@@ -20,9 +20,10 @@ it. Three rules, all raising:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-from dataclasses import fields, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -217,3 +218,17 @@ def resolve_config(
     return Config(
         **{section: _build(section, merged.get(section, {}), origin_by_key) for section in SECTIONS}
     )
+
+
+def config_hash(config: Config) -> str:
+    """Stable identity for a resolved config, stamped on every generated row.
+
+    `hashlib`, not `dataclasses`, is why this lives in `jobs/` rather than
+    `core/config.py` (invariant 10). `sort_keys=True` makes field order
+    irrelevant; `asdict` recurses into every section so a change anywhere
+    in the config changes the hash. 16 hex chars (64 bits) is plenty of
+    collision resistance for a provenance tag, and stays short in a
+    filename or a URL.
+    """
+    payload = json.dumps(asdict(config), sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]

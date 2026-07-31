@@ -1451,7 +1451,9 @@ Testing consequence. Resolver tests must pass an explicit `config_file` and clea
 
 Status: Pinned
 
-Decision. `ExitParams` gains `exit_stoch_threshold: float = 80.0`. The exit path reads it and never uses a bare literal.
+Decision. `ExitParams` gains two independent fields: `exit_stoch_threshold: float = 80.0` for the long exit and `exit_stoch_threshold_short: float = 20.0` for the short. The exit path reads them and never uses a bare literal or a derivation.
+
+**No `100 - threshold` coupling.** Measured on a 4x4 long/short grid, the derivation reaches 4 of 16 combinations, the diagonal only. `(long 70, short 20)` is unreachable — the coupling forces short to 30. That assumes exactly the symmetry ADR 016 rejects: drift runs against the short, band walking hurts it, and loss geometry differs. Shorts are computed but not surfaced in v1 (ADR 058), and their statistics feed the Phase 4 long-vs-short asymmetry analysis, so a coupled threshold would bias that comparison before it is ever read.
 
 Rationale. `exits.py` hardcoded `80.0` and `20.0` for the stochastic exit. `SignalParams.stoch_overbought` is a sweepable parameter, so sweeping it would move the entry threshold while the exit stayed at the literal. Entry and exit would then disagree about what "overbought" means inside a single backtest, and every resulting number would look reasonable. This is invariant 9 and the silent-bias class TESTS §1 allocates coverage to.
 

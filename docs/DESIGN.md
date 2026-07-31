@@ -432,7 +432,8 @@ class ExitParams:
     stop_fixed_pct: float = 0.03
     exit_on_upper_band: bool = True
     exit_on_stoch_80: bool = True
-    exit_stoch_threshold: float = 80.0      # exit policy, independent of SignalParams
+    exit_stoch_threshold: float = 80.0        # long exit, exit policy
+    exit_stoch_threshold_short: float = 20.0  # short exit, independent (ADR 016)
     exit_on_mid_band: bool = False          # ADR 046
 
 @dataclass(frozen=True)
@@ -1013,6 +1014,8 @@ For each forward bar `i ∈ {t+1 … t+5}`, in this order:
 3. **`ambiguous` is set only when stop and target both breach on the same bar.** Stop wins by rule (ADR 010). The flag makes the frequency measurable; above 10% triggers hourly escalation.
 4. **The stochastic exit is close-based and evaluated last,** because a close-triggered exit cannot preempt an intraday fill that already happened.
 
+**Long and short thresholds are independent fields, never derived from each other.** The long exit reads `ep.exit_stoch_threshold`; the short exit reads `ep.exit_stoch_threshold_short`. A `100 - threshold` derivation reaches only the diagonal of the sweep space (4 of 16 combinations on a 4x4 grid) and assumes exactly the symmetry ADR 016 was written to reject.
+
 **No bare literals in the exit path.** The threshold comes from `ep.exit_stoch_threshold`, never from `80.0` inline. `SignalParams.stoch_overbought` is sweepable; a hardcoded exit threshold would let entry and exit disagree about what "overbought" means inside a single backtest, and every resulting number would look reasonable. The two parameters are independent by design — one is signal detection, the other exit policy — but they default to the same value.
 
 Fill price summary:
@@ -1143,7 +1146,9 @@ target_pct:  0.03, 0.04, 0.05
 entry_kind:  all 4, computed in one pass
 ```
 
-`(4 + 1 + 1) × 3 = 18` exit configs. **Entry prices compute once per event and are reused across exit configs,** since entry does not depend on exit parameters. That single optimization takes the sweep from 18 full passes to one candidate pass plus 18 exit passes: ~4 minutes total.
+`(4 + 1 + 1) × 3 = 18` exit configs.
+
+Stochastic exit thresholds are **not** in this grid. They are configuration, held at defaults across the sweep. Adding them is a §5.9 change that multiplies the config count. **Entry prices compute once per event and are reused across exit configs,** since entry does not depend on exit parameters. That single optimization takes the sweep from 18 full passes to one candidate pass plus 18 exit passes: ~4 minutes total.
 
 Ordering rule (ADR 059): the first backtest uses one default config (ATR stop k=1.5, target 4%, `NEXT_OPEN`), passes the full validation harness, and ~20 events get inspected by hand against charts **before** any sweep. Sweeping over a buggy engine produces 18 confidently wrong answers. The full 18-config sweep is mandatory before any result is published.
 
