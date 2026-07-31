@@ -17,6 +17,7 @@ from typing import Any, Iterator
 import pandas as pd
 import pandas_market_calendars as mcal
 from rich.console import Console
+from rich.progress import Progress
 from rich.table import Table
 from sqlalchemy import Engine, text
 
@@ -368,10 +369,13 @@ def run_bars_hourly(
         engine, "bars_hourly", {"tickers": tickers, "start": str(start), "end": str(end)}
     ) as report:
         frames = []
-        for ticker in tickers:
-            hourly = yahoo.fetch_bars_hourly(ticker, start, end)
-            if not hourly.empty:
-                frames.append(hourly)
+        with Progress() as progress:
+            task = progress.add_task("[cyan]hourly bars...", total=len(tickers))
+            for ticker in tickers:
+                hourly = yahoo.fetch_bars_hourly(ticker, start, end)
+                if not hourly.empty:
+                    frames.append(hourly)
+                progress.update(task, advance=1, description=f"[cyan]{ticker}[/cyan]")
         if not frames:
             report.tickers = []
             return report
