@@ -146,9 +146,15 @@ MCP_BEARER_TOKEN=
 
 Add a test in session 0 that spawns a trivial pool and asserts it returns, so the guard is verified before any real parallel work exists.
 
-**0.5 Config resolution**
+**0.5 Config resolution — in `jobs/`, not `core/`**
 
-One tested function. Precedence: CLI flag > env var > `config.toml` > dataclass default.
+`core/config.py` holds frozen dataclasses only. Its sole import is `dataclasses`. No `open()`, no `os.getenv()`, no `Path.exists()`, no `dotenv`. Invariant 1 applies to `core/config.py` like every other module in `core/`.
+
+`jobs/config.py` owns resolution: CLI flag > env var > `config.toml` > dataclass default. It returns populated frozen dataclasses. `core/` receives them as arguments.
+
+The resolver raises `ConfigError` on parse failure, unknown keys, and type-coercion failure. Never fall back to defaults on malformed input: `config_hash` is stamped on every generated row, so a silently-defaulted config produces provenance that describes parameters which never ran.
+
+Tests for the resolver must pass an explicit `config_file` and clear `CAPSCAN_*` with `monkeypatch.delenv`. A resolver reading ambient CWD and environment makes the suite depend on the machine, and a green CI then proves only that no stray variable happened to be set.
 
 **0.6 CLI skeleton**
 

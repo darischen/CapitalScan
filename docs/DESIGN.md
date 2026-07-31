@@ -390,6 +390,14 @@ Everything follows from this. The backtest and the poller call identical functio
 
 Every constant lives here as a frozen dataclass. No magic numbers anywhere else in the repo. Each backtest run serializes its full config into `runs.params`, so reproducing a result means reading one JSON blob.
 
+**`core/config.py` contains dataclasses only.** No `open()`, no `os.getenv()`, no `Path.exists()`, no `dotenv`. Its only import is `dataclasses`. This is §3.1 applied to itself.
+
+Resolution lives in `jobs/config.py`, which owns the precedence chain (CLI flag, then environment variable, then `config.toml`, then dataclass default) and returns populated frozen dataclasses. `core/` receives config objects as arguments and never fetches them.
+
+`jobs/config.py` raises on malformed input rather than falling back to defaults: parse failures, unknown keys, and type-coercion failures all raise `ConfigError`. Silent fallback is not survivable here, because `config_hash` is computed from the resolved config and stamped on every generated row. A silently-defaulted config yields a hash that describes parameters which never ran, and the record is internally consistent, so no later check can catch it.
+
+Consequence for tests: resolution tests must pass an explicit `config_file` and clear `CAPSCAN_*` via `monkeypatch.delenv`. A resolver defaulting to ambient CWD and environment makes the suite depend on the machine it runs on, and a green CI proves only that no stray variable happened to be set.
+
 ```python
 @dataclass(frozen=True)
 class IndicatorParams:
@@ -424,6 +432,7 @@ class ExitParams:
     stop_fixed_pct: float = 0.03
     exit_on_upper_band: bool = True
     exit_on_stoch_80: bool = True
+    exit_stoch_threshold: float = 80.0      # exit policy, independent of SignalParams
     exit_on_mid_band: bool = False          # ADR 046
 
 @dataclass(frozen=True)
@@ -1003,6 +1012,8 @@ For each forward bar `i ∈ {t+1 … t+5}`, in this order:
 2. **Exit band levels come from bar i−1, not bar i.** Using i means using i's close to decide an intraday exit on bar i. Same trap as the entry side, same test.
 3. **`ambiguous` is set only when stop and target both breach on the same bar.** Stop wins by rule (ADR 010). The flag makes the frequency measurable; above 10% triggers hourly escalation.
 4. **The stochastic exit is close-based and evaluated last,** because a close-triggered exit cannot preempt an intraday fill that already happened.
+
+**No bare literals in the exit path.** The threshold comes from `ep.exit_stoch_threshold`, never from `80.0` inline. `SignalParams.stoch_overbought` is sweepable; a hardcoded exit threshold would let entry and exit disagree about what "overbought" means inside a single backtest, and every resulting number would look reasonable. The two parameters are independent by design — one is signal detection, the other exit policy — but they default to the same value.
 
 Fill price summary:
 

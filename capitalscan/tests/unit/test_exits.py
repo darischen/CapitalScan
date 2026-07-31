@@ -463,17 +463,31 @@ def test_an_unknown_stop_mode_raises():
 # ---------------------------------------------------------------------------
 
 
-def test_stoch_exit_threshold_comes_from_config_not_a_literal():
-    """The %K exit level must be the same number `detect` uses.
+def test_stoch_exit_threshold_is_an_exit_param():
+    """ADR 092: the level is exit policy, so it lives on ExitParams.
 
-    Hardcoding 80/20 here lets a sweep of `SignalParams.stoch_overbought`
-    move the entry threshold while the exit silently stays put — the two
-    would disagree about what "overbought" means inside one backtest.
+    Independent of SignalParams.stoch_overbought even though both default
+    to 80.0 — an exit-rule sweep must not require a signal-config change.
     """
+    assert ExitParams().exit_stoch_threshold == 80.0
+
+
+def test_a_swept_exit_threshold_changes_the_exit():
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.5])
+    ind = _ind(bars, k_full=72.0)
+    assert _resolve(bars, ind=ind).reason is ExitReason.TIMEOUT
+    ep = ExitParams(exit_stoch_threshold=70.0)
+    assert _resolve(bars, ind=ind, ep=ep).reason is ExitReason.STOCH_80
+
+
+def test_the_exit_threshold_is_independent_of_signal_params():
+    """Sweeping SignalParams must not move the exit, and vice versa."""
     from capitalscan.core.config import SignalParams
 
-    assert exits._STOCH_EXIT_HIGH == SignalParams().stoch_overbought
-    assert exits._STOCH_EXIT_LOW == SignalParams().stoch_oversold
+    assert SignalParams(stoch_overbought=60.0).stoch_overbought == 60.0
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.5])
+    # Exit still uses ExitParams' 80.0, unmoved by the signal config.
+    assert _resolve(bars, ind=_ind(bars, k_full=65.0)).reason is ExitReason.TIMEOUT
 
 
 def test_exits_module_contains_no_bare_stochastic_literal():
@@ -483,24 +497,21 @@ def test_exits_module_contains_no_bare_stochastic_literal():
     body = "\n".join(
         line
         for line in source.splitlines()
-        if not line.strip().startswith("#") and "_STOCH_EXIT_" not in line
+        if not line.strip().startswith("#") and "exit_stoch_threshold" not in line
     )
     assert "80.0" not in body and "20.0" not in body
 
 
 def test_long_stoch_exit_fires_exactly_at_the_configured_level():
-    from capitalscan.core.config import SignalParams
-
-    level = SignalParams().stoch_overbought
+    level = ExitParams().exit_stoch_threshold
     bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.5])
     assert _resolve(bars, ind=_ind(bars, k_full=level)).reason is ExitReason.STOCH_80
     assert _resolve(bars, ind=_ind(bars, k_full=level - 0.01)).reason is ExitReason.TIMEOUT
 
 
 def test_short_stoch_exit_fires_exactly_at_the_configured_level():
-    from capitalscan.core.config import SignalParams
-
-    level = SignalParams().stoch_oversold
+    # The short mirrors the threshold across the %K midpoint.
+    level = 100.0 - ExitParams().exit_stoch_threshold
     bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[99.5])
     r = _resolve(bars, ind=_ind(bars, k_full=level), side=Side.SHORT)
     assert r.reason is ExitReason.STOCH_80

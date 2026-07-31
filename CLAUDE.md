@@ -33,7 +33,8 @@ If a task appears to require contradicting one, **stop and ask.** Do not work ar
 6. **Every generated row carries `run_id` and `git_sha`.**
 7. **No broker client, no order placement, no brokerage credentials.** The absence is the safety property, not a disabled flag.
 8. **Every response carrying a probability carries `n_eff` and a confidence interval.**
-9. **No magic numbers outside `core/config.py`.**
+9. **No magic numbers outside `core/config.py`.** This includes thresholds that happen to match a default elsewhere. A literal `80.0` in the exit path while `stoch_overbought` is sweepable lets entry and exit disagree inside one backtest, and the output looks fine.
+10. **`core/config.py` holds dataclasses only.** Sole import is `dataclasses`. Resolution lives in `jobs/config.py`. Invariant 1 applies to the config module too.
 
 ---
 

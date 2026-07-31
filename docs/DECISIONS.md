@@ -102,6 +102,8 @@ Last updated: 2026-07-28
 | 088 | cell_id is derived; serving views pin split to validate | Pinned |
 | 089 | MFE unclamped; look-ahead guarded by signature, not shift alone | Pinned |
 | 090 | Absence is None, never NaN; debounce keys on a tuple | Pinned |
+| 091 | Config resolution lives in jobs, not core | Pinned |
+| 092 | Exit thresholds are ExitParams fields, never literals | Pinned |
 
 ---
 
@@ -1417,6 +1419,47 @@ Both fixes are required. Either alone leaves the other failure mode live: fixing
 **CI budget, corrected again.** The marked split saved only 50 seconds because the exit invariants are themselves the expensive part. `test_stop_exits_land_at_or_beyond_the_stop_level` alone measures 193 s, since `assume(r.reason is ExitReason.STOP)` discards roughly two of every three draws. The slow-tier budget is raised to **10 minutes** rather than targeting the generator: a hand-built stop-hitting generator would test the stops someone thought to construct rather than the ones the parameter space produces. If the tier becomes painful, the fix is additive — keep the unfiltered generator at a lower count and add a targeted one alongside — never substitutive.
 
 The ADR 060 determinism sweep is unmarked and runs at `ci_fast`. It is not one of the four §3.4 invariants and 250 cases establish it.
+
+
+---
+
+## 091. Config resolution lives in jobs, not core
+
+Status: Pinned. Corrects BUILD §0.5.
+
+Decision. `core/config.py` contains frozen dataclasses only. Its sole import is `dataclasses`. No `open()`, no `os.getenv()`, no `Path.exists()`, no `dotenv.load_dotenv()`.
+
+Resolution moves to `jobs/config.py`, which owns the precedence chain (CLI flag, environment variable, `config.toml`, dataclass default) and returns populated frozen dataclasses. `core/` receives config objects as arguments and never fetches them.
+
+Rationale. BUILD §0.5 asked for a resolution function with environment and TOML precedence and placed it in `core/`, which directly contradicts invariant 1 and DESIGN §3.1. The conflict was in the spec, not the implementation. Purity in `core/` is what makes the backtest and the poller callable with identical code paths and testable without fixtures, and a config module reading the environment breaks that for the module every other module imports.
+
+**Malformed config fails loudly.** `resolve_config` swallowed `json.JSONDecodeError` with a bare `pass`, so `CAPSCAN_INDICATORS='{bad json'` silently produced `bb_window = 20` while the operator believed an override had applied.
+
+This is worse than an ordinary silent failure because of provenance. `config_hash` is computed from the resolved config and stamped on every event row, every `cell_stats` row, and every `RESULTS.md` entry. A silently-defaulted config produces a hash asserting "these were the parameters" when they were not, and the record is internally consistent, so nothing later can detect it. ADR 034's provenance guarantee depends on the hash describing what actually ran.
+
+Three rules, all raising rather than defaulting:
+
+1. Parse failure raises `ConfigError` naming the variable and the underlying error.
+2. Unknown keys raise. `{"bb_windwo": 20}` parses as valid JSON and applies nothing; validate against dataclass fields.
+3. Type coercion failure raises. `{"bb_window": "twenty"}` must not land a string in a field typed `int`.
+
+Testing consequence. Resolver tests must pass an explicit `config_file` and clear `CAPSCAN_*` via `monkeypatch.delenv`. A resolver defaulting to ambient CWD and environment makes the suite depend on the machine it runs on. Demonstrated during the session 1-3 audit: running with `CAPSCAN_INDICATORS='{"bb_window": 99}'` set fails two tests. With no `config.toml` committed, CI was green by luck rather than by construction.
+
+---
+
+## 092. Exit thresholds are ExitParams fields, never literals
+
+Status: Pinned
+
+Decision. `ExitParams` gains `exit_stoch_threshold: float = 80.0`. The exit path reads it and never uses a bare literal.
+
+Rationale. `exits.py` hardcoded `80.0` and `20.0` for the stochastic exit. `SignalParams.stoch_overbought` is a sweepable parameter, so sweeping it would move the entry threshold while the exit stayed at the literal. Entry and exit would then disagree about what "overbought" means inside a single backtest, and every resulting number would look reasonable. This is invariant 9 and the silent-bias class TESTS §1 allocates coverage to.
+
+Why a new `ExitParams` field rather than threading `SignalParams` into `resolve_exit`. The exit threshold is exit policy; the entry threshold is signal detection. They are conceptually independent even though they default to the same value, and coupling them would make an exit-rule sweep require a signal-config change. The `resolve_exit` signature pinned in DESIGN §3.7 also stays intact.
+
+Enforcement. A source assertion that no bare numeric literal appears in the exit threshold comparison, plus boundary tests on each side of the configured value.
+
+Found during the session 1-3 audit. The audit also verified independently that every DESIGN §3.5 formula matches a from-scratch reimplementation, that `ddof=0` genuinely differs from `ddof=1` so the population-std choice is real rather than incidental, that `realized_vol` provably reads `adj_close` (the §2.2 exception) by giving `adj_close` an independent path from `close` and confirming the output followed it, and that all 19 output columns declare warmups at or above their actual first-valid index with `max_warmup() = 272` matching §2.7.
 
 ---
 

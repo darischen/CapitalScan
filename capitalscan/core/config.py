@@ -1,20 +1,28 @@
-import json
-import os
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional
+"""Configuration dataclasses. Frozen values only, no IO (ADR 091).
 
-try:
-    import tomllib as tomli
-except ImportError:
-    import tomli  # type: ignore[no-redef]
+**The sole import is `dataclasses`.** No `open()`, no `os.getenv()`, no
+`Path.exists()`, no `dotenv`. Resolution — the CLI / env / TOML / default
+precedence chain — lives in `jobs/config.py`, which owns all IO. `core/`
+receives config objects as arguments and never fetches them.
+
+This is the module every other module imports, so a single environment read
+here would break purity for the whole library: the backtest and the poller
+would stop being callable through identical code paths, and `core/` would
+stop being testable without fixtures on disk (DESIGN §3.1, invariant 1).
+
+Every constant in the system lives here. No magic numbers anywhere else
+(invariant 9). Each backtest serializes its full config into `runs.params`,
+so reproducing a result means reading one JSON blob.
+"""
+
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class IndicatorParams:
     bb_window: int = 20
     bb_std: float = 2.0
-    bb_ddof: int = 0
+    bb_ddof: int = 0  # population std (ADR 004)
     stoch_window: int = 14
     stoch_smooth_k: int = 3
     stoch_smooth_d: int = 3
@@ -31,21 +39,26 @@ class IndicatorParams:
 class SignalParams:
     stoch_oversold: float = 20.0
     stoch_overbought: float = 80.0
-    require_fast_agreement: bool = False
+    require_fast_agreement: bool = False  # ADR 044
     fast_agreement_tol: float = 5.0
-    price_tolerance: float = 0.0
+    price_tolerance: float = 0.0  # 0.0 == "at or beyond", exact
 
 
 @dataclass(frozen=True)
 class ExitParams:
     max_hold_days: int = 5
-    target_pct: float = 0.04
-    stop_mode: str = "atr"
-    stop_atr_k: float = 1.5
+    target_pct: float = 0.04  # swept 0.03-0.05 (ADR 009)
+    stop_mode: str = "atr"  # "atr" | "fixed" | "none"
+    stop_atr_k: float = 1.5  # swept 1.0-2.5 (ADR 008)
     stop_fixed_pct: float = 0.03
     exit_on_upper_band: bool = True
     exit_on_stoch_80: bool = True
-    exit_on_mid_band: bool = False
+    # Exit policy, independent of SignalParams.stoch_overbought even though
+    # they default to the same value (ADR 092). One is signal detection, the
+    # other is exit policy, and an exit-rule sweep must not require a
+    # signal-config change.
+    exit_stoch_threshold: float = 80.0
+    exit_on_mid_band: bool = False  # ADR 046
 
 
 @dataclass(frozen=True)
@@ -60,13 +73,13 @@ class CostParams:
 class UniverseParams:
     min_mcap_usd: float = 200e9
     min_price: float = 1.0
-    rel_return_lookback_days: int = 756
+    rel_return_lookback_days: int = 756  # 3 years
     rebalance_freq: str = "Q"
 
 
 @dataclass(frozen=True)
 class StatsParams:
-    min_n_eff: int = 30
+    min_n_eff: int = 30  # below this a cell is suppressed
     fdr_alpha: float = 0.05
     n_replications_default: int = 200
     n_replications_sweep: int = 50
@@ -93,50 +106,6 @@ class Config:
     universe: UniverseParams = UniverseParams()
     stats: StatsParams = StatsParams()
     splits: SplitParams = SplitParams()
-
-
-def resolve_config(
-    cli_overrides: Optional[dict] = None,
-    env_file: Optional[str] = None,
-    config_file: Optional[str] = None,
-) -> Config:
-    cli_overrides = cli_overrides or {}
-    config_file = config_file or "config.toml"
-
-    result = {}
-
-    if Path(config_file).exists():
-        with open(config_file, "rb") as f:
-            file_config = tomli.load(f)
-            result.update(file_config)
-
-    env_config = {}
-    if env_file:
-        import dotenv
-
-        dotenv.load_dotenv(env_file)
-
-    for key in ["indicators", "signals", "exits", "costs", "universe", "stats", "splits"]:
-        env_key = f"CAPSCAN_{key.upper()}"
-        env_val = os.getenv(env_key)
-        if env_val:
-            try:
-                env_config[key] = json.loads(env_val)
-            except json.JSONDecodeError:
-                pass
-
-    result.update(env_config)
-    result.update(cli_overrides)
-
-    return Config(
-        indicators=IndicatorParams(**result.get("indicators", {})),
-        signals=SignalParams(**result.get("signals", {})),
-        exits=ExitParams(**result.get("exits", {})),
-        costs=CostParams(**result.get("costs", {})),
-        universe=UniverseParams(**result.get("universe", {})),
-        stats=StatsParams(**result.get("stats", {})),
-        splits=SplitParams(**result.get("splits", {})),
-    )
 
 
 DEFAULT_CONFIG = Config()

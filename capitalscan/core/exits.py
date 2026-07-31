@@ -33,20 +33,14 @@ from __future__ import annotations
 
 import pandas as pd
 
-from capitalscan.core.config import ExitParams, SignalParams
+from capitalscan.core.config import ExitParams
 from capitalscan.core.returns import mfe_mae
 from capitalscan.core.signals import _breach, _isnan
 from capitalscan.core.types import Bound, ExitReason, ExitResult, Side
 
-# %K exit levels, sourced from SignalParams so the exit and the signal cannot
-# disagree about what "overbought" means inside one backtest (CLAUDE.md
-# invariant 9 — no magic numbers outside core/config.py).
-#
-# DESIGN §3.7 pins `resolve_exit`'s signature without a SignalParams argument,
-# so these bind the defaults. If a sweep ever needs to vary them per config,
-# ExitParams needs its own field — a spec change, not a code change.
-_STOCH_EXIT_HIGH = SignalParams().stoch_overbought
-_STOCH_EXIT_LOW = SignalParams().stoch_oversold
+# The %K scale, for mirroring the exit threshold onto the short side. Not a
+# tunable: %K is defined as a 0-100 percentage (DESIGN §3.5).
+_STOCH_SCALE = 100.0
 
 
 def stop_level(entry_price: float, side: Side, atr_at_entry: float, ep: ExitParams) -> float:
@@ -170,7 +164,13 @@ def _exit_on_bar(
     if ep.exit_on_stoch_80:
         k_full = _level(own_ind, "k_full")
         if not _isnan(k_full):
-            extreme = k_full >= _STOCH_EXIT_HIGH if side is Side.LONG else k_full <= _STOCH_EXIT_LOW
+            # ADR 092: the level is exit policy, read from ExitParams, never a
+            # literal. The short mirrors it across the %K midpoint — a long
+            # exits into strength at 80, a short into weakness at 20.
+            if side is Side.LONG:
+                extreme = k_full >= ep.exit_stoch_threshold
+            else:
+                extreme = k_full <= _STOCH_SCALE - ep.exit_stoch_threshold
             if extreme:
                 return float(bar["close"]), ExitReason.STOCH_80, False
 

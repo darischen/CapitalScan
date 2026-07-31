@@ -20,7 +20,9 @@ moment a fifth field is touched.
 
 from __future__ import annotations
 
+import ast
 import inspect
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -277,3 +279,82 @@ def test_nan_indicator_row_still_reads_only_permitted_bar_fields():
     probe = _probe()
     detect(probe, _ind_row(bb_lower=np.nan, k_full=np.nan), SP)
     assert probe.accessed <= PERMITTED_ON_BAR
+
+
+# ---------------------------------------------------------------------------
+# core/ purity, module-wide (ADR 091, invariant 1)
+# ---------------------------------------------------------------------------
+
+CORE_DIR = Path(__file__).resolve().parents[2] / "core"
+
+# Third-party compute libraries are fine; these are the IO doors.
+_IO_MODULES = {
+    "os",
+    "io",
+    "pathlib",
+    "json",
+    "tomllib",
+    "tomli",
+    "dotenv",
+    "requests",
+    "httpx",
+    "urllib",
+    "sqlalchemy",
+    "psycopg",
+    "socket",
+    "subprocess",
+    "time",
+    "random",
+}
+
+
+def _imports(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            found.add(node.module.split(".")[0])
+    return found
+
+
+@pytest.mark.parametrize(
+    "module", sorted(p.name for p in CORE_DIR.glob("*.py") if p.name != "__init__.py")
+)
+def test_no_core_module_imports_an_io_library(module):
+    offenders = _imports(CORE_DIR / module) & _IO_MODULES
+    assert not offenders, f"core/{module} imports {sorted(offenders)}; jobs/ owns all IO"
+
+
+def test_core_config_imports_only_dataclasses():
+    """ADR 091 pins this exactly: config.py is the module every other module
+    imports, so one environment read there breaks purity library-wide."""
+    assert _imports(CORE_DIR / "config.py") == {"dataclasses"}
+
+
+def test_core_config_defines_no_resolver():
+    # Scan code, not prose: the module docstring names these terms while
+    # explaining why they are banned there.
+    tree = ast.parse((CORE_DIR / "config.py").read_text(encoding="utf-8"))
+    called = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    } | {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    for banned in ("open", "getenv", "load_dotenv", "exists", "read_text"):
+        assert banned not in called, f"core/config.py calls {banned}(); belongs in jobs/"
+
+    defined = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    assert "resolve_config" not in defined, "resolution belongs in jobs/config.py (ADR 091)"
+
+
+def test_the_import_scan_would_catch_a_violation(tmp_path):
+    """Guard on the guard: a synthetic offending module must be detected."""
+    bad = tmp_path / "bad.py"
+    bad.write_text("import os\nfrom pathlib import Path\n")
+    assert _imports(bad) & _IO_MODULES == {"os", "pathlib"}
