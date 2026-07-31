@@ -100,6 +100,7 @@ Last updated: 2026-07-28
 | 086 | External indicator verification, semi-automated | Pinned |
 | 087 | Random-walk null test is the primary statistical guard | Pinned |
 | 088 | cell_id is derived; serving views pin split to validate | Pinned |
+| 089 | MFE unclamped; look-ahead guarded by signature, not shift alone | Pinned |
 
 ---
 
@@ -1367,6 +1368,27 @@ Enforcement. `split_key = 'validate'` is hardcoded in `v_screen` and in any futu
 Consequence for the statistics job. It must write a pooled row per cell with `era IS NULL` alongside the four per-era rows. `v_screen` reads the pooled row; the research page reads the per-era ones.
 
 Provenance. Found by a Claude Code session during migration 004, which correctly identified that `v_screen` referenced a column `events` did not have, and proposed adding it. The proposal was rejected for the two reasons above.
+
+
+---
+
+## 089. MFE unclamped; look-ahead guarded by signature, not shift alone
+
+Status: Pinned
+
+Two corrections found by a Claude Code session completing `core/exits.py` and `core/signals.py`.
+
+**MFE is not clamped at zero.** An earlier test draft asserted `mae <= 0 <= mfe`, contradicting DESIGN §5.6. A position gapping down at t+1 that never trades back above entry has a genuinely negative MFE, since every forward high sits below the entry price. Clamping would render DESIGN §5.6's "`capture_ratio` stored null when MFE <= 0" clause dead and inflate every capture ratio. The correct invariants are `mae <= mfe` and the load-bearing `mfe >= realized_return`.
+
+**The shift test cannot enforce the t-1 rule.** A single Jaccard threshold at 0.5 fails on real bars, measuring near 0.59 for a one-bar shift. The cause is arithmetic rather than a bug: bands drift roughly 0.35% of price per day against a bar range of roughly 1.59%, so a bar touching yesterday's band usually touches the day-before's too. Row-shuffled indicators collapse Jaccard to 0.067 and the ladder decays cleanly (1 to 0.59, 2 to 0.37, 5 to 0.14, 20 to 0.06).
+
+More importantly, the shift design is structurally incapable of the check it was written for. If `detect` wrongly read bar t's indicators, shifting forward one bar would make it read t-1, producing the same magnitude of change and a similar Jaccard. The test catches a detector that ignores indicators entirely; it cannot catch reading the wrong bar.
+
+Resolution. The shift test becomes a four-bound ladder anchored to a shuffled control, plus a blind-detector guard proving the suite can fail. The **actual** t-1 guarantee is structural and is asserted directly: `detect(bar, ind, sp)` receives one indicator row as an argument and may read only `low`, `high`, `ts`, and `ticker` from the bar, verified by a tracking probe that records attribute access. Bar t's indicators are not in scope, so no path to them exists.
+
+The probe is the load-bearing part. It fails immediately if a future refactor passes the full indicator frame for convenience, or if someone adds `bar.close` to a band comparison.
+
+**CI consequence.** Property tests at 10,000 examples run roughly 105 seconds, exceeding the 60-second fast-tier budget. Hypothesis profiles split this: 1,000 examples in fast, 10,000 in slow. The Phase 3 gate still requires the full 10,000.
 
 ---
 

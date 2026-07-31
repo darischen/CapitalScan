@@ -42,16 +42,61 @@ Each catches a failure that would otherwise ship silently. These carry the corre
 
 ### 3.1 Look-ahead detection
 
+A single Jaccard threshold does not work here. Measured on real bars, a one-bar shift lands near 0.59, not below 0.5, and the cause is arithmetic rather than a bug: bands drift roughly 0.35% of price per day while a bar's own range is roughly 1.59%, so a bar touching yesterday's band usually touches the day-before's too.
+
+Four bounds anchored to a shuffled control, jointly stronger than the original threshold:
+
 ```python
-def test_shift_changes_events(bars, indicators):
+def test_shift_ladder(bars, indicators):
     base    = detect_all(bars, indicators)
-    shifted = detect_all(bars, indicators.shift(1))
-    assert jaccard(base, shifted) < 0.5
+    shifted = {k: detect_all(bars, indicators.shift(k)) for k in (1, 2, 5, 20)}
+    control = detect_all(bars, indicators.sample(frac=1.0))   # row-shuffled
+
+    j = {k: jaccard(base, v) for k, v in shifted.items()}
+    jc = jaccard(base, control)
+
+    assert jc < 0.15                       # shuffled control floor
+    assert j[1] < 0.80                     # one-bar shift changes materially
+    assert j[1] > j[2] > j[5] > j[20]      # monotonic decay
+    assert j[5] < 0.50                     # original threshold, at shift-5
+    assert j[20] < 2 * jc                  # converges toward the control
 ```
 
-If shifting indicators forward a day barely changes the event set, either the signal is not reading the indicators or it is already using future data and the shift is a no-op.
+Plus a blind-detector guard proving the suite can fail:
 
-Applies to both `core/signals.py` and the `events` job, since the t−1 guard exists at both layers (DESIGN §3.6, §4.7).
+```python
+def test_suite_catches_a_blind_detector():
+    """A detector ignoring indicators entirely must fail the ladder."""
+    with pytest.raises(AssertionError):
+        run_shift_ladder(detector=lambda bar, ind, sp: always_fire(bar))
+```
+
+**What this test does and does not prove.** It catches a signal that is not reading the indicators at all, and it catches a detector whose response to indicator perturbation is structurally wrong.
+
+It does **not** distinguish correct t-1 reading from incorrect t reading. If `detect` wrongly read bar t's indicators, shifting forward one bar would make it read t-1 — the same magnitude of change, roughly the same Jaccard. That limitation is inherent to the shift design.
+
+### 3.1b Signature guarantee — the real t-1 enforcement
+
+The actual guarantee is structural: `detect(bar, ind, sp)` receives **one** indicator row as an argument and reads only `low`, `high`, `ts`, and `ticker` from the bar. Bar t's indicators are not in scope, so there is no path to them.
+
+This is fragile to a future refactor that passes the full frame "for convenience," so it is asserted:
+
+```python
+def test_detect_cannot_reach_bar_t_indicators():
+    sig = inspect.signature(core.signals.detect)
+    assert list(sig.parameters) == ["bar", "ind", "sp"]
+
+    # ind must be a row, not a frame
+    with pytest.raises((TypeError, ValueError, AttributeError)):
+        detect(BAR, INDICATOR_FRAME, SP)
+
+    # bar must expose only the four permitted fields
+    probe = TrackingSeries(BAR)
+    detect(probe, IND_ROW, SP)
+    assert probe.accessed <= {"low", "high", "ts", "ticker"}
+```
+
+The `TrackingSeries` probe is the load-bearing part. If someone later adds `bar.close` to a band comparison, this fails immediately rather than silently introducing look-ahead.
 
 ### 3.2 Signal path parity — ADR 006 enforcement
 
@@ -91,7 +136,7 @@ def test_exit_invariants(entry, bars, ind, atr, cfg):
 
     assert bars.low[r.exit_idx] <= r.exit_price <= bars.high[r.exit_idx]
     assert 1 <= r.holding_days <= cfg.max_hold_days
-    assert r.mae <= 0 <= r.mfe
+    assert r.mae <= r.mfe          # NOT mae <= 0 <= mfe, see below
     assert r.mfe >= realized_return(entry, r.exit_price, Side.LONG)
 
     if r.reason == ExitReason.STOP:
@@ -100,7 +145,9 @@ def test_exit_invariants(entry, bars, ind, atr, cfg):
 
 **The MFE invariant is the sharp one.** Realized return can never exceed max favorable excursion. Any violation means the path metrics and the exit disagree about what happened.
 
-Target: 10,000 generated cases.
+**MFE is not clamped at zero.** An earlier draft asserted `mae <= 0 <= mfe`. That is wrong and contradicts DESIGN §5.6. A position that gaps down at t+1 and never trades back above entry has a genuinely negative MFE, since `MFE = max_i (high_i - P0)/P0` and every `high_i < P0`. Clamping would make DESIGN §5.6's "`capture_ratio` stored null when MFE <= 0" clause dead code and would overstate every capture ratio. Assert `mae <= mfe`, not `mae <= 0 <= mfe`.
+
+Target: 10,000 generated cases in the slow tier, 1,000 in fast (§9).
 
 ### 3.5 Split leakage — structural
 
@@ -279,12 +326,26 @@ jobs:
   fast:
     - ruff check
     - ruff format --check
-    - mypy core/
-    - pytest tests/unit tests/property
+    - mypy                                    # config-driven, see below
+    - pytest tests/unit -p no:randomly
+    - pytest tests/property --hypothesis-profile=ci_fast
   slow:
     services: [postgres]
+    - pytest tests/property --hypothesis-profile=full
     - pytest tests/golden tests/integration
 ```
+
+Hypothesis profiles, registered in `conftest.py`:
+
+```python
+settings.register_profile("ci_fast", max_examples=1000, deadline=None)
+settings.register_profile("full",    max_examples=10000, deadline=None)
+settings.register_profile("dev",     max_examples=200)
+```
+
+Property tests at 10,000 examples take roughly 105 seconds, which exceeds the fast-tier budget. The split preserves quick feedback without weakening the Phase 3 gate, which still requires the full 10,000.
+
+`mypy` takes no path argument. Invocation style is pinned in `pyproject.toml` via `packages = ["capitalscan"]`, since path invocation causes module-resolution ambiguity. `pandas-stubs` is a dev dependency.
 
 Fast tier under 60 seconds. Slow tier under 5 minutes. **Acceptance tests never run in CI** — they need the real database and the full dataset.
 

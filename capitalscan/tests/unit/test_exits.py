@@ -1,0 +1,458 @@
+"""Unit tests for core/exits.py.
+
+BUILD.md §3.2 names four details that decide correctness, and each gets its
+own section below: gap checks run first, band levels come from bar i-1,
+`ambiguous` is set on a stop-and-target collision, and the stochastic exit
+is evaluated last because a close-triggered exit cannot preempt an intraday
+fill that already happened.
+
+Priority order is pinned in DESIGN §5.5 and is not re-derived here.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from capitalscan.core import exits
+from capitalscan.core.config import ExitParams
+from capitalscan.core.types import ExitReason, Side
+
+EP = ExitParams()
+ATR = 2.0
+ENTRY = 100.0
+
+# Default config: target 4% -> 104.0, ATR stop k=1.5 -> 100 - 3.0 = 97.0.
+TARGET = 104.0
+STOP = 97.0
+
+
+def _fwd(opens, highs, lows, closes, start="2026-07-30"):
+    idx = pd.date_range(start, periods=len(opens), freq="B")
+    return pd.DataFrame({"open": opens, "high": highs, "low": lows, "close": closes}, index=idx)
+
+
+def _quiet(n=5):
+    """Five forward bars that trigger nothing: no stop, no target, no band."""
+    return _fwd(opens=[100.0] * n, highs=[101.0] * n, lows=[99.0] * n, closes=[100.0] * n)
+
+
+def _ind(bars, bb_upper=200.0, bb_mid=150.0, bb_lower=1.0, k_full=50.0):
+    """Indicator rows aligned to `bars`. Bands default far out of reach so a
+    test only sees the condition it is exercising."""
+    return pd.DataFrame(
+        {
+            "bb_upper": bb_upper,
+            "bb_mid": bb_mid,
+            "bb_lower": bb_lower,
+            "k_full": k_full,
+        },
+        index=bars.index,
+    )
+
+
+def _resolve(bars, ind=None, ep=EP, side=Side.LONG, entry=ENTRY, **kw):
+    return exits.resolve_exit(
+        entry_price=entry,
+        entry_idx=0,
+        side=side,
+        fwd_bars=bars,
+        fwd_ind=_ind(bars) if ind is None else ind,
+        atr_at_entry=ATR,
+        ep=ep,
+        **kw,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Timeout — the terminal case
+# ---------------------------------------------------------------------------
+
+
+def test_quiet_path_times_out_on_the_final_bar():
+    r = _resolve(_quiet())
+    assert r.reason is ExitReason.TIMEOUT
+    assert r.exit_idx == 4
+    assert r.holding_days == 5
+
+
+def test_timeout_fills_at_the_final_bar_close():
+    bars = _quiet()
+    bars.iloc[-1, bars.columns.get_loc("close")] = 100.5
+    r = _resolve(bars)
+    assert r.exit_price == pytest.approx(100.5)
+
+
+def test_a_short_window_times_out_at_its_own_end():
+    # A delisting truncates the window; the position exits at the last close.
+    r = _resolve(_quiet(2))
+    assert r.reason is ExitReason.TIMEOUT
+    assert r.holding_days == 2
+
+
+def test_max_hold_days_truncates_a_longer_window():
+    r = _resolve(_quiet(5), ep=ExitParams(max_hold_days=3))
+    assert r.holding_days == 3
+    assert r.exit_idx == 2
+
+
+# ---------------------------------------------------------------------------
+# Detail 1 — gap checks run first (DESIGN §5.5)
+# ---------------------------------------------------------------------------
+
+
+def test_gap_through_the_stop_fills_at_the_open_not_the_stop():
+    # Opened at 92, eight points below the 97 stop. Filling at 97 would book
+    # a 3% loss on a move that was already 8% against.
+    bars = _fwd(opens=[92.0, 100.0], highs=[93.0, 101.0], lows=[91.0, 99.0], closes=[92.5, 100.0])
+    r = _resolve(bars)
+    assert r.reason is ExitReason.STOP
+    assert r.exit_price == pytest.approx(92.0)
+
+
+def test_gap_through_the_target_fills_at_the_open_not_the_target():
+    bars = _fwd(
+        opens=[108.0, 100.0], highs=[109.0, 101.0], lows=[107.0, 99.0], closes=[108.5, 100.0]
+    )
+    r = _resolve(bars)
+    assert r.reason is ExitReason.TARGET
+    assert r.exit_price == pytest.approx(108.0)
+
+
+def test_gap_stop_beats_gap_target_on_the_same_bar():
+    # A bar opening below the stop cannot also open above the target, but the
+    # ordering is asserted so a future edit cannot quietly reverse it.
+    bars = _fwd(opens=[92.0], highs=[110.0], lows=[91.0], closes=[105.0])
+    assert _resolve(bars).reason is ExitReason.STOP
+
+
+def test_no_gap_check_when_the_open_is_between_stop_and_target():
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.0])
+    assert _resolve(bars).reason is ExitReason.TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# Intraday stop and target
+# ---------------------------------------------------------------------------
+
+
+def test_intraday_stop_fills_at_the_stop_level():
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[96.0], closes=[98.0])
+    r = _resolve(bars)
+    assert r.reason is ExitReason.STOP
+    assert r.exit_price == pytest.approx(STOP)
+
+
+def test_intraday_target_fills_at_the_target_level():
+    bars = _fwd(opens=[100.0], highs=[105.0], lows=[99.0], closes=[104.5])
+    r = _resolve(bars)
+    assert r.reason is ExitReason.TARGET
+    assert r.exit_price == pytest.approx(TARGET)
+
+
+def test_stop_mode_fixed_uses_the_percentage_stop():
+    ep = ExitParams(stop_mode="fixed", stop_fixed_pct=0.03)
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[96.5], closes=[97.5])
+    r = _resolve(bars, ep=ep)
+    assert r.reason is ExitReason.STOP
+    assert r.exit_price == pytest.approx(97.0)
+
+
+def test_stop_mode_none_lets_a_deep_drawdown_run_to_timeout():
+    ep = ExitParams(stop_mode="none")
+    bars = _fwd(opens=[100.0] * 5, highs=[101.0] * 5, lows=[80.0] * 5, closes=[85.0] * 5)
+    r = _resolve(bars, ep=ep)
+    assert r.reason is ExitReason.TIMEOUT
+
+
+def test_stop_is_skipped_when_atr_is_null():
+    # No fabricated stop level from a missing ATR (DESIGN §3.11).
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[80.0], closes=[85.0])
+    r = exits.resolve_exit(
+        entry_price=ENTRY,
+        entry_idx=0,
+        side=Side.LONG,
+        fwd_bars=bars,
+        fwd_ind=_ind(bars),
+        atr_at_entry=np.nan,
+        ep=EP,
+    )
+    assert r.reason is ExitReason.TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# Detail 3 — ambiguous on a stop-and-target collision (ADR 010)
+# ---------------------------------------------------------------------------
+
+
+def test_stop_wins_when_both_levels_breach_on_one_bar():
+    bars = _fwd(opens=[100.0], highs=[105.0], lows=[96.0], closes=[104.0])
+    r = _resolve(bars)
+    assert r.reason is ExitReason.STOP
+    assert r.exit_price == pytest.approx(STOP)
+
+
+def test_ambiguous_is_set_when_both_levels_breach_on_one_bar():
+    bars = _fwd(opens=[100.0], highs=[105.0], lows=[96.0], closes=[104.0])
+    assert _resolve(bars).ambiguous is True
+
+
+def test_ambiguous_is_not_set_on_a_clean_stop():
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[96.0], closes=[98.0])
+    assert _resolve(bars).ambiguous is False
+
+
+def test_ambiguous_is_not_set_on_a_clean_target():
+    bars = _fwd(opens=[100.0], highs=[105.0], lows=[99.0], closes=[104.5])
+    assert _resolve(bars).ambiguous is False
+
+
+def test_a_gapped_stop_is_not_ambiguous():
+    # The fill happened at the open; nothing about the ordering is in doubt.
+    bars = _fwd(opens=[92.0], highs=[110.0], lows=[91.0], closes=[105.0])
+    assert _resolve(bars).ambiguous is False
+
+
+# ---------------------------------------------------------------------------
+# Detail 2 — band levels come from bar i-1 (DESIGN §5.5)
+# ---------------------------------------------------------------------------
+
+
+def test_upper_band_exit_uses_the_prior_bars_band_level():
+    bars = _fwd(
+        opens=[100.0, 100.0], highs=[101.0, 103.0], lows=[99.0, 99.0], closes=[100.0, 102.0]
+    )
+    ind = _ind(bars)
+    ind.iloc[0, ind.columns.get_loc("bb_upper")] = 102.0  # bar 0's band
+    ind.iloc[1, ind.columns.get_loc("bb_upper")] = 200.0  # bar 1's own band
+    r = _resolve(bars, ind=ind)
+    # Bar 1's high of 103 clears bar 0's band of 102, so it fills there.
+    # Reading bar 1's own band (200) would have produced a timeout.
+    assert r.reason is ExitReason.UPPER_BAND
+    assert r.exit_price == pytest.approx(102.0)
+
+
+def test_the_first_forward_bar_uses_the_entry_bars_band_level():
+    bars = _fwd(opens=[100.0], highs=[103.0], lows=[99.0], closes=[102.0])
+    entry_ind = pd.Series({"bb_upper": 102.0, "bb_mid": 150.0, "bb_lower": 1.0, "k_full": 50.0})
+    r = _resolve(bars, ind_at_entry=entry_ind)
+    assert r.reason is ExitReason.UPPER_BAND
+    assert r.exit_price == pytest.approx(102.0)
+
+
+def test_the_first_forward_bar_has_no_band_exit_without_the_entry_indicator_row():
+    # No i-1 row available means no band level, so the band exit is skipped
+    # rather than substituting bar i's own level and re-introducing lookahead.
+    bars = _fwd(opens=[100.0], highs=[103.0], lows=[99.0], closes=[102.0])
+    ind = _ind(bars, bb_upper=102.0)
+    assert _resolve(bars, ind=ind).reason is ExitReason.TIMEOUT
+
+
+def test_gap_above_the_band_fills_at_the_open():
+    bars = _fwd(
+        opens=[100.0, 105.0], highs=[101.0, 106.0], lows=[99.0, 104.0], closes=[100.0, 105.5]
+    )
+    ind = _ind(bars, bb_upper=200.0)
+    ind.iloc[0, ind.columns.get_loc("bb_upper")] = 102.0
+    ep = ExitParams(target_pct=0.50)  # keep the target out of the way
+    r = _resolve(bars, ind=ind, ep=ep)
+    assert r.reason is ExitReason.UPPER_BAND
+    assert r.exit_price == pytest.approx(105.0)
+
+
+def test_upper_band_exit_can_be_disabled():
+    bars = _fwd(
+        opens=[100.0, 100.0], highs=[101.0, 103.0], lows=[99.0, 99.0], closes=[100.0, 102.0]
+    )
+    ind = _ind(bars)
+    ind.iloc[0, ind.columns.get_loc("bb_upper")] = 102.0
+    r = _resolve(bars, ind=ind, ep=ExitParams(exit_on_upper_band=False))
+    assert r.reason is ExitReason.TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# Mid-band exit — optional, default off (ADR 046)
+# ---------------------------------------------------------------------------
+
+
+def test_mid_band_exit_is_off_by_default():
+    bars = _fwd(
+        opens=[100.0, 100.0], highs=[101.0, 103.0], lows=[99.0, 99.0], closes=[100.0, 102.0]
+    )
+    ind = _ind(bars, bb_mid=102.0, bb_upper=200.0)
+    assert _resolve(bars, ind=ind).reason is ExitReason.TIMEOUT
+
+
+def test_mid_band_exit_fires_when_enabled():
+    bars = _fwd(
+        opens=[100.0, 100.0], highs=[101.0, 103.0], lows=[99.0, 99.0], closes=[100.0, 102.0]
+    )
+    ind = _ind(bars, bb_mid=102.0, bb_upper=200.0)
+    r = _resolve(bars, ind=ind, ep=ExitParams(exit_on_mid_band=True))
+    assert r.reason is ExitReason.MID_BAND
+    assert r.exit_price == pytest.approx(102.0)
+
+
+def test_mid_band_takes_priority_over_the_upper_band():
+    # It is the nearer level, so it is reached first (ADR 046).
+    bars = _fwd(
+        opens=[100.0, 100.0], highs=[101.0, 110.0], lows=[99.0, 99.0], closes=[100.0, 109.0]
+    )
+    ind = _ind(bars, bb_mid=102.0, bb_upper=106.0)
+    ep = ExitParams(exit_on_mid_band=True, target_pct=0.50)
+    r = _resolve(bars, ind=ind, ep=ep)
+    assert r.reason is ExitReason.MID_BAND
+
+
+def test_target_takes_priority_over_the_mid_band():
+    bars = _fwd(
+        opens=[100.0, 100.0], highs=[101.0, 110.0], lows=[99.0, 99.0], closes=[100.0, 109.0]
+    )
+    ind = _ind(bars, bb_mid=106.0, bb_upper=200.0)
+    r = _resolve(bars, ind=ind, ep=ExitParams(exit_on_mid_band=True))
+    assert r.reason is ExitReason.TARGET
+
+
+# ---------------------------------------------------------------------------
+# Detail 4 — the stochastic exit is close-based and evaluated last
+# ---------------------------------------------------------------------------
+
+
+def test_stoch_80_exit_fills_at_that_bars_close():
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.5])
+    ind = _ind(bars, k_full=85.0)
+    r = _resolve(bars, ind=ind)
+    assert r.reason is ExitReason.STOCH_80
+    assert r.exit_price == pytest.approx(100.5)
+
+
+def test_stoch_80_reads_bar_i_not_bar_i_minus_1():
+    # It is close-based, so it evaluates on the bar whose close it describes.
+    bars = _fwd(
+        opens=[100.0, 100.0], highs=[101.0, 101.0], lows=[99.0, 99.0], closes=[100.5, 100.7]
+    )
+    ind = _ind(bars, k_full=50.0)
+    ind.iloc[1, ind.columns.get_loc("k_full")] = 85.0
+    r = _resolve(bars, ind=ind)
+    assert r.reason is ExitReason.STOCH_80
+    assert r.exit_idx == 1
+
+
+def test_an_intraday_stop_preempts_the_stochastic_exit_on_the_same_bar():
+    # The stop filled during the session; a close-based signal cannot undo it.
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[96.0], closes=[100.5])
+    ind = _ind(bars, k_full=85.0)
+    assert _resolve(bars, ind=ind).reason is ExitReason.STOP
+
+
+def test_an_intraday_target_preempts_the_stochastic_exit_on_the_same_bar():
+    bars = _fwd(opens=[100.0], highs=[105.0], lows=[99.0], closes=[104.5])
+    ind = _ind(bars, k_full=85.0)
+    assert _resolve(bars, ind=ind).reason is ExitReason.TARGET
+
+
+def test_stoch_exit_can_be_disabled():
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.5])
+    ind = _ind(bars, k_full=85.0)
+    r = _resolve(bars, ind=ind, ep=ExitParams(exit_on_stoch_80=False))
+    assert r.reason is ExitReason.TIMEOUT
+
+
+def test_null_k_full_does_not_trigger_the_stochastic_exit():
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.5])
+    ind = _ind(bars, k_full=np.nan)
+    assert _resolve(bars, ind=ind).reason is ExitReason.TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# Path metrics on the result (DESIGN §5.6)
+# ---------------------------------------------------------------------------
+
+
+def test_path_metrics_stop_at_the_exit_bar():
+    # A 20% spike after the stop fired must not appear in MFE.
+    bars = _fwd(opens=[100.0, 100.0], highs=[101.0, 120.0], lows=[96.0, 99.0], closes=[98.0, 119.0])
+    r = _resolve(bars)
+    assert r.exit_idx == 0
+    assert r.mfe == pytest.approx(0.01)
+
+
+def test_mae_reflects_the_worst_low_up_to_the_exit():
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[96.0], closes=[98.0])
+    assert _resolve(bars).mae == pytest.approx(-0.04)
+
+
+def test_time_to_mfe_is_one_based():
+    bars = _fwd(opens=[100.0] * 3, highs=[101.0, 103.0, 102.0], lows=[99.0] * 3, closes=[100.0] * 3)
+    assert _resolve(bars).time_to_mfe == 2
+
+
+def test_exit_date_matches_the_exit_bars_index_label():
+    bars = _quiet()
+    r = _resolve(bars)
+    assert r.exit_date == bars.index[r.exit_idx].date()
+
+
+# ---------------------------------------------------------------------------
+# Short side — the sign flip (ADR 058)
+# ---------------------------------------------------------------------------
+
+
+def test_short_target_is_below_entry():
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[95.0], closes=[96.0])
+    r = _resolve(bars, side=Side.SHORT)
+    assert r.reason is ExitReason.TARGET
+    assert r.exit_price == pytest.approx(96.0)
+
+
+def test_short_stop_is_above_entry():
+    bars = _fwd(opens=[100.0], highs=[104.0], lows=[99.0], closes=[103.5])
+    r = _resolve(bars, side=Side.SHORT)
+    assert r.reason is ExitReason.STOP
+    assert r.exit_price == pytest.approx(103.0)
+
+
+def test_short_gaps_through_the_stop_at_the_open():
+    bars = _fwd(opens=[108.0], highs=[109.0], lows=[107.0], closes=[108.5])
+    r = _resolve(bars, side=Side.SHORT)
+    assert r.reason is ExitReason.STOP
+    assert r.exit_price == pytest.approx(108.0)
+
+
+def test_short_exits_on_the_lower_band():
+    bars = _fwd(opens=[100.0, 100.0], highs=[101.0, 101.0], lows=[99.0, 97.0], closes=[100.0, 98.0])
+    ind = _ind(bars, bb_lower=1.0)
+    ind.iloc[0, ind.columns.get_loc("bb_lower")] = 98.0
+    ep = ExitParams(target_pct=0.50)
+    r = _resolve(bars, ind=ind, ep=ep, side=Side.SHORT)
+    assert r.reason is ExitReason.UPPER_BAND  # the far band, mirrored
+    assert r.exit_price == pytest.approx(98.0)
+
+
+def test_short_exits_on_stochastic_oversold():
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[99.5])
+    ind = _ind(bars, k_full=15.0)
+    r = _resolve(bars, ind=ind, side=Side.SHORT)
+    assert r.reason is ExitReason.STOCH_80
+
+
+def test_short_mfe_is_positive_when_price_falls():
+    bars = _fwd(opens=[100.0] * 2, highs=[101.0] * 2, lows=[98.0] * 2, closes=[99.0] * 2)
+    r = _resolve(bars, side=Side.SHORT)
+    assert r.mfe == pytest.approx(0.02)
+
+
+# ---------------------------------------------------------------------------
+# Guards
+# ---------------------------------------------------------------------------
+
+
+def test_an_empty_forward_window_raises():
+    with pytest.raises(ValueError):
+        _resolve(_fwd(opens=[], highs=[], lows=[], closes=[]))
+
+
+def test_an_unknown_stop_mode_raises():
+    with pytest.raises(ValueError):
+        _resolve(_quiet(), ep=ExitParams(stop_mode="trailing"))

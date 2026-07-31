@@ -78,10 +78,10 @@ Coverage gate: **90% on `core/` only.** No repo-wide target.
 
 Five tests carry the correctness load. Do not weaken any of them:
 
-1. Look-ahead detection (shift indicators forward, event set must change)
+1. Look-ahead: the shift ladder plus the **signature probe**. The probe is the real guarantee — `detect` may read only `low`, `high`, `ts`, `ticker` from the bar, and receives one indicator row, never a frame. Never widen that signature.
 2. Signal path parity (`detect` vs `breach_live` on a simulated intraday path)
 3. Determinism (identical config → identical output)
-4. Exit invariants (property-based, especially `mfe >= realized_return`)
+4. Exit invariants (property-based). `mfe >= realized_return` is the sharp one. MFE is **not** clamped at zero — negative MFE is real and DESIGN §5.6 depends on it.
 5. Split leakage (structural date bounds + purged fold check)
 
 See `docs/TESTS.md` §3.
