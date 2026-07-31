@@ -319,10 +319,25 @@ def test_compute_all_returns_one_row_per_bar_with_expected_columns():
     out = ind.compute_all(bars, p)
     assert len(out) == len(bars)
     expected_cols = {
-        "bb_mid", "bb_upper", "bb_lower", "bb_pctb", "bb_width", "bb_width_pct",
-        "k_fast", "d_fast", "k_full", "d_full", "k_cross_up", "k_cross_down",
-        "atr_14", "rv_20d", "rv_pct_252d", "dd_52w",
-        "sma_200", "sma200_slope_60", "vol_z_20d",
+        "bb_mid",
+        "bb_upper",
+        "bb_lower",
+        "bb_pctb",
+        "bb_width",
+        "bb_width_pct",
+        "k_fast",
+        "d_fast",
+        "k_full",
+        "d_full",
+        "k_cross_up",
+        "k_cross_down",
+        "atr_14",
+        "rv_20d",
+        "rv_pct_252d",
+        "dd_52w",
+        "sma_200",
+        "sma200_slope_60",
+        "vol_z_20d",
     }
     assert expected_cols <= set(out.columns)
 

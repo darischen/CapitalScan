@@ -113,6 +113,7 @@ def resolve_config(
     env_config = {}
     if env_file:
         import dotenv
+
         dotenv.load_dotenv(env_file)
 
     for key in ["indicators", "signals", "exits", "costs", "universe", "stats", "splits"]:

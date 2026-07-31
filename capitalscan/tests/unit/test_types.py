@@ -61,8 +61,13 @@ def test_entry_kind_values():
 
 def test_bands_is_frozen():
     b = Bands(
-        bb_lower=90.0, bb_mid=100.0, bb_upper=110.0,
-        k_full=50.0, d_full=50.0, k_fast=50.0, atr_14=2.0,
+        bb_lower=90.0,
+        bb_mid=100.0,
+        bb_upper=110.0,
+        k_full=50.0,
+        d_full=50.0,
+        k_fast=50.0,
+        atr_14=2.0,
     )
     assert dataclasses.is_dataclass(b)
     try:

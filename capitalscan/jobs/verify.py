@@ -101,6 +101,5 @@ def run(tickers: list[str], dates: list[date]) -> None:
     REFERENCE_CSV.parent.mkdir(parents=True, exist_ok=True)
     ref_df.to_csv(REFERENCE_CSV, index=False)
     console.print(
-        f"wrote {REFERENCE_CSV} — fill the external_* columns by hand, "
-        "then run the agreement test"
+        f"wrote {REFERENCE_CSV} — fill the external_* columns by hand, then run the agreement test"
     )

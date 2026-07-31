@@ -42,9 +42,7 @@ def setup_logging(
     logger.addHandler(file_handler)
 
     console_handler = logging.StreamHandler()
-    console_handler.setFormatter(
-        logging.Formatter("[%(levelname)s] %(message)s")
-    )
+    console_handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
     logger.addHandler(console_handler)
 
     return logger

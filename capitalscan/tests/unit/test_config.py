@@ -25,9 +25,7 @@ def test_config_cli_overrides():
 
 def test_config_precedence():
     """Verify precedence: CLI > env > file > default."""
-    cfg = resolve_config(
-        cli_overrides={"indicators": {"bb_window": 30}}
-    )
+    cfg = resolve_config(cli_overrides={"indicators": {"bb_window": 30}})
     assert cfg.indicators.bb_window == 30
 
 
@@ -55,7 +53,7 @@ def test_config_malformed_env_var_is_ignored(monkeypatch):
 def test_config_file_values_used_when_present(tmp_path, monkeypatch):
     """config.toml values load when no CLI or env override exists."""
     config_file = tmp_path / "config.toml"
-    config_file.write_text('[indicators]\nbb_window = 25\n')
+    config_file.write_text("[indicators]\nbb_window = 25\n")
     monkeypatch.chdir(tmp_path)
     cfg = resolve_config(config_file="config.toml")
     assert cfg.indicators.bb_window == 25

@@ -56,7 +56,7 @@ def _resolve_targets(only: str | None) -> list[Target]:
 def _psycopg3_url(url: str) -> str:
     """Force the psycopg (v3) driver; pyproject pins psycopg, not psycopg2."""
     if url.startswith("postgresql://"):
-        return "postgresql+psycopg://" + url[len("postgresql://"):]
+        return "postgresql+psycopg://" + url[len("postgresql://") :]
     return url
 
 
