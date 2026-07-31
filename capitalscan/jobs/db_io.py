@@ -84,19 +84,32 @@ def upsert(
     fetch" (DESIGN §2.3's duplicate-row rule) is the only policy used
     anywhere in this system, so there is no per-column merge strategy to
     configure.
+
+    Inserts in batches of 1,000 rows to avoid exceeding Postgres parameter limits.
     """
     rows = _rows_from(data)
     if not rows:
         return 0
     table = _table(engine, table_name)
-    stmt = pg_insert(table).values(rows)
-    update_cols = {
-        c.name: stmt.excluded[c.name] for c in table.columns if c.name not in conflict_cols
-    }
-    stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
-    with engine.begin() as conn:
-        conn.execute(stmt)
-    return len(rows)
+    batch_size = 1000
+    total_inserted = 0
+
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i : i + batch_size]
+        stmt = pg_insert(table).values(batch)
+        update_cols = {
+            c.name: stmt.excluded[c.name]
+            for c in table.columns
+            if c.name not in conflict_cols
+        }
+        stmt = stmt.on_conflict_do_update(
+            index_elements=conflict_cols, set_=update_cols
+        )
+        with engine.begin() as conn:
+            conn.execute(stmt)
+        total_inserted += len(batch)
+
+    return total_inserted
 
 
 def append(engine: Engine, table_name: str, data: list[dict] | pd.DataFrame) -> int:
