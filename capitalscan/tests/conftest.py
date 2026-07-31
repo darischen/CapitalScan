@@ -14,7 +14,17 @@ Two things carry the cost instead. `ci_fast` is 250. And the slow tier runs
     slow: pytest tests/property -m exit_invariant --hypothesis-profile=full
           pytest tests/property -m "not exit_invariant" --hypothesis-profile=ci_fast
 
-The gate's 10,000 cases per exit invariant are preserved exactly.
+The gate's 10,000 cases per exit invariant are preserved exactly. Measured:
+fast tier 29 s against 60 s, slow tier 459 s against the 10-minute budget.
+
+Most of the slow tier is one test. `test_stop_exits_land_at_or_beyond_the_
+stop_level` runs ~193 s against ~60 s for the others, because
+`assume(reason is STOP)` discards non-STOP draws and regenerates to reach
+10,000 valid cases. That cost is the point: it samples the natural
+distribution of stop-hitting scenarios rather than the ones someone thought
+to construct. **Do not replace the generator with a targeted one.** If it
+ever needs relief, the fix is additive — keep the unfiltered generator at a
+lower count and add a targeted strategy alongside it.
 
 Select with `--hypothesis-profile=<name>`. `dev` is the default so a local
 `pytest` stays fast; CI names its profile explicitly.

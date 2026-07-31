@@ -32,12 +32,14 @@ from capitalscan.tests.property.test_signal_parity import (
 def _identical(a, b) -> bool:
     """Field-wise equality treating NaN as equal to NaN.
 
-    Plain `==` will not do here. A stochastic-only `SignalHit` carries
-    `touch_level = nan` (no band was touched, and DESIGN §3.11 forbids
-    substituting a price), and `nan != nan`, so two structurally identical
-    hits compare unequal. That is IEEE-754 behaviour, not nondeterminism —
-    but it does mean `SignalHit` equality and `hit in some_set` are unsafe
-    wherever `touch_level` may be null. Flagged rather than worked around.
+    Needed for `ExitResult`, whose `mfe`, `mae`, and `exit_price` are plain
+    floats that a degenerate window could leave as NaN — and `nan != nan`,
+    so plain `==` would report a deterministic function as nondeterministic.
+
+    **Not** needed for `SignalHit` any more. `touch_level` is `float | None`
+    (DESIGN §3.4), so identical hits compare equal and hash equal directly;
+    the tests below use `==` on purpose, so a revert to a NaN sentinel fails
+    here rather than being papered over by this helper.
     """
     if type(a) is not type(b):
         return False
@@ -71,8 +73,25 @@ def test_resolve_exit_is_deterministic(scenario):
 @given(bar_and_bands(), signal_params())
 @settings(deadline=None)
 def test_detect_is_deterministic(fixture, sp):
+    # Plain `==`, deliberately: `touch_level` is `float | None`, so a revert
+    # to a NaN sentinel would surface here rather than hide behind
+    # `_identical`.
     bar, ind = fixture
-    assert _identical(detect(bar, ind, sp), detect(bar, ind, sp))
+    assert detect(bar, ind, sp) == detect(bar, ind, sp)
+
+
+@given(bar_and_bands(), signal_params())
+@settings(deadline=None)
+def test_detect_output_is_set_safe(fixture, sp):
+    """Equality and hashing must agree on every generated hit.
+
+    Under a NaN sentinel these disagree — stable hash, unequal compare — so
+    a set keeps duplicates. This is the property debounce would have relied
+    on had it keyed on the dataclass (DESIGN §4.7).
+    """
+    bar, ind = fixture
+    hits = detect(bar, ind, sp)
+    assert len(set(hits)) == len({(h.ticker, h.ts, h.signal_type) for h in hits})
 
 
 @given(bar_and_bands(), signal_params())
@@ -84,12 +103,13 @@ def test_breach_live_is_deterministic(fixture, sp):
     assert breach_live(price, bands, sp) == breach_live(price, bands, sp)
 
 
-def test_a_null_touch_level_makes_signal_hit_equality_unsafe():
-    """Documents the footgun `_identical` exists to route around.
+def test_a_null_touch_level_keeps_equality_and_hashing_coherent():
+    """The boundary case that drove `touch_level` to `float | None`.
 
-    Not asserting desired behaviour — asserting what currently happens, so
-    that a later change to `touch_level` (to `float | None`, say) fails here
-    and gets noticed rather than silently altering event-dedupe semantics.
+    A stochastic-only hit touched no band. Under the old NaN sentinel these
+    three assertions failed: `a != b` because `nan != nan`, while
+    `hash(a) == hash(b)` because `hash(nan)` is stable, so `{a, b}` kept
+    both. Left in place so reverting the type fails loudly here.
     """
     import pandas as pd
 
@@ -115,6 +135,7 @@ def test_a_null_touch_level_makes_signal_hit_equality_unsafe():
     (a,) = detect(bar, ind, sp)
     (b,) = detect(bar, ind, sp)
 
-    assert math.isnan(a.touch_level)  # stochastic-only: no band was touched
-    assert a != b  # IEEE-754: nan != nan
-    assert _identical(a, b)  # ...but the hits are genuinely identical
+    assert a.touch_level is None  # no band was touched
+    assert a == b
+    assert hash(a) == hash(b)
+    assert len({a, b}) == 1

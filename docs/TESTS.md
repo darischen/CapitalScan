@@ -365,7 +365,9 @@ Measured reference: `dev` 17.4 s, `ci_fast` at 250 roughly 14 s, `full` scoped t
 
 `mypy` takes no path argument. Invocation style is pinned in `pyproject.toml` via `packages = ["capitalscan"]`, since path invocation causes module-resolution ambiguity. `pandas-stubs` is a dev dependency.
 
-Fast tier under 60 seconds. Slow tier under 5 minutes. **Acceptance tests never run in CI** — they need the real database and the full dataset.
+Fast tier under 60 seconds (measured: 29 s). Slow tier under **10 minutes** (measured: 459 s).
+
+The slow budget was raised from 5 minutes after measurement. `test_stop_exits_land_at_or_beyond_the_stop_level` alone costs 193 s because `assume(r.reason is ExitReason.STOP)` discards roughly two of every three draws. That cost is the test sampling the natural distribution of stop-hitting scenarios, which is the property worth keeping. Do not replace it with a targeted generator. **Acceptance tests never run in CI** — they need the real database and the full dataset.
 
 ---
 

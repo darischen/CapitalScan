@@ -101,6 +101,7 @@ Last updated: 2026-07-28
 | 087 | Random-walk null test is the primary statistical guard | Pinned |
 | 088 | cell_id is derived; serving views pin split to validate | Pinned |
 | 089 | MFE unclamped; look-ahead guarded by signature, not shift alone | Pinned |
+| 090 | Absence is None, never NaN; debounce keys on a tuple | Pinned |
 
 ---
 
@@ -1393,6 +1394,29 @@ The probe is the load-bearing part. It fails immediately if a future refactor pa
 Resolution: `full` is scoped to the four exit invariants via a pytest marker, which is what TESTS §3.4 and the Phase 3 gate actually name. That lands near 226 seconds, inside the slow-tier budget. Everything else runs at `ci_fast`. `ci_fast` is 250 examples rather than 1,000, since 1,000 measures 56.9 seconds for the property suite alone and exceeds the fast tier before unit tests, ruff, and mypy run.
 
 **Packaging.** `packages = ["capitalscan"]` under `[tool.setuptools]` lists only the top-level package, excluding `core`, `jobs`, `research`, `handlers`, and `mcp` from a built wheel. Editable installs mask this. Use `[tool.setuptools.packages.find] include = ["capitalscan*"]`. The related mypy ambiguity had the same root cause: `capitalscan/__init__.py` did not exist, so `packages = ["capitalscan"]` resolved against a namespace package.
+
+
+---
+
+## 090. Absence is None, never NaN; debounce keys on a tuple
+
+Status: Pinned
+
+Two related corrections found by a Claude Code session while testing determinism in `core/signals.py`.
+
+**`SignalHit.touch_level` is `float | None`, not `float`.** A stochastic-only signal touches no band, and that absence is `None`. DESIGN §3.4 previously pinned `float`, which forced NaN as the sentinel.
+
+NaN as a sentinel for absence breaks equality in a way that is silent and consequential. `nan != nan`, so two structurally identical hits compare unequal. Meanwhile frozen dataclasses derive `__hash__` from their fields and `hash(nan)` is stable in CPython, so those same two hits hash identically. A set therefore keeps both. Identity comparison masks it further: `a == a` returns True because tuple comparison short-circuits on identity, while `a == b` returns False for structurally identical objects.
+
+This is also §3.11 in spirit. That rule forbids filling nulls; encoding absence as NaN is the same error wearing a float.
+
+**Debounce keys on `(ticker, signal_date, bound)`, never on the `SignalHit` dataclass.** DESIGN §4.7 always specified the key as one event per ticker per bound per day. Deduping on the whole dataclass is an implementation temptation that would have produced silent duplicate events in the events job, and it would break again on any future float field. Explicit keying is immune to field additions.
+
+Both fixes are required. Either alone leaves the other failure mode live: fixing the type without fixing the key leaves the debounce fragile to the next float field, and fixing the key without fixing the type leaves `hit in seen_set` broken anywhere else it is used.
+
+**CI budget, corrected again.** The marked split saved only 50 seconds because the exit invariants are themselves the expensive part. `test_stop_exits_land_at_or_beyond_the_stop_level` alone measures 193 s, since `assume(r.reason is ExitReason.STOP)` discards roughly two of every three draws. The slow-tier budget is raised to **10 minutes** rather than targeting the generator: a hand-built stop-hitting generator would test the stops someone thought to construct rather than the ones the parameter space produces. If the tier becomes painful, the fix is additive — keep the unfiltered generator at a lower count and add a targeted one alongside — never substitutive.
+
+The ADR 060 determinism sweep is unmarked and runs at `ci_fast`. It is not one of the four §3.4 invariants and 250 cases establish it.
 
 ---
 

@@ -172,8 +172,10 @@ def test_stoch_thresholds_are_inclusive():
 
 
 def test_stoch_only_hit_has_null_touch_level():
+    # None, never NaN. A stochastic-only signal touched no band, and DESIGN
+    # §3.4 pins that absence as None so equality and hashing stay coherent.
     (hit,) = sig.detect(_bar(), _ind(k_full=15.0), SP)
-    assert np.isnan(hit.touch_level)
+    assert hit.touch_level is None
 
 
 # ---------------------------------------------------------------------------
@@ -489,3 +491,119 @@ def test_a_missing_ticker_is_not_reported_until_a_signal_fires():
     """A quiet bar returns [] without touching `ticker`, so a frame that
     legitimately omits it never breaks bulk scanning of non-events."""
     assert sig.detect(_bar(), _ind(), SP) == []
+
+
+# ---------------------------------------------------------------------------
+# touch_level is float | None, never NaN (DESIGN §3.4)
+# ---------------------------------------------------------------------------
+
+
+def test_identical_stoch_only_hits_compare_equal():
+    """The bug NaN caused. Two structurally identical hits must be equal."""
+    (a,) = sig.detect(_bar(), _ind(k_full=15.0), SP)
+    (b,) = sig.detect(_bar(), _ind(k_full=15.0), SP)
+    assert a == b
+
+
+def test_identical_stoch_only_hits_collapse_in_a_set():
+    """Hashing and equality must agree.
+
+    Frozen dataclasses derive `__hash__` from their fields and `hash(nan)`
+    is stable, so under the old NaN encoding two identical hits hashed the
+    same and compared unequal — a set kept both. That is precisely the
+    silent duplicate a debounce set would have let through.
+    """
+    (a,) = sig.detect(_bar(), _ind(k_full=15.0), SP)
+    (b,) = sig.detect(_bar(), _ind(k_full=15.0), SP)
+    assert hash(a) == hash(b)
+    assert len({a, b}) == 1
+
+
+def test_a_band_hit_still_carries_a_float_touch_level():
+    (hit,) = sig.detect(_bar(low=94.0), _ind(bb_lower=95.0), SP)
+    assert isinstance(hit.touch_level, float)
+    assert hit.touch_level == 95.0
+
+
+def test_no_hit_ever_carries_a_nan_touch_level():
+    """Sweep the signal space: every reachable hit is None or a real float."""
+    cases = [
+        (_bar(low=94.0), _ind(bb_lower=95.0, k_full=50.0)),  # band only
+        (_bar(), _ind(k_full=15.0)),  # stoch only
+        (_bar(low=94.0), _ind(bb_lower=95.0, k_full=15.0)),  # confluence low
+        (_bar(high=106.0), _ind(bb_upper=105.0, k_full=50.0)),  # upper band
+        (_bar(), _ind(k_full=85.0)),  # stoch overbought
+        (_bar(high=106.0), _ind(bb_upper=105.0, k_full=85.0)),  # confluence high
+        (_bar(low=94.0, high=106.0), _ind(bb_lower=95.0, bb_upper=105.0)),  # both
+    ]
+    for bar, ind in cases:
+        for hit in sig.detect(bar, ind, SP):
+            assert hit.touch_level is None or not np.isnan(hit.touch_level)
+
+
+# ---------------------------------------------------------------------------
+# debounce_key — the explicit tuple (DESIGN §4.7)
+# ---------------------------------------------------------------------------
+
+
+def test_debounce_key_is_ticker_date_bound():
+    (hit,) = sig.detect(_bar(low=94.0, ticker="TSM"), _ind(bb_lower=95.0), SP)
+    assert sig.debounce_key(hit) == ("TSM", pd.Timestamp("2026-07-29").date(), Bound.LOWER)
+
+
+def test_debounce_key_maps_a_short_hit_to_the_upper_bound():
+    (hit,) = sig.detect(_bar(high=106.0, ticker="TSM"), _ind(bb_upper=105.0), SP)
+    assert sig.debounce_key(hit) == ("TSM", pd.Timestamp("2026-07-29").date(), Bound.UPPER)
+
+
+def test_debounce_key_collapses_a_band_hit_and_a_confluence_hit():
+    """One event per ticker per bound per day. A lower touch on Monday and a
+    confluence-low on the same Monday are the same debounce slot, even though
+    the two hits carry different signal_types."""
+    (band,) = sig.detect(_bar(low=94.0), _ind(bb_lower=95.0, k_full=50.0), SP)
+    (conf,) = sig.detect(_bar(low=94.0), _ind(bb_lower=95.0, k_full=15.0), SP)
+    assert band.signal_type is not conf.signal_type
+    assert sig.debounce_key(band) == sig.debounce_key(conf)
+
+
+def test_debounce_key_separates_the_two_sides_on_one_bar():
+    """A wide bar touching both bands is two events, not one."""
+    hits = sig.detect(_bar(low=94.0, high=106.0), _ind(bb_lower=95.0, bb_upper=105.0), SP)
+    assert len({sig.debounce_key(h) for h in hits}) == 2
+
+
+def test_debounce_key_separates_days():
+    (a,) = sig.detect(_bar(low=94.0, ts="2026-07-29"), _ind(bb_lower=95.0), SP)
+    (b,) = sig.detect(_bar(low=94.0, ts="2026-07-30"), _ind(bb_lower=95.0), SP)
+    assert sig.debounce_key(a) != sig.debounce_key(b)
+
+
+def test_debounce_key_separates_tickers():
+    (a,) = sig.detect(_bar(low=94.0, ticker="TSM"), _ind(bb_lower=95.0), SP)
+    (b,) = sig.detect(_bar(low=94.0, ticker="NVDA"), _ind(bb_lower=95.0), SP)
+    assert sig.debounce_key(a) != sig.debounce_key(b)
+
+
+def test_debounce_key_is_hashable_and_stable():
+    (hit,) = sig.detect(_bar(low=94.0), _ind(bb_lower=95.0), SP)
+    assert sig.debounce_key(hit) == sig.debounce_key(hit)
+    assert len({sig.debounce_key(hit), sig.debounce_key(hit)}) == 1
+
+
+def test_debounce_key_ignores_float_fields_entirely():
+    """The property that makes it immune to the next float field added.
+
+    Two hits differing only in pctb occupy the same debounce slot, so a
+    future NaN-valued field cannot reintroduce silent duplicates.
+    """
+    (a,) = sig.detect(_bar(low=94.0), _ind(bb_lower=95.0, bb_pctb=-0.05), SP)
+    (b,) = sig.detect(_bar(low=94.0), _ind(bb_lower=95.0, bb_pctb=0.42), SP)
+    assert a != b
+    assert sig.debounce_key(a) == sig.debounce_key(b)
+
+
+def test_a_stochastic_only_hit_still_has_a_debounce_key():
+    """No band was touched, so touch_level is None — the key must still
+    resolve, from side rather than from the absent level."""
+    (hit,) = sig.detect(_bar(ticker="TSM"), _ind(k_full=15.0), SP)
+    assert sig.debounce_key(hit) == ("TSM", pd.Timestamp("2026-07-29").date(), Bound.LOWER)

@@ -493,7 +493,8 @@ class SignalHit:
     signal_types_all: tuple[SignalType, ...]
     signal_strength: int
     side: Side
-    touch_level: float; pctb: float; k_full: float
+    touch_level: float | None      # None when no band was touched
+    pctb: float; k_full: float
 
 @dataclass(frozen=True)
 class ExitResult:
@@ -504,6 +505,8 @@ class ExitResult:
 ```
 
 `Bands` is what the poller reads from Postgres and what the backtest reads from a DataFrame row. Identical shape on both paths; this is the mechanism behind ADR 006.
+
+**`touch_level` is `float | None`, never NaN.** A stochastic-only signal has no band touch, and that absence is `None`. Encoding it as NaN violates §3.11 in spirit and breaks equality: `nan != nan`, so two structurally identical hits compare unequal while hashing identically, since frozen dataclasses derive `__hash__` from fields and `hash(nan)` is stable. A set would keep both. See §4.7 for the consequence this would have had on debounce.
 
 ### 3.5 `core/indicators.py`
 
@@ -792,12 +795,15 @@ per ticker, per bar in range:
   2. skip if any required indicator field is null → bar_rejects
   3. skip if universe.in_trade is false for the enclosing quarter
   4. core.signals.detect(bar_t, ind_{t−1}, SIGNAL_PARAMS)
-  5. debounce: one event per ticker per bound per day
+  5. debounce on the explicit key (ticker, signal_date, bound)
+     -- never on the SignalHit dataclass itself
   6. cluster tagging (§5.3)
   7. write event rows
 ```
 
 Step 1's t−1 read is the look-ahead guard from §3.6, enforced **again** here at the job level. Two layers, because this is the highest-risk silent failure in the system.
+
+**Debounce keys on a tuple, not the dataclass.** The key is `(ticker, signal_date, bound)`. Deduping on the whole `SignalHit` is an implementation temptation that was never the spec, and it fails on any float field: a NaN member hashes stably but compares unequal, so a set silently keeps duplicates. Keying explicitly is immune to future field additions.
 
 ### 4.8 `poll`
 

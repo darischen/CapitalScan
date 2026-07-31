@@ -58,7 +58,11 @@ class SignalHit:
     signal_types_all: tuple
     signal_strength: int
     side: Side
-    touch_level: float
+    # None when no band was touched — a stochastic-only signal. Never NaN:
+    # `nan != nan` makes two identical hits compare unequal while hashing the
+    # same (frozen dataclasses derive __hash__ from fields, and hash(nan) is
+    # stable), so a set would silently keep both. DESIGN §3.4, §4.7.
+    touch_level: float | None
     pctb: float
     k_full: float
 

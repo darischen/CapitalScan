@@ -238,13 +238,35 @@ def detect(bar: pd.Series, ind: pd.Series, sp: SignalParams) -> list[SignalHit]:
                 signal_strength=len(types),
                 side=side,
                 # A stochastic-only hit touched no band, so it has no touch
-                # level. Null, never a substituted price (DESIGN §3.11).
-                touch_level=_get(ind, level_field) if touched_band else float("nan"),
+                # level. None, never a substituted price and never NaN
+                # (DESIGN §3.4) — NaN would break equality and set membership.
+                touch_level=_get(ind, level_field) if touched_band else None,
                 pctb=pctb,
                 k_full=k_full,
             )
         )
     return hits
+
+
+def debounce_key(hit: SignalHit) -> tuple[str, date, Bound]:
+    """The debounce slot a hit occupies: `(ticker, signal_date, bound)`.
+
+    One event per ticker per bound per day (DESIGN §4.7). A lower touch and
+    a confluence-low on the same session are the same slot even though they
+    carry different `signal_type` values, because the advisory action is
+    identical and ADR 057 already collapsed them into one hit.
+
+    **Never dedupe on the `SignalHit` itself.** The dataclass carries floats,
+    and any NaN member hashes stably while comparing unequal, so a set would
+    silently keep duplicates. Keying on this explicit tuple is immune to that
+    and to whatever float field gets added next.
+
+    Debounce *state* still lives in the job layer — it spans days and
+    `core/` holds none. This is only the key, defined once so the `events`
+    job and the poller cannot drift into two versions of it.
+    """
+    bound = Bound.LOWER if hit.side is Side.LONG else Bound.UPPER
+    return (hit.ticker, hit.ts, bound)
 
 
 def breach_live(price: float, bands: Bands, sp: SignalParams) -> list[SignalType]:
