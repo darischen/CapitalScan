@@ -220,10 +220,19 @@ def logs_tail(
 @app.command()
 def verify_indicators(
     ticker: list[str] = typer.Option([], help="Ticker"),
-    dates: Optional[str] = typer.Option(None, help="Comma-separated dates"),
+    dates: Optional[str] = typer.Option(None, help="Comma-separated dates (YYYY-MM-DD)"),
 ) -> None:
-    """Verify computed indicators against external reference."""
-    raise NotImplementedError("verify-indicators")
+    """Print computed indicators and write tests/golden/external_reference.csv (ADR 086)."""
+    from datetime import datetime
+
+    from capitalscan.jobs import verify
+
+    if not ticker or not dates:
+        console.print("[red]error[/red]: --ticker and --dates are required")
+        raise typer.Exit(code=1)
+
+    parsed_dates = [datetime.strptime(d.strip(), "%Y-%m-%d").date() for d in dates.split(",")]
+    verify.run(tickers=ticker, dates=parsed_dates)
 
 
 @app.command()
