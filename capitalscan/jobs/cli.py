@@ -105,6 +105,7 @@ def bars(
         # ADR/DESIGN §4.4: Yahoo caps hourly history at 730 days regardless
         # of --backfill; `run_bars_hourly` windows internally either way.
         start = end - timedelta(days=730 if backfill else lookback)
+        console.print(f"[dim]hourly: fetching from {start} to {end}[/dim]")
         report = ingest.run_bars_hourly(resolved, start, end)
         console.print(
             f"bars --hourly: {report.rows_written} written, "
