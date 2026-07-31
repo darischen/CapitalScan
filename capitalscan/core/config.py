@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Optional
 
 try:
-    import tomllib as tomli  # type: ignore
+    import tomllib as tomli
 except ImportError:
-    import tomli  # type: ignore
+    import tomli  # type: ignore[no-redef]
 
 
 @dataclass(frozen=True)
