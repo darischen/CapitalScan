@@ -54,10 +54,17 @@ class ExitParams:
     exit_on_upper_band: bool = True
     exit_on_stoch_80: bool = True
     # Exit policy, independent of SignalParams.stoch_overbought even though
-    # they default to the same value (ADR 092). One is signal detection, the
-    # other is exit policy, and an exit-rule sweep must not require a
-    # signal-config change.
+    # the long side defaults to the same value (ADR 092). One is signal
+    # detection, the other is exit policy, and an exit-rule sweep must not
+    # require a signal-config change.
+    #
+    # Two fields, not one derived from the other. Deriving the short as
+    # `100 - long` would force both to move together in every sweep cell,
+    # making combinations like (long 70, short 20) unreachable — and it
+    # would hardcode exactly the long/short symmetry ADR 016 rejects, biasing
+    # the Phase 4 asymmetry comparison before it is ever run.
     exit_stoch_threshold: float = 80.0
+    exit_stoch_threshold_short: float = 20.0
     exit_on_mid_band: bool = False  # ADR 046
 
 

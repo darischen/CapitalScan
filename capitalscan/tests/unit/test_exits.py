@@ -463,13 +463,64 @@ def test_an_unknown_stop_mode_raises():
 # ---------------------------------------------------------------------------
 
 
-def test_stoch_exit_threshold_is_an_exit_param():
-    """ADR 092: the level is exit policy, so it lives on ExitParams.
+def test_stoch_exit_thresholds_are_exit_params():
+    """ADR 092: the levels are exit policy, so they live on ExitParams.
 
-    Independent of SignalParams.stoch_overbought even though both default
-    to 80.0 — an exit-rule sweep must not require a signal-config change.
+    Independent of SignalParams.stoch_overbought even though the long side
+    defaults to the same 80.0 — an exit-rule sweep must not require a
+    signal-config change.
     """
     assert ExitParams().exit_stoch_threshold == 80.0
+    assert ExitParams().exit_stoch_threshold_short == 20.0
+
+
+def test_the_two_sides_are_independently_sweepable():
+    """ADR 016: the short is not a mirror of the long.
+
+    Deriving the short level as `100 - long` makes this combination
+    unreachable, so every sweep cell would move two things at once and the
+    Phase 4 long-vs-short asymmetry comparison would be biased before
+    anyone looked at it.
+    """
+    ep = ExitParams(exit_stoch_threshold=70.0, exit_stoch_threshold_short=20.0)
+    # Long exits at 70 ...
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.5])
+    assert _resolve(bars, ind=_ind(bars, k_full=72.0), ep=ep).reason is ExitReason.STOCH_80
+    # ... while the short still exits at 20, not at 30.
+    short_bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[99.5])
+    r = _resolve(short_bars, ind=_ind(short_bars, k_full=25.0), ep=ep, side=Side.SHORT)
+    assert r.reason is ExitReason.TIMEOUT
+    r2 = _resolve(short_bars, ind=_ind(short_bars, k_full=19.0), ep=ep, side=Side.SHORT)
+    assert r2.reason is ExitReason.STOCH_80
+
+
+def test_sweeping_the_long_threshold_leaves_the_short_untouched():
+    ep = ExitParams(exit_stoch_threshold=60.0)
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[99.5])
+    # A short at %K=35 must not exit just because the long level moved to 60.
+    assert _resolve(bars, ind=_ind(bars, k_full=35.0), ep=ep, side=Side.SHORT).reason is (
+        ExitReason.TIMEOUT
+    )
+
+
+def test_sweeping_the_short_threshold_leaves_the_long_untouched():
+    ep = ExitParams(exit_stoch_threshold_short=40.0)
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.5])
+    assert _resolve(bars, ind=_ind(bars, k_full=65.0), ep=ep).reason is ExitReason.TIMEOUT
+    # ... but the short now exits at 40.
+    sb = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[99.5])
+    assert _resolve(sb, ind=_ind(sb, k_full=38.0), ep=ep, side=Side.SHORT).reason is (
+        ExitReason.STOCH_80
+    )
+
+
+def test_the_exit_path_derives_no_threshold_from_the_other_side():
+    """The `100 - threshold` coupling must not come back."""
+    import inspect
+
+    source = inspect.getsource(exits)
+    assert "100.0 - ep." not in source and "100 - ep." not in source
+    assert "_STOCH_SCALE" not in source
 
 
 def test_a_swept_exit_threshold_changes_the_exit():
@@ -510,8 +561,7 @@ def test_long_stoch_exit_fires_exactly_at_the_configured_level():
 
 
 def test_short_stoch_exit_fires_exactly_at_the_configured_level():
-    # The short mirrors the threshold across the %K midpoint.
-    level = 100.0 - ExitParams().exit_stoch_threshold
+    level = ExitParams().exit_stoch_threshold_short
     bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[99.5])
     r = _resolve(bars, ind=_ind(bars, k_full=level), side=Side.SHORT)
     assert r.reason is ExitReason.STOCH_80

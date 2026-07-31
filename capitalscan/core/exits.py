@@ -38,10 +38,6 @@ from capitalscan.core.returns import mfe_mae
 from capitalscan.core.signals import _breach, _isnan
 from capitalscan.core.types import Bound, ExitReason, ExitResult, Side
 
-# The %K scale, for mirroring the exit threshold onto the short side. Not a
-# tunable: %K is defined as a 0-100 percentage (DESIGN §3.5).
-_STOCH_SCALE = 100.0
-
 
 def stop_level(entry_price: float, side: Side, atr_at_entry: float, ep: ExitParams) -> float:
     """Stop price, or NaN when no stop applies.
@@ -164,13 +160,14 @@ def _exit_on_bar(
     if ep.exit_on_stoch_80:
         k_full = _level(own_ind, "k_full")
         if not _isnan(k_full):
-            # ADR 092: the level is exit policy, read from ExitParams, never a
-            # literal. The short mirrors it across the %K midpoint — a long
-            # exits into strength at 80, a short into weakness at 20.
+            # ADR 092: both levels are exit policy, read from ExitParams,
+            # never literals and never derived from each other. The short is
+            # not a mirror of the long (ADR 016), so the two sweep
+            # independently.
             if side is Side.LONG:
                 extreme = k_full >= ep.exit_stoch_threshold
             else:
-                extreme = k_full <= _STOCH_SCALE - ep.exit_stoch_threshold
+                extreme = k_full <= ep.exit_stoch_threshold_short
             if extreme:
                 return float(bar["close"]), ExitReason.STOCH_80, False
 
