@@ -152,8 +152,8 @@ def fetch_bars_daily(tickers: list[str], start: date, end: date) -> pd.DataFrame
 
 
 def _hourly_windows(start: date, end: date) -> list[tuple[date, date]]:
-    # Yahoo caps hourly data at 730 days; cap start date to that limit (DESIGN §4.4)
-    max_start = end - timedelta(days=730)
+    # Yahoo caps hourly data at ~730 days; cap start date conservatively at 725 days (DESIGN §4.4)
+    max_start = end - timedelta(days=725)
     clamped_start = max(start, max_start)
 
     windows = []
