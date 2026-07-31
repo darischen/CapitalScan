@@ -1555,19 +1555,63 @@ The poller loads all 11 artifacts at 09:15. Inference on one row across 11 model
 Query logic lives in Postgres views (ADR 076). TypeScript API routes select from them. Python MCP handlers select from the same ones. Neither language contains query logic, so a shape change happens in exactly one place.
 
 ```sql
+-- Canonical cell identifier. The stats job and every view use this one function.
+CREATE FUNCTION cell_key(
+  p_signal_type text, p_side text, p_dd_bucket text,
+  p_strength int, p_entry_kind text, p_split text,
+  p_era text, p_horizon int, p_target numeric
+) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+  SELECT concat_ws('|',
+    p_signal_type, p_side,
+    coalesce(p_dd_bucket, 'all'),
+    coalesce(p_strength::text, 'all'),
+    p_entry_kind, p_split,
+    coalesce(p_era, 'pooled'),
+    'h' || p_horizon,
+    't' || to_char(p_target, 'FM990.999')
+  );
+$$;
+
+-- 1. Screener. Joins on components with display parameters pinned.
 CREATE VIEW v_screen AS
 SELECT e.ticker, e.signal_date, e.signal_type, e.signal_types_all,
        e.signal_strength, e.touch_level, e.bb_pctb, e.k_full, e.k_fast,
        e.k_cross_up, e.dd_52w, e.dd_bucket, e.above_sma200,
        e.seq_in_cluster, e.cofire_count, e.sector,
-       c.cell_id, c.p_hit, c.baseline_empirical, c.edge,
-       c.n_events, c.n_eff, c.ci_low, c.ci_high, c.suppressed,
+       c.cell_id,
+       CASE WHEN c.suppressed THEN NULL ELSE c.p_hit END              AS p_hit,
+       CASE WHEN c.suppressed THEN NULL ELSE c.baseline_empirical END AS baseline,
+       CASE WHEN c.suppressed THEN NULL ELSE c.edge END               AS edge,
+       CASE WHEN c.suppressed THEN NULL ELSE c.ci_low END             AS ci_low,
+       CASE WHEN c.suppressed THEN NULL ELSE c.ci_high END            AS ci_high,
+       c.n_events, c.n_eff, c.q_value, c.suppressed, c.suppress_reason,
        p.q50, p.p_touch_3, p.p_touch_5, p.p_adverse_3, p.model_version
 FROM events e
-LEFT JOIN cell_stats c USING (cell_id)
-LEFT JOIN predictions p ON p.ticker = e.ticker AND p.as_of = e.signal_date
-WHERE e.is_cluster_head;
+LEFT JOIN cell_stats c
+       ON c.signal_type     = e.signal_type
+      AND c.side            = e.side
+      AND c.dd_bucket       = e.dd_bucket
+      AND c.signal_strength = e.signal_strength
+      AND c.entry_kind      = e.entry_kind
+      AND c.split_key       = 'validate'      -- NEVER e.split_key
+      AND c.era             IS NULL           -- pooled row
+      AND c.horizon_days    = 5
+      AND c.target_pct      = 0.03
+LEFT JOIN predictions p
+       ON p.ticker = e.ticker AND p.as_of = e.signal_date
+WHERE e.is_cluster_head
+  AND e.entry_kind = 'next_open';
 ```
+
+**`cell_id` is derived, never stored on `events`.** Two reasons, both load-bearing.
+
+*One event belongs to many cells.* `cell_stats` carries `horizon_days` and `target_pct`, which are report parameters rather than event properties and are absent from `events`. A single `cell_id` column on `events` would store one arbitrary member of a set.
+
+*Joining on the event's own `split_key` would leak holdout.* A live event fired today carries `split_key = 'holdout'`. Inheriting it into the join would surface holdout statistics in the screener every day, silently, destroying the guarantee in ADR 019 and 033 that holdout is evaluated exactly once. The hardcoded `split_key = 'validate'` is the firewall.
+
+**Requirement this places on the stats job:** write a pooled row per cell with `era IS NULL`, alongside the four per-era rows. `v_screen` reads the pooled row; `/research` reads the per-era ones.
+
+
 
 ```sql
 -- 2. Current state rail for /ticker/[sym]. One row per ticker.

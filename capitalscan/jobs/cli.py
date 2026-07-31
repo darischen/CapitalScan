@@ -156,27 +156,52 @@ app.add_typer(db_app, name="db")
 
 
 @db_app.command()
-def migrate() -> None:
-    """Apply migrations to both databases."""
-    raise NotImplementedError("db migrate")
+def migrate(
+    target: Optional[str] = typer.Option(
+        None, "--target", help="Single target: research or serving. Default: both."
+    ),
+) -> None:
+    """Apply migrations. Targets both research and serving databases by default."""
+    from capitalscan.jobs import db as db_ops
+
+    db_ops.migrate(only=target)
 
 
 @db_app.command()
-def status() -> None:
-    """Show current migration status."""
-    raise NotImplementedError("db status")
+def status(
+    target: Optional[str] = typer.Option(
+        None, "--target", help="Single target: research or serving. Default: both."
+    ),
+) -> None:
+    """Show current migration revision per database."""
+    from capitalscan.jobs import db as db_ops
+
+    db_ops.status(only=target)
 
 
 @db_app.command()
-def rollback() -> None:
-    """Rollback one migration level."""
-    raise NotImplementedError("db rollback")
+def rollback(
+    target: Optional[str] = typer.Option(
+        None, "--target", help="Single target: research or serving. Default: both."
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Skip confirmation prompt"),
+) -> None:
+    """Downgrade one migration level."""
+    from capitalscan.jobs import db as db_ops
+
+    if not yes:
+        confirmed = typer.confirm("Downgrade one migration on the selected database(s)?")
+        if not confirmed:
+            raise typer.Abort()
+    db_ops.rollback(only=target)
 
 
 @db_app.command()
 def schema() -> None:
-    """Export schema to db/schema.sql."""
-    raise NotImplementedError("db schema")
+    """Export research database schema to db/schema.sql via pg_dump."""
+    from capitalscan.jobs import db as db_ops
+
+    db_ops.schema()
 
 
 logs_app = typer.Typer(help="Logging utilities")

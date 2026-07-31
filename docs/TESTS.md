@@ -115,6 +115,24 @@ def test_no_split_leakage(events):
 
 `split_key` is assigned at event creation, never computed at query time (ADR 019), which makes leakage a schema violation rather than a discipline problem.
 
+### 3.6 Holdout firewall — ADR 088
+
+```python
+def test_serving_views_never_read_holdout(db):
+    for view in SERVING_VIEWS_WITH_STATS:
+        ddl = get_view_definition(db, view)
+        assert "'validate'" in ddl, f"{view} must pin split_key"
+        assert "e.split_key" not in ddl, f"{view} must not inherit event split"
+
+def test_screener_shows_no_holdout_stats(db):
+    rows = query(db, "SELECT * FROM v_screen WHERE p_hit IS NOT NULL")
+    ids  = [r.cell_id for r in rows]
+    splits = query(db, "SELECT DISTINCT split_key FROM cell_stats WHERE cell_id = ANY(%s)", (ids,))
+    assert set(splits) <= {"validate"}
+```
+
+A live event carries `split_key = 'holdout'` by date assignment. Without this guard, a join inheriting it would surface holdout statistics continuously and the numbers would look entirely reasonable.
+
 ---
 
 ## 4. Golden fixtures

@@ -229,6 +229,10 @@ Note: there is no `regime` table. `universe` already stores `as_of` plus the fiv
 
 **1.5 Migration 004: events**
 
+**`events` has no `cell_id` column and must not gain one.** `cell_id` is derived, not stored — see DESIGN §8.2. If a view appears to need it, join on component columns instead.
+
+
+
 `events` per DESIGN §5.7, with all three indexes. This is the widest table; take care with the cluster columns and the UNIQUE constraint on `(config_hash, ticker, signal_date, signal_type, entry_kind)`.
 
 **1.6 Migration 005: statistics, predictions, positions**
@@ -239,9 +243,13 @@ Note: there is no `regime` table. `universe` already stores `as_of` plus the fiv
 
 **1.7 Migration 006: views**
 
+Create `cell_key()` first — it is an immutable SQL function the stats job and the views both use.
+
 All eight views, with full DDL in DESIGN §8.2: `v_screen`, `v_ticker_state`, `v_chart`, `v_stats`, `v_events`, `v_forward`, `v_universe`, `v_positions`. Copy them exactly.
 
-`v_positions` depends on `v_ticker_state`, so create it after. `v_events` uses `current_setting('capitalscan.default_config_hash', true)` — the `true` second argument makes it return NULL rather than erroring when unset, which is what you want before the first backtest exists.
+`v_positions` depends on `v_ticker_state`, so create it after. `v_screen` hardcodes `split_key = 'validate'` in its join. This is deliberate and must not be changed to inherit `e.split_key`, which would leak holdout statistics into the UI.
+
+`v_events` uses `current_setting('capitalscan.default_config_hash', true)` — the `true` second argument makes it return NULL rather than erroring when unset, which is what you want before the first backtest exists.
 
 **1.8 CLI wiring**
 

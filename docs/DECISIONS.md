@@ -99,6 +99,7 @@ Last updated: 2026-07-28
 | 085 | Test tiers weighted by failure silence | Pinned |
 | 086 | External indicator verification, semi-automated | Pinned |
 | 087 | Random-walk null test is the primary statistical guard | Pinned |
+| 088 | cell_id is derived; serving views pin split to validate | Pinned |
 
 ---
 
@@ -1347,6 +1348,25 @@ Null test. Feed a driftless geometric Brownian motion series for 50 synthetic ti
 Recovery test. Feed a series with known drift, and assert the computed parametric baseline matches the analytical value within 1 percentage point.
 
 Rationale. If a random walk produces significant cells, the statistics layer has a bug and every real result is suspect. This is the highest-value test in the suite, because it validates the reasoning rather than the code, and no unit test can catch the failure it targets.
+
+
+---
+
+## 088. cell_id is derived; serving views pin split to validate
+
+Status: Pinned
+
+Decision. `events` carries no `cell_id` column. Cell identity is computed by an immutable SQL function `cell_key(signal_type, side, dd_bucket, strength, entry_kind, split, era, horizon, target)`, used by both the statistics job and every view. Serving views join `cell_stats` on component columns with `split_key = 'validate'`, `era IS NULL`, `horizon_days = 5`, and `target_pct = 0.03` pinned.
+
+Rationale, first reason. `cell_stats` carries `horizon_days` and `target_pct`, which are report parameters rather than event properties and do not exist on `events`. One event therefore belongs to many cells, one per horizon-target pair. A single `cell_id` column would store one arbitrary member of a set, and any later change to bucket boundaries would require rewriting every event row.
+
+Rationale, second reason, and the more serious one. A live event fired today carries `split_key = 'holdout'` by date assignment. A view joining `USING (cell_id)` or on `e.split_key` would surface holdout statistics in the screener every day, silently and indefinitely, destroying the guarantee in ADR 019 and ADR 033 that holdout is evaluated exactly once at the end. The failure would be invisible because the numbers would look entirely reasonable.
+
+Enforcement. `split_key = 'validate'` is hardcoded in `v_screen` and in any future serving view that reports statistics. This is a firewall, not a default, and must not be parameterized.
+
+Consequence for the statistics job. It must write a pooled row per cell with `era IS NULL` alongside the four per-era rows. `v_screen` reads the pooled row; the research page reads the per-era ones.
+
+Provenance. Found by a Claude Code session during migration 004, which correctly identified that `v_screen` referenced a column `events` did not have, and proposed adding it. The proposal was rejected for the two reasons above.
 
 ---
 

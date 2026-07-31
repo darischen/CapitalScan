@@ -29,6 +29,7 @@ If a task appears to require contradicting one, **stop and ask.** Do not work ar
 3. **Indicators are read at t−1, never t.** Enforced in `core/signals.py` and again in the `events` job. This is the highest-risk silent failure in the system.
 4. **Never fill, forward-fill, or interpolate a null.** Drop the row and log it to `bar_rejects` with a reason.
 5. **`split_key` is assigned at event creation, never at query time.**
+5b. **No view or query may join statistics on an event's own `split_key`.** Live events carry `split_key = 'holdout'`; inheriting it would surface holdout numbers continuously. Serving views hardcode `split_key = 'validate'`. `cell_id` is derived from component columns, never stored on `events`.
 6. **Every generated row carries `run_id` and `git_sha`.**
 7. **No broker client, no order placement, no brokerage credentials.** The absence is the safety property, not a disabled flag.
 8. **Every response carrying a probability carries `n_eff` and a confidence interval.**
