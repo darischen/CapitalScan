@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "capitalscan"
+version = "0.1.0"
+description = "Bollinger Band + Stochastic Oscillator event-study engine for US mega-cap equities"
+requires-python = ">=3.11"
+authors = [{name = "Daris Chen", email = "arcriumurnior@gmail.com"}]
+license = {text = "MIT"}
+
+dependencies = [
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "sqlalchemy>=2.0.0",
+    "psycopg[binary]>=3.1.0",
+    "alembic>=1.12.0",
+    "pydantic>=2.0.0",
+    "typer[all]>=0.9.0",
+    "rich>=13.0.0",
+    "yfinance>=0.2.30",
+    "pandas-market-calendars>=4.3.0",
+    "requests>=2.31.0",
+    "pyarrow>=13.0.0",
+    "python-dotenv>=1.0.0",
+    "tomli>=2.0.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-xdist>=3.5.0",
+    "pytest-cov>=4.1.0",
+    "hypothesis>=6.90.0",
+    "testcontainers[postgres]>=3.7.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+]
+
+[project.scripts]
+cscan = "capitalscan.jobs.cli:app"
+
+[tool.setuptools]
+packages = ["capitalscan"]
+
+[tool.pytest.ini_options]
+testpaths = ["capitalscan/tests"]
+python_files = "test_*.py"
+pythonpath = ["."]
+addopts = "-v --tb=short"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+strict_optional = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["capitalscan"]

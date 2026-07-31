@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: capitalscan-postgres
+    environment:
+      POSTGRES_USER: capscan
+      POSTGRES_PASSWORD: capscan
+      POSTGRES_DB: capitalscan
+      POSTGRES_INITDB_ARGS: >
+        -c shared_buffers=1GB
+        -c work_mem=32MB
+        -c maintenance_work_mem=512MB
+        -c effective_cache_size=4GB
+        -c max_parallel_workers=8
+    ports:
+      - "5432:5432"
+    volumes:
+      - capitalscan-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U capscan -d capitalscan"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  capitalscan-data:
+    name: capitalscan-data
