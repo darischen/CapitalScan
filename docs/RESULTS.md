@@ -62,7 +62,20 @@ This file exists so that a null result is a recorded finding rather than a conve
 
 ### Backfill record
 
-*(Append after session 7. Ticker count, bar count, date range, reject counts by rule, coverage gaps, tickers dropped with reasons.)*
+**2026-07-31 Session 7: Initial 51-ticker backfill (2015-2026)**
+
+Testing backfill pipeline with subset of major mega-cap tickers before full production run.
+
+- Ticker count: 51 (AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA, TSM, BRK-B, JNJ, etc.)
+- Date range: 2015-01-01 to present
+- Status: In progress (validation gate phase)
+
+Expected next steps: Complete bars download, compute indicators, detect events, validate clean at reject severity.
+
+**Note**: Full session 7 production run will use:
+- 750 tickers from universe_union.csv (ADR 055, requires Wikipedia scraper fix)
+- Start date: 2009-01-01 (ADR 040: ingest 2009, events 2010)
+- Acceptance criteria from BUILD.md §7: 750 tickers with first_bar/last_bar, validation clean, indicators computed with no post-2010 nulls, scan command returns plausible results
 
 ### Indicator verification
 
