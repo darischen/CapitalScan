@@ -25,11 +25,14 @@ from capitalscan.core.types import Bands, Bound, Side, SignalType
 SP = SignalParams()
 
 
-def _bar(open_=100.0, high=101.0, low=99.0, close=100.0, ts="2026-07-29"):
-    return pd.Series(
-        {"open": open_, "high": high, "low": low, "close": close},
-        name=pd.Timestamp(ts),
-    )
+def _bar(open_=100.0, high=101.0, low=99.0, close=100.0, ts="2026-07-29", ticker="TSM"):
+    """A bar as `read_bars` returns one: `ticker` is a column, `ts` the index
+    label. Matches the golden fixtures' `ticker,ts,open,high,low,close,...`
+    shape, so tests exercise the real caller contract."""
+    fields = {"open": open_, "high": high, "low": low, "close": close}
+    if ticker is not None:
+        fields["ticker"] = ticker
+    return pd.Series(fields, name=pd.Timestamp(ts))
 
 
 def _ind(
@@ -272,7 +275,6 @@ def test_null_k_full_still_allows_a_band_touch():
 
 def test_hit_carries_ticker_and_bar_date():
     bar = _bar(low=94.0, ts="2026-07-29")
-    bar["ticker"] = "TSM"
     (hit,) = sig.detect(bar, _ind(bb_lower=95.0), SP)
     assert hit.ticker == "TSM"
     assert hit.ts == pd.Timestamp("2026-07-29").date()
@@ -426,6 +428,7 @@ def test_bar_date_falls_back_to_a_ts_column_when_the_index_is_unnamed():
             "low": 94.0,
             "close": 100.0,
             "ts": pd.Timestamp("2026-07-29"),
+            "ticker": "TSM",
         }
     )
     (hit,) = sig.detect(bar, _ind(bb_lower=95.0), SP)
@@ -448,14 +451,41 @@ def test_bar_date_accepts_a_string_label():
     assert hit.ts == pd.Timestamp("2026-07-29").date()
 
 
-def test_ticker_falls_back_to_a_ticker_column_on_the_bar():
-    bar = _bar(low=94.0)
-    bar["ticker"] = "NVDA"
+def test_ticker_comes_from_the_bars_ticker_column():
+    bar = _bar(low=94.0, ticker="NVDA")
     (hit,) = sig.detect(bar, _ind(bb_lower=95.0), SP)
     assert hit.ticker == "NVDA"
 
 
-def test_ticker_defaults_to_empty_when_the_bar_carries_none():
-    bar = _bar(low=94.0)
-    (hit,) = sig.detect(bar, _ind(bb_lower=95.0), SP)
-    assert hit.ticker == ""
+def test_a_bar_without_a_ticker_field_raises():
+    """`events.ticker` is NOT NULL. A silent "" would write an event
+    attributed to no ticker, which is a fabricated value (DESIGN §3.11).
+
+    Per-ticker frames loaded from the `bars` table carry `ticker` as a
+    column, so this fires only when a caller builds a bar by hand and
+    forgets it — which must fail loudly, not produce an orphan event.
+    """
+    bar = _bar(low=94.0, ticker=None)
+    with pytest.raises(KeyError, match="ticker"):
+        sig.detect(bar, _ind(bb_lower=95.0), SP)
+
+
+def test_a_null_ticker_raises_rather_than_stringifying_to_none():
+    # The column is present but null — `str(None)` would silently produce
+    # the literal ticker "None".
+    bar = _bar(low=94.0, ticker=None)
+    bar["ticker"] = None
+    with pytest.raises(KeyError, match="ticker"):
+        sig.detect(bar, _ind(bb_lower=95.0), SP)
+
+
+def test_an_empty_ticker_raises():
+    bar = _bar(low=94.0, ticker="")
+    with pytest.raises(KeyError, match="ticker"):
+        sig.detect(bar, _ind(bb_lower=95.0), SP)
+
+
+def test_a_missing_ticker_is_not_reported_until_a_signal_fires():
+    """A quiet bar returns [] without touching `ticker`, so a frame that
+    legitimately omits it never breaks bulk scanning of non-events."""
+    assert sig.detect(_bar(), _ind(), SP) == []

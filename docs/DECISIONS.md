@@ -1388,7 +1388,11 @@ Resolution. The shift test becomes a four-bound ladder anchored to a shuffled co
 
 The probe is the load-bearing part. It fails immediately if a future refactor passes the full indicator frame for convenience, or if someone adds `bar.close` to a band comparison.
 
-**CI consequence.** Property tests at 10,000 examples run roughly 105 seconds, exceeding the 60-second fast-tier budget. Hypothesis profiles split this: 1,000 examples in fast, 10,000 in slow. The Phase 3 gate still requires the full 10,000.
+**CI consequence, corrected after measurement.** `max_examples` is per test, not per suite. With 9 property tests, a naive 10,000-example run measures 509 seconds, not the 105 originally estimated.
+
+Resolution: `full` is scoped to the four exit invariants via a pytest marker, which is what TESTS §3.4 and the Phase 3 gate actually name. That lands near 226 seconds, inside the slow-tier budget. Everything else runs at `ci_fast`. `ci_fast` is 250 examples rather than 1,000, since 1,000 measures 56.9 seconds for the property suite alone and exceeds the fast tier before unit tests, ruff, and mypy run.
+
+**Packaging.** `packages = ["capitalscan"]` under `[tool.setuptools]` lists only the top-level package, excluding `core`, `jobs`, `research`, `handlers`, and `mcp` from a built wheel. Editable installs mask this. Use `[tool.setuptools.packages.find] include = ["capitalscan*"]`. The related mypy ambiguity had the same root cause: `capitalscan/__init__.py` did not exist, so `packages = ["capitalscan"]` resolved against a namespace package.
 
 ---
 

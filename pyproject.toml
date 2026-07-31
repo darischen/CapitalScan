@@ -43,14 +43,25 @@ dev = [
 [project.scripts]
 cscan = "capitalscan.jobs.cli:app"
 
-[tool.setuptools]
-packages = ["capitalscan"]
+[tool.setuptools.packages.find]
+# Not `packages = ["capitalscan"]` — that lists only the top level, so a
+# wheel would ship an empty package with core/, jobs/, research/, handlers/,
+# and mcp/ all missing. Editable installs mask it; the first build would not.
+include = ["capitalscan*"]
+# Tests run from the repo, never from an installed wheel.
+exclude = ["capitalscan.tests*"]
 
 [tool.pytest.ini_options]
 testpaths = ["capitalscan/tests"]
 python_files = "test_*.py"
 pythonpath = ["."]
 addopts = "-v --tb=short"
+markers = [
+    # The exit invariants are what TESTS.md §3.4 and the Phase 3 gate name
+    # specifically. The slow tier runs these at `full` (10,000 examples) and
+    # everything else at `ci_fast`, which is what keeps it inside budget.
+    "exit_invariant: exit resolver invariants, run at the full profile in CI",
+]
 
 [tool.mypy]
 # 3.12, not the project's 3.11 floor (requires-python above): numpy 2.5's

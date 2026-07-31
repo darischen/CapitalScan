@@ -1,9 +1,10 @@
 """Exit resolver invariants, property-based (BUILD.md §3.6, TESTS.md §3.4).
 
-Case count comes from the hypothesis profile, not from this module:
-`full` runs 10,000 per test in the slow tier, `ci_fast` runs 1,000, `dev`
-runs 200. Registered in `capitalscan/tests/conftest.py` (TESTS.md §9). The
-Phase 3 gate requires `full`.
+Case count comes from the hypothesis profile, not from this module. Every
+test here carries the `exit_invariant` marker, which is what the slow tier
+selects to run at `full` — 10,000 cases each, as TESTS.md §3.4 and the
+Phase 3 gate require. Profiles are registered in
+`capitalscan/tests/conftest.py` (TESTS.md §9).
 
 **MFE is not clamped at zero** (ADR 089, TESTS.md §3.4). An earlier draft
 asserted `mae <= 0 <= mfe`, which contradicts DESIGN §5.6: a position that
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
@@ -24,6 +26,11 @@ from capitalscan.core.config import ExitParams
 from capitalscan.core.exits import min_stop_distance, resolve_exit, stop_level
 from capitalscan.core.returns import realized_return
 from capitalscan.core.types import ExitReason, Side
+
+# The slow tier selects on this to run at the full profile. Applied to the
+# four invariants TESTS.md §3.4 names; the determinism test below is ADR 060
+# rather than a §3.4 invariant and is deliberately left unmarked.
+pytestmark = pytest.mark.exit_invariant
 
 # Only the health-check suppression is fixed here. `max_examples` and
 # `deadline` come from the active profile so the tier split controls cost.
@@ -180,9 +187,25 @@ def test_stop_exits_land_at_or_beyond_the_stop_level(scenario):
 # ---------------------------------------------------------------------------
 
 
-@given(scenarios())
-@SETTINGS
-def test_resolve_exit_is_deterministic(scenario):
-    _, _, _, _, _, first = _resolve(scenario)
-    _, _, _, _, _, second = _resolve(scenario)
-    assert first == second
+def test_resolve_exit_is_deterministic_on_a_worked_case():
+    """Spot check. The generated determinism sweep lives in
+    `test_determinism.py`, unmarked, because ADR 060 is not one of the four
+    §3.4 exit invariants and does not need the full profile."""
+    bars = pd.DataFrame(
+        {"open": [100.0], "high": [105.0], "low": [96.0], "close": [104.0]},
+        index=pd.date_range("2026-01-05", periods=1, freq="B"),
+    )
+    ind = pd.DataFrame(
+        {"bb_upper": [200.0], "bb_mid": [150.0], "bb_lower": [1.0], "k_full": [50.0]},
+        index=bars.index,
+    )
+    kwargs = dict(
+        entry_price=100.0,
+        entry_idx=0,
+        side=Side.LONG,
+        fwd_bars=bars,
+        fwd_ind=ind,
+        atr_at_entry=2.0,
+        ep=ExitParams(),
+    )
+    assert resolve_exit(**kwargs) == resolve_exit(**kwargs)

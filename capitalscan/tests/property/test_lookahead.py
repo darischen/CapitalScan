@@ -53,13 +53,17 @@ def gbm_bars(n: int = 1200, seed: int = 42, mu: float = 0.0, sigma: float = 0.02
     The question is whether detection *responds* to indicator values, which
     does not need a real price series — and a random walk has no edge to
     accidentally exploit (ADR 087).
+
+    Carries `ticker` as a column, matching what `read_bars` returns and what
+    the golden fixtures store, so `bars.iloc[i]` is the shape `detect`
+    actually receives in the `events` job.
     """
     rng = np.random.default_rng(seed)
     steps = rng.normal(mu / 252.0, sigma, size=n)
     close = 100.0 * np.exp(np.cumsum(steps))
     spread = np.abs(rng.normal(0.0, sigma * 0.6, size=n)) * close
     idx = pd.date_range("2015-01-01", periods=n, freq="B")
-    return pd.DataFrame(
+    frame = pd.DataFrame(
         {
             "open": close * (1 + rng.normal(0.0, sigma * 0.2, size=n)),
             "high": close + spread,
@@ -70,6 +74,8 @@ def gbm_bars(n: int = 1200, seed: int = 42, mu: float = 0.0, sigma: float = 0.02
         },
         index=idx,
     ).clip(lower=0.01)
+    frame["ticker"] = "SYNTH"
+    return frame
 
 
 def detect_all(bars, indicators, detector=detect) -> set[tuple]:

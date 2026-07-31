@@ -146,6 +146,29 @@ def _types_fired(
     return fired
 
 
+def _bar_ticker(bar: pd.Series) -> str:
+    """The bar's ticker symbol. Raises when absent.
+
+    Per-ticker frames read from the `bars` table carry `ticker` as a column
+    (it is part of the primary key), so this fires only when a caller builds
+    a bar by hand and omits it.
+
+    `events.ticker` is NOT NULL, so a silent `""` would write an event
+    attributed to no ticker — a fabricated value, which DESIGN §3.11 forbids
+    outright. Failing loudly here is the whole point.
+    """
+    raw = bar["ticker"] if "ticker" in bar.index else None
+    # A null lands here as None from an object column or NaN from a float
+    # one (pandas coerces None on a numeric Series). Both are missing.
+    missing = raw is None or (isinstance(raw, float) and np.isnan(raw))
+    if missing or (isinstance(raw, str) and not raw.strip()):
+        raise KeyError(
+            "bar has no usable 'ticker' field; detect() cannot attribute the "
+            "signal. Per-ticker frames from the bars table carry it as a column."
+        )
+    return str(raw)
+
+
 def _bar_date(bar: pd.Series) -> date:
     """The bar's trading date, from the index label or a `ts` column."""
     label: object = bar.name
@@ -187,13 +210,13 @@ def detect(bar: pd.Series, ind: pd.Series, sp: SignalParams) -> list[SignalHit]:
         # one "for convenience" must fail loudly, not silently widen access.
         raise TypeError("detect() takes a single indicator row (pd.Series), not a DataFrame")
 
-    raw_ticker = bar["ticker"] if "ticker" in bar.index else ""
-    ticker = str(raw_ticker) if raw_ticker is not None else ""
-
     fired = _types_fired(_get(bar, "low"), _get(bar, "high"), ind, sp)
     if not any(fired.values()):
         return []
 
+    # Resolved only once a signal fires, so scanning frames that legitimately
+    # omit `ticker` stays cheap on the overwhelming majority of bars.
+    ticker = _bar_ticker(bar)
     ts = _bar_date(bar)
     pctb = _get(ind, "bb_pctb")
     k_full = _get(ind, "k_full")

@@ -59,7 +59,7 @@ def bar_and_bands(draw):
     open_ = draw(finite(low, high))
     close = draw(finite(low, high))
     bar = pd.Series(
-        {"open": open_, "high": high, "low": low, "close": close},
+        {"open": open_, "high": high, "low": low, "close": close, "ticker": "TEST"},
         name=pd.Timestamp("2026-07-29"),
     )
 
@@ -124,7 +124,7 @@ def test_parity_holds_under_default_params(fixture):
 def test_parity_on_a_hand_built_confluence_bar():
     """A worked case, so a strategy regression cannot hide behind shrinking."""
     bar = pd.Series(
-        {"open": 100.0, "high": 101.0, "low": 94.0, "close": 96.0},
+        {"open": 100.0, "high": 101.0, "low": 94.0, "close": 96.0, "ticker": "TEST"},
         name=pd.Timestamp("2026-07-29"),
     )
     ind = pd.Series(
@@ -152,7 +152,7 @@ def test_parity_on_a_hand_built_confluence_bar():
 def test_live_path_never_fires_on_a_bar_the_backtest_ignores():
     """The asymmetric failure that matters: live firing on unmeasured events."""
     bar = pd.Series(
-        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "ticker": "TEST"},
         name=pd.Timestamp("2026-07-29"),
     )
     ind = pd.Series(

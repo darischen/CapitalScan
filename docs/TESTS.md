@@ -338,12 +338,30 @@ jobs:
 Hypothesis profiles, registered in `conftest.py`:
 
 ```python
-settings.register_profile("ci_fast", max_examples=1000, deadline=None)
+settings.register_profile("ci_fast", max_examples=250,   deadline=None)
 settings.register_profile("full",    max_examples=10000, deadline=None)
-settings.register_profile("dev",     max_examples=200)
+settings.register_profile("dev",     max_examples=200)   # default
 ```
 
-Property tests at 10,000 examples take roughly 105 seconds, which exceeds the fast-tier budget. The split preserves quick feedback without weakening the Phase 3 gate, which still requires the full 10,000.
+`CAPSCAN_HYPOTHESIS_PROFILE` also selects a profile, so gate scripts request `full` without threading a pytest flag through.
+
+**`max_examples` is per test, not per suite.** With 9 property tests, a naive `full` run measures 509 s. Two consequences shape the tiering:
+
+*`full` is scoped to the exit invariants only.* TESTS §3.4 and the Phase 3 gate both name the exit invariants specifically, not every property test. Four tests at 10,000 examples lands near 226 s, inside the slow-tier budget. Parity, ladder, and the remaining property tests run at `ci_fast` in both tiers.
+
+```python
+# tests/property/test_exits.py
+pytestmark = pytest.mark.exit_invariant
+```
+
+```
+slow tier:  pytest tests/property -m exit_invariant --hypothesis-profile=full
+            pytest tests/property -m "not exit_invariant" --hypothesis-profile=ci_fast
+```
+
+*`ci_fast` is 250, not 1,000.* At 1,000 examples the property suite alone measures 56.9 s, exceeding the fast-tier budget before unit tests, ruff, and mypy run. 250 lands near 14 s.
+
+Measured reference: `dev` 17.4 s, `ci_fast` at 250 roughly 14 s, `full` scoped to exit invariants roughly 226 s.
 
 `mypy` takes no path argument. Invocation style is pinned in `pyproject.toml` via `packages = ["capitalscan"]`, since path invocation causes module-resolution ambiguity. `pandas-stubs` is a dev dependency.
 
@@ -376,7 +394,7 @@ cscan scan --ticker TSM --start 2026-07-01 --end 2026-07-30
 
 ### Phase 3
 
-- Exit invariants hold across 10,000 property-generated cases
+- Exit invariants hold across 10,000 property-generated cases each (`--hypothesis-profile=full -m exit_invariant`)
 - Ambiguity rate below 10%, or hourly escalation implemented
 - Event count within 20% of the analytical estimate (~4% of ticker-days for confluence)
 - Determinism test passes
