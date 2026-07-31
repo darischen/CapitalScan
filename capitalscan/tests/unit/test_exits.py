@@ -456,3 +456,53 @@ def test_an_empty_forward_window_raises():
 def test_an_unknown_stop_mode_raises():
     with pytest.raises(ValueError):
         _resolve(_quiet(), ep=ExitParams(stop_mode="trailing"))
+
+
+# ---------------------------------------------------------------------------
+# No magic numbers (CLAUDE.md invariant 9)
+# ---------------------------------------------------------------------------
+
+
+def test_stoch_exit_threshold_comes_from_config_not_a_literal():
+    """The %K exit level must be the same number `detect` uses.
+
+    Hardcoding 80/20 here lets a sweep of `SignalParams.stoch_overbought`
+    move the entry threshold while the exit silently stays put — the two
+    would disagree about what "overbought" means inside one backtest.
+    """
+    from capitalscan.core.config import SignalParams
+
+    assert exits._STOCH_EXIT_HIGH == SignalParams().stoch_overbought
+    assert exits._STOCH_EXIT_LOW == SignalParams().stoch_oversold
+
+
+def test_exits_module_contains_no_bare_stochastic_literal():
+    import inspect
+
+    source = inspect.getsource(exits)
+    body = "\n".join(
+        line
+        for line in source.splitlines()
+        if not line.strip().startswith("#") and "_STOCH_EXIT_" not in line
+    )
+    assert "80.0" not in body and "20.0" not in body
+
+
+def test_long_stoch_exit_fires_exactly_at_the_configured_level():
+    from capitalscan.core.config import SignalParams
+
+    level = SignalParams().stoch_overbought
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.5])
+    assert _resolve(bars, ind=_ind(bars, k_full=level)).reason is ExitReason.STOCH_80
+    assert _resolve(bars, ind=_ind(bars, k_full=level - 0.01)).reason is ExitReason.TIMEOUT
+
+
+def test_short_stoch_exit_fires_exactly_at_the_configured_level():
+    from capitalscan.core.config import SignalParams
+
+    level = SignalParams().stoch_oversold
+    bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[99.5])
+    r = _resolve(bars, ind=_ind(bars, k_full=level), side=Side.SHORT)
+    assert r.reason is ExitReason.STOCH_80
+    r2 = _resolve(bars, ind=_ind(bars, k_full=level + 0.01), side=Side.SHORT)
+    assert r2.reason is ExitReason.TIMEOUT
