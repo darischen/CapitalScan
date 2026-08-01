@@ -9,6 +9,7 @@ does not clear on its own.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import cast
 
@@ -17,10 +18,15 @@ import requests
 
 from capitalscan.jobs.fetch.base import NotFoundError, cached, rate_limited, with_retry
 
+logger = logging.getLogger(__name__)
+
 RATE_LIMIT_PER_SEC = 8.0
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+# `filings.files[]` entries carry only a bare `name`; shards live as
+# sibling files to the submissions JSON itself, not under a versioned path.
+SUBMISSIONS_HOST = "https://data.sec.gov/submissions/"
 
 _SHARES_TAGS = ("EntityCommonStockSharesOutstanding",)
 _SHARES_UNIT = "shares"
@@ -94,21 +100,69 @@ def fetch_company_facts(cik: int) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["cik", "tag", "filed_on", "end", "value", "form", "accn"])
 
 
+def _filing_rows(cik: int, payload: dict) -> pd.DataFrame:
+    """Build the (cik, form, filed_on, accn) frame from one filings payload.
+
+    `filings.recent` and each `filings.files[]` shard share the same shape
+    (three parallel arrays: `form`, `filingDate`, `accessionNumber`) — the
+    shard is just the same structure fetched from a different URL instead
+    of nested under `recent`. One helper avoids writing the same three
+    `.get(...)` lines twice.
+    """
+    forms = payload.get("form", [])
+    dates = payload.get("filingDate", [])
+    accns = payload.get("accessionNumber", [])
+    return pd.DataFrame({"cik": cik, "form": forms, "filed_on": dates, "accn": accns})
+
+
 @cached(source="sec_submissions", key_fn=lambda cik: str(cik))
 def fetch_submissions(cik: int) -> pd.DataFrame:
-    """Filing history for a CIK, including 8-K filing dates (ADR 036)."""
+    """Filing history for a CIK, including 8-K filing dates (ADR 036).
+
+    `filings.recent` caps out around the most recent 1,000 filings — fine
+    for a ticker onboarded in the last few years, silently wrong for one
+    with a decade-plus history. The overflow lives in `filings.files[]`,
+    each entry a shard fetched by `name` from the same host
+    (e.g. "CIK0000320193-submissions-001.json"). Missing this is precisely
+    what left most of the universe's 8-K history starting in 2014-2016
+    instead of reaching ADR 036's 2010 target, and it does not fail loudly:
+    `_merge_days_to_earnings` (jobs/compute.py) happily attaches the
+    nearest *future* filing it can find to a bar a decade earlier, so the
+    gap shows up as a plausible-looking wrong number, not an error.
+
+    A shard that fails (404, exhausted retries, whatever) must raise rather
+    than be logged and skipped. This function is wrapped in `@cached`
+    (`base.py`): on a cache miss, whatever this function returns gets
+    written to `data/cache/sec_submissions/<cik>.parquet` and served to
+    every future call, including the repair run meant to fix a bad fetch.
+    Swallowing a shard failure here would persist a partial filing history
+    that looks complete and is not — precisely the failure mode this whole
+    fix exists to eliminate (the original missing-shards bug was invisible
+    until a distribution check on `days_to_earnings` caught it). Raising
+    before `to_parquet` runs means nothing is cached and the next run
+    genuinely retries. `@with_retry` already gives each shard its retries,
+    so anything still failing here is real and worth surfacing loudly.
+    """
     raw = _fetch_json(SUBMISSIONS_URL.format(cik=cik))
-    recent = raw.get("filings", {}).get("recent", {})
-    forms = recent.get("form", [])
-    dates = recent.get("filingDate", [])
-    accns = recent.get("accessionNumber", [])
-    return pd.DataFrame(
-        {
-            "cik": cik,
-            "form": forms,
-            "filed_on": dates,
-            "accn": accns,
-        }
+    filings = raw.get("filings", {})
+    frames = [_filing_rows(cik, filings.get("recent", {}))]
+
+    for shard in filings.get("files", []):
+        name = shard.get("name")
+        if not name:
+            continue
+        try:
+            shard_payload = _fetch_json(SUBMISSIONS_HOST + name)
+        except Exception as exc:
+            raise RuntimeError(
+                f"SEC submissions shard fetch failed for CIK {cik} ({name}); "
+                "refusing to cache a partial filing history"
+            ) from exc
+        frames.append(_filing_rows(cik, shard_payload))
+
+    return cast(
+        pd.DataFrame,
+        pd.concat(frames, ignore_index=True)[["cik", "form", "filed_on", "accn"]],
     )
 
 
