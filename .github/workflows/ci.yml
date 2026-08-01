@@ -21,24 +21,22 @@ jobs:
         uses: astral-sh/setup-uv@v2
 
       - name: Sync dependencies
-        working-directory: capitalscan
-        run: uv sync
+        run: uv sync --extra dev
 
       - name: Ruff check
-        working-directory: capitalscan
         run: uv run ruff check .
 
       - name: Ruff format
-        working-directory: capitalscan
         run: uv run ruff format --check .
 
       - name: MyPy
-        working-directory: capitalscan
-        run: uv run mypy core/
+        run: uv run mypy
 
-      - name: Pytest unit and property
-        working-directory: capitalscan
-        run: uv run pytest tests/unit tests/property -v
+      - name: Pytest unit and property (with core coverage gate)
+        run: >-
+          uv run pytest capitalscan/tests/unit capitalscan/tests/property
+          -p no:randomly --hypothesis-profile=ci_fast
+          --cov=capitalscan/core --cov-report=term-missing --cov-fail-under=90
 
   slow:
     runs-on: ubuntu-latest
@@ -69,11 +67,26 @@ jobs:
         uses: astral-sh/setup-uv@v2
 
       - name: Sync dependencies
-        working-directory: capitalscan
-        run: uv sync
+        run: uv sync --extra dev
 
-      - name: Pytest golden and integration
-        working-directory: capitalscan
+      # This Postgres service is a throwaway container scoped to this CI job
+      # only. It never points at a developer's database. Do not repoint
+      # DATABASE_URL_RESEARCH at anything but this service container.
+      - name: Pytest property (exit invariants at full profile)
         env:
           DATABASE_URL_RESEARCH: postgresql://capscan:capscan@localhost:5432/capitalscan
-        run: uv run pytest tests/golden tests/integration -v
+        run: >-
+          uv run pytest capitalscan/tests/property -m exit_invariant
+          --hypothesis-profile=full
+
+      - name: Pytest property (remainder at ci_fast profile)
+        env:
+          DATABASE_URL_RESEARCH: postgresql://capscan:capscan@localhost:5432/capitalscan
+        run: >-
+          uv run pytest capitalscan/tests/property -m "not exit_invariant"
+          --hypothesis-profile=ci_fast
+
+      - name: Pytest golden and integration
+        env:
+          DATABASE_URL_RESEARCH: postgresql://capscan:capscan@localhost:5432/capitalscan
+        run: uv run pytest capitalscan/tests/golden capitalscan/tests/integration
