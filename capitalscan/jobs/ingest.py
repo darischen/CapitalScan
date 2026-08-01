@@ -622,6 +622,18 @@ def run_market(lookback_days: int, engine: Engine | None = None) -> IngestReport
 # ============ shares ============
 
 
+def _period_end_key(row: dict) -> str:
+    """Sortable `period_end`, with a missing value ordering lowest.
+
+    A dropped `end` arrives from pandas as `NaN`, not `None`, so the
+    self-inequality test is the reliable check for both.
+    """
+    period_end = row["period_end"]
+    if period_end is None or period_end != period_end:
+        return ""
+    return str(period_end)
+
+
 def run_shares(tickers: list[str], engine: Engine | None = None) -> IngestReport:
     """Point-in-time shares outstanding from SEC XBRL (DESIGN §2.4).
 
@@ -653,8 +665,25 @@ def run_shares(tickers: list[str], engine: Engine | None = None) -> IngestReport
                     }
                 )
             touched.append(ticker)
+        # `shares_outstanding` is keyed (ticker, filed_on), but one filing
+        # reports the share count for several periods, so a single `filed_on`
+        # yields several XBRL facts. Postgres rejects an ON CONFLICT whose own
+        # proposed rows collide with each other ("cannot affect row a second
+        # time"), so pick one per filing before the write.
+        #
+        # The survivor is the fact with the latest `period_end` — the most
+        # current count that filing carries. DESIGN §2.4 leaves the "latest
+        # filing with filed_on < as_of" selection to the `universe` job, so
+        # what belongs here is one correct row per filing, not every fact.
+        best: dict[tuple[str, object], dict] = {}
+        for row in rows:
+            key = (row["ticker"], row["filed_on"])
+            prior = best.get(key)
+            if prior is None or _period_end_key(row) >= _period_end_key(prior):
+                best[key] = row
+
         report.rows_written = db_io.upsert(
-            engine, "shares_outstanding", rows, ["ticker", "filed_on"]
+            engine, "shares_outstanding", list(best.values()), ["ticker", "filed_on"]
         )
         report.tickers = touched
     return report
@@ -716,8 +745,22 @@ def run_earnings(
                         }
                     )
 
-        report.rows_written = db_io.upsert(engine, "earnings", rows, ["ticker", "report_date"])
-        report.tickers = sorted({r["ticker"] for r in rows})
+        # `earnings` is keyed (ticker, report_date) and duplicates here are
+        # structural, not anomalous: a company files several 8-Ks in one day and
+        # ADR 036 treats every 8-K date as an earnings date. Postgres rejects an
+        # ON CONFLICT whose own proposed rows collide with each other
+        # ("cannot affect row a second time"), so collapse before the write.
+        #
+        # Last wins, which is what the two passes want. The Finnhub forward pass
+        # appends after the SEC historical pass and is the only source carrying
+        # real session timing — SEC 8-K rows always say 'unknown'. Letting it
+        # overwrite the same date keeps the better row.
+        deduped = list({(r["ticker"], r["report_date"]): r for r in rows}.values())
+
+        report.rows_written = db_io.upsert(
+            engine, "earnings", deduped, ["ticker", "report_date"]
+        )
+        report.tickers = sorted({r["ticker"] for r in deduped})
     return report
 
 
