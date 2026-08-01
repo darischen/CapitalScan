@@ -1,1231 +1,756 @@
-ticker,added,removed,needs_review
-MMM,,,False
-AOS,,,False
-ABT,,,False
-ABBV,,,False
-ACN,,,False
-ADBE,,,False
-AMD,,,False
-AES,,,False
-AFL,,,False
-A,,,False
-APD,,,False
-ABNB,,,False
-AKAM,,,False
-ALB,,,False
-ARE,,,False
-ALGN,,,False
-ALLE,,,False
-LNT,,,False
-ALL,,,False
-GOOGL,,,False
-GOOG,,,False
-MO,,,False
-AMZN,,,False
-AMCR,,,False
-AEE,,,False
-AEP,,,False
-AXP,,,False
-AIG,,,False
-AMT,,,False
-AWK,,,False
-AMP,,,False
-AME,,,False
-AMGN,,,False
-APH,,,False
-ADI,,,False
-AON,,,False
-APA,,,False
-APO,,,False
-AAPL,,,False
-AMAT,,,False
-APP,,,False
-APTV,,,False
-ACGL,,,False
-ADM,,,False
-ARES,,,False
-ANET,,,False
-AJG,,,False
-AIZ,,,False
-T,,,False
-ATO,,,False
-ADSK,,,False
-ADP,,,False
-AZO,,,False
-AVB,,,False
-AVY,,,False
-AXON,,,False
-BKR,,,False
-BALL,,,False
-BAC,,,False
-BAX,,,False
-BDX,,,False
-BRK-B,,,False
-BBY,,,False
-TECH,,,False
-BIIB,,,False
-BLK,,,False
-BX,,,False
-XYZ,,,False
-BNY,,,False
-BA,,,False
-BKNG,,,False
-BSX,,,False
-BMY,,,False
-AVGO,,,False
-BR,,,False
-BRO,,,False
-BF-B,,,False
-BLDR,,,False
-BG,,,False
-BXP,,,False
-CHRW,,,False
-CDNS,,,False
-CPT,,,False
-COF,,,False
-CAH,,,False
-CCL,,,False
-CARR,,,False
-CVNA,,,False
-CASY,,,False
-CAT,,,False
-CBOE,,,False
-CBRE,,,False
-CDW,,,False
-COR,,,False
-CNC,,,False
-CNP,,,False
-CF,,,False
-CRL,,,False
-SCHW,,,False
-CHTR,,,False
-CVX,,,False
-CMG,,,False
-CB,,,False
-CHD,,,False
-CIEN,,,False
-CI,,,False
-CINF,,,False
-CTAS,,,False
-CSCO,,,False
-C,,,False
-CFG,,,False
-CLX,,,False
-CME,,,False
-CMS,,,False
-KO,,,False
-CTSH,,,False
-COHR,,,False
-COIN,,,False
-CL,,,False
-CMCSA,,,False
-FIX,,,False
-COP,,,False
-ED,,,False
-STZ,,,False
-CEG,,,False
-COO,,,False
-CPRT,,,False
-GLW,,,False
-CPAY,,,False
-CTVA,,,False
-CSGP,,,False
-COST,,,False
-CRH,,,False
-CRWD,,,False
-CCI,,,False
-CSX,,,False
-CMI,,,False
-CVS,,,False
-DHR,,,False
-DRI,,,False
-DDOG,,,False
-DVA,,,False
-DECK,,,False
-DE,,,False
-DELL,,,False
-DAL,,,False
-DVN,,,False
-DXCM,,,False
-FANG,,,False
-DLR,,,False
-DG,,,False
-DLTR,,,False
-D,,,False
-DPZ,,,False
-DASH,,,False
-DOV,,,False
-DOW,,,False
-DHI,,,False
-DTE,,,False
-DUK,,,False
-DD,,,False
-ETN,,,False
-EBAY,,,False
-ECHO,,,False
-ECL,,,False
-EIX,,,False
-EW,,,False
-EA,,,False
-ELV,,,False
-EME,,,False
-EMR,,,False
-ETR,,,False
-EOG,,,False
-EQT,,,False
-EFX,,,False
-EQIX,,,False
-EQR,,,False
-ERIE,,,False
-ESS,,,False
-EL,,,False
-EG,,,False
-EVRG,,,False
-ES,,,False
-EXC,,,False
-EXE,,,False
-EXPE,,,False
-EXPD,,,False
-EXR,,,False
-XOM,,,False
-FFIV,,,False
-FDS,,,False
-FICO,,,False
-FAST,,,False
-FRT,,,False
-FDX,,,False
-FDXF,,,False
-FIS,,,False
-FITB,,,False
-FSLR,,,False
-FE,,,False
-FISV,,,False
-FLEX,,,False
-F,,,False
-FTNT,,,False
-FTV,,,False
-FOXA,,,False
-FOX,,,False
-BEN,,,False
-FCX,,,False
-GRMN,,,False
-IT,,,False
-GE,,,False
-GEHC,,,False
-GEV,,,False
-GEN,,,False
-GNRC,,,False
-GD,,,False
-GIS,,,False
-GM,,,False
-GPC,,,False
-GILD,,,False
-GPN,,,False
-GL,,,False
-GDDY,,,False
-GS,,,False
-HAL,,,False
-HIG,,,False
-HAS,,,False
-HCA,,,False
-DOC,,,False
-HSIC,,,False
-HSY,,,False
-HPE,,,False
-HLT,,,False
-HD,,,False
-HONA,,,False
-HON,,,False
-HRL,,,False
-HST,,,False
-HWM,,,False
-HPQ,,,False
-HUBB,,,False
-HUM,,,False
-HBAN,,,False
-HII,,,False
-IBM,,,False
-IEX,,,False
-IDXX,,,False
-ITW,,,False
-INCY,,,False
-IR,,,False
-PODD,,,False
-INTC,,,False
-IBKR,,,False
-ICE,,,False
-IFF,,,False
-IP,,,False
-INTU,,,False
-ISRG,,,False
-IVZ,,,False
-INVH,,,False
-IQV,,,False
-IRM,,,False
-JBHT,,,False
-JBL,,,False
-JKHY,,,False
-J,,,False
-JNJ,,,False
-JCI,,,False
-JPM,,,False
-KVUE,,,False
-KDP,,,False
-KEY,,,False
-KEYS,,,False
-KMB,,,False
-KIM,,,False
-KMI,,,False
-KKR,,,False
-KLAC,,,False
-KHC,,,False
-KR,,,False
-LHX,,,False
-LH,,,False
-LRCX,,,False
-LVS,,,False
-LDOS,,,False
-LEN,,,False
-LII,,,False
-LLY,,,False
-LIN,,,False
-LYV,,,False
-LMT,,,False
-L,,,False
-LOW,,,False
-LULU,,,False
-LITE,,,False
-LYB,,,False
-MTB,,,False
-MPC,,,False
-MAR,,,False
-MRSH,,,False
-MLM,,,False
-MRVL,,,False
-MAS,,,False
-MA,,,False
-MKC,,,False
-MCD,,,False
-MCK,,,False
-MDT,,,False
-MRK,,,False
-META,,,False
-MET,,,False
-MTD,,,False
-MGM,,,False
-MCHP,,,False
-MU,,,False
-MSFT,,,False
-MAA,,,False
-MRNA,,,False
-TAP,,,False
-MDLZ,,,False
-MPWR,,,False
-MNST,,,False
-MCO,,,False
-MS,,,False
-MOS,,,False
-MSI,,,False
-MSCI,,,False
-NDAQ,,,False
-NTAP,,,False
-NFLX,,,False
-NEM,,,False
-NWSA,,,False
-NWS,,,False
-NEE,,,False
-NKE,,,False
-NI,,,False
-NDSN,,,False
-NSC,,,False
-NTRS,,,False
-NOC,,,False
-NCLH,,,False
-NRG,,,False
-NUE,,,False
-NVDA,,,False
-NVR,,,False
-NXPI,,,False
-ORLY,,,False
-OXY,,,False
-ODFL,,,False
-OMC,,,False
-ON,,,False
-OKE,,,False
-ORCL,,,False
-OTIS,,,False
-PCAR,,,False
-PKG,,,False
-PLTR,,,False
-PANW,,,False
-PSKY,,,False
-PH,,,False
-PAYX,,,False
-PYPL,,,False
-PNR,,,False
-PEP,,,False
-PFE,,,False
-PCG,,,False
-PM,,,False
-PSX,,,False
-PNW,,,False
-PNC,,,False
-PPG,,,False
-PPL,,,False
-PFG,,,False
-PG,,,False
-PGR,,,False
-PLD,,,False
-PRU,,,False
-PEG,,,False
-PTC,,,False
-PSA,,,False
-PHM,,,False
-PWR,,,False
-QCOM,,,False
-DGX,,,False
-Q,,,False
-RL,,,False
-RJF,,,False
-RTX,,,False
-O,,,False
-REG,,,False
-REGN,,,False
-RF,,,False
-RSG,,,False
-RMD,,,False
-RVTY,,,False
-HOOD,,,False
-ROK,,,False
-ROL,,,False
-ROP,,,False
-ROST,,,False
-RCL,,,False
-SPGI,,,False
-CRM,,,False
-SNDK,,,False
-SBAC,,,False
-SLB,,,False
-STX,,,False
-SRE,,,False
-NOW,,,False
-SHW,,,False
-SPG,,,False
-SWKS,,,False
-SJM,,,False
-SW,,,False
-SNA,,,False
-SOLV,,,False
-SO,,,False
-LUV,,,False
-SWK,,,False
-SBUX,,,False
-STT,,,False
-STLD,,,False
-STE,,,False
-SYK,,,False
-SMCI,,,False
-SYF,,,False
-SNPS,,,False
-SYY,,,False
-TMUS,,,False
-TROW,,,False
-TTWO,,,False
-TPR,,,False
-TRGP,,,False
-TGT,,,False
-TEL,,,False
-TDY,,,False
-TER,,,False
-TSLA,,,False
-TXN,,,False
-TPL,,,False
-TXT,,,False
-TMO,,,False
-TJX,,,False
-TKO,,,False
-TTD,,,False
-TSCO,,,False
-TT,,,False
-TDG,,,False
-TRV,,,False
-TRMB,,,False
-TFC,,,False
-TYL,,,False
-TSN,,,False
-USB,,,False
-UBER,,,False
-UDR,,,False
-ULTA,,,False
-UNP,,,False
-UAL,,,False
-UPS,,,False
-URI,,,False
-UNH,,,False
-UHS,,,False
-VLO,,,False
-VEEV,,,False
-VTR,,,False
-VLTO,,,False
-VRSN,,,False
-VRSK,,,False
-VZ,,,False
-VRTX,,,False
-VRT,,,False
-VTRS,,,False
-VICI,,,False
-V,,,False
-VST,,,False
-VMC,,,False
-WRB,,,False
-GWW,,,False
-WAB,,,False
-WMT,,,False
-DIS,,,False
-WBD,,,False
-WM,,,False
-WAT,,,False
-WEC,,,False
-WFC,,,False
-WELL,,,False
-WST,,,False
-WDC,,,False
-WY,,,False
-WSM,,,False
-WMB,,,False
-WTW,,,False
-WDAY,,,False
-WYNN,,,False
-XEL,,,False
-XYL,,,False
-YUM,,,False
-ZBRA,,,False
-ZBH,,,False
-ZTS,,,False
-CAG,,"June 30, 2026",False
-HONA,"June 29, 2026",,False
-POOL,,"June 22, 2026",False
-MRVL,"June 22, 2026",,False
-CPB,,"June 22, 2026",False
-FLEX,"June 22, 2026",,False
-EPAM,,"June 2, 2026",False
-FDXF,"June 1, 2026",,False
-CTRA,,"May 7, 2026",False
-VEEV,"May 7, 2026",,False
-HOLX,,"April 9, 2026",False
-CASY,"April 9, 2026",,False
-MTCH,,"March 23, 2026",False
-VRT,"March 23, 2026",,False
-MOH,,"March 23, 2026",False
-LITE,"March 23, 2026",,False
-LW,,"March 23, 2026",False
-COHR,"March 23, 2026",,False
-PAYC,,"March 23, 2026",False
-SATS,"March 23, 2026",,False
-DAY,,"February 9, 2026",False
-CIEN,"February 9, 2026",,False
-LKQ,,"December 22, 2025",False
-CRH,"December 22, 2025",,False
-SOLS,,"December 22, 2025",False
-CVNA,"December 22, 2025",,False
-MHK,,"December 22, 2025",False
-FIX,"December 22, 2025",,False
-K,,"December 11, 2025",False
-ARES,"December 11, 2025",,False
-IPG,,"November 28, 2025",False
-SNDK,"November 28, 2025",,False
-EMN,,"November 4, 2025",False
-Q,"November 3, 2025",,False
-KMX,,"October 31, 2025",False
-SOLS,"October 30, 2025",,False
-ENPH,,"September 22, 2025",False
-EME,"September 22, 2025",,False
-CZR,,"September 22, 2025",False
-HOOD,"September 22, 2025",,False
-MKTX,,"September 22, 2025",False
-APP,"September 22, 2025",,False
-WBA,,"August 28, 2025",False
-IBKR,"August 28, 2025",,False
-HES,,"July 23, 2025",False
-XYZ,"July 23, 2025",,False
-ANSS,,"July 18, 2025",False
-TTD,"July 18, 2025",,False
-JNPR,,"July 9, 2025",False
-DDOG,"July 9, 2025",,False
-DFS,,"May 19, 2025",False
-COIN,"May 19, 2025",,False
-BWA,,"March 24, 2025",False
-DASH,"March 24, 2025",,False
-TFX,,"March 24, 2025",False
-TKO,"March 24, 2025",,False
-CE,,"March 24, 2025",False
-WSM,"March 24, 2025",,False
-FMC,,"March 24, 2025",False
-EXE,"March 24, 2025",,False
-QRVO,,"December 23, 2024",False
-APO,"December 23, 2024",,False
-AMTM,,"December 23, 2024",False
-WDAY,"December 23, 2024",,False
-CTLT,,"December 23, 2024",False
-LII,"December 23, 2024",,False
-MRO,,"November 26, 2024",False
-TPL,"November 26, 2024",,False
-BBWI,,"October 1, 2024",False
-AMTM,"September 30, 2024",,False
-AAL,,"September 23, 2024",False
-PLTR,"September 23, 2024",,False
-ETSY,,"September 23, 2024",False
-DELL,"September 23, 2024",,False
-BIO,,"September 23, 2024",False
-ERIE,"September 23, 2024",,False
-RHI,,"June 24, 2024",False
-KKR,"June 24, 2024",,False
-CMA,,"June 24, 2024",False
-CRWD,"June 24, 2024",,False
-ILMN,,"June 24, 2024",False
-GDDY,"June 24, 2024",,False
-PXD,,"May 8, 2024",False
-VST,"May 8, 2024",,False
-XRAY,,"April 3, 2024",False
-VFC,,"April 3, 2024",False
-GEV,"April 2, 2024",,False
-SOLV,"April 1, 2024",,False
-FLT,,"March 25, 2024",False
-CPAY,"March 25, 2024",,False
-WHR,,"March 18, 2024",False
-SMCI,"March 18, 2024",,False
-ZION,,"March 18, 2024",False
-DECK,"March 18, 2024",,False
-CDAY,,"February 1, 2024",False
-DAY,"February 1, 2024",,False
-SEE,,"December 18, 2023",False
-UBER,"December 18, 2023",,False
-ALK,,"December 18, 2023",False
-JBL,"December 18, 2023",,False
-SEDG,,"December 18, 2023",False
-BLDR,"December 18, 2023",,False
-OGN,,"October 18, 2023",False
-HUBB,"October 18, 2023",,False
-ATVI,,"October 18, 2023",False
-LULU,"October 18, 2023",,False
-DXC,,"October 3, 2023",False
-VLTO,"October 2, 2023",,False
-LNC,,"September 18, 2023",False
-BX,"September 18, 2023",,False
-NWL,,"September 18, 2023",False
-ABNB,"September 18, 2023",,False
-AAP,,"August 25, 2023",False
-KVUE,"August 25, 2023",,False
-RE,,"July 10, 2023",False
-EG,"July 10, 2023",,False
-DISH,,"June 20, 2023",False
-PANW,"June 20, 2023",,False
-FRC,,"May 4, 2023",False
-AXON,"May 4, 2023",,False
-LUMN,,"March 20, 2023",False
-FICO,"March 20, 2023",,False
-SBNY,,"March 15, 2023",False
-BG,"March 15, 2023",,False
-SIVB,,"March 15, 2023",False
-PODD,"March 15, 2023",,False
-VNO,,"January 5, 2023",False
-GEHC,"January 4, 2023",,False
-ABMD,,"December 22, 2022",False
-STLD,"December 22, 2022",,False
-FBHS,,"December 19, 2022",False
-FSLR,"December 19, 2022",,False
-MBC,,"December 19, 2022",False
-MBC,"December 15, 2022",,False
-TWTR,,"November 1, 2022",False
-ACGL,"November 1, 2022",,False
-NLSN,,"October 12, 2022",False
-TRGP,"October 12, 2022",,False
-CTXS,,"October 3, 2022",False
-PCG,"October 3, 2022",,False
-DRE,,"October 3, 2022",False
-EQT,"October 3, 2022",,False
-PVH,,"September 19, 2022",False
-CSGP,"September 19, 2022",,False
-PENN,,"September 19, 2022",False
-INVH,"September 19, 2022",,False
-UA,,"June 21, 2022",False
-UAA,,"June 21, 2022",False
-KDP,"June 21, 2022",,False
-IPGP,,"June 21, 2022",False
-ON,"June 21, 2022",,False
-CERN,,"June 8, 2022",False
-VICI,"June 8, 2022",,False
-DISCA,,"April 11, 2022",False
-WBD,"April 11, 2022",,False
-DISCK,,"April 11, 2022",False
-PBCT,,"April 4, 2022",False
-CPT,"April 4, 2022",,False
-INFO,,"March 2, 2022",False
-MOH,"March 2, 2022",,False
-XLNX,,"February 15, 2022",False
-NDSN,"February 15, 2022",,False
-GPS,,"February 3, 2022",False
-CEG,"February 2, 2022",,False
-LEG,,"December 20, 2021",False
-SBNY,"December 20, 2021",,False
-WLTW,,"January 10, 2022",False
-WTW,"January 10, 2022",,False
-HBI,,"December 20, 2021",False
-SEDG,"December 20, 2021",,False
-WU,,"December 20, 2021",False
-FDS,"December 20, 2021",,False
-KSU,,"December 14, 2021",False
-EPAM,"December 14, 2021",,False
-PRGO,,"September 20, 2021",False
-MTCH,"September 20, 2021",,False
-UNM,,"September 20, 2021",False
-CDAY,"September 20, 2021",,False
-NOV,,"September 20, 2021",False
-BRO,"September 20, 2021",,False
-MXIM,,"August 30, 2021",False
-TECH,"August 30, 2021",,False
-ALXN,,"July 21, 2021",False
-MRNA,"July 21, 2021",,False
-HFC,,"June 4, 2021",False
-OGN,"June 3, 2021",,False
-FLIR,,"May 14, 2021",False
-CRL,"May 14, 2021",,False
-VAR,,"April 20, 2021",False
-PTC,"April 20, 2021",,False
-FLS,,"March 22, 2021",False
-NXPI,"March 22, 2021",,False
-SLG,,"March 22, 2021",False
-PENN,"March 22, 2021",,False
-XRX,,"March 22, 2021",False
-GNRC,"March 22, 2021",,False
-VNT,,"March 22, 2021",False
-CZR,"March 22, 2021",,False
-FTI,,"February 12, 2021",False
-MPWR,"February 12, 2021",,False
-CXO,,"January 21, 2021",False
-TRMB,"January 21, 2021",,False
-TIF,,"January 7, 2021",False
-ENPH,"January 7, 2021",,False
-AIV,,"December 21, 2020",False
-TSLA,"December 21, 2020",,False
-NBL,,"October 12, 2020",False
-VNT,"October 9, 2020",,False
-ETFC,,"October 7, 2020",False
-POOL,"October 7, 2020",,False
-HRB,,"September 21, 2020",False
-ETSY,"September 21, 2020",,False
-COTY,,"September 21, 2020",False
-TER,"September 21, 2020",,False
-KSS,,"September 21, 2020",False
-CTLT,"September 21, 2020",,False
-ADS,,"June 22, 2020",False
-BIO,"June 22, 2020",,False
-HOG,,"June 22, 2020",False
-TDY,"June 22, 2020",,False
-JWN,,"June 22, 2020",False
-TYL,"June 22, 2020",,False
-HP,,"May 22, 2020",False
-WST,"May 22, 2020",,False
-CPRI,,"May 12, 2020",False
-DPZ,"May 12, 2020",,False
-AGN,,"May 12, 2020",False
-DXCM,"May 12, 2020",,False
-M,,"April 6, 2020",False
-RTN,,"April 6, 2020",False
-OTIS,"April 3, 2020",,False
-CARR,"April 3, 2020",,False
-ARNC,,"April 1, 2020",False
-HWM,"April 1, 2020",,False
-XEC,,"March 2, 2020",False
-IR,"March 2, 2020",,False
-WCG,,"January 28, 2020",False
-PAYC,"January 28, 2020",,False
-AMG,,"December 23, 2019",False
-LYV,"December 23, 2019",,False
-TRIP,,"December 23, 2019",False
-ZBRA,"December 23, 2019",,False
-MAC,,"December 23, 2019",False
-STE,"December 23, 2019",,False
-STI,,"December 9, 2019",False
-ODFL,"December 9, 2019",,False
-VIAB,,"December 5, 2019",False
-WRB,"December 5, 2019",,False
-CELG,,"November 21, 2019",False
-NOW,"November 21, 2019",,False
-NKTR,,"October 3, 2019",False
-LVS,"October 3, 2019",,False
-JEF,,"September 26, 2019",False
-NVR,"September 26, 2019",,False
-TSS,,"September 23, 2019",False
-CDW,"September 23, 2019",,False
-APC,,"August 9, 2019",False
-LDOS,"August 9, 2019",,False
-FL,,"August 9, 2019",False
-IEX,"August 9, 2019",,False
-RHT,,"July 15, 2019",False
-TMUS,"July 15, 2019",,False
-LLL,,"July 1, 2019",False
-MKTX,"July 1, 2019",,False
-BMS,,"June 11, 2019",False
-AMCR,"June 11, 2019",,False
-MAT,,"June 7, 2019",False
-BMS,"June 7, 2019",,False
-DWDP,,"June 3, 2019",False
-DD,"June 3, 2019",,False
-FLR,,"June 3, 2019",False
-CTVA,"June 3, 2019",,False
-BHF,,"April 2, 2019",False
-DOW,"April 2, 2019",,False
-FOXA,,"March 19, 2019",False
-FOXA,"March 19, 2019",,False
-FOX,,"March 19, 2019",False
-FOX,"March 19, 2019",,False
-GT,,"February 27, 2019",False
-WAB,"February 27, 2019",,False
-NFX,,"February 15, 2019",False
-ATO,"February 15, 2019",,False
-PCG,,"January 18, 2019",False
-TFX,"January 18, 2019",,False
-SCG,,"January 2, 2019",False
-FRC,"January 2, 2019",,False
-ESRX,,"December 24, 2018",False
-CE,"December 24, 2018",,False
-COL,,"December 3, 2018",False
-LW,"December 3, 2018",,False
-AET,,"December 3, 2018",False
-MXIM,"December 3, 2018",,False
-SRCL,,"December 3, 2018",False
-FANG,"December 3, 2018",,False
-EQT,,"November 13, 2018",False
-JKHY,"November 13, 2018",,False
-CA,,"November 6, 2018",False
-KEYS,"November 6, 2018",,False
-EVHC,,"October 11, 2018",False
-FTNT,"October 11, 2018",,False
-ANDV,,"October 1, 2018",False
-ROL,"October 1, 2018",,False
-XL,,"September 14, 2018",False
-WCG,"September 14, 2018",,False
-GGP,,"August 28, 2018",False
-ANET,"August 28, 2018",,False
-DPS,,"July 2, 2018",False
-CPRT,"July 2, 2018",,False
-TWX,,"June 20, 2018",False
-FLT,"June 20, 2018",,False
-RRC,,"June 18, 2018",False
-BR,"June 18, 2018",,False
-AYI,,"June 18, 2018",False
-HFC,"June 18, 2018",,False
-MON,,"June 7, 2018",False
-TWTR,"June 7, 2018",,False
-NAVI,,"June 5, 2018",False
-EVRG,"June 5, 2018",,False
-WYN,,"May 31, 2018",False
-ABMD,"May 31, 2018",,False
-CSRA,,"April 4, 2018",False
-MSCI,"April 4, 2018",,False
-SIG,,"March 19, 2018",False
-TTWO,"March 19, 2018",,False
-PDCO,,"March 19, 2018",False
-SIVB,"March 19, 2018",,False
-CHK,,"March 19, 2018",False
-NKTR,"March 19, 2018",,False
-SNI,,"March 7, 2018",False
-IPGP,"March 7, 2018",,False
-BCR,,"January 3, 2018",False
-HII,"January 3, 2018",,False
-Q,,"November 15, 2017",False
-IQV,"November 15, 2017",,False
-LVLT,,"October 13, 2017",False
-NCLH,"October 13, 2017",,False
-SPLS,,"September 18, 2017",False
-CDNS,"September 18, 2017",,False
-DOW,,"September 1, 2017",False
-DWDP,"September 1, 2017",,False
-DD,,"September 1, 2017",False
-SBAC,"September 1, 2017",,False
-WFM,,"August 29, 2017",False
-Q,"August 29, 2017",,False
-AN,,"August 8, 2017",False
-BHF,"August 8, 2017",,False
-RIG,,"July 26, 2017",False
-DRE,"July 26, 2017",,False
-BBBY,,"July 26, 2017",False
-AOS,"July 26, 2017",,False
-MUR,,"July 26, 2017",False
-PKG,"July 26, 2017",,False
-MNK,,"July 26, 2017",False
-RMD,"July 26, 2017",,False
-RAI,,"July 26, 2017",False
-MGM,"July 26, 2017",,False
-BHI,,"July 7, 2017",False
-BKR,"July 7, 2017",,False
-YHOO,,"June 19, 2017",False
-HLT,"June 19, 2017",,False
-TDC,,"June 19, 2017",False
-ALGN,"June 19, 2017",,False
-R,,"June 19, 2017",False
-ANSS,"June 19, 2017",,False
-MJN,,"June 19, 2017",False
-RE,"June 19, 2017",,False
-TGNA,,"June 2, 2017",False
-INFO,"June 2, 2017",,False
-DNB,,"April 5, 2017",False
-IT,"April 5, 2017",,False
-SWN,,"April 4, 2017",False
-DXC,"April 4, 2017",,False
-URBN,,"March 20, 2017",False
-AMD,"March 20, 2017",,False
-FTR,,"March 20, 2017",False
-RJF,"March 20, 2017",,False
-FSLR,,"March 20, 2017",False
-ARE,"March 20, 2017",,False
-HAR,,"March 16, 2017",False
-SNPS,"March 16, 2017",,False
-LLTC,,"March 13, 2017",False
-DISH,"March 13, 2017",,False
-ENDP,,"March 2, 2017",False
-REG,"March 2, 2017",,False
-PBI,,"March 1, 2017",False
-CBOE,"March 1, 2017",,False
-SE,,"February 28, 2017",False
-INCY,"February 28, 2017",,False
-STJ,,"January 5, 2017",False
-IDXX,"January 5, 2017",,False
-OI,,"December 2, 2016",False
-MAA,"December 2, 2016",,False
-LM,,"December 2, 2016",False
-EVHC,"December 2, 2016",,False
-AA,,"November 1, 2016",False
-ARNC,"November 1, 2016",,False
-DO,,"September 30, 2016",False
-COTY,"September 30, 2016",,False
-HOT,,"September 22, 2016",False
-COO,"September 22, 2016",,False
-EMC,,"September 8, 2016",False
-CHTR,"September 8, 2016",,False
-TYC,,"September 6, 2016",False
-MTD,"September 6, 2016",,False
-CPGX,,"July 5, 2016",False
-FTV,"July 5, 2016",,False
-GAS,,"July 1, 2016",False
-LNT,"July 1, 2016",,False
-TE,,"July 1, 2016",False
-ALB,"July 1, 2016",,False
-CVC,,"June 22, 2016",False
-FBHS,"June 22, 2016",,False
-BXLT,,"June 3, 2016",False
-TDG,"June 3, 2016",,False
-CCE,,"May 31, 2016",False
-AJG,"May 31, 2016",,False
-ARG,,"May 23, 2016",False
-LKQ,"May 23, 2016",,False
-TWC,,"May 18, 2016",False
-DLR,"May 18, 2016",,False
-SNDK,,"May 13, 2016",False
-ALK,"May 13, 2016",,False
-ADT,,"May 3, 2016",False
-AYI,"May 3, 2016",,False
-GME,,"April 25, 2016",False
-GPN,"April 25, 2016",,False
-THC,,"April 18, 2016",False
-ULTA,"April 18, 2016",,False
-UA,"April 8, 2016",,False
-CAM,,"April 4, 2016",False
-FL,"April 4, 2016",,False
-POM,,"March 30, 2016",False
-HOLX,"March 30, 2016",,False
-ESV,,"March 30, 2016",False
-CNC,"March 30, 2016",,False
-GMCR,,"March 7, 2016",False
-UDR,"March 7, 2016",,False
-CNX,,"March 4, 2016",False
-AWK,"March 4, 2016",,False
-PCL,,"February 22, 2016",False
-CXO,"February 22, 2016",,False
-PCP,,"February 1, 2016",False
-CFG,"February 1, 2016",,False
-BRCM,,"February 1, 2016",False
-FRT,"February 1, 2016",,False
-ACE,,"January 19, 2016",False
-EXR,"January 19, 2016",,False
-FOSL,,"January 5, 2016",False
-WLTW,"January 5, 2016",,False
-ALTR,,"December 29, 2015",False
-CHD,"December 29, 2015",,False
-CMCSK,,"December 15, 2015",False
-CSC,,"December 1, 2015",False
-CSRA,"December 1, 2015",,False
-SIAL,,"November 19, 2015",False
-ILMN,"November 19, 2015",,False
-GNW,,"November 18, 2015",False
-SYF,"November 18, 2015",,False
-HCBK,,"November 2, 2015",False
-HPE,"November 2, 2015",,False
-JOY,,"October 7, 2015",False
-VRSK,"October 7, 2015",,False
-CMCSK,"September 18, 2015",,False
-FOX,"September 18, 2015",,False
-NWS,"September 18, 2015",,False
-HSP,,"September 2, 2015",False
-UAL,"September 2, 2015",,False
-PLL,,"August 28, 2015",False
-ATVI,"August 28, 2015",,False
-DTV,,"July 29, 2015",False
-SIG,"July 29, 2015",,False
-NE,,"July 20, 2015",False
-PYPL,"July 20, 2015",,False
-FDO,,"July 8, 2015",False
-AAP,"July 8, 2015",,False
-KRFT,,"July 6, 2015",False
-KHC,"July 6, 2015",,False
-ATI,,"July 2, 2015",False
-CPGX,"July 2, 2015",,False
-TEG,,"July 1, 2015",False
-JBHT,"July 1, 2015",,False
-QEP,,"July 1, 2015",False
-BXLT,"July 1, 2015",,False
-LO,,"June 11, 2015",False
-QRVO,"June 11, 2015",,False
-WIN,,"April 7, 2015",False
-O,"April 7, 2015",,False
-AGN,,"March 23, 2015",False
-AAL,"March 23, 2015",,False
-DNR,,"March 23, 2015",False
-EQIX,"March 23, 2015",,False
-NBR,,"March 23, 2015",False
-SLG,"March 23, 2015",,False
-AVP,,"March 23, 2015",False
-HBI,"March 23, 2015",,False
-CFN,,"March 18, 2015",False
-HSIC,"March 18, 2015",,False
-PETM,,"March 12, 2015",False
-SWKS,"March 12, 2015",,False
-SWY,,"January 27, 2015",False
-HCA,"January 27, 2015",,False
-COV,,"January 27, 2015",False
-ENDP,"January 27, 2015",,False
-BMS,,"December 5, 2014",False
-RCL,"December 5, 2014",,False
-JBL,,"November 5, 2014",False
-LVLT,"November 5, 2014",,False
-BTU,,"September 20, 2014",False
-URI,"September 20, 2014",,False
-GHC,,"September 20, 2014",False
-UHS,"September 20, 2014",,False
-RDC,,"August 18, 2014",False
-MNK,"August 18, 2014",,False
-DISCK,"August 6, 2014",,False
-X,,"July 2, 2014",False
-MLM,"July 2, 2014",,False
-FRX,,"July 1, 2014",False
-AMG,"July 1, 2014",,False
-IGT,,"June 20, 2014",False
-XEC,"June 20, 2014",,False
-LSI,,"May 8, 2014",False
-AVGO,"May 8, 2014",,False
-BEAM,,"May 1, 2014",False
-UA,"May 1, 2014",,False
-SLM,,"May 1, 2014",False
-NAVI,"May 1, 2014",,False
-GOOGL,"April 3, 2014",,False
-CLF,,"April 2, 2014",False
-ESS,"April 2, 2014",,False
-WPX,,"March 21, 2014",False
-GMCR,"March 21, 2014",,False
-LIFE,,"January 24, 2014",False
-TSCO,"January 24, 2014",,False
-ANF,,"December 23, 2013",False
-ADS,"December 23, 2013",,False
-JDSU,,"December 23, 2013",False
-MHK,"December 23, 2013",,False
-TER,,"December 23, 2013",False
-FB,"December 23, 2013",,False
-MOLX,,"December 10, 2013",False
-GGP,"December 10, 2013",,False
-JCP,,"December 2, 2013",False
-ALLE,"December 2, 2013",,False
-NYX,,"November 13, 2013",False
-KORS,"November 13, 2013",,False
-DELL,,"October 29, 2013",False
-RIG,"October 29, 2013",,False
-AMD,,"September 20, 2013",False
-VRTX,"September 20, 2013",,False
-SAI,,"September 20, 2013",False
-AME,"September 20, 2013",,False
-BMC,,"September 10, 2013",False
-DAL,"September 10, 2013",,False
-S,,"July 8, 2013",False
-NLSN,"July 8, 2013",,False
-APOL,,"July 1, 2013",False
-NWSA,"July 1, 2013",,False
-FHN,,"June 21, 2013",False
-ZTS,"June 21, 2013",,False
-HNZ,,"June 6, 2013",False
-GM,"June 6, 2013",,False
-DF,,"May 23, 2013",False
-KSU,"May 23, 2013",,False
-CVH,,"May 8, 2013",False
-MAC,"May 8, 2013",,False
-PCS,,"April 30, 2013",False
-REGN,"April 30, 2013",,False
-BIG,,"February 15, 2013",False
-PVH,"February 15, 2013",,False
-FII,,"January 2, 2013",False
-ABBV,"January 2, 2013",,False
-TIE,,"December 21, 2012",False
-DLPH,"December 21, 2012",,False
-RRD,,"December 11, 2012",False
-GRMN,"December 11, 2012",,False
-CBE,,"December 3, 2012",False
-DG,"December 3, 2012",,False
-SUN,,"October 10, 2012",False
-PETM,"October 10, 2012",,False
-ANR,,"October 2, 2012",False
-KRFT,"October 2, 2012",,False
-KFT,,"October 2, 2012",False
-MDLZ,"October 2, 2012",,False
-LXK,,"October 1, 2012",False
-ADT,"October 1, 2012",,False
-DV,,"October 1, 2012",False
-PNR,"October 1, 2012",,False
-SHLD,,"September 5, 2012",False
-LYB,"September 5, 2012",,False
-GR,,"July 31, 2012",False
-ESV,"July 31, 2012",,False
-PGN,,"July 2, 2012",False
-STX,"July 2, 2012",,False
-SLE,,"June 29, 2012",False
-MNST,"June 29, 2012",,False
-NVLS,,"June 5, 2012",False
-LRCX,"June 5, 2012",,False
-MMI,,"May 21, 2012",False
-ALXN,"May 21, 2012",,False
-EP,,"May 17, 2012",False
-KMI,"May 17, 2012",,False
-SVU,,"April 23, 2012",False
-PSX,"April 23, 2012",,False
-MHS,,"April 3, 2012",False
-FOSL,"April 3, 2012",,False
-CEG,,"March 13, 2012",False
-CCI,"March 13, 2012",,False
-CPWR,,"December 31, 2011",False
-WPX,"December 31, 2011",,False
-TLAB,,"December 20, 2011",False
-TRIP,"December 20, 2011",,False
-AKS,,"December 16, 2011",False
-BWA,"December 16, 2011",,False
-MWW,,"December 16, 2011",False
-PRGO,"December 16, 2011",,False
-WFR,,"December 16, 2011",False
-DLTR,"December 16, 2011",,False
-GAS,,"December 12, 2011",False
-GAS,"December 12, 2011",,False
-JNS,,"November 18, 2011",False
-CBE,"November 18, 2011",,False
-ITT,,"October 31, 2011",False
-XYL,"October 31, 2011",,False
-CEPH,,"October 14, 2011",False
-TEL,"October 14, 2011",,False
-NSM,,"September 23, 2011",False
-MOS,"September 23, 2011",,False
-MI,,"July 5, 2011",False
-ACN,"July 5, 2011",,False
-RSH,,"June 30, 2011",False
-MPC,"June 30, 2011",,False
-MEE,,"June 1, 2011",False
-ANR,"June 1, 2011",,False
-NOVL,,"April 27, 2011",False
-CMG,"April 27, 2011",,False
-GENZ,,"April 1, 2011",False
-BLK,"April 1, 2011",,False
-Q,,"March 31, 2011",False
-EW,"March 31, 2011",,False
-MFE,,"February 28, 2011",False
-COV,"February 28, 2011",,False
-AYE,,"February 25, 2011",False
-JOYG,"February 25, 2011",,False
-MDP,,"January 3, 2011",False
-MMI,"January 3, 2011",,False
-KG,,"December 17, 2010",False
-CVC,"December 17, 2010",,False
-EK,,"December 17, 2010",False
-FFIV,"December 17, 2010",,False
-ODP,,"December 17, 2010",False
-NFLX,"December 17, 2010",,False
-NYT,,"December 17, 2010",False
-NFX,"December 17, 2010",,False
-PTV,,"November 17, 2010",False
-IR,"November 17, 2010",,False
-SII,,"August 26, 2010",False
-TYC,"August 26, 2010",,False
-MIL,,"July 14, 2010",False
-CB,"July 14, 2010",,False
-STR,,"June 30, 2010",False
-QEP,"June 30, 2010",,False
-XTO,,"June 28, 2010",False
-KMX,"June 28, 2010",,False
-BJS,,"April 29, 2010",False
-CERN,"April 29, 2010",,False
-RX,,"February 26, 2010",False
-HP,"February 26, 2010",,False
-CIEN,,"December 18, 2009",False
-V,"December 18, 2009",,False
-MJN,"December 18, 2009",,False
-CLF,"December 18, 2009",,False
-SAI,"December 18, 2009",,False
-ROST,"December 18, 2009",,False
-PCLN,"November 3, 2009",,False
-CBE,,"September 28, 2009",False
-ARG,"September 28, 2009",,False
-FMC,"August 19, 2009",,False
-PCS,"June 29, 2009",,False
-TEL,,"June 25, 2009",False
-COV,,"June 5, 2009",False
-FTI,"June 5, 2009",,False
-HRL,"March 3, 2009",,False
-VTR,"March 3, 2009",,False
-OI,"December 31, 2008",,False
-HRS,"September 16, 2008",,False
-CRM,"September 12, 2008",,False
-FAST,"September 12, 2008",,False
-AKS,"July 1, 2008",,False
-COG,"June 23, 2008",,False
-MEE,"June 23, 2008",,False
-LO,"June 10, 2008",,False
-RRC,"December 20, 2007",,False
-GME,"December 13, 2007",,False
-JEC,"October 26, 2007",,False
-EXPE,"October 2, 2007",,False
-TDC,"October 1, 2007",,False
-MXIM,,"September 27, 2007",False
-TSO,"September 27, 2007",,False
-ICE,"September 26, 2007",,False
-LUK,"August 24, 2007",,False
-DFS,"July 2, 2007",,False
-KFT,"March 30, 2007",,False
-AVB,"January 10, 2007",,False
-JNPR,"June 2, 2006",,False
-T,,"November 18, 2005",False
-AMZN,"November 18, 2005",,False
-STZ,"July 1, 2005",,False
-ESRX,"September 25, 2003",,False
-INTU,"December 5, 2000",,False
-OI,,"December 5, 2000",False
-AYE,"December 5, 2000",,False
-JDSU,"July 27, 2000",,False
-SBUX,"June 7, 2000",,False
-YHOO,"December 8, 1999",,False
-WLP,"June 9, 1999",,False
-ACT,"April 12, 1999",,False
-AN,,"December 11, 1998",False
-FSR,"December 11, 1998",,False
-CCL,"December 11, 1998",,False
-SUN,,"December 11, 1998",False
-CPWR,"December 11, 1998",,False
-CCR,"June 17, 1997",,False
-MCK,,"September 30, 1994",False
-NCC,"September 30, 1994",,False
-BUD,"July 1, 1976",,False
-AYE,,"July 1, 1976",False
-DIS,"July 1, 1976",,False
+﻿"ticker","added","removed","needs_review"
+"MMM","","","False"
+"AOS","","","False"
+"ABT","","","False"
+"ABBV","","","False"
+"ACN","","","False"
+"ADBE","","","False"
+"AMD","","","False"
+"AES","","","False"
+"AFL","","","False"
+"A","","","False"
+"APD","","","False"
+"ABNB","","","False"
+"AKAM","","","False"
+"ALB","","","False"
+"ARE","","","False"
+"ALGN","","","False"
+"ALLE","","","False"
+"LNT","","","False"
+"ALL","","","False"
+"GOOGL","","","False"
+"GOOG","","","False"
+"MO","","","False"
+"AMZN","","","False"
+"AMCR","","","False"
+"AEE","","","False"
+"AEP","","","False"
+"AXP","","","False"
+"AIG","","","False"
+"AMT","","","False"
+"AWK","","","False"
+"AMP","","","False"
+"AME","","","False"
+"AMGN","","","False"
+"APH","","","False"
+"ADI","","","False"
+"AON","","","False"
+"APA","","","False"
+"APO","","","False"
+"AAPL","","","False"
+"AMAT","","","False"
+"APP","","","False"
+"APTV","","","False"
+"ACGL","","","False"
+"ADM","","","False"
+"ARES","","","False"
+"ANET","","","False"
+"AJG","","","False"
+"AIZ","","","False"
+"T","","","False"
+"ATO","","","False"
+"ADSK","","","False"
+"ADP","","","False"
+"AZO","","","False"
+"AVB","","","False"
+"AVY","","","False"
+"AXON","","","False"
+"BKR","","","False"
+"BALL","","","False"
+"BAC","","","False"
+"BAX","","","False"
+"BDX","","","False"
+"BRK-B","","","False"
+"BBY","","","False"
+"TECH","","","False"
+"BIIB","","","False"
+"BLK","","","False"
+"BX","","","False"
+"XYZ","","","False"
+"BNY","","","False"
+"BA","","","False"
+"BKNG","","","False"
+"BSX","","","False"
+"BMY","","","False"
+"AVGO","","","False"
+"BR","","","False"
+"BRO","","","False"
+"BF-B","","","False"
+"BLDR","","","False"
+"BG","","","False"
+"BXP","","","False"
+"CHRW","","","False"
+"CDNS","","","False"
+"CPT","","","False"
+"COF","","","False"
+"CAH","","","False"
+"CCL","","","False"
+"CARR","","","False"
+"CVNA","","","False"
+"CASY","","","False"
+"CAT","","","False"
+"CBOE","","","False"
+"CBRE","","","False"
+"CDW","","","False"
+"COR","","","False"
+"CNC","","","False"
+"CNP","","","False"
+"CF","","","False"
+"CRL","","","False"
+"SCHW","","","False"
+"CHTR","","","False"
+"CVX","","","False"
+"CMG","","","False"
+"CB","","","False"
+"CHD","","","False"
+"CIEN","","","False"
+"CI","","","False"
+"CINF","","","False"
+"CTAS","","","False"
+"CSCO","","","False"
+"C","","","False"
+"CFG","","","False"
+"CLX","","","False"
+"CME","","","False"
+"CMS","","","False"
+"KO","","","False"
+"CTSH","","","False"
+"COHR","","","False"
+"COIN","","","False"
+"CL","","","False"
+"CMCSA","","","False"
+"FIX","","","False"
+"COP","","","False"
+"ED","","","False"
+"STZ","","","False"
+"CEG","","","False"
+"COO","","","False"
+"CPRT","","","False"
+"GLW","","","False"
+"CPAY","","","False"
+"CTVA","","","False"
+"CSGP","","","False"
+"COST","","","False"
+"CRH","","","False"
+"CRWD","","","False"
+"CCI","","","False"
+"CSX","","","False"
+"CMI","","","False"
+"CVS","","","False"
+"DHR","","","False"
+"DRI","","","False"
+"DDOG","","","False"
+"DVA","","","False"
+"DECK","","","False"
+"DE","","","False"
+"DELL","","","False"
+"DAL","","","False"
+"DVN","","","False"
+"DXCM","","","False"
+"FANG","","","False"
+"DLR","","","False"
+"DG","","","False"
+"DLTR","","","False"
+"D","","","False"
+"DPZ","","","False"
+"DASH","","","False"
+"DOV","","","False"
+"DOW","","","False"
+"DHI","","","False"
+"DTE","","","False"
+"DUK","","","False"
+"DD","","","False"
+"ETN","","","False"
+"EBAY","","","False"
+"ECHO","","","False"
+"ECL","","","False"
+"EIX","","","False"
+"EW","","","False"
+"EA","","","False"
+"ELV","","","False"
+"EME","","","False"
+"EMR","","","False"
+"ETR","","","False"
+"EOG","","","False"
+"EQT","","","False"
+"EFX","","","False"
+"EQIX","","","False"
+"EQR","","","False"
+"ERIE","","","False"
+"ESS","","","False"
+"EL","","","False"
+"EG","","","False"
+"EVRG","","","False"
+"ES","","","False"
+"EXC","","","False"
+"EXE","","","False"
+"EXPE","","","False"
+"EXPD","","","False"
+"EXR","","","False"
+"XOM","","","False"
+"FFIV","","","False"
+"FDS","","","False"
+"FICO","","","False"
+"FAST","","","False"
+"FRT","","","False"
+"FDX","","","False"
+"FDXF","","","False"
+"FIS","","","False"
+"FITB","","","False"
+"FSLR","","","False"
+"FE","","","False"
+"FISV","","","False"
+"FLEX","","","False"
+"F","","","False"
+"FTNT","","","False"
+"FTV","","","False"
+"FOXA","","","False"
+"FOX","","","False"
+"BEN","","","False"
+"FCX","","","False"
+"GRMN","","","False"
+"IT","","","False"
+"GE","","","False"
+"GEHC","","","False"
+"GEV","","","False"
+"GEN","","","False"
+"GNRC","","","False"
+"GD","","","False"
+"GIS","","","False"
+"GM","","","False"
+"GPC","","","False"
+"GILD","","","False"
+"GPN","","","False"
+"GL","","","False"
+"GDDY","","","False"
+"GS","","","False"
+"HAL","","","False"
+"HIG","","","False"
+"HAS","","","False"
+"HCA","","","False"
+"DOC","","","False"
+"HSIC","","","False"
+"HSY","","","False"
+"HPE","","","False"
+"HLT","","","False"
+"HD","","","False"
+"HONA","","","False"
+"HON","","","False"
+"HRL","","","False"
+"HST","","","False"
+"HWM","","","False"
+"HPQ","","","False"
+"HUBB","","","False"
+"HUM","","","False"
+"HBAN","","","False"
+"HII","","","False"
+"IBM","","","False"
+"IEX","","","False"
+"IDXX","","","False"
+"ITW","","","False"
+"INCY","","","False"
+"IR","","","False"
+"PODD","","","False"
+"INTC","","","False"
+"IBKR","","","False"
+"ICE","","","False"
+"IFF","","","False"
+"IP","","","False"
+"INTU","","","False"
+"ISRG","","","False"
+"IVZ","","","False"
+"INVH","","","False"
+"IQV","","","False"
+"IRM","","","False"
+"JBHT","","","False"
+"JBL","","","False"
+"JKHY","","","False"
+"J","","","False"
+"JNJ","","","False"
+"JCI","","","False"
+"JPM","","","False"
+"KVUE","","","False"
+"KDP","","","False"
+"KEY","","","False"
+"KEYS","","","False"
+"KMB","","","False"
+"KIM","","","False"
+"KMI","","","False"
+"KKR","","","False"
+"KLAC","","","False"
+"KHC","","","False"
+"KR","","","False"
+"LHX","","","False"
+"LH","","","False"
+"LRCX","","","False"
+"LVS","","","False"
+"LDOS","","","False"
+"LEN","","","False"
+"LII","","","False"
+"LLY","","","False"
+"LIN","","","False"
+"LYV","","","False"
+"LMT","","","False"
+"L","","","False"
+"LOW","","","False"
+"LULU","","","False"
+"LITE","","","False"
+"LYB","","","False"
+"MTB","","","False"
+"MPC","","","False"
+"MAR","","","False"
+"MRSH","","","False"
+"MLM","","","False"
+"MRVL","","","False"
+"MAS","","","False"
+"MA","","","False"
+"MKC","","","False"
+"MCD","","","False"
+"MCK","","","False"
+"MDT","","","False"
+"MRK","","","False"
+"META","","","False"
+"MET","","","False"
+"MTD","","","False"
+"MGM","","","False"
+"MCHP","","","False"
+"MU","","","False"
+"MSFT","","","False"
+"MAA","","","False"
+"MRNA","","","False"
+"TAP","","","False"
+"MDLZ","","","False"
+"MPWR","","","False"
+"MNST","","","False"
+"MCO","","","False"
+"MS","","","False"
+"MOS","","","False"
+"MSI","","","False"
+"MSCI","","","False"
+"NDAQ","","","False"
+"NTAP","","","False"
+"NFLX","","","False"
+"NEM","","","False"
+"NWSA","","","False"
+"NWS","","","False"
+"NEE","","","False"
+"NKE","","","False"
+"NI","","","False"
+"NDSN","","","False"
+"NSC","","","False"
+"NTRS","","","False"
+"NOC","","","False"
+"NCLH","","","False"
+"NRG","","","False"
+"NUE","","","False"
+"NVDA","","","False"
+"NVR","","","False"
+"NXPI","","","False"
+"ORLY","","","False"
+"OXY","","","False"
+"ODFL","","","False"
+"OMC","","","False"
+"ON","","","False"
+"OKE","","","False"
+"ORCL","","","False"
+"OTIS","","","False"
+"PCAR","","","False"
+"PKG","","","False"
+"PLTR","","","False"
+"PANW","","","False"
+"PSKY","","","False"
+"PH","","","False"
+"PAYX","","","False"
+"PYPL","","","False"
+"PNR","","","False"
+"PEP","","","False"
+"PFE","","","False"
+"PCG","","","False"
+"PM","","","False"
+"PSX","","","False"
+"PNW","","","False"
+"PNC","","","False"
+"PPG","","","False"
+"PPL","","","False"
+"PFG","","","False"
+"PG","","","False"
+"PGR","","","False"
+"PLD","","","False"
+"PRU","","","False"
+"PEG","","","False"
+"PTC","","","False"
+"PSA","","","False"
+"PHM","","","False"
+"PWR","","","False"
+"QCOM","","","False"
+"DGX","","","False"
+"Q","","","False"
+"RL","","","False"
+"RJF","","","False"
+"RTX","","","False"
+"O","","","False"
+"REG","","","False"
+"REGN","","","False"
+"RF","","","False"
+"RSG","","","False"
+"RMD","","","False"
+"RVTY","","","False"
+"HOOD","","","False"
+"ROK","","","False"
+"ROL","","","False"
+"ROP","","","False"
+"ROST","","","False"
+"RCL","","","False"
+"SPGI","","","False"
+"CRM","","","False"
+"SNDK","","","False"
+"SBAC","","","False"
+"SLB","","","False"
+"STX","","","False"
+"SRE","","","False"
+"NOW","","","False"
+"SHW","","","False"
+"SPG","","","False"
+"SWKS","","","False"
+"SJM","","","False"
+"SW","","","False"
+"SNA","","","False"
+"SOLV","","","False"
+"SO","","","False"
+"LUV","","","False"
+"SWK","","","False"
+"SBUX","","","False"
+"STT","","","False"
+"STLD","","","False"
+"STE","","","False"
+"SYK","","","False"
+"SMCI","","","False"
+"SYF","","","False"
+"SNPS","","","False"
+"SYY","","","False"
+"TMUS","","","False"
+"TROW","","","False"
+"TTWO","","","False"
+"TPR","","","False"
+"TRGP","","","False"
+"TGT","","","False"
+"TEL","","","False"
+"TDY","","","False"
+"TER","","","False"
+"TSLA","","","False"
+"TXN","","","False"
+"TPL","","","False"
+"TXT","","","False"
+"TMO","","","False"
+"TJX","","","False"
+"TKO","","","False"
+"TTD","","","False"
+"TSCO","","","False"
+"TT","","","False"
+"TDG","","","False"
+"TRV","","","False"
+"TRMB","","","False"
+"TFC","","","False"
+"TYL","","","False"
+"TSN","","","False"
+"USB","","","False"
+"UBER","","","False"
+"UDR","","","False"
+"ULTA","","","False"
+"UNP","","","False"
+"UAL","","","False"
+"UPS","","","False"
+"URI","","","False"
+"UNH","","","False"
+"UHS","","","False"
+"VLO","","","False"
+"VEEV","","","False"
+"VTR","","","False"
+"VLTO","","","False"
+"VRSN","","","False"
+"VRSK","","","False"
+"VZ","","","False"
+"VRTX","","","False"
+"VRT","","","False"
+"VTRS","","","False"
+"VICI","","","False"
+"V","","","False"
+"VST","","","False"
+"VMC","","","False"
+"WRB","","","False"
+"GWW","","","False"
+"WAB","","","False"
+"WMT","","","False"
+"DIS","","","False"
+"WBD","","","False"
+"WM","","","False"
+"WAT","","","False"
+"WEC","","","False"
+"WFC","","","False"
+"WELL","","","False"
+"WST","","","False"
+"WDC","","","False"
+"WY","","","False"
+"WSM","","","False"
+"WMB","","","False"
+"WTW","","","False"
+"WDAY","","","False"
+"WYNN","","","False"
+"XEL","","","False"
+"XYL","","","False"
+"YUM","","","False"
+"ZBRA","","","False"
+"ZBH","","","False"
+"ZTS","","","False"
+"CAG","","June 30, 2026","False"
+"POOL","","June 22, 2026","False"
+"CPB","","June 22, 2026","False"
+"EPAM","","June 2, 2026","False"
+"CTRA","","May 7, 2026","False"
+"MTCH","","March 23, 2026","False"
+"MOH","","March 23, 2026","False"
+"LW","","March 23, 2026","False"
+"PAYC","","March 23, 2026","False"
+"LKQ","","December 22, 2025","False"
+"SOLS","","December 22, 2025","False"
+"MHK","","December 22, 2025","False"
+"K","","December 11, 2025","False"
+"IPG","","November 28, 2025","False"
+"EMN","","November 4, 2025","False"
+"KMX","","October 31, 2025","False"
+"ENPH","","September 22, 2025","False"
+"CZR","","September 22, 2025","False"
+"MKTX","","September 22, 2025","False"
+"WBA","","August 28, 2025","False"
+"HES","","July 23, 2025","False"
+"BWA","","March 24, 2025","False"
+"TFX","","March 24, 2025","False"
+"CE","","March 24, 2025","False"
+"FMC","","March 24, 2025","False"
+"QRVO","","December 23, 2024","False"
+"AMTM","","December 23, 2024","False"
+"MRO","","November 26, 2024","False"
+"BBWI","","October 1, 2024","False"
+"AAL","","September 23, 2024","False"
+"ETSY","","September 23, 2024","False"
+"BIO","","September 23, 2024","False"
+"RHI","","June 24, 2024","False"
+"CMA","","June 24, 2024","False"
+"ILMN","","June 24, 2024","False"
+"PXD","","May 8, 2024","False"
+"XRAY","","April 3, 2024","False"
+"VFC","","April 3, 2024","False"
+"WHR","","March 18, 2024","False"
+"ZION","","March 18, 2024","False"
+"SEE","","December 18, 2023","False"
+"ALK","","December 18, 2023","False"
+"SEDG","","December 18, 2023","False"
+"OGN","","October 18, 2023","False"
+"DXC","","October 3, 2023","False"
+"LNC","","September 18, 2023","False"
+"NWL","","September 18, 2023","False"
+"AAP","","August 25, 2023","False"
+"LUMN","","March 20, 2023","False"
+"SBNY","","March 15, 2023","False"
+"VNO","","January 5, 2023","False"
+"MBC","","December 19, 2022","False"
+"CTXS","","October 3, 2022","False"
+"PVH","","September 19, 2022","False"
+"PENN","","September 19, 2022","False"
+"UA","","June 21, 2022","False"
+"UAA","","June 21, 2022","False"
+"IPGP","","June 21, 2022","False"
+"DISCA","","April 11, 2022","False"
+"PBCT","","April 4, 2022","False"
+"INFO","","March 2, 2022","False"
+"XLNX","","February 15, 2022","False"
+"GPS","","February 3, 2022","False"
+"LEG","","December 20, 2021","False"
+"WU","","December 20, 2021","False"
+"PRGO","","September 20, 2021","False"
+"UNM","","September 20, 2021","False"
+"NOV","","September 20, 2021","False"
+"FLIR","","May 14, 2021","False"
+"VAR","","April 20, 2021","False"
+"FLS","","March 22, 2021","False"
+"SLG","","March 22, 2021","False"
+"XRX","","March 22, 2021","False"
+"VNT","","March 22, 2021","False"
+"FTI","","February 12, 2021","False"
+"TIF","","January 7, 2021","False"
+"AIV","","December 21, 2020","False"
+"NBL","","October 12, 2020","False"
+"ETFC","","October 7, 2020","False"
+"HRB","","September 21, 2020","False"
+"COTY","","September 21, 2020","False"
+"KSS","","September 21, 2020","False"
+"HOG","","June 22, 2020","False"
+"JWN","","June 22, 2020","False"
+"HP","","May 22, 2020","False"
+"CPRI","","May 12, 2020","False"
+"AGN","","May 12, 2020","False"
+"M","","April 6, 2020","False"
+"RTN","","April 6, 2020","False"
+"AMG","","December 23, 2019","False"
+"TRIP","","December 23, 2019","False"
+"MAC","","December 23, 2019","False"
+"STI","","December 9, 2019","False"
+"VIAB","","December 5, 2019","False"
+"CELG","","November 21, 2019","False"
+"NKTR","","October 3, 2019","False"
+"JEF","","September 26, 2019","False"
+"TSS","","September 23, 2019","False"
+"APC","","August 9, 2019","False"
+"RHT","","July 15, 2019","False"
+"LLL","","July 1, 2019","False"
+"MAT","","June 7, 2019","False"
+"FLR","","June 3, 2019","False"
+"BHF","","April 2, 2019","False"
+"GT","","February 27, 2019","False"
+"NFX","","February 15, 2019","False"
+"SCG","","January 2, 2019","False"
+"COL","","December 3, 2018","False"
+"AET","","December 3, 2018","False"
+"SRCL","","December 3, 2018","False"
+"CA","","November 6, 2018","False"
+"ANDV","","October 1, 2018","False"
+"XL","","September 14, 2018","False"
+"DPS","","July 2, 2018","False"
+"TWX","","June 20, 2018","False"
+"RRC","","June 18, 2018","False"
+"AYI","","June 18, 2018","False"
+"MON","","June 7, 2018","False"
+"NAVI","","June 5, 2018","False"
+"WYN","","May 31, 2018","False"
+"SIG","","March 19, 2018","False"
+"PDCO","","March 19, 2018","False"
+"CHK","","March 19, 2018","False"
+"SNI","","March 7, 2018","False"
+"BCR","","January 3, 2018","False"
+"SPLS","","September 18, 2017","False"
+"WFM","","August 29, 2017","False"
+"AN","","August 8, 2017","False"
+"RIG","","July 26, 2017","False"
+"BBBY","","July 26, 2017","False"
+"MUR","","July 26, 2017","False"
+"RAI","","July 26, 2017","False"
+"BHI","","July 7, 2017","False"
+"TDC","","June 19, 2017","False"
+"R","","June 19, 2017","False"
+"TGNA","","June 2, 2017","False"
+"DNB","","April 5, 2017","False"
+"SWN","","April 4, 2017","False"
+"URBN","","March 20, 2017","False"
+"FTR","","March 20, 2017","False"
+"HAR","","March 16, 2017","False"
+"LLTC","","March 13, 2017","False"
+"PBI","","March 1, 2017","False"
+"SE","","February 28, 2017","False"
+"STJ","","January 5, 2017","False"
+"OI","","December 2, 2016","False"
+"LM","","December 2, 2016","False"
+"AA","","November 1, 2016","False"
+"DO","","September 30, 2016","False"
+"HOT","","September 22, 2016","False"
+"EMC","","September 8, 2016","False"
+"TE","","July 1, 2016","False"
+"CCE","","May 31, 2016","False"
+"TWC","","May 18, 2016","False"
+"ADT","","May 3, 2016","False"
+"GME","","April 25, 2016","False"
+"THC","","April 18, 2016","False"
+"CAM","","April 4, 2016","False"
+"POM","","March 30, 2016","False"
+"CNX","","March 4, 2016","False"
+"PCL","","February 22, 2016","False"
+"PCP","","February 1, 2016","False"
+"BRCM","","February 1, 2016","False"
+"ACE","","January 19, 2016","False"
+"FOSL","","January 5, 2016","False"
+"ALTR","","December 29, 2015","False"
+"CSC","","December 1, 2015","False"
+"SIAL","","November 19, 2015","False"
+"GNW","","November 18, 2015","False"
+"HCBK","","November 2, 2015","False"
+"JOY","","October 7, 2015","False"
+"HSP","","September 2, 2015","False"
+"PLL","","August 28, 2015","False"
+"DTV","","July 29, 2015","False"
+"NE","","July 20, 2015","False"
+"FDO","","July 8, 2015","False"
+"ATI","","July 2, 2015","False"
+"TEG","","July 1, 2015","False"
+"WIN","","April 7, 2015","False"
+"DNR","","March 23, 2015","False"
+"NBR","","March 23, 2015","False"
+"AVP","","March 23, 2015","False"
+"CFN","","March 18, 2015","False"
+"SWY","","January 27, 2015","False"
+"BTU","","September 20, 2014","False"
+"GHC","","September 20, 2014","False"
+"RDC","","August 18, 2014","False"
+"X","","July 2, 2014","False"
+"FRX","","July 1, 2014","False"
+"IGT","","June 20, 2014","False"
+"LSI","","May 8, 2014","False"
+"BEAM","","May 1, 2014","False"
+"SLM","","May 1, 2014","False"
+"CLF","","April 2, 2014","False"
+"LIFE","","January 24, 2014","False"
+"ANF","","December 23, 2013","False"
+"FB","December 23, 2013","","False"
+"MOLX","","December 10, 2013","False"
+"JCP","","December 2, 2013","False"
+"NYX","","November 13, 2013","False"
+"BMC","","September 10, 2013","False"
+"S","","July 8, 2013","False"
+"APOL","","July 1, 2013","False"
+"FHN","","June 21, 2013","False"
+"HNZ","","June 6, 2013","False"
+"DF","","May 23, 2013","False"
+"CVH","","May 8, 2013","False"
+"PCS","","April 30, 2013","False"
+"BIG","","February 15, 2013","False"
+"FII","","January 2, 2013","False"
+"TIE","","December 21, 2012","False"
+"RRD","","December 11, 2012","False"
+"SUN","","October 10, 2012","False"
+"LXK","","October 1, 2012","False"
+"DV","","October 1, 2012","False"
+"SHLD","","September 5, 2012","False"
+"GR","","July 31, 2012","False"
+"PGN","","July 2, 2012","False"
+"SLE","","June 29, 2012","False"
+"NVLS","","June 5, 2012","False"
+"MMI","","May 21, 2012","False"
+"EP","","May 17, 2012","False"
+"SVU","","April 23, 2012","False"
+"MHS","","April 3, 2012","False"
+"CPWR","","December 31, 2011","False"
+"TLAB","","December 20, 2011","False"
+"MWW","","December 16, 2011","False"
+"WFR","","December 16, 2011","False"
+"JNS","","November 18, 2011","False"
+"ITT","","October 31, 2011","False"
+"CEPH","","October 14, 2011","False"
+"NSM","","September 23, 2011","False"
+"MI","","July 5, 2011","False"
+"RSH","","June 30, 2011","False"
+"NOVL","","April 27, 2011","False"
+"GENZ","","April 1, 2011","False"
+"MFE","","February 28, 2011","False"
+"MDP","","January 3, 2011","False"
+"KG","","December 17, 2010","False"
+"EK","","December 17, 2010","False"
+"ODP","","December 17, 2010","False"
+"NYT","","December 17, 2010","False"
+"PTV","","November 17, 2010","False"
+"SII","","August 26, 2010","False"
+"MIL","","July 14, 2010","False"
+"STR","","June 30, 2010","False"
+"XTO","","June 28, 2010","False"
+"BJS","","April 29, 2010","False"
+"RX","","February 26, 2010","False"
+"PCLN","November 3, 2009","","False"
+"ACT","April 12, 1999","","False"
+"BUD","July 1, 1976","","False"
