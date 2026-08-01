@@ -82,6 +82,29 @@ class UniverseParams:
     min_price: float = 1.0
     rel_return_lookback_days: int = 756  # 3 years
     rebalance_freq: str = "Q"
+    # ADR 014 names five criteria; this is the honest subset actually
+    # enforced. `crit_rev_growth` is excluded because the SEC fetcher
+    # (jobs/sec.py, called from jobs/ingest.run_shares) currently pulls only
+    # `EntityCommonStockSharesOutstanding`, never a revenue tag, so
+    # `jobs/compute._revenue_growth_positive` returns `None` for every
+    # ticker with no exception. `core.universe.is_tradeable` correctly
+    # treats `None` as failing, which is right for a single ticker missing
+    # four quarters of filings but wrong applied uniformly: it silently
+    # zeroes the entire trade universe every quarter, forever, because the
+    # data that criterion needs was never ingested (DESIGN §4.6).
+    # `is_tradeable`'s `required` parameter exists precisely so an
+    # unimplemented or ablated criterion is a config change, not a code
+    # change (DESIGN §3.10) — using it here, instead of quietly relaxing
+    # `is_tradeable`, keeps the `crit_rev_growth` column honestly `None` in
+    # the audit log while still letting the other four decide `in_trade`.
+    # Restore `"crit_rev_growth"` here the day the fetcher pulls
+    # `us-gaap:Revenues` and `_revenue_growth_positive` stops stubbing.
+    required_criteria: tuple[str, ...] = (
+        "crit_mcap",
+        "crit_above_sma200",
+        "crit_sma200_slope",
+        "crit_rel_return",
+    )
 
 
 @dataclass(frozen=True)

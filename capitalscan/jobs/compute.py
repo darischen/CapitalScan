@@ -319,6 +319,13 @@ def _revenue_growth_positive(
     already landed and otherwise returns None — a documented simplification,
     not a silent guess. Extending the fetcher to pull `us-gaap:Revenues`
     is the natural follow-up once this job's shape is validated.
+
+    Returning `None` here is honest and must stay that way — it is NOT the
+    bug. The bug this stub used to cause (`in_trade` false for all 625
+    tickers) was `is_tradeable` requiring all five criteria including this
+    permanently-null one; that is fixed in `run_universe` by passing
+    `UniverseParams.required_criteria`, which excludes `crit_rev_growth`
+    until this function stops stubbing. See that field's comment.
     """
     return None
 
@@ -330,16 +337,26 @@ def _sector_median_return(
 
     Returns `(median, used_fallback)`. Fewer than 5 members in the sector
     falls back to the universe-wide median, flagged (DESIGN §4.6).
+
+    `sector is None` (currently every row: `tickers.sector` is unpopulated
+    for all 711 rows, confirmed by SELECT) used to short-circuit to
+    `(None, True)` here without ever computing the fallback median. DESIGN
+    §4.6 only names one fallback path — "sector with too few members" — and
+    an unknown sector is the most extreme case of that, not a third silent
+    state. Folding it into the same `fallback` branch is what actually
+    makes `crit_rel_return` resolve to a real True/False instead of always
+    None; the "too few members" flag continues to mean the same thing it
+    always did.
     """
-    if sector is None:
-        return None, True
-    with engine.connect() as conn:
-        peers = conn.execute(
-            text("SELECT ticker FROM tickers WHERE sector = :sector AND is_active"),
-            {"sector": sector},
-        ).fetchall()
-    tickers = [r.ticker for r in peers]
-    fallback = len(tickers) < 5
+    tickers: list[str] = []
+    if sector is not None:
+        with engine.connect() as conn:
+            peers = conn.execute(
+                text("SELECT ticker FROM tickers WHERE sector = :sector AND is_active"),
+                {"sector": sector},
+            ).fetchall()
+        tickers = [r.ticker for r in peers]
+    fallback = sector is None or len(tickers) < 5
     if fallback:
         with engine.connect() as conn:
             tickers = [
@@ -356,16 +373,97 @@ def _sector_median_return(
     return median, fallback
 
 
+class FutureQuarterError(ValueError):
+    """Raised when `run_universe` is asked to evaluate a quarter that has
+    not ended yet (DEFECT 3 fix).
+
+    `_quarter_end('2026Q3')` returns 2026-09-30 regardless of what day it
+    actually is. Every helper this job calls (`_latest_indicator_row`,
+    `_latest_shares`, `_rel_return_756d`, ...) filters on `ts <= as_of` /
+    `filed_on < as_of`, so an `as_of` in the future does not read fabricated
+    future data — it silently reads whatever the *latest real* data happens
+    to be and stamps today's numbers with a September label. That
+    mislabeled row then makes `_in_trade` (compute.py) inert: every current
+    `signal_date` is before the row's `as_of`, so the "on or before" match
+    fails, `_in_trade` hits its zero-rows branch and fails OPEN (True) for
+    every ticker — no error, no log line — until the calendar catches up to
+    the label, at which point the same row starts failing every event
+    closed, also with no error and no log line. A quarter-end `as_of` is
+    only a safe cache key for "the last evaluation available" if the
+    quarter has actually finished; refusing early converts a silent,
+    calendar-triggered flip into an immediate, loud one at job-submission
+    time, which is the whole point of ADR 014's "evaluated only on
+    information available at t-1" — a quarter can't be evaluated on data
+    from inside itself.
+    """
+
+
+def _evaluate_universe_row(
+    ticker: str,
+    as_of: date,
+    ind_row: pd.Series,
+    mcap: float | None,
+    rel_return: float | None,
+    sector_median: float | None,
+    rev_growth: bool | None,
+    adv_20d: float | None,
+    up: UniverseParams,
+) -> dict:
+    """Pure(ish) assembly of one `universe` row from already-fetched inputs.
+
+    Split out of `run_universe` so the ADR 014 criteria wiring — in
+    particular DEFECT 1's `required` subset — is unit-testable without a
+    database (`tests/unit/test_universe_membership.py`).
+    """
+    ind_row = ind_row.copy()
+    ind_row["rel_return_756d"] = rel_return
+    criteria = core_universe.evaluate_criteria(ind_row, mcap, sector_median, rev_growth, up)
+    # DEFECT 1: `required` is deliberately a subset (UniverseParams.
+    # required_criteria), not all five — see that field's comment. Passing
+    # `None` here (i.e. "require all five") is what silently zeroed
+    # `in_trade` for every ticker, since `crit_rev_growth` is a permanent
+    # stub with no ingested revenue data behind it.
+    in_trade = core_universe.is_tradeable(criteria, required=set(up.required_criteria))
+
+    return {
+        "ticker": ticker,
+        "as_of": as_of,
+        # v1 simplification: any ticker on file counts as in the
+        # wide training universe. Point-in-time reconstruction
+        # from `data/universe_union.csv`'s add/remove dates is
+        # deferred — see the module docstring's scope note.
+        "in_train": True,
+        "in_trade": in_trade,
+        "mcap_usd": mcap,
+        "adv_20d_usd": adv_20d,
+        **criteria,
+    }
+
+
 def run_universe(
     quarter: str,
     tickers: list[str] | None = None,
     engine: Engine | None = None,
     up: UniverseParams | None = None,
+    today: date | None = None,
 ) -> IngestReport:
-    """`universe` job (DESIGN §4.6). `quarter` like `'2026Q3'`."""
+    """`universe` job (DESIGN §4.6). `quarter` like `'2026Q3'`.
+
+    `today` is the reference wall-clock date for the future-quarter guard
+    (DEFECT 3) — injectable so tests do not depend on the real calendar;
+    defaults to `date.today()` for real runs (jobs own clock access,
+    invariant 1's IO carve-out — same pattern as `run_shares`'s `as_of`).
+    """
     engine = engine or db_io.get_engine()
     up = up or UniverseParams()
+    today = today or date.today()
     as_of = _quarter_end(quarter)
+    if as_of > today:
+        raise FutureQuarterError(
+            f"cannot evaluate {quarter} (ends {as_of}): that quarter has not ended yet "
+            f"(today is {today}). ADR 014's filter is causal — ask again after the "
+            "quarter closes, or evaluate the most recently completed quarter instead."
+        )
 
     with run_job(engine, "universe", {"quarter": quarter}) as report:
         if tickers is None:
@@ -396,25 +494,10 @@ def run_universe(
             rev_growth = _revenue_growth_positive(engine, ticker, cik, as_of)
             adv_20d = _adv_20d(engine, ticker, as_of)
 
-            ind_row = ind_row.copy()
-            ind_row["rel_return_756d"] = rel_return
-            criteria = core_universe.evaluate_criteria(ind_row, mcap, sector_median, rev_growth, up)
-            in_trade = core_universe.is_tradeable(criteria)
-
             rows.append(
-                {
-                    "ticker": ticker,
-                    "as_of": as_of,
-                    # v1 simplification: any ticker on file counts as in the
-                    # wide training universe. Point-in-time reconstruction
-                    # from `data/universe_union.csv`'s add/remove dates is
-                    # deferred — see the module docstring's scope note.
-                    "in_train": True,
-                    "in_trade": in_trade,
-                    "mcap_usd": mcap,
-                    "adv_20d_usd": adv_20d,
-                    **criteria,
-                }
+                _evaluate_universe_row(
+                    ticker, as_of, ind_row, mcap, rel_return, sector_median, rev_growth, adv_20d, up
+                )
             )
 
         report.rows_written = db_io.upsert(engine, "universe", rows, ["ticker", "as_of"])
@@ -738,12 +821,30 @@ def scan(
         clauses.append("e.signal_date <= :end")
         params["end"] = end
 
+    # DEFECT 4 fix: the signal fired off the indicator row at t-1 (invariant
+    # 3; `run_events` reads `prior_ind = ind_group.loc[prior_dates.max()]`,
+    # the latest indicator strictly before the bar date). Joining on
+    # `e.signal_date = i.ts` instead pulled the *same-day* (t) bands —
+    # confirmed against real data: TSM's 2026-07-30 event was compared
+    # against the 2026-07-29 bands (bb_upper 456.523644 / bb_mid 418.677000
+    # / bb_lower 380.830356), but the old join displayed 2026-07-30's own
+    # bands (453.131161 / 416.631000 / 380.130839) — internally consistent
+    # looking, silently wrong. A LATERAL join re-derives "latest ts strictly
+    # before signal_date" per row, which is the same rule `run_events`
+    # already applied when it computed `bb_pctb`/`k_full` onto the event —
+    # this display join must agree with it, not re-decide it.
     query = f"""
         SELECT e.ticker, e.signal_date, e.signal_type, e.signal_types_all, e.signal_strength,
                e.side, i.bb_upper, i.bb_mid, i.bb_lower, e.bb_pctb, e.k_full, e.k_fast,
                e.k_cross_up, e.k_cross_down, e.dd_bucket, e.above_sma200
         FROM events e
-        LEFT JOIN indicators i ON e.ticker = i.ticker AND e.signal_date = i.ts AND i.interval = '1d'
+        LEFT JOIN LATERAL (
+            SELECT bb_upper, bb_mid, bb_lower
+            FROM indicators i2
+            WHERE i2.ticker = e.ticker AND i2.interval = '1d' AND i2.ts < e.signal_date
+            ORDER BY i2.ts DESC
+            LIMIT 1
+        ) i ON true
         WHERE {' AND '.join(clauses)}
         ORDER BY e.ticker, e.signal_date
     """
