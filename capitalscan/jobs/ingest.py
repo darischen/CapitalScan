@@ -812,9 +812,7 @@ def run_shares(
             ):
                 best[key] = row
 
-        upsert_rows = [
-            {k: v for k, v in row.items() if k != "accn"} for row in best.values()
-        ]
+        upsert_rows = [{k: v for k, v in row.items() if k != "accn"} for row in best.values()]
 
         # Fallback: SEC's dei fact does not degrade, it disappears the
         # quarter a filer starts reporting per share class (`fetch/sec.py`
@@ -971,9 +969,7 @@ def run_earnings(
         # overwrite the same date keeps the better row.
         deduped = list({(r["ticker"], r["report_date"]): r for r in rows}.values())
 
-        report.rows_written = db_io.upsert(
-            engine, "earnings", deduped, ["ticker", "report_date"]
-        )
+        report.rows_written = db_io.upsert(engine, "earnings", deduped, ["ticker", "report_date"])
         report.tickers = sorted({r["ticker"] for r in deduped})
     return report
 
@@ -1078,9 +1074,7 @@ def run_validate(
             # by the broad `except` below and printed with a message that
             # happened to read like the bare ticker. Reproduced directly
             # against pandas' own merge, no network involved.
-            pct_diff = (
-                (merged["close_local"] - merged["close_stooq"]).abs() / merged["close_stooq"]
-            )
+            pct_diff = (merged["close_local"] - merged["close_stooq"]).abs() / merged["close_stooq"]
             frac_bad = (pct_diff > STOOQ_DISAGREEMENT_PCT).mean()
             stooq_checked += 1
             if frac_bad > STOOQ_DISAGREEMENT_FRACTION:
@@ -1103,10 +1097,7 @@ def run_validate(
         else 0
     )
     clean = (
-        n_hard_rejects == 0
-        and not disagreements
-        and missing_bars.empty
-        and not stooq_check_failed
+        n_hard_rejects == 0 and not disagreements and missing_bars.empty and not stooq_check_failed
     )
 
     return ValidationReport(

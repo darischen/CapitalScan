@@ -12,13 +12,14 @@ not a separate `regime` table per BUILD.md §1.4) plus the audit trail:
 foreign key, because `predictions` does not exist until migration 005.
 The FK itself is added there via ALTER TABLE (BUILD.md §1.6).
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = '8785b00f9217'
-down_revision: Union[str, Sequence[str], None] = 'c530b63124cf'
+revision: str = "8785b00f9217"
+down_revision: Union[str, Sequence[str], None] = "c530b63124cf"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

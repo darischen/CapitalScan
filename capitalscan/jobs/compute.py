@@ -845,7 +845,7 @@ def scan(
             ORDER BY i2.ts DESC
             LIMIT 1
         ) i ON true
-        WHERE {' AND '.join(clauses)}
+        WHERE {" AND ".join(clauses)}
         ORDER BY e.ticker, e.signal_date
     """
     with engine.connect() as conn:

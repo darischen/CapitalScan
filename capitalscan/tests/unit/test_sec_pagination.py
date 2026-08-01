@@ -220,9 +220,7 @@ class TestFetchSubmissionsWithShards:
 class TestFetch8kDatesStillFiltersToEightKs:
     """`fetch_8k_dates` must keep working once `fetch_submissions` spans shards."""
 
-    def test_filters_across_recent_and_shard_rows(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path
-    ):
+    def test_filters_across_recent_and_shard_rows(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
         shard_name = "CIK0000320193-submissions-001.json"
         payload = {
             "filings": {

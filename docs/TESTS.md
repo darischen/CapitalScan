@@ -48,18 +48,18 @@ Four bounds anchored to a shuffled control, jointly stronger than the original t
 
 ```python
 def test_shift_ladder(bars, indicators):
-    base    = detect_all(bars, indicators)
+    base = detect_all(bars, indicators)
     shifted = {k: detect_all(bars, indicators.shift(k)) for k in (1, 2, 5, 20)}
-    control = detect_all(bars, indicators.sample(frac=1.0))   # row-shuffled
+    control = detect_all(bars, indicators.sample(frac=1.0))  # row-shuffled
 
     j = {k: jaccard(base, v) for k, v in shifted.items()}
     jc = jaccard(base, control)
 
-    assert jc < 0.15                       # shuffled control floor
-    assert j[1] < 0.80                     # one-bar shift changes materially
-    assert j[1] > j[2] > j[5] > j[20]      # monotonic decay
-    assert j[5] < 0.50                     # original threshold, at shift-5
-    assert j[20] < 2 * jc                  # converges toward the control
+    assert jc < 0.15  # shuffled control floor
+    assert j[1] < 0.80  # one-bar shift changes materially
+    assert j[1] > j[2] > j[5] > j[20]  # monotonic decay
+    assert j[5] < 0.50  # original threshold, at shift-5
+    assert j[20] < 2 * jc  # converges toward the control
 ```
 
 Plus a blind-detector guard proving the suite can fail:
@@ -104,7 +104,7 @@ The `TrackingSeries` probe is the load-bearing part. If someone later adds `bar.
 def test_backtest_and_live_agree(fixture_bar, fixture_ind, fixture_bands):
     bt = detect(fixture_bar, fixture_ind, SP)
     live = []
-    for tick in simulate_intraday(fixture_bar):   # open → low → high → close
+    for tick in simulate_intraday(fixture_bar):  # open → low → high → close
         live += breach_live(tick, fixture_bands, SP)
     assert {s.signal_type for s in bt} == set(dedupe(live))
 ```
@@ -119,8 +119,7 @@ This is the test that prevents the live system from firing on events the backtes
 def test_identical_config_identical_output(bars, indicators, universe):
     a = backtest(CFG, bars, indicators, universe)
     b = backtest(CFG, bars, indicators, universe)
-    assert_frame_equal(a.drop(columns=["run_id"]),
-                       b.drop(columns=["run_id"]))
+    assert_frame_equal(a.drop(columns=["run_id"]), b.drop(columns=["run_id"]))
 ```
 
 Run with test-ordering randomization **enabled** so hidden global state surfaces.
@@ -128,15 +127,13 @@ Run with test-ordering randomization **enabled** so hidden global state surfaces
 ### 3.4 Exit resolver invariants — property-based
 
 ```python
-@given(entry=prices(),
-       bars=ohlc_sequences(min_size=5, max_size=5),
-       cfg=exit_configs())
+@given(entry=prices(), bars=ohlc_sequences(min_size=5, max_size=5), cfg=exit_configs())
 def test_exit_invariants(entry, bars, ind, atr, cfg):
     r = resolve_exit(entry, 0, Side.LONG, bars, ind, atr, cfg)
 
     assert bars.low[r.exit_idx] <= r.exit_price <= bars.high[r.exit_idx]
     assert 1 <= r.holding_days <= cfg.max_hold_days
-    assert r.mae <= r.mfe          # NOT mae <= 0 <= mfe, see below
+    assert r.mae <= r.mfe  # NOT mae <= 0 <= mfe, see below
     assert r.mfe >= realized_return(entry, r.exit_price, Side.LONG)
 
     if r.reason == ExitReason.STOP:
@@ -171,9 +168,10 @@ def test_serving_views_never_read_holdout(db):
         assert "'validate'" in ddl, f"{view} must pin split_key"
         assert "e.split_key" not in ddl, f"{view} must not inherit event split"
 
+
 def test_screener_shows_no_holdout_stats(db):
     rows = query(db, "SELECT * FROM v_screen WHERE p_hit IS NOT NULL")
-    ids  = [r.cell_id for r in rows]
+    ids = [r.cell_id for r in rows]
     splits = query(db, "SELECT DISTINCT split_key FROM cell_stats WHERE cell_id = ANY(%s)", (ids,))
     assert set(splits) <= {"validate"}
 ```
@@ -217,19 +215,21 @@ Every rule in DESIGN §2.3 gets a test with a crafted violating row. Additionall
 def test_no_nulls_after_warmup(indicators):
     post = indicators[indicators.ts >= "2010-01-01"]
     for col in REQUIRED_INDICATOR_COLS:
-        assert post[col].isna().sum() == 0        # ADR 040
+        assert post[col].isna().sum() == 0  # ADR 040
 ```
 
 ```python
-def test_stooq_agreement(sample_tickers):          # integration tier
+def test_stooq_agreement(sample_tickers):  # integration tier
     diff = compare_closes(yf_data, stooq_data)
     assert (diff.abs() > 0.005).mean() < 0.01
 ```
 
 ```python
 def test_ingest_idempotent(db, ticker):
-    run_ingest(ticker); n1 = row_count(db, "bars")
-    run_ingest(ticker); n2 = row_count(db, "bars")
+    run_ingest(ticker)
+    n1 = row_count(db, "bars")
+    run_ingest(ticker)
+    n2 = row_count(db, "bars")
     assert n1 == n2
 ```
 
@@ -252,7 +252,7 @@ Two tests catching a category no unit test can (ADR 087).
 def test_random_walk_has_no_edge():
     synthetic = gbm(n_tickers=50, days=2500, mu=0, sigma=0.02, seed=42)
     events = backtest(CFG, synthetic, compute_all(synthetic), universe_all)
-    stats  = compute_cells(events)
+    stats = compute_cells(events)
     assert (stats.q_value < 0.05).mean() <= 0.05
 ```
 
@@ -264,7 +264,7 @@ If a random walk produces significant cells, the statistics layer has a bug and 
 def test_baseline_recovers_known_drift():
     synthetic = gbm(mu=0.20, sigma=0.30, seed=7)
     base = compute_baseline(synthetic, target=0.02, horizon=5)
-    expected = 1 - norm.cdf((0.02 - 0.20/50.4) / (0.30 * sqrt(5/252)))
+    expected = 1 - norm.cdf((0.02 - 0.20 / 50.4) / (0.30 * sqrt(5 / 252)))
     assert abs(base.parametric - expected) < 0.01
 ```
 
@@ -277,13 +277,16 @@ def test_quantiles_monotone(model, features):
     q = model.predict_quantiles(features)
     assert (np.diff(q, axis=1) >= 0).all()
 
+
 def test_calibration_beats_cell_lookup(model, validation):
     assert brier(model.predict(validation)) < brier(cell_lookup(validation))
+
 
 def test_no_future_features(feature_frame, event_dates):
     """Every feature value must be derivable from data at t−1."""
     for col in FEATURE_COLS:
         assert not depends_on_future(col, feature_frame, event_dates)
+
 
 def test_promotion_gate_rejects_flattened_model():
     """A model predicting the base rate everywhere gains ECE but must fail."""
@@ -302,14 +305,19 @@ def test_every_tool_returns_valid_schema(tool_name, sample_args):
     result = call_tool(tool_name, sample_args)
     assert TOOL_SCHEMAS[tool_name].model_validate(result)
 
+
 def test_validator_rejects_naked_probability():
     resp = "There's a 51% chance of a rebound."
     assert not validate_response(resp, tool_calls=[...]).ok
 
+
 def test_validator_allows_sourced_advisory():
-    resp = ("TSM fired confluence-low. That cell resolved up 3% within "
-            "5 sessions in 51% of 340 effective cases, CI 46-56.")
+    resp = (
+        "TSM fired confluence-low. That cell resolved up 3% within "
+        "5 sessions in 51% of 340 effective cases, CI 46-56."
+    )
     assert validate_response(resp, tool_calls=[...]).ok
+
 
 def test_suppressed_cell_never_yields_a_number():
     result = get_stats(signal_type="confluence_low", ticker="RARE")
@@ -338,9 +346,9 @@ jobs:
 Hypothesis profiles, registered in `conftest.py`:
 
 ```python
-settings.register_profile("ci_fast", max_examples=250,   deadline=None)
-settings.register_profile("full",    max_examples=10000, deadline=None)
-settings.register_profile("dev",     max_examples=200)   # default
+settings.register_profile("ci_fast", max_examples=250, deadline=None)
+settings.register_profile("full", max_examples=10000, deadline=None)
+settings.register_profile("dev", max_examples=200)  # default
 ```
 
 `CAPSCAN_HYPOTHESIS_PROFILE` also selects a profile, so gate scripts request `full` without threading a pytest flag through.

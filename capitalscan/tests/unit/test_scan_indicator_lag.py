@@ -72,9 +72,7 @@ def captured_query(monkeypatch):
 
 
 class TestScanIndicatorLagQuery:
-    def test_join_condition_requires_indicator_ts_strictly_before_signal_date(
-        self, captured_query
-    ):
+    def test_join_condition_requires_indicator_ts_strictly_before_signal_date(self, captured_query):
         compute.scan(tickers=["TSM"], engine=_FakeEngine())
         sql = captured_query["sql"]
 

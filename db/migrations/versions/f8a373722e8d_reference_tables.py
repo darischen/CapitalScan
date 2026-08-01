@@ -9,12 +9,13 @@ corporate actions, point-in-time shares outstanding, and earnings dates.
 Nothing here depends on another table in this migration, so creation
 order only matters for the two REFERENCES to `tickers`.
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = 'f8a373722e8d'
+revision: str = "f8a373722e8d"
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

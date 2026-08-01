@@ -259,13 +259,23 @@ def fetch_actions(ticker: str) -> pd.DataFrame:
         splits = df.loc[df["Stock Splits"] != 0]
         for _, row in splits.iterrows():
             records.append(
-                {"ticker": ticker, "ts": row["ts"], "action_type": "split", "value": row["Stock Splits"]}
+                {
+                    "ticker": ticker,
+                    "ts": row["ts"],
+                    "action_type": "split",
+                    "value": row["Stock Splits"],
+                }
             )
     if "Dividends" in df.columns:
         divs = df.loc[df["Dividends"] != 0]
         for _, row in divs.iterrows():
             records.append(
-                {"ticker": ticker, "ts": row["ts"], "action_type": "dividend", "value": row["Dividends"]}
+                {
+                    "ticker": ticker,
+                    "ts": row["ts"],
+                    "action_type": "dividend",
+                    "value": row["Dividends"],
+                }
             )
     return pd.DataFrame(records, columns=_ACTIONS_COLUMNS)
 

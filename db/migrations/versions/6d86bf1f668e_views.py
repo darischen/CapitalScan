@@ -20,13 +20,14 @@ holdout statistics into the UI continuously if inherited.
 
 v_positions is created after v_ticker_state because it depends on it.
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = '6d86bf1f668e'
-down_revision: Union[str, Sequence[str], None] = '7b31a50af774'
+revision: str = "6d86bf1f668e"
+down_revision: Union[str, Sequence[str], None] = "7b31a50af774"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

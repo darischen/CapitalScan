@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 """Clear test bars to allow clean backfill."""
 
-from capitalscan.jobs import db_io
 from sqlalchemy import text
+
+from capitalscan.jobs import db_io
 
 engine = db_io.get_engine()
 

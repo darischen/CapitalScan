@@ -50,13 +50,17 @@ def open_position(
     else:
         db_io.append(engine, "positions", [row])
     with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                "SELECT * FROM positions WHERE ticker = :ticker AND entry_date = :entry_date "
-                "AND entry_price = :entry_price ORDER BY id DESC LIMIT 1"
-            ),
-            {"ticker": ticker, "entry_date": entry_date, "entry_price": entry_price},
-        ).mappings().one()
+        result = (
+            conn.execute(
+                text(
+                    "SELECT * FROM positions WHERE ticker = :ticker AND entry_date = :entry_date "
+                    "AND entry_price = :entry_price ORDER BY id DESC LIMIT 1"
+                ),
+                {"ticker": ticker, "entry_date": entry_date, "entry_price": entry_price},
+            )
+            .mappings()
+            .one()
+        )
     return dict(result)
 
 
@@ -73,9 +77,11 @@ def close_position(
     price falls, so the sign flips relative to the long case).
     """
     with engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT * FROM positions WHERE id = :id"), {"id": position_id}
-        ).mappings().one_or_none()
+        row = (
+            conn.execute(text("SELECT * FROM positions WHERE id = :id"), {"id": position_id})
+            .mappings()
+            .one_or_none()
+        )
     if row is None:
         raise ValueError(f"no position with id {position_id}")
 
@@ -101,9 +107,11 @@ def close_position(
             },
         )
     with engine.connect() as conn:
-        result = conn.execute(
-            text("SELECT * FROM positions WHERE id = :id"), {"id": position_id}
-        ).mappings().one()
+        result = (
+            conn.execute(text("SELECT * FROM positions WHERE id = :id"), {"id": position_id})
+            .mappings()
+            .one()
+        )
     return dict(result)
 
 
@@ -160,7 +168,11 @@ def emit_order_intent(
     }
     db_io.upsert(engine, "order_intents", [row], ["idempotency_key"])
     with engine.connect() as conn:
-        result = conn.execute(
-            text("SELECT * FROM order_intents WHERE idempotency_key = :key"), {"key": key}
-        ).mappings().one()
+        result = (
+            conn.execute(
+                text("SELECT * FROM order_intents WHERE idempotency_key = :key"), {"key": key}
+            )
+            .mappings()
+            .one()
+        )
     return dict(result)

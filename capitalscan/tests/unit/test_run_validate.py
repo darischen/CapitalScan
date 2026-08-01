@@ -162,8 +162,10 @@ class TestMissingBarWiring:
         # inside its own span — a genuine gap, not pre-listing/post-delisting.
         bar_dates = _bar_dates([("AAPL", "2020-01-02"), ("AAPL", "2020-01-06")])
         local = pd.DataFrame(
-            {"d": [pd.Timestamp("2020-01-02").date(), pd.Timestamp("2020-01-06").date()],
-             "close": [100.0, 101.0]}
+            {
+                "d": [pd.Timestamp("2020-01-02").date(), pd.Timestamp("2020-01-06").date()],
+                "close": [100.0, 101.0],
+            }
         )
         dispatcher = _sql_dispatcher(
             reject_counts=EMPTY_REJECTS,

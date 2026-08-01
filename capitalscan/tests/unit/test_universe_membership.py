@@ -168,9 +168,7 @@ class TestSectorMedianFallback:
         monkeypatch.setattr(
             compute,
             "_rel_return_756d",
-            lambda engine, ticker, as_of, lookback: {"AAPL": 0.1, "MSFT": 0.2, "GOOG": 0.3}[
-                ticker
-            ],
+            lambda engine, ticker, as_of, lookback: {"AAPL": 0.1, "MSFT": 0.2, "GOOG": 0.3}[ticker],
         )
 
         median, used_fallback = compute._sector_median_return(engine, None, date(2026, 6, 30), 756)
@@ -204,9 +202,7 @@ class TestSectorMedianFallback:
 class TestFutureQuarterGuard:
     def test_evaluating_a_quarter_that_has_not_ended_raises(self):
         with pytest.raises(compute.FutureQuarterError, match="2026Q3"):
-            compute.run_universe(
-                "2026Q3", tickers=[], engine=object(), today=date(2026, 8, 1)
-            )
+            compute.run_universe("2026Q3", tickers=[], engine=object(), today=date(2026, 8, 1))
 
     def test_evaluating_a_quarter_that_ended_today_is_allowed(self, monkeypatch):
         """`as_of == today` must not raise: the quarter has just closed."""

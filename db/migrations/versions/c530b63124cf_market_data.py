@@ -9,13 +9,14 @@ DESIGN.md §2.5. Raw bars, their rejects, market-wide daily context
 `bars` are the first line of §2.3's validation, enforced by Postgres
 itself rather than only in application code.
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = 'c530b63124cf'
-down_revision: Union[str, Sequence[str], None] = 'f8a373722e8d'
+revision: str = "c530b63124cf"
+down_revision: Union[str, Sequence[str], None] = "f8a373722e8d"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

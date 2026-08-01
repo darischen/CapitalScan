@@ -98,13 +98,9 @@ def upsert(
         batch = rows[i : i + batch_size]
         stmt = pg_insert(table).values(batch)
         update_cols = {
-            c.name: stmt.excluded[c.name]
-            for c in table.columns
-            if c.name not in conflict_cols
+            c.name: stmt.excluded[c.name] for c in table.columns if c.name not in conflict_cols
         }
-        stmt = stmt.on_conflict_do_update(
-            index_elements=conflict_cols, set_=update_cols
-        )
+        stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
         with engine.begin() as conn:
             conn.execute(stmt)
         total_inserted += len(batch)

@@ -10,13 +10,14 @@ signal_reports.prediction_id to predictions.id now that predictions
 exists (BUILD.md §1.6 — this constraint could not be added in
 migration 003).
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = '7b31a50af774'
-down_revision: Union[str, Sequence[str], None] = '01c32499e1b2'
+revision: str = "7b31a50af774"
+down_revision: Union[str, Sequence[str], None] = "01c32499e1b2"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -403,7 +403,7 @@ Consequence for tests: resolution tests must pass an explicit `config_file` and 
 class IndicatorParams:
     bb_window: int = 20
     bb_std: float = 2.0
-    bb_ddof: int = 0              # population std (ADR 004)
+    bb_ddof: int = 0  # population std (ADR 004)
     stoch_window: int = 14
     stoch_smooth_k: int = 3
     stoch_smooth_d: int = 3
@@ -415,26 +415,29 @@ class IndicatorParams:
     vol_z_window: int = 20
     dd_window: int = 252
 
+
 @dataclass(frozen=True)
 class SignalParams:
     stoch_oversold: float = 20.0
     stoch_overbought: float = 80.0
-    require_fast_agreement: bool = False    # ADR 044
+    require_fast_agreement: bool = False  # ADR 044
     fast_agreement_tol: float = 5.0
-    price_tolerance: float = 0.0            # 0.0 == "at or beyond", exact
+    price_tolerance: float = 0.0  # 0.0 == "at or beyond", exact
+
 
 @dataclass(frozen=True)
 class ExitParams:
     max_hold_days: int = 5
-    target_pct: float = 0.04                # swept 0.03-0.05 (ADR 009)
-    stop_mode: str = "atr"                  # "atr" | "fixed" | "none"
-    stop_atr_k: float = 1.5                 # swept 1.0-2.5 (ADR 008)
+    target_pct: float = 0.04  # swept 0.03-0.05 (ADR 009)
+    stop_mode: str = "atr"  # "atr" | "fixed" | "none"
+    stop_atr_k: float = 1.5  # swept 1.0-2.5 (ADR 008)
     stop_fixed_pct: float = 0.03
     exit_on_upper_band: bool = True
     exit_on_stoch_80: bool = True
-    exit_stoch_threshold: float = 80.0        # long exit, exit policy
+    exit_stoch_threshold: float = 80.0  # long exit, exit policy
     exit_stoch_threshold_short: float = 20.0  # short exit, independent (ADR 016)
-    exit_on_mid_band: bool = False          # ADR 046
+    exit_on_mid_band: bool = False  # ADR 046
+
 
 @dataclass(frozen=True)
 class CostParams:
@@ -443,16 +446,18 @@ class CostParams:
     borrow_bps_annual: float = 40.0
     short_enabled: bool = True
 
+
 @dataclass(frozen=True)
 class UniverseParams:
     min_mcap_usd: float = 200e9
     min_price: float = 1.0
-    rel_return_lookback_days: int = 756      # 3 years
+    rel_return_lookback_days: int = 756  # 3 years
     rebalance_freq: str = "Q"
+
 
 @dataclass(frozen=True)
 class StatsParams:
-    min_n_eff: int = 30                  # below this a cell is suppressed
+    min_n_eff: int = 30  # below this a cell is suppressed
     fdr_alpha: float = 0.05
     n_replications_default: int = 200
     n_replications_sweep: int = 50
@@ -461,56 +466,88 @@ class StatsParams:
     dd_buckets: tuple = (0.10, 0.20, 0.35)
     era_bounds: tuple = ("2014-12-31", "2019-12-31", "2023-12-31")
 
+
 @dataclass(frozen=True)
 class SplitParams:
-    ingest_start: str  = "2009-01-01"
-    event_start: str   = "2010-01-01"
-    train_end: str     = "2021-12-31"
-    validate_end: str  = "2023-12-31"
+    ingest_start: str = "2009-01-01"
+    event_start: str = "2010-01-01"
+    train_end: str = "2021-12-31"
+    validate_end: str = "2023-12-31"
 ```
 
 ### 3.4 `core/types.py`
 
 ```python
-class Side(str, Enum):        LONG = "long"; SHORT = "short"
-class Bound(str, Enum):       LOWER = "lower"; MID = "mid"; UPPER = "upper"
+class Side(str, Enum):
+    LONG = "long"
+    SHORT = "short"
+
+
+class Bound(str, Enum):
+    LOWER = "lower"
+    MID = "mid"
+    UPPER = "upper"
+
 
 class SignalType(str, Enum):
-    BB_LOWER_TOUCH   = "bb_lower_touch"
-    BB_UPPER_TOUCH   = "bb_upper_touch"
-    STOCH_OVERSOLD   = "stoch_oversold"
+    BB_LOWER_TOUCH = "bb_lower_touch"
+    BB_UPPER_TOUCH = "bb_upper_touch"
+    STOCH_OVERSOLD = "stoch_oversold"
     STOCH_OVERBOUGHT = "stoch_overbought"
-    CONFLUENCE_LOW   = "confluence_low"
-    CONFLUENCE_HIGH  = "confluence_high"
+    CONFLUENCE_LOW = "confluence_low"
+    CONFLUENCE_HIGH = "confluence_high"
+
 
 class ExitReason(str, Enum):
-    TIMEOUT = "timeout"; TARGET = "target"; STOP = "stop"
-    UPPER_BAND = "upper_band"; MID_BAND = "mid_band"; STOCH_80 = "stoch_80"
+    TIMEOUT = "timeout"
+    TARGET = "target"
+    STOP = "stop"
+    UPPER_BAND = "upper_band"
+    MID_BAND = "mid_band"
+    STOCH_80 = "stoch_80"
+
 
 class EntryKind(str, Enum):
-    TOUCH = "touch"; TOUCH_5M = "touch_5m"
-    TOUCH_30M = "touch_30m"; NEXT_OPEN = "next_open"
+    TOUCH = "touch"
+    TOUCH_5M = "touch_5m"
+    TOUCH_30M = "touch_30m"
+    NEXT_OPEN = "next_open"
+
 
 @dataclass(frozen=True)
 class Bands:
-    bb_lower: float; bb_mid: float; bb_upper: float
-    k_full: float; d_full: float; k_fast: float; atr_14: float
+    bb_lower: float
+    bb_mid: float
+    bb_upper: float
+    k_full: float
+    d_full: float
+    k_fast: float
+    atr_14: float
+
 
 @dataclass(frozen=True)
 class SignalHit:
-    ticker: str; ts: date
+    ticker: str
+    ts: date
     signal_type: SignalType
     signal_types_all: tuple[SignalType, ...]
     signal_strength: int
     side: Side
-    touch_level: float | None      # None when no band was touched
-    pctb: float; k_full: float
+    touch_level: float | None  # None when no band was touched
+    pctb: float
+    k_full: float
+
 
 @dataclass(frozen=True)
 class ExitResult:
-    exit_idx: int; exit_date: date; exit_price: float
-    reason: ExitReason; holding_days: int
-    mfe: float; mae: float; time_to_mfe: int
+    exit_idx: int
+    exit_date: date
+    exit_price: float
+    reason: ExitReason
+    holding_days: int
+    mfe: float
+    mae: float
+    time_to_mfe: int
     ambiguous: bool
 ```
 
@@ -727,7 +764,9 @@ All external IO routes through one module so retry, rate limiting, and caching e
 class Fetcher(Protocol):
     name: str
     rate_limit_per_sec: float
+
     def fetch(self, **kwargs) -> pd.DataFrame: ...
+
 
 def with_retry(fn, *, attempts=4, base_delay=2.0, jitter=True): ...
 def rate_limited(fn, *, per_sec: float): ...
@@ -775,9 +814,10 @@ def run(tickers, target_start, target_end, run_id):
     for ticker in tickers:
         bars = read_bars(ticker, read_start, target_end)
         if len(bars) < 280:
-            reject(ticker, "insufficient_history"); continue
+            reject(ticker, "insufficient_history")
+            continue
         ind = core.indicators.compute_all(bars, PARAMS)
-        ind = ind.loc[target_start:target_end]     # write window ≠ read window
+        ind = ind.loc[target_start:target_end]  # write window ≠ read window
         upsert(ind)
 ```
 

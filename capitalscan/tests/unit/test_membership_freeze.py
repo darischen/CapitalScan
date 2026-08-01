@@ -129,9 +129,7 @@ class TestRunMembershipGuard:
         monkeypatch.setattr(
             ingest.wikipedia,
             "fetch_membership_changes",
-            lambda: pd.DataFrame(
-                {"effective_date": [], "added_ticker": [], "removed_ticker": []}
-            ),
+            lambda: pd.DataFrame({"effective_date": [], "added_ticker": [], "removed_ticker": []}),
         )
 
         report = ingest.run_membership()

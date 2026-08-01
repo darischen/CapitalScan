@@ -53,9 +53,7 @@ def upserted(monkeypatch) -> list[dict]:
 
 
 def _stub_sec(monkeypatch, filings: dict[str, list[str]]) -> None:
-    lookup = pd.DataFrame(
-        {"ticker": list(filings), "cik": list(range(1, len(filings) + 1))}
-    )
+    lookup = pd.DataFrame({"ticker": list(filings), "cik": list(range(1, len(filings) + 1))})
     monkeypatch.setattr(ingest.sec, "fetch_cik_lookup", lambda: lookup)
 
     by_cik = {i + 1: dates for i, dates in enumerate(filings.values())}

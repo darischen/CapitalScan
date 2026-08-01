@@ -127,10 +127,14 @@ def test_breach_is_recorded_as_a_holdout_event_within_one_tick(seeded):
     assert report.rows_written == 1
 
     with engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT * FROM events WHERE ticker = :t AND signal_date = :d"),
-            {"t": TICKER, "d": SIGNAL_DATE},
-        ).mappings().one()
+        row = (
+            conn.execute(
+                text("SELECT * FROM events WHERE ticker = :t AND signal_date = :d"),
+                {"t": TICKER, "d": SIGNAL_DATE},
+            )
+            .mappings()
+            .one()
+        )
     assert row["side"] == "long"
     assert row["signal_type"] == "confluence_low"
     assert row["split_key"] == "holdout"  # invariant 5b: never train/validate for a live event

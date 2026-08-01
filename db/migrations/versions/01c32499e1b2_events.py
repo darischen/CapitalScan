@@ -9,13 +9,14 @@ DESIGN.md §5.7. The widest table in the schema: one row per
 (ADR 056) and the UNIQUE constraint are the parts most likely to be
 gotten wrong, per BUILD.md §1.5.
 """
+
 from typing import Sequence, Union
 
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = '01c32499e1b2'
-down_revision: Union[str, Sequence[str], None] = '8785b00f9217'
+revision: str = "01c32499e1b2"
+down_revision: Union[str, Sequence[str], None] = "8785b00f9217"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
