@@ -252,6 +252,18 @@ def _latest_indicator_row(engine: Engine, ticker: str, as_of: date) -> pd.Series
 def _latest_shares(engine: Engine, ticker: str, as_of: date) -> float | None:
     """Latest filing with `filed_on < as_of` (DESIGN §2.4) — the ~45-day
     10-Q lag is real and deliberate, not a bug to fix.
+
+    This deliberately does not filter on `shares_outstanding.source`. Rows
+    with `source = 'yahoo_shares_full'` (`jobs/ingest.py` `run_shares`,
+    added when SEC's fact is missing or stale — see `SHARES_STALENESS_DAYS`
+    there) are safe to compete on `filed_on` recency with `'sec_xbrl'` rows
+    for the exact reason DESIGN §2.4 rejects holding current shares
+    constant backward: each Yahoo row's `filed_on` is a real historical
+    date `yfinance.Ticker.get_shares_full` attributes that share count to,
+    not today's count re-stamped onto the past. A row dated 2016 describes
+    2016 regardless of which fetcher produced it, so ordering by `filed_on`
+    alone already prevents a current count from silently answering a
+    historical `as_of` — the one thing this function must not do.
     """
     with engine.connect() as conn:
         row = conn.execute(

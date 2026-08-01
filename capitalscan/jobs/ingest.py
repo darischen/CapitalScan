@@ -40,6 +40,31 @@ SPLIT_RATIOS = (2, 3, 4, 5, 7, 10, 20)  # forward and reverse splits both checke
 FLAT_CLOSE_RUN = 5
 MIN_TRADE_PRICE = 1.0
 
+# `run_shares`'s yfinance fallback (BUILD follow-up; see the comment on
+# `fetch_shares_full` in `jobs/fetch/yahoo.py` for why `get_shares_full`
+# rather than `Ticker.info["sharesOutstanding"]` is what backs it).
+#
+# SEC's `dei:EntityCommonStockSharesOutstanding` feed does not go stale
+# gradually — a filer either reports it every 10-Q/10-K, or it vanishes
+# from the concept entirely the quarter that filer starts reporting shares
+# per class of stock (`_SHARES_TAG_SOURCES` in `fetch/sec.py`). One year
+# covers every filer's slowest cadence (annual-only 10-K reporters), and
+# the ~45-day 10-Q lag DESIGN §2.4 already tolerates buys one further
+# quarter of grace on top before a gap counts as "the feed stopped," not
+# "the next filing hasn't landed yet."
+SHARES_STALENESS_DAYS = 365 + 90
+# `get_shares_full` was verified live (BRK-B, MA, V, META) to return dated
+# points back to ~2015 regardless of how far before that `start` asks for;
+# 2015-01-01 costs nothing extra and is far enough back to backfill any
+# ticker in the 629-name universe (all listed well after 2015).
+SHARES_FULL_HISTORY_START = date(2015, 1, 1)
+# Distinct from `"sec_xbrl"` so a query can exclude it — required reading
+# for anyone tempted to trust this column the way they trust an SEC filing:
+# these are Yahoo's own dated estimates, not filed facts, even though each
+# row's `filed_on` is a genuine historical date rather than "today, applied
+# backward" (see `fetch_shares_full`'s docstring).
+SHARES_YAHOO_SOURCE = "yahoo_shares_full"
+
 
 @dataclass
 class IngestReport:
@@ -634,24 +659,85 @@ def _period_end_key(row: dict) -> str:
     return str(period_end)
 
 
-def run_shares(tickers: list[str], engine: Engine | None = None) -> IngestReport:
-    """Point-in-time shares outstanding from SEC XBRL (DESIGN §2.4).
+def _accn_key(row: dict) -> str:
+    """Sortable accession number, with a missing value ordering lowest.
+
+    Accession numbers are assigned in filing sequence
+    (`NNNNNNNNNN-YY-NNNNNN`), so a lexicographic compare orders two
+    filings from the same filer and year the same way a filing-date
+    compare would. That is exactly what breaks a `_period_end_key` tie
+    correctly: real duplicate-`filed_on` cases in the wild are same-day
+    original/amendment pairs (10-Q then 10-Q/A, or 10-K then 10-K/A)
+    reporting the *same* `period_end` with a corrected `value` — the
+    amendment always carries the later accession number. Without this,
+    the tie resolves on whatever order `facts.iterrows()` happens to
+    hand rows back in, which is an accident of the SEC JSON's ordering,
+    not a rule.
+    """
+    accn = row.get("accn")
+    if accn is None or accn != accn:
+        return ""
+    return str(accn)
+
+
+def _parse_filed_on(value: object) -> date | None:
+    """`filed_on` arrives as an ISO string from SEC's JSON, a `date` from a
+    prior parse, or a null-like sentinel (`None`/NaN) — normalize all three
+    to `date | None` so staleness math never has to special-case the type.
+
+    An unparseable string returns `None` rather than raising: this feeds a
+    staleness *check*, not the write path (the malformed value still gets
+    upserted as-is, unchanged), so one bad `filed_on` should count toward
+    "no usable date to judge freshness by" — same as a missing one — not
+    abort the run for every other ticker in the batch.
+    """
+    if value is None or (isinstance(value, float) and value != value):
+        return None
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def run_shares(
+    tickers: list[str], engine: Engine | None = None, as_of: date | None = None
+) -> IngestReport:
+    """Point-in-time shares outstanding from SEC XBRL (DESIGN §2.4), with a
+    yfinance fallback for tickers SEC has stopped covering (BUILD follow-up).
 
     Stores every filed value with its `filed_on` date; the "latest filing
     with `filed_on < as_of`" selection happens at query time in the
     `universe` job, not here.
+
+    `as_of` is the reference "today" for the staleness check and for the
+    Yahoo fetch window's upper bound — injectable so tests do not depend on
+    wall-clock date; defaults to `date.today()` for real runs, consistent
+    with how this job is actually invoked (jobs own clock access, invariant
+    1's IO carve-out).
     """
+    as_of = as_of or date.today()
     engine = engine or db_io.get_engine()
     with run_job(engine, "shares", {"tickers": tickers}) as report:
         cik_lookup = sec.fetch_cik_lookup().set_index("ticker")["cik"]
         rows = []
         touched = []
+        # Tickers that end up contributing zero rows, with why. Distinct
+        # from a hard failure — some issuers genuinely have no usable fact
+        # in the feed (see the comment above `_SHARES_TAG_SOURCES` in
+        # `fetch/sec.py`) — but "why" must be visible in the run's notes
+        # instead of only showing up later as a silent gap in `universe`'s
+        # market-cap numbers, which is how this got missed the first time.
+        skipped: list[tuple[str, str]] = []
         for ticker in tickers:
             cik = cik_lookup.get(ticker)
             if cik is None:
+                skipped.append((ticker, "no CIK in SEC ticker lookup"))
                 continue
             facts = sec.fetch_company_facts(int(cik))
             if facts.empty:
+                skipped.append((ticker, f"no shares-outstanding fact for CIK {int(cik)}"))
                 continue
             facts = facts.dropna(subset=["filed_on", "value"])
             for _, row in facts.iterrows():
@@ -662,6 +748,7 @@ def run_shares(tickers: list[str], engine: Engine | None = None) -> IngestReport
                         "period_end": row["end"],
                         "shares": int(row["value"]),
                         "source": "sec_xbrl",
+                        "accn": row.get("accn"),
                     }
                 )
             touched.append(ticker)
@@ -675,17 +762,110 @@ def run_shares(tickers: list[str], engine: Engine | None = None) -> IngestReport
         # current count that filing carries. DESIGN §2.4 leaves the "latest
         # filing with filed_on < as_of" selection to the `universe` job, so
         # what belongs here is one correct row per filing, not every fact.
+        #
+        # Ties on `period_end` (a same-day original/amendment pair, e.g. a
+        # 10-Q immediately corrected by a 10-Q/A covering the identical
+        # period) break on `accn` — see `_accn_key`. Without a second key
+        # the tie resolves on row order alone, which happens to be the
+        # order the SEC JSON lists facts in, not a documented rule.
         best: dict[tuple[str, object], dict] = {}
         for row in rows:
             key = (row["ticker"], row["filed_on"])
             prior = best.get(key)
-            if prior is None or _period_end_key(row) >= _period_end_key(prior):
+            if prior is None or (_period_end_key(row), _accn_key(row)) >= (
+                _period_end_key(prior),
+                _accn_key(prior),
+            ):
                 best[key] = row
 
+        upsert_rows = [
+            {k: v for k, v in row.items() if k != "accn"} for row in best.values()
+        ]
+
+        # Fallback: SEC's dei fact does not degrade, it disappears the
+        # quarter a filer starts reporting per share class (`fetch/sec.py`
+        # `_SHARES_TAG_SOURCES`), and a filer skipped above (no CIK / no
+        # fact at all) has the identical symptom as one whose only fact
+        # predates `SHARES_STALENESS_DAYS` — both need Yahoo's dated series
+        # to keep the ticker's market cap from being computed off a decade-
+        # old share count (the BRK-B/MA/V bug this session exists to fix).
+        latest_sec_filed_on: dict[str, date] = {}
+        for (t, _), row in best.items():
+            parsed = _parse_filed_on(row["filed_on"])
+            if parsed is not None and parsed > latest_sec_filed_on.get(t, date.min):
+                latest_sec_filed_on[t] = parsed
+
+        yahoo_used: list[str] = []
+        yahoo_skipped: list[tuple[str, str]] = []
+        yahoo_best: dict[tuple[str, date], dict] = {}
+        # Normalized to (ticker, parsed date): `best`'s keys carry SEC's raw
+        # `filed_on` (an ISO string straight from the JSON), while Yahoo's
+        # `filed_on` is already a `date` — comparing the raw forms would
+        # never match even on the same calendar day and silently let a
+        # same-dated Yahoo row through instead of deferring to the SEC one.
+        existing_keys = {
+            (t, parsed)
+            for (t, raw_filed_on) in best
+            if (parsed := _parse_filed_on(raw_filed_on)) is not None
+        }
+        for ticker in tickers:
+            latest = latest_sec_filed_on.get(ticker)
+            if latest is not None and (as_of - latest).days <= SHARES_STALENESS_DAYS:
+                continue  # SEC is current enough; do not spend a Yahoo call
+            try:
+                full = yahoo.fetch_shares_full(ticker, SHARES_FULL_HISTORY_START, as_of)
+            except Exception as exc:  # yfinance failure is a skip, not a job failure
+                yahoo_skipped.append((ticker, f"yahoo shares_full fetch raised: {exc}"))
+                continue
+            if full.empty:
+                yahoo_skipped.append((ticker, "no yahoo shares_full data either"))
+                continue
+            for _, row in full.iterrows():
+                filed_on = row["filed_on"]
+                key = (ticker, filed_on)
+                # A `filed_on` this Yahoo fetch shares with an existing SEC
+                # row is left to the SEC row: mixing "filed" and "estimated"
+                # values under one PK for the same date has no defined
+                # merge policy (`db_io.upsert` overwrites whole rows, no
+                # per-column merge), and it is also a batch-internal
+                # ON CONFLICT collision if both land in one upsert call.
+                if key in existing_keys:
+                    continue
+                yahoo_best[key] = {
+                    "ticker": ticker,
+                    "filed_on": filed_on,
+                    "period_end": None,
+                    "shares": int(row["shares"]),
+                    "source": SHARES_YAHOO_SOURCE,
+                }
+            yahoo_used.append(ticker)
+
+        upsert_rows.extend(yahoo_best.values())
+
         report.rows_written = db_io.upsert(
-            engine, "shares_outstanding", list(best.values()), ["ticker", "filed_on"]
+            engine, "shares_outstanding", upsert_rows, ["ticker", "filed_on"]
         )
-        report.tickers = touched
+        report.tickers = touched + [t for t in yahoo_used if t not in touched]
+
+        note_parts = []
+        if skipped:
+            note_parts.append(
+                f"{len(skipped)} of {len(tickers)} tickers contributed no SEC rows: "
+                + "; ".join(f"{t} ({reason})" for t, reason in skipped)
+            )
+        if yahoo_used:
+            note_parts.append(
+                f"{len(yahoo_used)} ticker(s) backed by {SHARES_YAHOO_SOURCE} "
+                "fallback (SEC data absent or older than "
+                f"{SHARES_STALENESS_DAYS} days): " + ", ".join(sorted(yahoo_used))
+            )
+        if yahoo_skipped:
+            note_parts.append(
+                f"{len(yahoo_skipped)} ticker(s) had no usable shares data from "
+                "either source: " + "; ".join(f"{t} ({reason})" for t, reason in yahoo_skipped)
+            )
+        if note_parts:
+            report.notes = " | ".join(note_parts)
     return report
 
 

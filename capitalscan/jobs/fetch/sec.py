@@ -28,8 +28,29 @@ SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 # sibling files to the submissions JSON itself, not under a versioned path.
 SUBMISSIONS_HOST = "https://data.sec.gov/submissions/"
 
-_SHARES_TAGS = ("EntityCommonStockSharesOutstanding",)
 _SHARES_UNIT = "shares"
+# `dei:EntityCommonStockSharesOutstanding` is the cover-page fact and the
+# preferred source: DESIGN §4.1 assumed every filer tags it every quarter.
+# In practice a filer stops appearing in this concept's `units` array the
+# moment its share count becomes dimensioned (reported per class of stock
+# rather than as one entity-level number) — SEC's companyfacts endpoint
+# does not expose dimensioned members at all, so the fact does not
+# degrade, it vanishes. Confirmed directly against data.sec.gov for BRK-B
+# (stops in 2011), MA and V (stop in 2010) and disappears entirely for
+# GOOGL/META, all coinciding with each filer's move to per-class cover-page
+# reporting. `us-gaap:CommonStockSharesOutstanding` is the fallback: some
+# filers (e.g. Alphabet) tag a non-dimensioned combined total there even
+# after `dei:EntityCommonStockSharesOutstanding` goes dimensioned-only, so
+# it recovers real rows for those issuers. It recovers nothing for BRK-B,
+# MA or V — those filers have no non-dimensional shares-outstanding fact
+# anywhere in the feed, in either namespace, and that is a real gap in the
+# source data, not a parsing bug. `run_shares` (jobs/ingest.py) logs a
+# ticker that comes back empty after both tags rather than silently
+# dropping it.
+_SHARES_TAG_SOURCES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("dei", ("EntityCommonStockSharesOutstanding",)),
+    ("us-gaap", ("CommonStockSharesOutstanding",)),
+)
 
 
 class SecConfigError(Exception):
@@ -72,6 +93,22 @@ def fetch_cik_lookup() -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["ticker", "cik", "name"])
 
 
+def _shares_rows(cik: int, taxonomy: dict, tag: str) -> list[dict]:
+    units = taxonomy.get(tag, {}).get("units", {}).get(_SHARES_UNIT, [])
+    return [
+        {
+            "cik": cik,
+            "tag": tag,
+            "filed_on": entry.get("filed"),
+            "end": entry.get("end"),
+            "value": entry.get("val"),
+            "form": entry.get("form"),
+            "accn": entry.get("accn"),
+        }
+        for entry in units
+    ]
+
+
 @cached(source="sec_facts", key_fn=lambda cik: str(cik))
 def fetch_company_facts(cik: int) -> pd.DataFrame:
     """Shares-outstanding history from XBRL `companyfacts`, point-in-time.
@@ -79,24 +116,23 @@ def fetch_company_facts(cik: int) -> pd.DataFrame:
     Point-in-time semantics (DESIGN §2.4) live in the caller: use the
     latest filing with `filed_on < as_of`. This fetcher returns every
     filed value with its `filed_on` date and lets the caller pick.
+
+    Tries `_SHARES_TAG_SOURCES` in order and stops at the first namespace
+    that yields any row. The two are not merged: mixing an entity-level
+    dei fact with a us-gaap balance-sheet fact for the same filer would
+    combine two different reporting conventions into one history, which
+    is worse than picking one and documenting the gap (see the comment
+    above `_SHARES_TAG_SOURCES`).
     """
     raw = _fetch_json(FACTS_URL.format(cik=cik))
-    facts = raw.get("facts", {}).get("dei", {})
-    rows = []
-    for tag in _SHARES_TAGS:
-        units = facts.get(tag, {}).get("units", {}).get(_SHARES_UNIT, [])
-        for entry in units:
-            rows.append(
-                {
-                    "cik": cik,
-                    "tag": tag,
-                    "filed_on": entry.get("filed"),
-                    "end": entry.get("end"),
-                    "value": entry.get("val"),
-                    "form": entry.get("form"),
-                    "accn": entry.get("accn"),
-                }
-            )
+    facts = raw.get("facts", {})
+    rows: list[dict] = []
+    for namespace, tags in _SHARES_TAG_SOURCES:
+        taxonomy = facts.get(namespace, {})
+        for tag in tags:
+            rows.extend(_shares_rows(cik, taxonomy, tag))
+        if rows:
+            break
     return pd.DataFrame(rows, columns=["cik", "tag", "filed_on", "end", "value", "form", "accn"])
 
 

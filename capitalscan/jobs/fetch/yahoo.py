@@ -296,6 +296,72 @@ def fetch_quotes(tickers: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["ticker", "ts", "price"])
 
 
+_SHARES_FULL_COLUMNS = ["ticker", "filed_on", "shares"]
+
+
+@rate_limited(per_sec=RATE_LIMIT_PER_SEC)
+@with_retry
+def _download_shares_full(ticker: str, start: date, end: date) -> pd.Series | None:
+    # `Ticker.get_shares_full` hits Yahoo's own "quoteSummary" endpoint, not
+    # `yf.download` — a 404 (bad symbol) surfaces as a caught-and-logged
+    # error inside yfinance itself, which returns `None` rather than
+    # raising. `_has_no_data`-style emptiness handling lives in the caller;
+    # this wrapper exists only to give the `None` case the same
+    # rate-limit/retry treatment as every other network call in this module.
+    return cast(
+        "pd.Series | None",
+        yf.Ticker(ticker).get_shares_full(start=start, end=end),
+    )
+
+
+def _shares_full_key(ticker: str, start: date, end: date) -> str:
+    return f"{ticker}_{start}_{end}"
+
+
+@cached(source="yahoo_shares_full", key_fn=_shares_full_key)
+def fetch_shares_full(ticker: str, start: date, end: date) -> pd.DataFrame:
+    """Dated shares-outstanding series, the current-shares fallback (BUILD follow-up).
+
+    `Ticker(ticker).info["sharesOutstanding"]` was the obvious first fallback
+    for the ~69 tickers whose SEC XBRL fact is missing or stale (see the
+    `SHARES_STALENESS_DAYS` comment in `jobs/ingest.py`), and it was
+    rejected: it is one number, true only *today*, and DESIGN §2.4 already
+    names the failure mode this would reproduce ("the rejected alternative
+    was holding current shares constant backward... AAPL's 2016 cap would
+    come out ~50% too low"). Stamping today's count onto every historical
+    `as_of` is exactly that mistake with a different data source.
+
+    `get_shares_full(start, end)` is different in kind, not just a wider
+    window: verified live against BRK-B, MA, V, and META, it returns a
+    `pd.Series` of Yahoo's own dated share-count estimates reaching back to
+    ~2015 for all four, each value tied to the date Yahoo attributes it to
+    (buybacks and issuances move the count between points). That is a
+    genuine point-in-time series, not "current, applied backward" — a row
+    dated 2016 in this frame describes 2016, the same contract SEC's
+    `filed_on` rows carry. It is why this is the fallback used, and why
+    `run_shares` inserts every point in the requested window rather than
+    only the latest one: a single-most-recent write would silently
+    re-introduce the "current constant held backward" problem for any
+    `as_of` between two Yahoo observation dates prior to the most recent one.
+
+    Returns an empty frame (not raising) when Yahoo has nothing for
+    `ticker` in `[start, end)` — a delisted or never-covered symbol is a
+    `run_shares` skip note, not a fetch failure.
+    """
+    raw = _download_shares_full(ticker, start, end)
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=_SHARES_FULL_COLUMNS)
+    index = cast(pd.DatetimeIndex, raw.index)
+    idx = index.tz_localize(None) if index.tz is not None else index
+    return pd.DataFrame(
+        {
+            "ticker": ticker,
+            "filed_on": idx.date,
+            "shares": raw.to_numpy(dtype="int64"),
+        }
+    ).reset_index(drop=True)
+
+
 @rate_limited(per_sec=RATE_LIMIT_PER_SEC)
 @with_retry
 def fetch_option_expirations(ticker: str) -> list[str]:
