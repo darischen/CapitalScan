@@ -456,6 +456,40 @@ def validate_bars(
     return clean, rejects + flags
 
 
+def find_missing_bars(bars: pd.DataFrame, trading_days: pd.DataFrame) -> pd.DataFrame:
+    """Trading days with no bar, bounded to each ticker's own observed span.
+
+    DESIGN §2.3 lists "missing bar on an NYSE trading day" with threshold
+    "any" — unlike the Stooq disagreement row, there is no tolerance
+    fraction here. That is only achievable, per DESIGN §4.3's silent-
+    truncation warning, if the calendar checked against is bounded to the
+    ticker's own `[min(d), max(d)]` rather than the whole `trading_days`
+    table: a ticker that listed in 2014 has no bars for 2010-2013 and a
+    ticker delisted in 2019 has none after, and neither is a gap — it is
+    exactly the expected absence DESIGN §4.3 says `first_bar`/`last_bar`
+    exist to describe. Comparing against the full calendar regardless of
+    a ticker's life would flag most of the universe permanently and make
+    the check impossible to ever pass; bounding by the ticker's own first
+    and last observed bar is what keeps "any" a real, checkable threshold.
+
+    `bars` needs columns `ticker`, `d` (a bar date, one row per bar).
+    `trading_days` needs a `d` column (the full NYSE calendar). Returns one
+    row per (ticker, missing_date).
+    """
+    if bars.empty:
+        return pd.DataFrame(columns=["ticker", "missing_date"])
+
+    all_days = pd.DatetimeIndex(pd.to_datetime(trading_days["d"])).normalize()
+    gaps: list[dict] = []
+    for ticker, group in bars.groupby("ticker"):
+        present = set(pd.to_datetime(group["d"]).dt.normalize())
+        first, last = min(present), max(present)
+        expected = all_days[(all_days >= first) & (all_days <= last)]
+        for d in sorted(set(expected) - present):
+            gaps.append({"ticker": ticker, "missing_date": d.date()})
+    return pd.DataFrame(gaps, columns=["ticker", "missing_date"])
+
+
 # ============ bars_daily / bars_hourly ============
 
 
@@ -953,6 +987,27 @@ class ValidationReport:
     coverage: pd.DataFrame
     stooq_disagreements: pd.DataFrame
     clean: bool
+    # Every ticker the Stooq loop actually completed a comparison for
+    # (merged non-empty, `pct_diff` computed) — distinct from `len(sample)`,
+    # which also counts tickers skipped for a legitimate reason (no local
+    # data yet, ticker not on Stooq) or lost to an error. A 20-ticker
+    # sample with `stooq_checked == 0` means the cross-check never ran at
+    # all, which is the exact failure mode that used to read as "clean"
+    # because `disagreements` stays empty either way.
+    stooq_checked: int = 0
+    # One row per ticker the loop caught an exception for, with the
+    # message — previously only `console.print`ed and otherwise discarded,
+    # so a total failure of the check (every ticker erroring) looked
+    # identical in the report to a total success (every ticker agreeing).
+    stooq_errors: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=["ticker", "error"])
+    )
+    # DESIGN §2.3's missing-bar rule (see `find_missing_bars`): one row per
+    # (ticker, missing_date) for a trading day inside that ticker's own
+    # observed span with no bar.
+    missing_bars: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=["ticker", "missing_date"])
+    )
 
 
 def run_validate(
@@ -980,9 +1035,21 @@ def run_validate(
         available = pd.read_sql(
             text("SELECT DISTINCT ticker FROM bars WHERE interval = '1d'"), conn
         )["ticker"].tolist()
+        # Missing-bar rule (DESIGN §2.3): the full NYSE calendar plus every
+        # bar date on file. `find_missing_bars` bounds the comparison to
+        # each ticker's own observed span, so this covers the whole
+        # universe (like `coverage` above), not just the Stooq sample.
+        trading_days = pd.read_sql(text("SELECT d FROM trading_days"), conn)
+        bar_dates = pd.read_sql(
+            text("SELECT ticker, ts::date AS d FROM bars WHERE interval = '1d'"), conn
+        )
+
+    missing_bars = find_missing_bars(bar_dates, trading_days)
 
     sample = (tickers or available)[:sample_size]
     disagreements = []
+    stooq_errors: list[dict] = []
+    stooq_checked = 0
     for ticker in sample:
         try:
             with engine.connect() as conn:
@@ -1004,25 +1071,52 @@ def run_validate(
             )
             if merged.empty:
                 continue
-            pct_diff = (merged["close_local"] - merged["close"]).abs() / merged["close"]
+            # Both frames carry a `close` column, so the merge suffixes
+            # *both* sides (`close_local` / `close_stooq`) rather than
+            # leaving one plain `close` behind — this is the bug that made
+            # the cross-check raise a `KeyError` for every ticker, caught
+            # by the broad `except` below and printed with a message that
+            # happened to read like the bare ticker. Reproduced directly
+            # against pandas' own merge, no network involved.
+            pct_diff = (
+                (merged["close_local"] - merged["close_stooq"]).abs() / merged["close_stooq"]
+            )
             frac_bad = (pct_diff > STOOQ_DISAGREEMENT_PCT).mean()
+            stooq_checked += 1
             if frac_bad > STOOQ_DISAGREEMENT_FRACTION:
                 disagreements.append({"ticker": ticker, "frac_disagreeing": frac_bad})
         except Exception as exc:  # noqa: BLE001 - one bad ticker must not kill the report
+            stooq_errors.append({"ticker": ticker, "error": str(exc)})
             console.print(f"[yellow]stooq cross-check skipped for {ticker}: {exc}[/yellow]")
+
+    # A non-empty sample where not a single ticker produced a comparison —
+    # whether every attempt errored, every local frame was empty, or Stooq
+    # had nothing for any of them — is indistinguishable from "no
+    # disagreements" if `clean` only looks at `disagreements`. That silence
+    # is exactly what let the `close`/`close_stooq` bug above hide behind a
+    # per-ticker `except Exception` for as long as it did.
+    stooq_check_failed = bool(sample) and stooq_checked == 0
 
     n_hard_rejects = int(
         reject_counts.loc[reject_counts["severity"] == "reject", "n"].sum()
         if not reject_counts.empty
         else 0
     )
-    clean = n_hard_rejects == 0 and not disagreements
+    clean = (
+        n_hard_rejects == 0
+        and not disagreements
+        and missing_bars.empty
+        and not stooq_check_failed
+    )
 
     return ValidationReport(
         reject_counts=reject_counts,
         coverage=coverage,
         stooq_disagreements=pd.DataFrame(disagreements),
         clean=clean,
+        stooq_checked=stooq_checked,
+        stooq_errors=pd.DataFrame(stooq_errors, columns=["ticker", "error"]),
+        missing_bars=missing_bars,
     )
 
 
@@ -1044,11 +1138,34 @@ def print_validation_report(report: ValidationReport) -> None:
         cov.add_row(row["ticker"], str(row["n_bars"]), str(row["first_ts"]), str(row["last_ts"]))
     console.print(cov)
 
-    if not report.stooq_disagreements.empty:
+    if not report.stooq_errors.empty:
+        console.print(
+            f"[red]Stooq cross-check errored for {len(report.stooq_errors)} "
+            f"ticker(s) (checked {report.stooq_checked} successfully):[/red]"
+        )
+        console.print(report.stooq_errors)
+    if report.stooq_checked == 0 and not report.stooq_errors.empty:
+        console.print(
+            "[red]Stooq cross-check did not complete for any sampled ticker — "
+            "treat as UNAVAILABLE, not as agreement[/red]"
+        )
+    elif not report.stooq_disagreements.empty:
         console.print("[red]Stooq disagreement above threshold:[/red]")
         console.print(report.stooq_disagreements)
     else:
-        console.print("[green]Stooq cross-check: no disagreement above threshold[/green]")
+        console.print(
+            f"[green]Stooq cross-check: no disagreement above threshold "
+            f"({report.stooq_checked} ticker(s) compared)[/green]"
+        )
+
+    if not report.missing_bars.empty:
+        console.print(
+            f"[red]Missing bars on {len(report.missing_bars)} NYSE trading day(s) "
+            f"across {report.missing_bars['ticker'].nunique()} ticker(s):[/red]"
+        )
+        console.print(report.missing_bars)
+    else:
+        console.print("[green]No missing bars inside any ticker's observed span[/green]")
 
     if report.clean:
         console.print("[green]validation clean: zero rejects at 'reject' severity[/green]")
