@@ -1,6 +1,7 @@
 """CapitalScan command-line interface."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -66,6 +67,7 @@ def tickers(
 @app.command()
 def membership(
     backfill: bool = typer.Option(False, help="Backfill membership history"),
+    force: bool = typer.Option(False, help="Regenerate even if the CSV is reviewed and frozen"),
 ) -> None:
     """Build universe membership from S&P 500 history."""
     from capitalscan.jobs import ingest
@@ -73,7 +75,13 @@ def membership(
     if not backfill:
         console.print("[yellow]nothing to do[/yellow]: pass --backfill")
         raise typer.Exit(code=1)
-    report = ingest.run_membership()
+    try:
+        report = ingest.run_membership(force=force)
+    except ingest.UniverseFrozenError as exc:
+        # A frozen file is the expected end state, not a crash: report it as
+        # a refusal rather than letting a traceback reach the terminal.
+        console.print(f"[yellow]membership: nothing to do[/yellow] — {exc}")
+        raise typer.Exit(code=0) from None
     console.print(f"membership: {report.notes}")
 
 
@@ -227,6 +235,60 @@ def events(
     )
 
 
+SIGNAL_TYPE_LABELS = {
+    "bb_lower_touch": "Bollinger Band Lower Bound",
+    "bb_upper_touch": "Bollinger Band Upper Bound",
+    "stoch_oversold": "Stochastic Oversold",
+    "stoch_overbought": "Stochastic Overbought",
+    "confluence_low": "Confluence Low",
+    "confluence_high": "Confluence High",
+}
+
+SIDE_LABELS = {
+    "long": "Long",
+    "short": "Short",
+}
+
+COLUMN_LABELS = {
+    "ticker": "Ticker",
+    "signal_date": "Date",
+    "signal_type": "Signal Type",
+    "signal_types_all": "All Signals",
+    "signal_strength": "Signal Strength",
+    "side": "Direction",
+    "bb_upper": "Upper Bound",
+    "bb_mid": "20-day MA (Split-Adjusted)",
+    "bb_lower": "Lower Bound",
+    "k_full": "Full Stochastic Value",
+    "k_fast": "Fast Stochastic Value",
+    "k_cross_up": "K Crossed Up",
+    "k_cross_down": "K Crossed Down",
+    "dd_bucket": "52-Week Drawdown Range",
+    "trend_state": "Price vs 200-day MA",
+}
+
+
+def _map_signal_types_for_csv(signal_types_val):
+    """Convert signal types array to human-readable labels."""
+    if signal_types_val is None or (isinstance(signal_types_val, str) and signal_types_val == "[]"):
+        return ""
+
+    import ast
+
+    types_list = signal_types_val
+    if isinstance(signal_types_val, str):
+        try:
+            types_list = ast.literal_eval(signal_types_val)
+        except (ValueError, SyntaxError):
+            return str(signal_types_val)
+
+    if not isinstance(types_list, (list, tuple)):
+        return str(signal_types_val)
+
+    labels = [SIGNAL_TYPE_LABELS.get(str(t), str(t)) for t in types_list]
+    return "; ".join(labels)
+
+
 @app.command()
 def scan(
     ticker: Optional[str] = typer.Option(None, help="Single ticker"),
@@ -249,7 +311,24 @@ def scan(
     if result.empty:
         console.print("[yellow]no events found[/yellow]")
         raise typer.Exit(code=0)
+
     console.print(result.to_string(index=False))
+
+    reports_dir = Path("reports")
+    reports_dir.mkdir(exist_ok=True)
+    timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    csv_path = reports_dir / f"{timestamp}.csv"
+
+    csv_export = result.copy()
+    csv_export["signal_type"] = csv_export["signal_type"].map(
+        lambda x: SIGNAL_TYPE_LABELS.get(x, x)
+    )
+    csv_export["signal_types_all"] = csv_export["signal_types_all"].apply(_map_signal_types_for_csv)
+    csv_export["side"] = csv_export["side"].map(lambda x: SIDE_LABELS.get(x, x))
+
+    csv_export = csv_export.rename(columns=COLUMN_LABELS)
+    csv_export.to_csv(csv_path, index=False)
+    console.print(f"\n[green]saved to[/green] {csv_path}")
 
 
 @app.command()
@@ -263,9 +342,16 @@ def sync(
 @app.command()
 def poll(
     interval: int = typer.Option(300, help="Poll interval in seconds"),
+    tickers: Optional[str] = typer.Option(None, help="Comma-separated ticker list"),
 ) -> None:
-    """Run live band-touch poller."""
-    raise NotImplementedError("poll")
+    """Run live band-touch poller until market close (DESIGN §4.8)."""
+    from capitalscan.jobs import poll as poll_job
+
+    resolved = [t.strip().upper() for t in tickers.split(",")] if tickers else None
+    report = poll_job.run_poll(interval=interval, tickers=resolved)
+    console.print(f"poll: session ended, {report.rows_written} events fired")
+    if report.notes:
+        console.print(f"[yellow]notes[/yellow]: {report.notes}")
 
 
 @app.command()
@@ -370,6 +456,113 @@ def schema() -> None:
     from capitalscan.jobs import db as db_ops
 
     db_ops.schema()
+
+
+positions_app = typer.Typer(help="Personal trade log (ADR 073)")
+app.add_typer(positions_app, name="positions")
+
+
+@positions_app.command("open")
+def positions_open(
+    ticker: str = typer.Option(...),
+    side: str = typer.Option(..., help="long or short"),
+    entry_date: str = typer.Option(..., help="YYYY-MM-DD"),
+    entry_price: float = typer.Option(...),
+    quantity: Optional[float] = typer.Option(None),
+) -> None:
+    """Declare a new open position."""
+    from capitalscan.jobs import db_io
+    from capitalscan.jobs import positions as positions_job
+
+    row = positions_job.open_position(
+        db_io.get_engine(),
+        ticker.upper(),
+        side,
+        date.fromisoformat(entry_date),
+        entry_price,
+        quantity,
+    )
+    console.print(f"opened position {row['id']}: {ticker.upper()} {side} @ {entry_price}")
+
+
+@positions_app.command("close")
+def positions_close(
+    id: int = typer.Option(...),
+    exit_date: str = typer.Option(..., help="YYYY-MM-DD"),
+    exit_price: float = typer.Option(...),
+    reason: str = typer.Option(...),
+) -> None:
+    """Close an open position and record the realized return."""
+    from capitalscan.jobs import db_io
+    from capitalscan.jobs import positions as positions_job
+
+    row = positions_job.close_position(
+        db_io.get_engine(), id, date.fromisoformat(exit_date), exit_price, reason
+    )
+    console.print(f"closed position {id}: realized_ret={row['realized_ret']}")
+
+
+@positions_app.command("list")
+def positions_list(
+    status: Optional[str] = typer.Option(None, help="Filter: open or closed"),
+) -> None:
+    """List positions."""
+    from capitalscan.jobs import db_io
+    from capitalscan.jobs import positions as positions_job
+
+    result = positions_job.list_positions(db_io.get_engine(), status=status)
+    if result.empty:
+        console.print("[yellow]no positions[/yellow]")
+        raise typer.Exit(code=0)
+    console.print(result.to_string(index=False))
+
+
+@app.command()
+def nightly() -> None:
+    """Orchestrates the nightly chain (DESIGN §4.12): bars, actions, market,
+    shares, earnings-forward, indicators, events. `sync` is Phase 5 scope
+    and stays unimplemented.
+    """
+    from capitalscan.jobs import compute, db_io, ingest, scheduled_runs
+
+    engine = db_io.get_engine()
+    scheduled_runs.record(engine, "nightly")
+    tickers = _resolve_tickers(None)
+    end = date.today()
+    start = end - timedelta(days=5)
+
+    ingest.run_bars_daily(tickers, start, end, engine=engine)
+    ingest.run_actions(tickers, engine=engine)
+    ingest.run_market(lookback_days=5, engine=engine)
+    ingest.run_shares(tickers, engine=engine)
+    ingest.run_earnings(tickers, historical=False, forward_days=90, engine=engine)
+    compute.run_indicators(tickers, start, end, engine=engine)
+    compute.run_events(tickers, start, end, engine=engine)
+    console.print("nightly: chain complete (sync --to-serving not yet implemented)")
+
+
+@app.command()
+def weekly() -> None:
+    """Orchestrates the weekly chain (DESIGN §4.12). Backtest/cell_stats/sync
+    are Phase 3/4/5 scope and stay unimplemented — this records the
+    schedule slot now so ADR 080's catch-up tracking is in place before
+    those jobs exist.
+    """
+    from capitalscan.jobs import db_io, scheduled_runs
+
+    scheduled_runs.record(db_io.get_engine(), "weekly")
+    console.print("weekly: no jobs wired yet (backtest/cell_stats are Phase 3-4 scope)")
+
+
+@app.command()
+def monthly() -> None:
+    """Orchestrates the monthly chain (DESIGN §4.12). Retrain/calibrate are
+    Phase 6 scope and stay unimplemented — see `weekly`.
+    """
+    from capitalscan.jobs import db_io, scheduled_runs
+
+    scheduled_runs.record(db_io.get_engine(), "monthly")
+    console.print("monthly: no jobs wired yet (retrain/calibrate are Phase 6 scope)")
 
 
 logs_app = typer.Typer(help="Logging utilities")

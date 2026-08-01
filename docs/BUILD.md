@@ -627,6 +627,18 @@ Nightly dump to the second local disk. Monthly to a GitHub Release asset (~300 M
 
 ### Tasks
 
+**9.0 Wire the hourly pull into the nightly chain** *(prerequisite for 9.2)* — `run_bars_hourly` has exactly one caller, the `bars` CLI command. `nightly()` in `jobs/cli.py` fetches daily bars and skips hourly, so nothing keeps the hourly table current and it freezes at whatever the last manual `cscan bars --hourly --backfill` produced. Add one line after `run_bars_daily`:
+
+```python
+ingest.run_bars_hourly(tickers, start, end, engine=engine)
+```
+
+`start` is already `end - 5` in that function, so `_hourly_windows` yields a single 60-day window per ticker rather than the 13 a full backfill walks. Cost is roughly **21 minutes** for ~630 tickers at `RATE_LIMIT_PER_SEC = 0.5`, against ~4.6 hours for the 725-day backfill.
+
+Safe to defer until this session: hourly is inert until 9.2 exists, since DESIGN §3.8 reads it only to resolve `TOUCH_5M` and `TOUCH_30M`. Bars already written persist, and only the *fetchable* window slides, so a later run recovers any gap shorter than 725 days.
+
+Failure mode if skipped: `entry_price_for` returns null rather than raising when hourly is absent (`tests/unit/test_returns.py:199`), so a stale hourly table silently drops two of the four entry kinds instead of erroring.
+
 **9.1 `research/backtest.py`** — the pipeline in DESIGN §5.2, exactly in that order.
 
 **9.2 Entry resolution** — four kinds, DESIGN §5.4, with the gap rule.

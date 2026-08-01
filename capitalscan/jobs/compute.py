@@ -676,7 +676,9 @@ _SCAN_COLUMNS = [
     "signal_types_all",
     "signal_strength",
     "side",
-    "touch_level",
+    "bb_upper",
+    "bb_mid",
+    "bb_lower",
     "bb_pctb",
     "k_full",
     "k_fast",
@@ -712,19 +714,27 @@ def scan(
     clauses = ["1=1"]
     params: dict[str, Any] = {}
     if tickers:
-        clauses.append("ticker = ANY(:tickers)")
+        clauses.append("e.ticker = ANY(:tickers)")
         params["tickers"] = tickers
     if signal_types:
-        clauses.append("signal_type = ANY(:signal_types)")
+        clauses.append("e.signal_type = ANY(:signal_types)")
         params["signal_types"] = signal_types
     if start:
-        clauses.append("signal_date >= :start")
+        clauses.append("e.signal_date >= :start")
         params["start"] = start
     if end:
-        clauses.append("signal_date <= :end")
+        clauses.append("e.signal_date <= :end")
         params["end"] = end
 
-    query = f"SELECT * FROM events WHERE {' AND '.join(clauses)} ORDER BY ticker, signal_date"
+    query = f"""
+        SELECT e.ticker, e.signal_date, e.signal_type, e.signal_types_all, e.signal_strength,
+               e.side, i.bb_upper, i.bb_mid, i.bb_lower, e.bb_pctb, e.k_full, e.k_fast,
+               e.k_cross_up, e.k_cross_down, e.dd_bucket, e.above_sma200
+        FROM events e
+        LEFT JOIN indicators i ON e.ticker = i.ticker AND e.signal_date = i.ts AND i.interval = '1d'
+        WHERE {' AND '.join(clauses)}
+        ORDER BY e.ticker, e.signal_date
+    """
     with engine.connect() as conn:
         df = pd.read_sql(text(query), conn, params=params)
     if df.empty:

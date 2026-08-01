@@ -23,6 +23,7 @@ dependencies = [
     "yfinance>=0.2.30",
     "pandas-market-calendars>=4.3.0",
     "requests>=2.31.0",
+    "lxml>=4.9.0",  # pandas.read_html backend for the Wikipedia membership fetcher
     "pyarrow>=13.0.0",
     "python-dotenv>=1.0.0",
     "tomli>=2.0.0; python_version < '3.11'",

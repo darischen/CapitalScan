@@ -298,6 +298,17 @@ def fetch_quotes(tickers: list[str]) -> pd.DataFrame:
 
 @rate_limited(per_sec=RATE_LIMIT_PER_SEC)
 @with_retry
+def fetch_option_expirations(ticker: str) -> list[str]:
+    """Every available expiration date, nearest first (ADR 050's call
+    overlay needs the full list to pick "nearest expiry past day 5";
+    `fetch_chain` below only returns one expiry's calls at a time). Never
+    cached — new expiries list weekly.
+    """
+    return list(yf.Ticker(ticker).options)
+
+
+@rate_limited(per_sec=RATE_LIMIT_PER_SEC)
+@with_retry
 def fetch_chain(ticker: str, expiration: str | None = None) -> pd.DataFrame:
     """Live option chain for the call overlay (ADR 050). Never cached."""
     tk = yf.Ticker(ticker)

@@ -170,13 +170,99 @@ def run_tickers_refresh(engine: Engine | None = None) -> IngestReport:
 # ============ membership ============
 
 
-def run_membership() -> IngestReport:
+def drop_pre_window_tickers(
+    union_df: pd.DataFrame, event_start: str
+) -> tuple[pd.DataFrame, list[str]]:
+    """Drop tickers whose entire index tenure ends before `event_start`.
+
+    ADR 035 keeps delisted and removed names on purpose — the union is
+    what removes survivorship bias, and ADR 015 depends on it. This is
+    **not** that cut. A name that left the index before the event window
+    opens contributes no events to the study, so dropping it costs no
+    bias; a name that left during the window stays, delisted or not.
+
+    Conservative by construction. A ticker goes only when all three hold:
+    it is not a current member, its removal was actually observed, and
+    none of its dates reach `event_start`. A ticker added in 2005 with no
+    recorded removal stays, because Wikipedia's table covers *selected*
+    changes and its exit may simply never have been logged. Dates that
+    fail to parse count as reaching the window for the same reason — ADR
+    055 expects inconsistent formatting in older rows, and a parse
+    failure is a signal to review, not to delete.
+
+    Returns the filtered frame and the sorted list of dropped tickers.
+    """
+    cutoff = pd.Timestamp(event_start)
+    current = set(union_df.loc[~union_df["needs_review"], "ticker"])
+
+    dropped: list[str] = []
+    for ticker, group in union_df.groupby("ticker", sort=False):
+        if ticker in current:
+            continue
+        if group["removed"].isna().all():
+            continue
+        stamps = pd.to_datetime(
+            pd.concat([group["added"], group["removed"]]).dropna(),
+            format="mixed",
+            errors="coerce",
+        )
+        if stamps.isna().any() or stamps.empty:
+            continue
+        if stamps.max() < cutoff:
+            dropped.append(str(ticker))
+
+    kept = union_df.loc[~union_df["ticker"].isin(dropped)]
+    return kept.reset_index(drop=True), sorted(dropped)
+
+
+class UniverseFrozenError(Exception):
+    """`universe_union.csv` has been reviewed and signed off (ADR 055).
+
+    Regenerating would reset every `needs_review` flag and discard the
+    manual pass, so the job refuses unless explicitly forced.
+    """
+
+
+def is_reviewed(path: Path) -> bool:
+    """Whether `path` is a signed-off universe file: present, non-empty, no pending rows.
+
+    Every uncertain case answers `False` — a missing file, a missing
+    `needs_review` column, an unreadable file. The guard should only ever
+    block on positive proof that a review happened, otherwise a malformed
+    file would lock the job out of a legitimate first run.
+    """
+    if not path.exists():
+        return False
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return False
+    if df.empty or "needs_review" not in df.columns:
+        return False
+    return not df["needs_review"].astype(bool).any()
+
+
+def run_membership(force: bool = False) -> IngestReport:
     """Builds `data/universe_union.csv` (ADR 055): once, then reviewed by hand.
 
     Writes no database rows — membership history is a reviewable file
     artifact, not a table, so composition changes show up as a diff rather
     than silently when the source page edits.
+
+    Refuses to overwrite a file whose rows are all signed off. ADR 055
+    calls this artifact frozen, and every regeneration re-flags each
+    change row as `needs_review`, so an accidental re-run would throw
+    away the review pass with no warning. `force=True` regenerates
+    anyway. The check runs before the scrape so a refusal costs no
+    network call and leaves the fetch cache untouched.
     """
+    if not force and is_reviewed(UNIVERSE_CSV):
+        raise UniverseFrozenError(
+            f"{UNIVERSE_CSV} is reviewed and frozen (ADR 055); regenerating would "
+            "reset every needs_review flag and discard that pass. Pass --force to "
+            "regenerate anyway."
+        )
+
     constituents = wikipedia.fetch_current_constituents()
     changes = wikipedia.fetch_membership_changes()
 
@@ -189,6 +275,17 @@ def run_membership() -> IngestReport:
         }
         for t in constituents["ticker"]
     ]
+    # Wikipedia labels this column "Effective Date", not "Date", and has
+    # renamed it before. Resolve it by suffix so a relabel shows up as a
+    # hard failure here rather than as a CSV full of empty dates.
+    date_cols = [c for c in changes.columns if c.endswith("date")]
+    if len(date_cols) != 1:
+        raise ValueError(
+            f"membership changes table: expected exactly one date column, "
+            f"found {date_cols} in {list(changes.columns)}"
+        )
+    date_col = date_cols[0]
+
     for _, row in changes.iterrows():
         for col, key in (("removed_ticker", "removed"), ("added_ticker", "added")):
             if col not in changes.columns:
@@ -199,13 +296,15 @@ def run_membership() -> IngestReport:
             rows.append(
                 {
                     "ticker": str(ticker).upper().replace(".", "-"),
-                    "added": row.get("date") if key == "added" else None,
-                    "removed": row.get("date") if key == "removed" else None,
+                    "added": row.get(date_col) if key == "added" else None,
+                    "removed": row.get(date_col) if key == "removed" else None,
                     "needs_review": True,
                 }
             )
 
     union_df = pd.DataFrame(rows).drop_duplicates()
+    union_df, dropped = drop_pre_window_tickers(union_df, SplitParams().event_start)
+
     UNIVERSE_CSV.parent.mkdir(parents=True, exist_ok=True)
     union_df.to_csv(UNIVERSE_CSV, index=False)
     return IngestReport(
@@ -213,8 +312,10 @@ def run_membership() -> IngestReport:
         run_id=new_run_id("membership"),
         rows_written=len(union_df),
         notes=(
-            f"wrote {UNIVERSE_CSV} — {int(union_df['needs_review'].sum())} rows "
-            "need manual review before this is frozen (ADR 055)"
+            f"wrote {UNIVERSE_CSV} — {union_df['ticker'].nunique()} tickers, "
+            f"{int(union_df['needs_review'].sum())} rows need manual review "
+            f"before this is frozen (ADR 055); dropped {len(dropped)} tickers "
+            "whose tenure ended before the event window opened"
         ),
     )
 
@@ -368,35 +469,46 @@ def run_bars_hourly(
     with run_job(
         engine, "bars_hourly", {"tickers": tickers, "start": str(start), "end": str(end)}
     ) as report:
-        frames = []
+        # Checkpointed per ticker (BUILD.md §5.4). The full 725-day walk is
+        # ~13 windows across ~630 tickers at 0.5 req/s — over four hours,
+        # well past CLAUDE.md's 10-minute checkpoint threshold. Buffering
+        # every frame and writing once at the end meant an interrupt threw
+        # away the whole run, which is exactly what happened twice.
+        fetched: list[str] = []
         with Progress() as progress:
             task = progress.add_task("[cyan]hourly bars...", total=len(tickers))
             for ticker in tickers:
                 hourly = yahoo.fetch_bars_hourly(ticker, start, end)
-                if not hourly.empty:
-                    frames.append(hourly)
                 progress.update(task, advance=1, description=f"[cyan]{ticker}[/cyan]")
-        if not frames:
-            report.tickers = []
-            return report
+                if hourly.empty:
+                    # Delisted before the 725-day window opened. Expected for
+                    # most of the union, not an error.
+                    continue
 
-        raw = pd.concat(frames, ignore_index=True)
-        raw["interval"] = "1h"
-        raw["adj_close"] = raw["close"]
-        raw["adj_factor"] = 1.0
-        raw["source"] = "yahoo"
-        raw["run_id"] = report.run_id
+                raw = hourly.copy()
+                raw["interval"] = "1h"
+                raw["adj_close"] = raw["close"]
+                raw["adj_factor"] = 1.0
+                raw["source"] = "yahoo"
+                raw["run_id"] = report.run_id
 
-        clean, rejects = validate_bars(raw, corporate_actions=None)
-        for r in rejects:
-            r["run_id"] = report.run_id
-        report.rows_rejected = sum(1 for r in rejects if r["severity"] == "reject")
-        report.rows_flagged = sum(1 for r in rejects if r["severity"] == "flag")
-        if rejects:
-            db_io.append(engine, "bar_rejects", rejects)
+                clean, rejects = validate_bars(raw, corporate_actions=None)
+                for r in rejects:
+                    r["run_id"] = report.run_id
+                report.rows_rejected += sum(1 for r in rejects if r["severity"] == "reject")
+                report.rows_flagged += sum(1 for r in rejects if r["severity"] == "flag")
+                if rejects:
+                    db_io.append(engine, "bar_rejects", rejects)
 
-        report.rows_written = db_io.upsert(engine, "bars", clean, ["ticker", "ts", "interval"])
-        report.tickers = sorted(set(raw["ticker"]))
+                # Committed before the next fetch starts. The key is
+                # (ticker, ts, interval), so rerunning after an interrupt
+                # rewrites what is already there rather than duplicating it.
+                report.rows_written += db_io.upsert(
+                    engine, "bars", clean, ["ticker", "ts", "interval"]
+                )
+                fetched.append(ticker)
+
+        report.tickers = sorted(set(fetched))
     return report
 
 
