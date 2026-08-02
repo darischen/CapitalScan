@@ -46,7 +46,7 @@ from capitalscan.core.returns import entry_price_for
 from capitalscan.core.signals import debounce_key
 from capitalscan.core.types import Bound, EntryKind
 from capitalscan.jobs import db_io
-from capitalscan.jobs.config import config_hash
+from capitalscan.jobs.config import config_hash, split_key_for
 from capitalscan.jobs.ingest import IngestReport, run_job
 
 MIN_BARS_FOR_INDICATORS = 280
@@ -523,12 +523,14 @@ def _dd_bucket(dd_52w: float | None) -> str | None:
 
 
 def _split_key(signal_date: date, sp: SplitParams) -> str:
-    """Assigned at event creation, never at query time (invariant 5)."""
-    if signal_date <= date.fromisoformat(sp.train_end):
-        return "train"
-    if signal_date <= date.fromisoformat(sp.validate_end):
-        return "validate"
-    return "holdout"
+    """Assigned at event creation, never at query time (invariant 5).
+
+    Thin delegate to `jobs.config.split_key_for` — the one implementation
+    shared with `research/backtest.py` (Ruling C2, session 9 task 2). Kept
+    as a wrapper, rather than inlined at the call site, so existing unit
+    tests importing `_split_key` from this module keep working unchanged.
+    """
+    return split_key_for(signal_date, sp)
 
 
 def _deterministic_id(*parts: object) -> int:

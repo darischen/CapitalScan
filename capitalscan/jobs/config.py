@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 from dataclasses import asdict, fields, is_dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -232,3 +233,33 @@ def config_hash(config: Config) -> str:
     """
     payload = json.dumps(asdict(config), sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def split_key_for(signal_date: date, sp: SplitParams) -> str:
+    """Assigned at event creation, never at query time (invariant 5).
+
+    One implementation, imported by both `jobs/compute.py` (event creation)
+    and `research/backtest.py` (Session 9). `datetime.date` comparison, not
+    string comparison, because `SplitParams`' bounds are ISO strings and
+    string order only agrees with date order for zero-padded ISO dates —
+    true here, but comparing as `date` makes that an invariant instead of
+    a coincidence.
+
+    Raises `ValueError` for a date before `sp.event_start` rather than
+    silently landing it in `train`. Every date the universe/event pipeline
+    is meant to see is `>= event_start`; a date before it means the caller
+    passed something outside the event universe, and `train` would be a
+    fabricated label, not a resolved one. (This raise is why
+    `cscan events --lookback 6500` — which reaches back before 2010-01-01 —
+    now errors instead of writing rows silently mislabelled `train`.)
+    """
+    if signal_date < date.fromisoformat(sp.event_start):
+        raise ValueError(
+            f"signal_date {signal_date.isoformat()} is before "
+            f"SplitParams.event_start {sp.event_start}; it has no valid split_key"
+        )
+    if signal_date <= date.fromisoformat(sp.train_end):
+        return "train"
+    if signal_date <= date.fromisoformat(sp.validate_end):
+        return "validate"
+    return "holdout"
