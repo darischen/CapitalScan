@@ -485,7 +485,12 @@ def run_universe(
             sector = tk.sector if tk else None
             cik = tk.cik if tk else None
 
-            shares = _latest_shares(engine, ticker, as_of)
+            # ADR filings report ordinary shares while `close` is per ADR;
+            # `adr_adjusted_shares` reconciles the two before pricing. A
+            # non-ADR passes through untouched.
+            shares = core_universe.adr_adjusted_shares(
+                ticker, _latest_shares(engine, ticker, as_of), up
+            )
             mcap = shares * float(ind_row["close"]) if shares is not None else None
             rel_return = _rel_return_756d(engine, ticker, as_of, up.rel_return_lookback_days)
             sector_median, _ = _sector_median_return(

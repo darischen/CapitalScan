@@ -42,6 +42,31 @@ def _cmp(left: object, right: object, strict: bool = True) -> bool | None:
     return lhs > rhs if strict else lhs >= rhs
 
 
+def adr_adjusted_shares(ticker: str, shares: float | None, up: UniverseParams) -> float | None:
+    """Ordinary share count converted to ADR-equivalent, for pricing.
+
+    An ADR's Form 20-F reports the issuer's **ordinary** shares while the
+    bar price is per **ADR**, so multiplying the two directly overstates
+    market cap by the ADR ratio. TSM filed 25,932,524,521 ordinary shares
+    against 5,186,474,013 ADRs — exactly 5:1 — which priced it at $10.5T
+    against an actual ~$2.1T.
+
+    `crit_mcap` survived that unharmed, since TSM clears the $200B
+    threshold at either figure. `mcap_usd` and `mcap_rank` did not: both
+    are stored on every event as context tags, so anything conditioning on
+    company size inherited a 5x error on that ticker.
+
+    A ticker absent from the map is 1:1 — that covers every ordinary US
+    listing and the 1:1 ADRs alike, so being an ADR is not itself a
+    correction. `None` passes through unchanged rather than becoming 0.0,
+    because "no filing yet" is not "no shares" (invariant 4).
+    """
+    if shares is None:
+        return None
+    ratio = dict(up.adr_ordinary_per_adr).get(ticker.upper(), 1.0)
+    return shares / ratio
+
+
 def evaluate_criteria(
     ind_row: pd.Series,
     mcap: float | None,

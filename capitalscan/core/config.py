@@ -105,6 +105,26 @@ class UniverseParams:
         "crit_sma200_slope",
         "crit_rel_return",
     )
+    # Ordinary shares backing one ADR. An ADR's Form 20-F reports the
+    # issuer's *ordinary* share count while the bar price is per *ADR*, so
+    # market cap needs the ordinary count divided by this ratio first.
+    #
+    # Only tickers with a ratio other than 1:1 belong here; everything else
+    # (including 1:1 ADRs) falls back to 1.0. Measured 2026-08-01 against
+    # yfinance's ADR-equivalent counts: TSM 5.00, ASML 1.00, SAP 1.06,
+    # NVO 1.32. Only TSM is a real ratio — TSMC's ADR is 1:5. SAP's 6% is
+    # filing-date drift, and NVO's 1.32 is Novo's A+B share classes, where
+    # yfinance's own `marketCap` agrees with the A+B total, so that number
+    # is already correct and the ADR itself is 1:1.
+    #
+    # A tuple of pairs rather than a dict because this dataclass is frozen
+    # and its sole import is `dataclasses` (invariant 10).
+    #
+    # ADR ratios do change — an issuer can re-ratio, and that silently
+    # rescales every historical market cap computed here. If a ratio is
+    # ever revised, the honest fix is a dated mapping, not editing this
+    # number in place.
+    adr_ordinary_per_adr: tuple[tuple[str, float], ...] = (("TSM", 5.0),)
 
 
 @dataclass(frozen=True)
