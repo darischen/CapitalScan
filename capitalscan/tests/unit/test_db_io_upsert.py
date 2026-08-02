@@ -174,6 +174,36 @@ class TestColumnScopedUpdate:
                 update_columns=["ticker"],
             )
 
+    def test_empty_update_columns_list_raises(self, engine):
+        """`update_columns=[]` is distinct from `update_columns=None` — the
+        former means "update nothing," a no-op DO UPDATE SET that is almost
+        certainly a caller bug (e.g. a programmatically-built list that came
+        out empty), not a deliberate request. Left unvalidated this reaches
+        SQLAlchemy's own `on_conflict_do_update(set_={})`, which raises
+        `set parameter dictionary must not be empty` — confirmed by review
+        against a standalone repro. That message names a parameter
+        (`set_`) the caller of `upsert()` never passed, so this function
+        raises its own descriptive error first instead."""
+        with pytest.raises(ValueError, match="empty list"):
+            db_io.upsert(engine, "events", [_ROW], CONFLICT_COLS, update_columns=[])
+
+    def test_duplicate_names_in_update_columns_are_harmless(self, engine):
+        """A repeated name collapses naturally because `update_cols` is
+        built as a dict comprehension keyed on the column name — pinned
+        here so a future refactor to a list-based structure doesn't
+        silently reintroduce ambiguity (e.g. two SET clauses for one
+        column, which Postgres rejects)."""
+        db_io.upsert(
+            engine,
+            "events",
+            [_ROW],
+            CONFLICT_COLS,
+            update_columns=["run_id", "run_id", "signal_strength"],
+        )
+        sql = _set_clause_columns(engine.executed[0])
+        assert sql.count("run_id = excluded.run_id") == 1
+        assert "signal_strength = excluded.signal_strength" in sql
+
     def test_empty_data_short_circuits_before_validation(self, engine):
         """An empty write is a no-op today (line `if not rows: return 0`)
         regardless of `update_columns` — this must not regress into raising

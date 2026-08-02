@@ -104,6 +104,15 @@ def upsert(
     silent-NULL defect this whole feature was added to fix, just one layer
     up.
 
+    An empty list (`update_columns=[]`, distinct from the `None` default)
+    also raises `ValueError`. It means "update no columns at all," which is
+    a no-op `DO UPDATE SET` and, on a natural-key table, almost certainly a
+    caller bug — a programmatically-built list that came out empty, not a
+    deliberate request. Left unchecked, `on_conflict_do_update(set_={})`
+    would reach SQLAlchemy's own `set parameter dictionary must not be
+    empty` error instead, which names a parameter the caller never passed
+    and isn't specific to this codebase's column-ownership rule.
+
     Inserts in batches of 1,000 rows to avoid exceeding Postgres parameter limits.
     """
     rows = _rows_from(data)
@@ -112,6 +121,13 @@ def upsert(
     table = _table(engine, table_name)
 
     if update_columns is not None:
+        if not update_columns:
+            raise ValueError(
+                f"update_columns for {table_name!r} is an empty list, which would "
+                "update no columns at all — pass None for the default (every "
+                "non-key column) or a non-empty list of the columns this caller "
+                "actually computed"
+            )
         table_col_names = {c.name for c in table.columns}
         invalid = [c for c in update_columns if c not in table_col_names or c in conflict_cols]
         if invalid:
