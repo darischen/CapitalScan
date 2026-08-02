@@ -11,6 +11,40 @@ console = Console()
 
 app = typer.Typer(help="CapitalScan event-study engine")
 
+# `jobs.config.resolve_config`'s own default (`config_file="config.toml"`)
+# reads the process CWD, which would make a command's resolved config depend
+# on the directory the user happened to be standing in when they typed
+# `cscan ...` (see `test_jobs_config.py`'s module docstring — the whole
+# reason every test there pins an explicit path). The CLI pins the repo
+# root instead: `cli.py` lives at `<repo_root>/capitalscan/jobs/cli.py`, so
+# two `.parent` calls land on `<repo_root>`, matching the `REPO_ROOT`
+# pattern already used in `jobs/db.py`, `jobs/ingest.py`, and `jobs/verify.py`.
+_CONFIG_FILE = str(Path(__file__).resolve().parent.parent.parent / "config.toml")
+
+
+def _resolve_config_or_exit(cli_overrides: Optional[dict] = None):
+    """The one call site for `jobs.config.resolve_config` (ADR 091, BUILD
+    §0.5). Every command that consumes a config dataclass routes through
+    here instead of constructing `Config()` / `IndicatorParams()` / etc.
+    directly, so a `config.toml` or `CAPSCAN_*` env var the user set is
+    actually honored.
+
+    A `ConfigError` is deliberate, not a bug (see `jobs/config.py`'s module
+    docstring): malformed input must raise rather than default, because
+    `config_hash` is stamped on every generated row, and a silently
+    defaulted config produces a hash asserting parameters that never ran.
+    Caught here and turned into the same clean-error idiom every other
+    command uses, so it reaches the terminal as a message and a non-zero
+    exit, never a traceback.
+    """
+    from capitalscan.jobs.config import ConfigError, resolve_config
+
+    try:
+        return resolve_config(cli_overrides=cli_overrides, config_file=_CONFIG_FILE)
+    except ConfigError as exc:
+        console.print(f"[red]error[/red]: config resolution failed — {exc}")
+        raise typer.Exit(code=1) from None
+
 
 def _resolve_tickers(tickers: Optional[str]) -> list[str]:
     """`--tickers TSM,NVDA` if given, else every active ticker already on file.
@@ -191,10 +225,13 @@ def indicators(
 
     if only:
         console.print("[yellow]note[/yellow]: --only is not implemented; computing every indicator")
+    config = _resolve_config_or_exit()
     resolved = _resolve_tickers(tickers)
     end = date.today()
     start = end - timedelta(days=lookback)
-    report = compute.run_indicators(resolved, start, end, max_workers=workers)
+    report = compute.run_indicators(
+        resolved, start, end, params=config.indicators, max_workers=workers
+    )
     console.print(
         f"indicators: {report.rows_written} written, {report.rows_flagged} tickers skipped "
         f"(insufficient history)"
@@ -212,8 +249,9 @@ def universe(
     if not quarter:
         console.print("[red]error[/red]: --quarter is required (e.g. 2026Q3)")
         raise typer.Exit(code=1)
+    config = _resolve_config_or_exit()
     resolved = [t.strip().upper() for t in tickers.split(",")] if tickers else None
-    report = compute.run_universe(quarter, tickers=resolved)
+    report = compute.run_universe(quarter, tickers=resolved, up=config.universe)
     console.print(f"universe: evaluated {len(report.tickers)} tickers as of {quarter}")
 
 
@@ -225,10 +263,11 @@ def events(
     """Detect signal events."""
     from capitalscan.jobs import compute
 
+    config = _resolve_config_or_exit()
     resolved = _resolve_tickers(tickers)
     end = date.today()
     start = end - timedelta(days=lookback)
-    report = compute.run_events(resolved, start, end)
+    report = compute.run_events(resolved, start, end, sp=config.signals)
     console.print(
         f"events: {report.rows_written} written, "
         f"{report.rows_flagged} bars skipped (null indicator)"
@@ -435,7 +474,6 @@ def backtest(
     """
     from dataclasses import asdict
 
-    from capitalscan.core.config import Config
     from capitalscan.jobs import db_io, ingest
     from capitalscan.jobs.config import config_hash as compute_config_hash
     from capitalscan.research.backtest import BacktestRunFailed, run_backtest
@@ -450,7 +488,7 @@ def backtest(
         )
         raise typer.Exit(code=1)
 
-    config = Config()
+    config = _resolve_config_or_exit()
     chash = compute_config_hash(config)
     engine = db_io.get_engine()
 
@@ -649,8 +687,15 @@ def poll(
     """Run live band-touch poller until market close (DESIGN §4.8)."""
     from capitalscan.jobs import poll as poll_job
 
+    config = _resolve_config_or_exit()
     resolved = [t.strip().upper() for t in tickers.split(",")] if tickers else None
-    report = poll_job.run_poll(interval=interval, tickers=resolved)
+    report = poll_job.run_poll(
+        interval=interval,
+        tickers=resolved,
+        sp=config.signals,
+        ep=config.exits,
+        stats=config.stats,
+    )
     console.print(f"poll: session ended, {report.rows_written} events fired")
     if report.notes:
         console.print(f"[yellow]notes[/yellow]: {report.notes}")

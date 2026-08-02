@@ -1,0 +1,264 @@
+"""Task: wire `jobs.config.resolve_config` into the CLI (ADR 091, BUILD §0.5).
+
+Before this task, every command constructed config dataclasses directly
+(`Config()`, `IndicatorParams()`, ...), so a `config.toml` or `CAPSCAN_*`
+env var a user set was silently ignored. These tests pin:
+
+  1. `cli._resolve_config_or_exit` is the one place that calls
+     `jobs.config.resolve_config`, pinned to a repo-root `config.toml`
+     rather than the process CWD (a resolver reading ambient CWD makes the
+     result depend on where the user stood when they typed the command —
+     see `test_jobs_config.py`'s module docstring).
+  2. A `ConfigError` surfaces as a clean `console.print` + `typer.Exit(1)`,
+     never a traceback.
+  3. `config_hash(Config())` is unchanged by this wiring — no `config.toml`
+     and no `CAPSCAN_*` env vars in this environment means `resolve_config`
+     returns dataclass defaults, same as the `Config()` call it replaces.
+  4. Each wired command threads the *resolved* config section through to
+     the job function it already calls, instead of letting that job
+     function default the section itself.
+
+Every test pins `cli._CONFIG_FILE` explicitly and clears `CAPSCAN_*` (same
+isolation pattern as `test_jobs_config.py`) so a stray ambient variable or a
+`config.toml` some other test leaves behind cannot make this suite green by
+accident.
+"""
+
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+
+import pytest
+import typer
+from typer.testing import CliRunner
+
+from capitalscan.core.config import Config
+from capitalscan.jobs import cli
+from capitalscan.jobs.config import config_hash
+
+SECTIONS = ["indicators", "signals", "exits", "costs", "universe", "stats", "splits"]
+
+runner = CliRunner()
+
+# Captured before the autouse fixture below overrides `cli._CONFIG_FILE` for
+# every other test — the one test that checks the real default needs the
+# unpatched value.
+_REAL_CONFIG_FILE = cli._CONFIG_FILE
+
+
+@pytest.fixture(autouse=True)
+def clean_env(monkeypatch, tmp_path):
+    for section in SECTIONS:
+        monkeypatch.delenv(f"CAPSCAN_{section.upper()}", raising=False)
+    # Default every test to a config file that does not exist, so the
+    # "no config.toml" case is the default and each test opts in to a real
+    # file explicitly.
+    monkeypatch.setattr(cli, "_CONFIG_FILE", str(tmp_path / "absent.toml"))
+
+
+def _toml(tmp_path, body: str) -> str:
+    path = tmp_path / "config.toml"
+    path.write_text(body)
+    return str(path)
+
+
+# ---------------------------------------------------------------------------
+# The pinned config_hash value (task requirement)
+# ---------------------------------------------------------------------------
+
+
+def test_default_config_hash_is_pinned():
+    """This value is tracked by the human partner to set a Postgres GUC.
+    Wiring the resolver in must not move it."""
+    assert config_hash(Config()) == "22df3117b890793b"
+
+
+# ---------------------------------------------------------------------------
+# `_resolve_config_or_exit` — the one call site for `resolve_config`
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_config_or_exit_defaults_with_no_file_or_env():
+    cfg = cli._resolve_config_or_exit()
+    assert cfg == Config()
+
+
+def test_resolve_config_or_exit_is_pinned_to_repo_root_not_cwd():
+    """`resolve_config`'s own default (`config_file="config.toml"`) reads
+    the process CWD. The CLI must not inherit that — it pins an explicit
+    path so the result is the same regardless of where `cscan` was invoked
+    from."""
+    assert _REAL_CONFIG_FILE != "config.toml"
+    assert _REAL_CONFIG_FILE.endswith("config.toml")
+
+
+def test_resolve_config_or_exit_applies_file_override(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_CONFIG_FILE", _toml(tmp_path, "[indicators]\nbb_window = 25\n"))
+    cfg = cli._resolve_config_or_exit()
+    assert cfg.indicators.bb_window == 25
+
+
+def test_resolve_config_or_exit_applies_cli_overrides_on_top(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_CONFIG_FILE", _toml(tmp_path, "[indicators]\nbb_window = 25\n"))
+    cfg = cli._resolve_config_or_exit(cli_overrides={"indicators": {"bb_window": 30}})
+    assert cfg.indicators.bb_window == 30
+
+
+def test_resolve_config_or_exit_raises_typer_exit_on_malformed_env(monkeypatch, capsys):
+    monkeypatch.setenv("CAPSCAN_INDICATORS", "{bad json")
+    with pytest.raises(typer.Exit) as exc_info:
+        cli._resolve_config_or_exit()
+    assert exc_info.value.exit_code == 1
+    out = capsys.readouterr().out
+    assert "Traceback" not in out
+    assert "error" in out.lower()
+
+
+def test_resolve_config_or_exit_error_message_names_the_bad_variable(monkeypatch, capsys):
+    monkeypatch.setenv("CAPSCAN_INDICATORS", "not json")
+    with pytest.raises(typer.Exit):
+        cli._resolve_config_or_exit()
+    out = capsys.readouterr().out
+    assert "CAPSCAN_INDICATORS" in out
+
+
+# ---------------------------------------------------------------------------
+# `cscan indicators` threads the resolved IndicatorParams through
+# ---------------------------------------------------------------------------
+
+
+def test_indicators_command_threads_resolved_params(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_CONFIG_FILE", _toml(tmp_path, "[indicators]\nbb_window = 25\n"))
+    captured = {}
+
+    def _fake_run_indicators(tickers, start, end, engine=None, params=None, max_workers=1):
+        captured["params"] = params
+        return SimpleNamespace(rows_written=0, rows_flagged=0)
+
+    monkeypatch.setattr("capitalscan.jobs.compute.run_indicators", _fake_run_indicators)
+
+    result = runner.invoke(cli.app, ["indicators", "--tickers", "AAPL"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["params"].bb_window == 25
+
+
+def test_indicators_command_malformed_config_exits_clean(monkeypatch, capsys):
+    monkeypatch.setenv("CAPSCAN_INDICATORS", "{bad json")
+
+    result = runner.invoke(cli.app, ["indicators", "--tickers", "AAPL"])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# `cscan universe` threads the resolved UniverseParams through
+# ---------------------------------------------------------------------------
+
+
+def test_universe_command_threads_resolved_params(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_CONFIG_FILE", _toml(tmp_path, "[universe]\nmin_price = 5.0\n"))
+    captured = {}
+
+    def _fake_run_universe(quarter, tickers=None, engine=None, up=None, today=None):
+        captured["up"] = up
+        return SimpleNamespace(tickers=[])
+
+    monkeypatch.setattr("capitalscan.jobs.compute.run_universe", _fake_run_universe)
+
+    result = runner.invoke(cli.app, ["universe", "--quarter", "2026Q3", "--tickers", "AAPL"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["up"].min_price == 5.0
+
+
+# ---------------------------------------------------------------------------
+# `cscan events` threads the resolved SignalParams through
+# ---------------------------------------------------------------------------
+
+
+def test_events_command_threads_resolved_params(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        cli, "_CONFIG_FILE", _toml(tmp_path, "[signals]\nstoch_oversold = 25.0\n")
+    )
+    captured = {}
+
+    def _fake_run_events(tickers, target_start, target_end, engine=None, sp=None):
+        captured["sp"] = sp
+        return SimpleNamespace(rows_written=0, rows_flagged=0)
+
+    monkeypatch.setattr("capitalscan.jobs.compute.run_events", _fake_run_events)
+
+    result = runner.invoke(cli.app, ["events", "--tickers", "AAPL"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["sp"].stoch_oversold == 25.0
+
+
+# ---------------------------------------------------------------------------
+# `cscan poll` threads the resolved SignalParams/ExitParams/StatsParams through
+# ---------------------------------------------------------------------------
+
+
+def test_poll_command_threads_resolved_params(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        cli, "_CONFIG_FILE", _toml(tmp_path, "[exits]\nmax_hold_days = 7\n")
+    )
+    captured = {}
+
+    def _fake_run_poll(interval=300, tickers=None, engine=None, sp=None, ep=None, stats=None):
+        captured["ep"] = ep
+        return SimpleNamespace(rows_written=0, notes=None)
+
+    monkeypatch.setattr("capitalscan.jobs.poll.run_poll", _fake_run_poll)
+
+    result = runner.invoke(cli.app, ["poll", "--tickers", "AAPL"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["ep"].max_hold_days == 7
+
+
+# ---------------------------------------------------------------------------
+# `cscan backtest` resolves config instead of calling `Config()` directly
+# ---------------------------------------------------------------------------
+
+
+def test_backtest_command_uses_resolved_config(monkeypatch, tmp_path):
+    from capitalscan.jobs import db_io, ingest
+    from capitalscan.research import backtest as backtest_mod
+
+    monkeypatch.setattr(cli, "_CONFIG_FILE", _toml(tmp_path, "[indicators]\nbb_window = 25\n"))
+    monkeypatch.setattr(db_io, "get_engine", lambda: "fake-engine")
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _fake_run_job(engine, job, params):
+        yield ingest.IngestReport(job=job, run_id="fake_run_id")
+
+    monkeypatch.setattr(ingest, "run_job", _fake_run_job)
+
+    captured = {}
+
+    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+        captured["config"] = config
+        return backtest_mod.BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
+
+    monkeypatch.setattr(backtest_mod, "run_backtest", _fake_run_backtest)
+
+    cli.backtest(tickers="AAPL", workers=1, sweep=False, config_name=None)
+
+    assert captured["config"].indicators.bb_window == 25
+
+
+def test_backtest_command_malformed_config_exits_clean_not_traceback(monkeypatch, capsys):
+    monkeypatch.setenv("CAPSCAN_INDICATORS", "{bad json")
+
+    with pytest.raises(typer.Exit) as exc_info:
+        cli.backtest(tickers="AAPL", workers=1, sweep=False, config_name=None)
+
+    assert exc_info.value.exit_code == 1
+    out = capsys.readouterr().out
+    assert "Traceback" not in out
