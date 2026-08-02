@@ -59,7 +59,9 @@ class TestTagClusters:
         assert bool(out.loc[1, "is_cluster_head"]) is False
 
     def test_events_further_apart_than_max_hold_days_get_distinct_clusters(self):
-        """Two long TSM events ten trading bars apart, max_hold_days=5:
+        """Two long TSM events fourteen trading bars apart (July 1 to July
+        15, one trading date per calendar day in the fixture below, so the
+        bar count matches the calendar-day count here), max_hold_days=5:
         both are heads of their own cluster."""
         trading_dates_list = [date(2026, 7, d) for d in range(1, 32)]
         candidates = pd.DataFrame(
@@ -189,3 +191,48 @@ class TestTagClusters:
         tag_clusters(candidates, max_hold_days=5, trading_dates=trading_dates)
 
         assert list(candidates.columns) == original_columns
+
+
+class TestTagClustersRaisesOnInputMismatch:
+    """Code review finding: `sorted_dates.get(ticker, [])` used to default
+    silently to an empty list for a ticker missing from `trading_dates`.
+    With an empty date list, `_trading_bars_between` always returns 0, so
+    the gap test never fires and every candidate for that ticker collapses
+    into one endless cluster with `days_since_head == 0` throughout — a
+    plausible-looking wrong answer, not an error. Both checks below must
+    raise instead of silently degrading."""
+
+    def test_a_ticker_missing_from_trading_dates_raises(self):
+        candidates = pd.DataFrame(
+            [
+                _candidate_row(ticker="TSM", signal_date=date(2026, 7, 1)),
+                _candidate_row(ticker="TSM", signal_date=date(2026, 7, 20)),
+            ]
+        )
+        # trading_dates has no "TSM" entry at all.
+        trading_dates: dict = {}
+
+        with pytest.raises(ValueError, match="TSM"):
+            tag_clusters(candidates, max_hold_days=5, trading_dates=trading_dates)
+
+    def test_a_ticker_with_an_empty_trading_dates_list_raises(self):
+        candidates = pd.DataFrame(
+            [_candidate_row(ticker="TSM", signal_date=date(2026, 7, 1))]
+        )
+        trading_dates = {"TSM": []}
+
+        with pytest.raises(ValueError, match="TSM"):
+            tag_clusters(candidates, max_hold_days=5, trading_dates=trading_dates)
+
+    def test_a_signal_date_absent_from_the_tickers_trading_dates_raises(self):
+        """The ticker has an entry, but it does not cover the candidate's
+        own signal_date — a partial mismatch, same failure class as a
+        wholly missing ticker."""
+        candidates = pd.DataFrame(
+            [_candidate_row(ticker="TSM", signal_date=date(2026, 7, 4))]
+        )
+        # TSM traded on the 1st and the 8th in this fixture, never the 4th.
+        trading_dates = {"TSM": [date(2026, 7, 1), date(2026, 7, 8)]}
+
+        with pytest.raises(ValueError, match="2026-07-04"):
+            tag_clusters(candidates, max_hold_days=5, trading_dates=trading_dates)

@@ -346,6 +346,16 @@ def tag_clusters(
     `bars.groupby("ticker")["ts"].apply(lambda s: sorted(s.dt.date.unique()))`
     and pass the same dict across a whole run rather than re-deriving it
     per call).
+
+    Raises `ValueError` if a ticker in `candidates` has no (or an empty)
+    entry in `trading_dates`, or if a candidate's `signal_date` is not
+    among the dates supplied for its ticker. Both are caller-side input
+    mismatches, and both degrade the same way if left unchecked: an empty
+    or wrong date list makes every gap test read as "still inside the
+    window," so a ticker missing from `trading_dates` would silently
+    collapse into one endless cluster instead of raising — the highest-risk
+    failure class this codebase tracks (plausible, wrong, and silent), so
+    it fails loudly at the boundary instead.
     """
     if candidates.empty:
         out = candidates.copy()
@@ -358,10 +368,29 @@ def tag_clusters(
     # One sorted date list per ticker actually present, built once rather
     # than per event — see `_trading_bars_between`'s docstring on why the
     # per-event lookup needs to be O(log n), not O(n).
-    sorted_dates: dict[str, list[date]] = {
-        ticker: sorted(set(trading_dates.get(ticker, [])))
-        for ticker in candidates["ticker"].unique()
-    }
+    #
+    # A ticker with candidate events but no (or an empty) entry in
+    # `trading_dates` is a caller-side input mismatch, not a valid empty
+    # calendar — raise rather than default to `[]`. An empty list makes
+    # `_trading_bars_between` return 0 for every pair (bisect on an empty
+    # list gives `lo == hi == 0`), which never exceeds `max_hold_days`, so
+    # every candidate for that ticker would silently collapse into one
+    # endless cluster with `days_since_head == 0` throughout — a
+    # plausible-looking, wrong answer with no error anywhere. That is
+    # exactly the silent-collapse failure this check exists to convert into
+    # a loud one at the boundary, per CLAUDE.md's highest-risk-failure
+    # framing and the project's "assert the check actually ran" standard.
+    sorted_dates: dict[str, list[date]] = {}
+    for ticker in candidates["ticker"].unique():
+        ticker_dates = trading_dates.get(ticker)
+        if not ticker_dates:
+            raise ValueError(
+                f"tag_clusters: ticker {ticker!r} has candidate events but no "
+                "trading_dates entry (or an empty one). Every ticker present in "
+                "`candidates` must have its trading dates supplied, or the gap "
+                "test silently degenerates to 'never break' for that ticker."
+            )
+        sorted_dates[ticker] = sorted(set(ticker_dates))
 
     working = candidates.copy()
     working["_signal_date_norm"] = working["signal_date"].map(_as_date)
@@ -375,24 +404,40 @@ def tag_clusters(
     # ticker alone, or a long cluster and a short cluster on one ticker
     # would merge into one position.
     for (ticker, side), group in working.groupby(["ticker", "side"], sort=False):
-        dates = sorted_dates.get(ticker, [])
+        dates = sorted_dates[ticker]
         ordered = group.sort_values("_signal_date_norm")
 
         head_date: date | None = None
         seq = 0
         for idx, signal_date in ordered["_signal_date_norm"].items():
+            # A signal_date absent from the ticker's own supplied trading
+            # dates means the two inputs describe different histories for
+            # this ticker (e.g. `trading_dates` built from a narrower date
+            # range than `candidates`) — the same silent-collapse risk as a
+            # missing ticker entry, just partial instead of total, so it
+            # gets the same loud failure rather than a plausible bar count
+            # computed against a date the ticker never actually traded.
+            pos_in_dates = bisect.bisect_left(dates, signal_date)
+            if pos_in_dates >= len(dates) or dates[pos_in_dates] != signal_date:
+                raise ValueError(
+                    f"tag_clusters: ticker {ticker!r} has a candidate on "
+                    f"{signal_date} that is not in its supplied trading_dates."
+                )
+
             gap = None if head_date is None else _trading_bars_between(dates, head_date, signal_date)
             if head_date is None or gap > max_hold_days:
                 head_date = signal_date
                 seq = 1
+                days_since_head = 0
             else:
                 seq += 1
+                days_since_head = gap  # same pair `gap` already measured
 
             pos = working.index.get_loc(idx)
             cluster_id_col[pos] = _deterministic_cluster_id(ticker, side, head_date)
             seq_col[pos] = seq
             head_col[pos] = seq == 1
-            days_col[pos] = _trading_bars_between(dates, head_date, signal_date)
+            days_col[pos] = days_since_head
 
     out = candidates.copy()
     out["cluster_id"] = cluster_id_col
