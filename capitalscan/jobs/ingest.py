@@ -21,7 +21,7 @@ from rich.progress import Progress
 from rich.table import Table
 from sqlalchemy import Engine, text
 
-from capitalscan.core.config import SplitParams
+from capitalscan.core.config import SharesPlausibility, SplitParams
 from capitalscan.jobs import db_io
 from capitalscan.jobs.fetch import finnhub, sec, wikipedia, yahoo
 from capitalscan.jobs.provenance import git_sha, new_run_id
@@ -771,8 +771,30 @@ def _parse_filed_on(value: object) -> date | None:
         return None
 
 
+def _implausible_shares_reason(shares: int, bounds: SharesPlausibility) -> str | None:
+    """`None` when `shares` is plausible; otherwise the `bar_rejects.rule`.
+
+    Reject, never correct (invariant 4, and the BUILD note on this task):
+    dividing by an inferred scale factor would be guessing at the factor
+    from the data's own shape, which is exactly how a wrong guess turns
+    into a plausible-looking wrong number. Bounds are absolute, not
+    relative to this ticker's own history — see `SharesPlausibility`'s
+    docstring in `core/config.py` for why (the PSKY counterexample: its own
+    median is 1,000, which would flag its one genuine filing as the
+    outlier).
+    """
+    if shares < bounds.min_shares:
+        return "shares_below_plausible_floor"
+    if shares > bounds.max_shares:
+        return "shares_above_plausible_ceiling"
+    return None
+
+
 def run_shares(
-    tickers: list[str], engine: Engine | None = None, as_of: date | None = None
+    tickers: list[str],
+    engine: Engine | None = None,
+    as_of: date | None = None,
+    shares_bounds: SharesPlausibility = SharesPlausibility(),
 ) -> IngestReport:
     """Point-in-time shares outstanding from SEC XBRL (DESIGN §2.4), with a
     yfinance fallback for tickers SEC has stopped covering (BUILD follow-up).
@@ -786,6 +808,16 @@ def run_shares(
     wall-clock date; defaults to `date.today()` for real runs, consistent
     with how this job is actually invoked (jobs own clock access, invariant
     1's IO carve-out).
+
+    `shares_bounds` gates every candidate row — SEC and Yahoo alike — through
+    `_implausible_shares_reason` before it is ever eligible for the upsert.
+    A filing outside the band is dropped and logged to `bar_rejects`
+    (invariant 4), never corrected: this is the Session 9 shares-guard fix
+    for the mcap-outlier diagnosis (a single XBRL filing scaled x1,000 or
+    x1,000,000 was reaching `universe.mcap_usd` with no check at all).
+    Defaulted rather than required so every existing call site keeps working
+    unchanged; `core.config.SharesPlausibility` documents where the default
+    bounds come from.
     """
     as_of = as_of or date.today()
     engine = engine or db_io.get_engine()
@@ -793,6 +825,11 @@ def run_shares(
         cik_lookup = sec.fetch_cik_lookup().set_index("ticker")["cik"]
         rows = []
         touched = []
+        # Rejected candidate rows (SEC and Yahoo both), destined for
+        # `bar_rejects` — reused here as the project's one append-only
+        # reject log (invariant 4) rather than inventing a second table for
+        # a second kind of row.
+        share_rejects: list[dict] = []
         # Tickers that end up contributing zero rows, with why. Distinct
         # from a hard failure — some issuers genuinely have no usable fact
         # in the feed (see the comment above `_SHARES_TAG_SOURCES` in
@@ -811,12 +848,31 @@ def run_shares(
                 continue
             facts = facts.dropna(subset=["filed_on", "value"])
             for _, row in facts.iterrows():
+                shares = int(row["value"])
+                reason = _implausible_shares_reason(shares, shares_bounds)
+                if reason is not None:
+                    share_rejects.append(
+                        {
+                            "ticker": ticker,
+                            "ts": row["filed_on"],
+                            "rule": reason,
+                            "severity": "reject",
+                            "payload": {
+                                "shares": shares,
+                                "filed_on": row["filed_on"],
+                                "period_end": row.get("end"),
+                                "source": "sec_xbrl",
+                                "accn": row.get("accn"),
+                            },
+                        }
+                    )
+                    continue
                 rows.append(
                     {
                         "ticker": ticker,
                         "filed_on": row["filed_on"],
                         "period_end": row["end"],
-                        "shares": int(row["value"]),
+                        "shares": shares,
                         "source": "sec_xbrl",
                         "accn": row.get("accn"),
                     }
@@ -899,11 +955,33 @@ def run_shares(
                 # ON CONFLICT collision if both land in one upsert call.
                 if key in existing_keys:
                     continue
+                shares = int(row["shares"])
+                # The fallback source is not exempt from the plausibility
+                # guard: Yahoo's dated estimates are as capable of carrying
+                # a bad point as an SEC filing is (same rationale as the SEC
+                # branch above).
+                reason = _implausible_shares_reason(shares, shares_bounds)
+                if reason is not None:
+                    share_rejects.append(
+                        {
+                            "ticker": ticker,
+                            "ts": filed_on,
+                            "rule": reason,
+                            "severity": "reject",
+                            "payload": {
+                                "shares": shares,
+                                "filed_on": filed_on,
+                                "period_end": None,
+                                "source": SHARES_YAHOO_SOURCE,
+                            },
+                        }
+                    )
+                    continue
                 yahoo_best[key] = {
                     "ticker": ticker,
                     "filed_on": filed_on,
                     "period_end": None,
-                    "shares": int(row["shares"]),
+                    "shares": shares,
                     "source": SHARES_YAHOO_SOURCE,
                 }
             yahoo_used.append(ticker)
@@ -914,6 +992,12 @@ def run_shares(
             engine, "shares_outstanding", upsert_rows, ["ticker", "filed_on"]
         )
         report.tickers = touched + [t for t in yahoo_used if t not in touched]
+
+        if share_rejects:
+            for r in share_rejects:
+                r["run_id"] = report.run_id
+            db_io.append(engine, "bar_rejects", share_rejects)
+        report.rows_rejected = len(share_rejects)
 
         note_parts = []
         if skipped:
@@ -931,6 +1015,14 @@ def run_shares(
             note_parts.append(
                 f"{len(yahoo_skipped)} ticker(s) had no usable shares data from "
                 "either source: " + "; ".join(f"{t} ({reason})" for t, reason in yahoo_skipped)
+            )
+        if share_rejects:
+            rejected_tickers = sorted({r["ticker"] for r in share_rejects})
+            note_parts.append(
+                f"{len(share_rejects)} filing(s) across {len(rejected_tickers)} ticker(s) "
+                "rejected by the shares-plausibility guard (outside "
+                f"[{shares_bounds.min_shares}, {shares_bounds.max_shares}] shares, logged to "
+                "bar_rejects): " + ", ".join(rejected_tickers)
             )
         if note_parts:
             report.notes = " | ".join(note_parts)

@@ -196,3 +196,77 @@ class SweepParams:
 
 
 DEFAULT_SWEEP = SweepParams()
+
+
+@dataclass(frozen=True)
+class SharesPlausibility:
+    """Absolute floor/ceiling for a single `shares_outstanding.shares` value,
+    ingested in `jobs.ingest.run_shares` (Session 9 shares-guard task).
+
+    Deliberately **not** a field of `Config`: nothing here varies a backtest
+    result, so folding it into `Config` would change `config_hash` for every
+    existing config for a value that has no effect on signal/exit/cost
+    behavior. Standalone, same rationale as `SweepParams` above.
+
+    **Why absolute, not relative-to-the-ticker's-own-history.** The obvious
+    first idea — reject a filing whose `shares` is N times its ticker's own
+    median or its nearest neighboring filing — fails on a real shape found
+    while deriving these bounds: PSKY's median share count is 1,000, because
+    two of its three known filings are themselves bad (a placeholder-looking
+    `1,000`), and the one plausible filing (1,071,666,977, its most recent)
+    is the one a median- or neighbor-relative test would flag as the
+    outlier and reject — exactly backwards. A criterion built from the
+    data's own central tendency inherits that data's own corruption. These
+    bounds are set from external facts about the US equity market instead:
+    a real listed company's total share count, at any point in this
+    project's tracked history (2009-present).
+
+    **`min_shares`.** Every confirmed-genuine `shares_outstanding` row in
+    the live database (73k+ rows) sits above 1,000,000; every row below
+    that line inspected by hand was a placeholder-shaped filer error (`1`,
+    `100`, `1000`, `13001`, ...), not a real coincidentally-small issuer.
+    Berkshire Hathaway is the standing edge case for "smallest real share
+    count a mega-cap can have" (its Class A count runs in the hundreds of
+    thousands), which is why the floor is not set at, say, 10,000,000 even
+    though that would still clear every confirmed-bad row found — 1,000,000
+    keeps clearance for a legitimately low-float name without weakening the
+    guard against any bad value actually observed.
+
+    **`max_shares`.** Set from the highest genuine share count on file:
+    Citigroup pre-2011-reverse-split, ~29.2 billion (2011-05-05 filing).
+    32 billion gives that roughly 10% headroom. The next value up on file
+    is a confirmed-bad one — Alaska Air's three 2011 filings at ~35.8-36
+    billion, which are its real ~35.8 million shares with three extra
+    zeros — so 32 billion also sits comfortably (~12%) below the lowest
+    confirmed-bad value found.
+
+    **Known limit, stated plainly.** These two numbers are close together
+    (32B sits between 29.2B genuine and 35.8B corrupted) because a x1,000
+    filer error on a company whose real share count is in the tens of
+    millions lands in the same absolute neighborhood as a genuine mega-cap's
+    real count in the billions — the corruption factor and the market's own
+    genuine range overlap at that boundary. A hypothetical x1,000 error on
+    a ~15-20 million-share company (15-20 billion after corruption) would
+    NOT be caught by `max_shares` alone; nothing in the 73k-row scan found
+    an instance of that shape, but the guard cannot rule one out structurally.
+    `min_shares` has no equivalent gap: every real value is orders of
+    magnitude above it and every bad value found sits far below it, with the
+    sole exception of two BRK-B 2009-2010 filings (1,103,764 and 1,056,884)
+    that are themselves implausible against BRK-B's own contemporaneous
+    price but sit just above `min_shares` — a second, class-mismatch defect
+    this guard does not close (see the shares-guard report for the query
+    that surfaces it for the separate cleanup step).
+
+    **Splits clear this with room.** NVDA's 2024 10:1 split took it from
+    ~2.5B to ~24.5B shares — inside `[min_shares, max_shares]` before and
+    after. AAPL's 2020 4:1 split (~4.3B -> ~17.1B) clears the same way. A
+    single filing multiplying share count by 10x, or even the largest
+    real-world stock split multiple in the tracked universe, never
+    approaches the 1,000x+ jump these bounds are built to catch.
+    """
+
+    min_shares: int = 1_000_000
+    max_shares: int = 32_000_000_000
+
+
+DEFAULT_SHARES_PLAUSIBILITY = SharesPlausibility()

@@ -69,7 +69,11 @@ def test_one_filing_yields_one_row_keeping_the_latest_period(monkeypatch, upsert
             {
                 "filed_on": ["2019-05-02", "2019-05-02", "2019-05-02"],
                 "end": ["2018-10-18", "2019-04-18", "2019-01-18"],
-                "value": [100, 300, 200],
+                # Plausible share counts (SharesPlausibility.min_shares is
+                # 1,000,000): this suite tests the dedup tie-break, not the
+                # plausibility guard, so the magnitudes must clear the floor
+                # or the guard rejects every row before dedup ever runs.
+                "value": [100_000_000, 300_000_000, 200_000_000],
             }
         ),
     )
@@ -79,7 +83,7 @@ def test_one_filing_yields_one_row_keeping_the_latest_period(monkeypatch, upsert
     assert len(upserted) == 1
     assert upserted[0]["filed_on"] == "2019-05-02"
     assert upserted[0]["period_end"] == "2019-04-18"
-    assert upserted[0]["shares"] == 300
+    assert upserted[0]["shares"] == 300_000_000
 
 
 def test_distinct_filings_are_all_kept(monkeypatch, upserted):
@@ -90,7 +94,7 @@ def test_distinct_filings_are_all_kept(monkeypatch, upserted):
             {
                 "filed_on": ["2019-05-02", "2019-07-31"],
                 "end": ["2019-04-18", "2019-07-17"],
-                "value": [300, 400],
+                "value": [300_000_000, 400_000_000],
             }
         ),
     )
@@ -108,7 +112,7 @@ def test_a_missing_period_end_loses_to_a_real_one(monkeypatch, upserted):
             {
                 "filed_on": ["2019-05-02", "2019-05-02"],
                 "end": [None, "2019-04-18"],
-                "value": [100, 300],
+                "value": [100_000_000, 300_000_000],
             }
         ),
     )
@@ -116,4 +120,4 @@ def test_a_missing_period_end_loses_to_a_real_one(monkeypatch, upserted):
     ingest.run_shares(["AAA"], engine=_FakeEngine())
 
     assert len(upserted) == 1
-    assert upserted[0]["shares"] == 300
+    assert upserted[0]["shares"] == 300_000_000

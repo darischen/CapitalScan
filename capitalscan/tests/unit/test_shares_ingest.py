@@ -227,7 +227,7 @@ def test_one_bad_ticker_does_not_block_a_good_one(monkeypatch, upserted):
         {
             1326801: pd.DataFrame(columns=["filed_on", "end", "value", "accn"]),
             104169: pd.DataFrame(
-                {"filed_on": ["2020-01-01"], "end": ["2019-12-31"], "value": [100]}
+                {"filed_on": ["2020-01-01"], "end": ["2019-12-31"], "value": [100_000_000]}
             ),
         },
     )
