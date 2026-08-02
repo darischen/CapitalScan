@@ -456,6 +456,47 @@ def validate_bars(
     return clean, rejects + flags
 
 
+def unresolved_rejects(
+    rejects: pd.DataFrame, bar_dates: pd.DataFrame, ingest_start: date
+) -> pd.DataFrame:
+    """Hard rejects whose bar is still absent — the ones that still cost data.
+
+    `bar_rejects` is append-only: it is an audit trail, not a worklist
+    (invariant 6). A bar rejected by one run stays recorded even after a
+    later run fetches it correctly and upserts it, so counting every row
+    ever written means a single transient rejection makes validation
+    permanently dirty with no path back to clean.
+
+    That is the same failure shape as the Stooq cross-check above — `clean`
+    measuring something other than what it claims. Here the claim is "no
+    bar was dropped for failing validation", and a reject whose bar is now
+    on file did not drop anything.
+
+    Measured when this was written: 10 of 12 outstanding hard rejects had
+    correct bars on file. The pattern is a batch fetched across a split
+    boundary, which shows an artificial discontinuity — ANET 2024-10-07 read
+    as -75% — and a later batch fetched wholly after the split landing it
+    smoothly at 98.14 between neighbours of 98.99 and 100.06.
+
+    Rejects before `ingest_start` are excluded: their bars are absent
+    because the window trim deleted them deliberately, not because a fetch
+    failed. Counting those would make the trim itself unfixable.
+
+    The audit trail is untouched — `reject_counts` still reports every row.
+    """
+    if rejects.empty:
+        return rejects.iloc[:0]
+
+    hard = rejects.loc[rejects["severity"] == "reject"].copy()
+    hard = hard.loc[hard["d"] >= ingest_start]
+    if hard.empty:
+        return hard
+
+    on_file = set(zip(bar_dates["ticker"], bar_dates["d"], strict=False))
+    still_missing = [(t, d) not in on_file for t, d in zip(hard["ticker"], hard["d"], strict=False)]
+    return hard.loc[still_missing].reset_index(drop=True)
+
+
 def find_missing_bars(bars: pd.DataFrame, trading_days: pd.DataFrame) -> pd.DataFrame:
     """Trading days with no bar, bounded to each ticker's own observed span.
 
@@ -1004,6 +1045,36 @@ class ValidationReport:
     missing_bars: pd.DataFrame = field(
         default_factory=lambda: pd.DataFrame(columns=["ticker", "missing_date"])
     )
+    # Hard rejects whose bar is still absent — the subset of `reject_counts`
+    # that still costs data. `reject_counts` keeps reporting every row for
+    # the audit trail; this is what `clean` is actually gated on.
+    open_rejects: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=["ticker", "d", "severity"])
+    )
+
+    @property
+    def data_clean(self) -> bool:
+        """Every check that ran found nothing wrong with the data.
+
+        Distinct from `clean`, which also requires that every check *ran*.
+        An operator reading the report needs to separate "the data is bad,
+        go fix it" from "a vendor is down, decide whether to proceed
+        without that safeguard" — one boolean forces them to read the prose
+        to work out which.
+        """
+        return (
+            self.open_rejects.empty and self.missing_bars.empty and self.stooq_disagreements.empty
+        )
+
+    @property
+    def checks_complete(self) -> bool:
+        """Every check actually executed.
+
+        As of 2026-08-01 Stooq serves a JavaScript proof-of-work challenge
+        to `requests` on every endpoint tried (stooq.com and stooq.pl, with
+        and without a browser UA), so this is False while the data is fine.
+        """
+        return not (self.stooq_checked == 0 and not self.stooq_errors.empty)
 
 
 def run_validate(
@@ -1039,8 +1110,18 @@ def run_validate(
         bar_dates = pd.read_sql(
             text("SELECT ticker, ts::date AS d FROM bars WHERE interval = '1d'"), conn
         )
+        # Rejects carry their own dates so `unresolved_rejects` can ask
+        # whether each one still costs a bar, rather than trusting the
+        # append-only log's row count.
+        reject_rows = pd.read_sql(
+            text("SELECT ticker, ts::date AS d, severity FROM bar_rejects WHERE ts IS NOT NULL"),
+            conn,
+        )
 
     missing_bars = find_missing_bars(bar_dates, trading_days)
+    open_rejects = unresolved_rejects(
+        reject_rows, bar_dates, date.fromisoformat(SplitParams().ingest_start)
+    )
 
     sample = (tickers or available)[:sample_size]
     disagreements = []
@@ -1091,13 +1172,10 @@ def run_validate(
     # per-ticker `except Exception` for as long as it did.
     stooq_check_failed = bool(sample) and stooq_checked == 0
 
-    n_hard_rejects = int(
-        reject_counts.loc[reject_counts["severity"] == "reject", "n"].sum()
-        if not reject_counts.empty
-        else 0
-    )
+    # Gated on rejects that still cost a bar, not on every row the
+    # append-only log ever recorded — see `unresolved_rejects`.
     clean = (
-        n_hard_rejects == 0 and not disagreements and missing_bars.empty and not stooq_check_failed
+        open_rejects.empty and not disagreements and missing_bars.empty and not stooq_check_failed
     )
 
     return ValidationReport(
@@ -1108,6 +1186,7 @@ def run_validate(
         stooq_checked=stooq_checked,
         stooq_errors=pd.DataFrame(stooq_errors, columns=["ticker", "error"]),
         missing_bars=missing_bars,
+        open_rejects=open_rejects,
     )
 
 
@@ -1158,8 +1237,44 @@ def print_validation_report(report: ValidationReport) -> None:
     else:
         console.print("[green]No missing bars inside any ticker's observed span[/green]")
 
+    # Separating these two numbers is the point: the log records every
+    # rejection ever made, but only the ones whose bar is still absent are
+    # a live data problem.
+    n_logged = int(
+        report.reject_counts.loc[report.reject_counts["severity"] == "reject", "n"].sum()
+        if not report.reject_counts.empty
+        else 0
+    )
+    if not report.open_rejects.empty:
+        console.print(
+            f"[red]{len(report.open_rejects)} hard reject(s) still missing a bar "
+            f"(of {n_logged} logged):[/red]"
+        )
+        console.print(report.open_rejects)
+    else:
+        console.print(
+            f"[green]No unresolved hard rejects "
+            f"({n_logged} logged, all since refetched or outside the ingest window)[/green]"
+        )
+
+    # Two verdicts, because "the data is bad" and "a check could not run"
+    # need different responses from whoever is reading this.
+    if report.data_clean:
+        console.print("[green]DATA: clean — every check that ran found nothing wrong[/green]")
+    else:
+        console.print("[red]DATA: NOT clean — see the failures above[/red]")
+
+    if report.checks_complete:
+        console.print("[green]CHECKS: all complete[/green]")
+    else:
+        console.print(
+            "[yellow]CHECKS: incomplete — the Stooq cross-check could not run. "
+            "DESIGN §5.8 uses it to catch a Yahoo-side error that would otherwise "
+            "look like ground truth, so that safeguard is currently absent.[/yellow]"
+        )
+
     if report.clean:
-        console.print("[green]validation clean: zero rejects at 'reject' severity[/green]")
+        console.print("[green]validation clean[/green]")
     else:
         console.print("[red]validation NOT clean[/red]")
 

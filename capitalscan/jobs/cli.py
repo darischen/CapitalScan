@@ -358,6 +358,9 @@ def poll(
 def validate(
     report: bool = typer.Option(False, help="Print validation report"),
     tickers: Optional[str] = typer.Option(None, help="Restrict the Stooq cross-check sample"),
+    strict: bool = typer.Option(
+        False, help="Also fail when a check could not run at all, not just when data is bad"
+    ),
 ) -> None:
     """Validate ingested data: reject counts, coverage, Stooq cross-check (DESIGN §5.8)."""
     from capitalscan.jobs import ingest
@@ -369,6 +372,12 @@ def validate(
     else:
         status = "clean" if result.clean else "NOT clean"
         console.print(f"validation: {status}")
+
+    # A vendor outage should not read the same as bad data. `--strict` is the
+    # unattended-rerun gate (DESIGN §5.8) and demands both; without it a
+    # non-zero exit means the data itself is bad.
+    if not result.data_clean or (strict and not result.checks_complete):
+        raise typer.Exit(code=1)
 
 
 @app.command()
