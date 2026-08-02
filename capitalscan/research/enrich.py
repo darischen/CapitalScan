@@ -574,7 +574,7 @@ def _era(signal_date: date, sp: StatsParams, splits: SplitParams) -> str:
     return f"{lo}+"
 
 
-def _earnings_in_window(days_to_earnings: object, holding_days: int | None) -> bool | None:
+def _earnings_in_window(days_to_earnings: object, ep: ExitParams) -> bool | None:
     """DESIGN §5.2 step 11; ADR 036: "A 5-day window containing an earnings
     report is contaminated regardless of session."
 
@@ -585,29 +585,34 @@ def _earnings_in_window(days_to_earnings: object, holding_days: int | None) -> b
     reporting how long ago it happened, since this column only ever answers
     "is one coming").
 
-    The window checked against is `event["holding_days"]` — the position's
-    *actual* resolved holding length for this exit config, not a literal 5
-    or `ExitParams.max_hold_days`. `enrich_context`'s pinned interface (task
-    brief) does not receive `ExitParams`, and `event` (built by steps 7-9,
-    upstream of this function) already carries the real answer: a trade that
-    exited early on a stop never had 5 days of exposure to begin with, so an
-    earnings report on day 4 did not contaminate a position closed on day 2.
-    Using the actual holding window is the more precise reading of "the
-    window this trade was open," not a looser approximation of ADR 036's
-    literal "5-day" — see the Task 8 report for the full reasoning.
+    The window checked against is `ep.max_hold_days` — the FIXED analysis
+    window, never a literal 5 (invariant 9) and never the trade's own
+    realized `holding_days`. An earlier version of this function compared
+    against `holding_days` on the theory that a position stopped out on day
+    2 was never exposed to a day-4 report; that reasoning is correct for
+    `gross_ret`/`net_ret`, which really do stop accruing at the realized
+    exit, but it is wrong for this flag specifically, because
+    `earnings_in_window` sits on the same row as Task 7's `touched_5pct` /
+    `day_touched_5pct`, and those are computed by `path_metrics` over the
+    FULL `[t+1, t+max_hold_days]` window regardless of when the exit fired
+    (DESIGN §5.6) — the two columns describe the same fixed window and are
+    read together through `v_events` (DESIGN §1759). Checking against
+    `holding_days` produced `earnings_in_window=False` on a row whose
+    reachability columns already reflect days 3-5 of an earnings-driven
+    move, which is the exact silent inversion the autonomous-run findings
+    warned about: a contamination filter answering "clear" when a report
+    was days away. Fixed in response to code review Finding 1.
 
-    `None`, not `False`, when either input is unknown (invariant 4):
-    `days_to_earnings` is null before ~2014 for a large share of events
-    (thin SEC 8-K coverage that far back — noted in the task brief's
-    autonomous-run findings), and writing `False` there would tell a
-    downstream contamination filter "confirmed clear," not "unknown,"
-    silently admitting exactly the events that could not be checked.
-    Likewise null when the position never resolved (`holding_days is None`)
-    — there is no window to check against.
+    `None`, not `False`, when `days_to_earnings` is unknown (invariant 4):
+    it is null before ~2014 for a large share of events (thin SEC 8-K
+    coverage that far back — noted in the task brief's autonomous-run
+    findings), and writing `False` there would tell a downstream
+    contamination filter "confirmed clear," not "unknown," silently
+    admitting exactly the events that could not be checked.
     """
-    if _isnan(days_to_earnings) or holding_days is None:
+    if _isnan(days_to_earnings):
         return None
-    return bool(0 <= float(days_to_earnings) <= float(holding_days))  # type: ignore[arg-type]
+    return bool(0 <= float(days_to_earnings) <= float(ep.max_hold_days))  # type: ignore[arg-type]
 
 
 def enrich_context(
@@ -617,6 +622,7 @@ def enrich_context(
     sp: StatsParams,
     splits: SplitParams,
     cp: CostParams,
+    ep: ExitParams,
 ) -> dict:
     """DESIGN §5.2 steps 10-12: cost application, context tagging, split
     assignment. Turns one resolved event — the candidate plus its entry
@@ -626,13 +632,16 @@ def enrich_context(
     table need: `gross_ret`, `net_ret`, `dd_bucket`, `bw_regime`, `era`,
     `earnings_in_window`, `split_key`, `vix_close`, `spx_ret_1d`.
 
-    `cp: CostParams` is not in the task brief's one-line interface sketch,
-    but `core.costs.apply_costs` requires it (invariant 2: apply costs
-    through that one implementation, never a second one written here) and
-    nothing else in scope can supply a cost schedule — so it is added as a
-    required parameter, the same way `resolve_entries` already takes `cp`
-    for entry-side slippage. Flagged in the Task 8 report rather than
-    silently deviating from the pinned signature.
+    `cp: CostParams` and `ep: ExitParams` are not in the task brief's
+    one-line interface sketch, but `core.costs.apply_costs` requires `cp`
+    (invariant 2: apply costs through that one implementation, never a
+    second one written here) and `_earnings_in_window` requires `ep` — the
+    fixed analysis window (`ep.max_hold_days`) it must compare against,
+    never a literal 5 (invariant 9). Nothing else in scope can supply
+    either, so both are added as required parameters, the same way
+    `resolve_entries` already takes `cp` for entry-side slippage. Flagged in
+    the Task 8 report rather than silently deviating from the pinned
+    signature.
 
     `gross_ret` is `core.returns.realized_return(entry_price, exit_price,
     side)` — never hand-computed (invariant 2). It is `NaN` whenever either
@@ -678,9 +687,7 @@ def enrich_context(
         "dd_bucket": _dd_bucket_label(ind_row.get("dd_52w"), sp),
         "bw_regime": None,
         "era": _era(signal_date, sp, splits),
-        "earnings_in_window": _earnings_in_window(
-            ind_row.get("days_to_earnings"), holding_days
-        ),
+        "earnings_in_window": _earnings_in_window(ind_row.get("days_to_earnings"), ep),
         "split_key": split_key_for(signal_date, splits),
         "vix_close": None if market_row is None else market_row.get("vix_close"),
         "spx_ret_1d": None if market_row is None else market_row.get("spx_ret_1d"),
