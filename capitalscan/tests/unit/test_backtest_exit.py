@@ -46,10 +46,10 @@ def _frame(cols: dict, start: str = "2026-07-30") -> pd.DataFrame:
     return pd.DataFrame(cols, index=idx)
 
 
-def _entry(price: float = 100.0) -> dict:
+def _entry(price: float = 100.0, entry_date: date | None = date(2026, 7, 30)) -> dict:
     return {
         "entry_kind": "touch",
-        "entry_date": date(2026, 7, 30),
+        "entry_date": entry_date,
         "entry_price": price,
         "entry_gapped": False,
     }
@@ -156,7 +156,11 @@ def test_entry_idx_offsets_the_forward_window():
         }
     )
     ep = ExitParams(stop_mode="none", max_hold_days=3)
-    result = resolve_exit_for_entry(_entry(), 2, Side.LONG, bars, indicators, ep)
+    # Position 2 in this business-day-indexed frame is 2026-08-03 — the
+    # entry's own entry_date must agree, or _assert_entry_idx_matches
+    # rejects the call before any slicing happens.
+    entry = _entry(entry_date=date(2026, 8, 3))
+    result = resolve_exit_for_entry(entry, 2, Side.LONG, bars, indicators, ep)
     assert result["exit_reason"] == ExitReason.TARGET.value
     assert result["exit_idx"] == 0  # first bar of the forward window (position 3)
     assert result["exit_date"] == date(2026, 8, 4)
@@ -269,3 +273,57 @@ def test_short_side_uses_its_own_stoch_threshold_not_a_mirror_of_the_long():
         _entry(price=100.0), 0, Side.SHORT, bars, indicators, ep
     )
     assert result["exit_reason"] == ExitReason.STOCH_80.value
+
+
+# ---------------------------------------------------------------------------
+# entry_idx consistency guard — the one-bar-shift class (CLAUDE.md
+# invariant 3), the review's Important finding on this task.
+# ---------------------------------------------------------------------------
+
+
+def test_entry_idx_pointing_at_the_wrong_bar_raises():
+    # bars position 0 is the signal bar (2026-07-30); the entry claims to
+    # have filled on 2026-07-31 (a NEXT_OPEN-shaped entry) but entry_idx=0
+    # still points at the signal bar — exactly the bug a naive NEXT_OPEN
+    # caller would produce.
+    bars, indicators, ep = _first_bar_band_fixture()
+    entry = _entry(entry_date=date(2026, 7, 31))
+    with pytest.raises(ValueError):
+        resolve_exit_for_entry(entry, 0, Side.LONG, bars, indicators, ep)
+
+
+def test_entry_idx_out_of_range_raises():
+    bars, indicators, ep = _first_bar_band_fixture()
+    entry = _entry(entry_date=date(2026, 7, 30))
+    with pytest.raises(ValueError):
+        resolve_exit_for_entry(entry, len(bars), Side.LONG, bars, indicators, ep)
+    with pytest.raises(ValueError):
+        resolve_exit_for_entry(entry, -1, Side.LONG, bars, indicators, ep)
+
+
+def test_next_open_shaped_entry_idx_one_bar_after_the_signal_does_not_raise():
+    # The correct counterpart to the mismatch test above: entry_idx=1
+    # (2026-07-31) matches an entry that legitimately filled one bar after
+    # the signal, as NEXT_OPEN does. The guard must not reject valid
+    # input — a guard that blocks correct callers is worse than no guard.
+    bars, indicators, ep = _first_bar_band_fixture()
+    entry = _entry(entry_date=date(2026, 7, 31))
+    result = resolve_exit_for_entry(entry, 1, Side.LONG, bars, indicators, ep)
+    # The call must simply not raise; the specific outcome (whatever the
+    # forward window from position 2 onward resolves to) isn't this test's
+    # concern — only that a legitimately later-filling entry is accepted.
+    assert set(result.keys()) == {
+        "exit_idx", "exit_date", "exit_price", "exit_reason", "holding_days", "ambiguous",
+    }
+
+
+def test_entry_idx_dtype_mismatch_between_date_and_timestamp_still_matches():
+    # bars is indexed by Timestamp (pd.date_range), entry_date is a plain
+    # date (what resolve_entries actually produces) — the guard must
+    # normalize both through _as_date rather than comparing them directly,
+    # or it would reject every correct call.
+    bars, indicators, ep = _first_bar_band_fixture()
+    assert isinstance(bars.index[0], pd.Timestamp)
+    entry = _entry(entry_date=date(2026, 7, 30))  # plain date, not Timestamp
+    result = resolve_exit_for_entry(entry, 0, Side.LONG, bars, indicators, ep)
+    assert result["exit_reason"] == ExitReason.UPPER_BAND.value

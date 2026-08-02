@@ -198,6 +198,50 @@ def _unresolved_exit() -> dict:
     }
 
 
+def _assert_entry_idx_matches(entry: dict, entry_idx: int, bars: pd.DataFrame) -> None:
+    """Guard against the one-bar-shift class of bug (CLAUDE.md invariant 3:
+    "the highest-risk silent failure in the system").
+
+    `entry_idx` is a plain `int` — nothing type-checks that it addresses
+    the bar the position actually opened on rather than, say, the signal
+    bar `NEXT_OPEN` fills one session after. Both are valid positions
+    inside `bars`, so a wrong one doesn't raise on its own; it just prices
+    every exit for that entry off a window shifted by one bar, and the
+    output still looks like a normal trade. This check catches it by
+    comparing the date actually sitting at `entry_idx` against the date
+    the entry itself claims to have filled on — data already in hand on
+    both sides, so this is a read-only equality check, not a second
+    date-resolution implementation (invariant 2).
+
+    Also rejects an out-of-range `entry_idx` outright, rather than letting
+    a negative index wrap to a wrong-but-valid bar or an oversized one
+    surface as an opaque pandas `IndexError` several calls away from here.
+
+    Reuses `_as_date` — the same `Timestamp` -> `date` coercion already
+    applied to `signal_date` elsewhere in this module — because `bars`
+    may be indexed by plain `date` (`research/candidates.py`'s
+    convention) or by `Timestamp` (what `pd.date_range` produces, which
+    this module's own tests build with), and comparing one directly
+    against the other would fail even for correct input.
+    """
+    if entry_idx < 0 or entry_idx >= len(bars):
+        raise ValueError(
+            f"resolve_exit_for_entry: entry_idx={entry_idx} is out of range "
+            f"for a {len(bars)}-row bars frame."
+        )
+    bar_date = _as_date(bars.index[entry_idx])
+    fill_date = _as_date(entry["entry_date"])
+    if bar_date != fill_date:
+        raise ValueError(
+            f"resolve_exit_for_entry: entry_idx={entry_idx} addresses "
+            f"{bar_date}, but entry['entry_date'] is {fill_date}. "
+            "entry_idx must be the position of the bar the entry actually "
+            "filled on (NEXT_OPEN fills one bar after the signal date) — "
+            "passing the signal bar's position shifts the entire forward "
+            "window by one bar."
+        )
+
+
 def resolve_exit_for_entry(
     entry: dict,
     entry_idx: int,
@@ -222,8 +266,10 @@ def resolve_exit_for_entry(
     passes the signal bar's position here shifts every exit in this
     position by one bar. Locating that position from `entry_date` is the
     caller's job (this function receives frames, not a date-to-position
-    index) — documented here because it is the sharpest way to misuse
-    this function silently.
+    index) — but `_assert_entry_idx_matches` verifies the result before
+    any slicing happens, raising `ValueError` on a mismatch or an
+    out-of-range index rather than silently resolving off the wrong
+    window.
 
     `ind_at_entry` is always passed to `resolve_exit`. Band levels for
     forward bar i come from bar i-1; `resolve_exit` derives that by
@@ -259,6 +305,12 @@ def resolve_exit_for_entry(
     entry_price = entry["entry_price"]
     if _isnan(entry_price):
         return _unresolved_exit()
+
+    # Placed after the NaN short-circuit, not before: an entry that never
+    # filled carries `entry_date=None` (see `resolve_entries`'s NEXT_OPEN
+    # terminal-bar case), which has nothing to verify against and must not
+    # reach this check.
+    _assert_entry_idx_matches(entry, entry_idx, bars)
 
     fwd_bars = bars.iloc[entry_idx + 1 : entry_idx + 1 + ep.max_hold_days]
     if len(fwd_bars) == 0:
