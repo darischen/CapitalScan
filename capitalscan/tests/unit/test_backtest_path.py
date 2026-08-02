@@ -267,7 +267,9 @@ def test_reach_target_column_names_match_the_events_schema():
 
 def test_fwd_ret_columns_present_for_every_configured_horizon():
     fwd_bars = _fwd_bars(highs=[100.5] * 5, lows=[99.5] * 5)
-    adj_close = _adj_close([100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0, 109.0, 110.0])
+    adj_close = _adj_close(
+        [100.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 107.0, 108.0, 109.0, 110.0]
+    )
     result = path_metrics(
         entry_price=100.0,
         side=Side.LONG,
