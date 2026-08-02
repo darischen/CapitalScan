@@ -235,6 +235,308 @@ def events(
     )
 
 
+# Columns `_load_bars_by_ticker` selects off `indicators` for the harness's
+# `bars_by_ticker` shape (research/harness.py module docstring: "bars *and*
+# indicators merged, one frame per ticker"). Named here, not inlined into
+# the SQL string, so the list is legible and `interval`/`computed_at`/
+# `run_id` (present on the table but not indicator *values*) are never
+# accidentally swept into the no-look-ahead check's shift ladder — that
+# check treats every column outside `harness._BAR_COLUMNS` as an indicator
+# column to shift, so an unfiltered `SELECT *` would corrupt it.
+_BACKTEST_INDICATOR_COLUMNS = [
+    "bb_mid",
+    "bb_upper",
+    "bb_lower",
+    "bb_pctb",
+    "bb_width",
+    "bb_width_pct",
+    "k_fast",
+    "d_fast",
+    "k_full",
+    "d_full",
+    "k_cross_up",
+    "k_cross_down",
+    "sma_200",
+    "sma200_slope_60",
+    "atr_14",
+    "rv_20d",
+    "rv_pct_252d",
+    "vol_z_20d",
+    "dd_52w",
+    "days_to_earnings",
+]
+
+
+def _prior_clean_default_run_exists(engine, config_hash: str) -> bool:
+    """ADR 059's `--sweep` ordering gate: "the first backtest run uses a
+    single default config... before any sweep executes."
+
+    "Clean" here means all three of:
+      - `status = 'ok'` — the run completed without `BacktestRunFailed`
+        (a config-level fault would leave `status = 'failed'`).
+      - `notes IS NULL` — `backtest()` below writes a non-null note the
+        moment even one ticker fails (`BacktestReport.failed_tickers`), so
+        a run that "succeeded" but silently dropped 50 of 600 tickers does
+        not count as clean either. ADR 059 exists precisely to catch a
+        buggy engine before a sweep; a run with unexplained per-ticker
+        failures is exactly the "buggy engine" case it is guarding against.
+      - `params->>'full_universe' = 'true'` — a `--tickers` debug run is a
+        deliberate subset (see `run_backtest`'s own `full_universe`
+        docstring) and never asserts coverage of the whole trade universe,
+        so it cannot stand in for the full-universe validation ADR 059
+        requires before an 18-config sweep.
+
+    `config_hash` matching is the fourth leg: this checks for a clean run
+    of *the current default config specifically*, not any prior backtest
+    run — a clean run of some other config says nothing about whether this
+    one behaves.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT 1 FROM runs WHERE job = 'backtest' AND status = 'ok' "
+                "AND notes IS NULL AND params->>'config_hash' = :chash "
+                "AND params->>'full_universe' = 'true' LIMIT 1"
+            ),
+            {"chash": config_hash},
+        ).fetchone()
+    return row is not None
+
+
+def _load_bars_by_ticker(engine, tickers: list[str], config) -> dict:
+    """One bars+indicators frame per ticker, left-joined on `ts`, in the
+    shape `research.harness.run_harness` requires (see module docstring on
+    `_BACKTEST_INDICATOR_COLUMNS` above). `research.backtest._read_bars` /
+    `_read_indicators` read the same two tables but keep them as two
+    separate frames per ticker — this is a distinct read for the harness
+    specifically, not a second copy of the backtest engine's own IO
+    (invariant 2 covers detection/exit/config logic, not "which columns a
+    caller selects off an already-written table").
+
+    Starts from `config.splits.ingest_start`, same lower bound
+    `_backtest_one_ticker` uses for `bars`, so the no-look-ahead check's
+    shift ladder has the same history available that the run itself did.
+    A ticker with no bars in that window is omitted from the result rather
+    than included with an empty frame — `research.harness._indexed_bars`
+    already drops empty frames, so this just avoids the pointless read.
+    """
+    from sqlalchemy import text
+
+    import pandas as pd
+
+    start = date.fromisoformat(config.splits.ingest_start)
+    indicator_cols_sql = ", ".join(_BACKTEST_INDICATOR_COLUMNS)
+    out: dict = {}
+    with engine.connect() as conn:
+        for ticker in tickers:
+            bars = pd.read_sql(
+                text(
+                    "SELECT ticker, ts, open, high, low, close, adj_close, volume "
+                    "FROM bars WHERE ticker = :ticker AND interval = '1d' AND ts >= :start "
+                    "ORDER BY ts"
+                ),
+                conn,
+                params={"ticker": ticker, "start": start},
+            )
+            if bars.empty:
+                continue
+            bars["ts"] = pd.to_datetime(bars["ts"]).dt.tz_localize(None)
+
+            indicators = pd.read_sql(
+                text(
+                    f"SELECT ts, {indicator_cols_sql} FROM indicators "
+                    "WHERE ticker = :ticker AND interval = '1d' AND ts >= :start ORDER BY ts"
+                ),
+                conn,
+                params={"ticker": ticker, "start": start},
+            )
+            if indicators.empty:
+                out[ticker] = bars
+                continue
+            indicators["ts"] = pd.to_datetime(indicators["ts"]).dt.tz_localize(None)
+            out[ticker] = bars.merge(indicators, on="ts", how="left")
+    return out
+
+
+def _load_events_for_run(engine, run_id: str):
+    """The `events` rows this run itself wrote — the harness's `events`
+    argument. Scoped to `run_id`, not `config_hash`, so a rerun against the
+    same default config does not pull in a previous run's rows alongside
+    this one's (upsert means both share the same `(config_hash, ticker,
+    signal_date, signal_type, entry_kind)` keys, but only the most recent
+    write carries this run's `run_id`).
+    """
+    from sqlalchemy import text
+
+    import pandas as pd
+
+    with engine.connect() as conn:
+        return pd.read_sql(
+            text("SELECT * FROM events WHERE run_id = :run_id"), conn, params={"run_id": run_id}
+        )
+
+
+def _print_harness_report(report) -> None:
+    checks = [
+        report.no_lookahead,
+        report.entry_sanity,
+        report.exit_sanity,
+        report.return_identity,
+        report.non_overlap,
+    ]
+    console.print("[bold]harness (DESIGN §5.10, ADR 059)[/bold]")
+    for check in checks:
+        color = "green" if check.passed else "red"
+        status = "PASS" if check.passed else f"FAIL ({len(check.violations)} violation(s))"
+        console.print(f"  [{color}]{status}[/{color}]  {check.name}")
+    if not report.all_passed:
+        console.print(
+            "[red]harness gate FAILED[/red] — do not sweep and do not hand-inspect "
+            "events yet; the failing check(s) above point at the engine, not the data."
+        )
+
+
+@app.command()
+def backtest(
+    tickers: Optional[str] = typer.Option(None, help="Comma-separated ticker list"),
+    workers: int = typer.Option(1, help="ProcessPoolExecutor workers; 1 runs serially"),
+    sweep: bool = typer.Option(
+        False, help="Run the full config sweep (ADR 059: requires a prior clean default-config run)"
+    ),
+    config_name: Optional[str] = typer.Option(
+        None, "--config-name", help="Not implemented — see `cscan backtest --help` output on error"
+    ),
+) -> None:
+    """Run the backtest engine (DESIGN §5): default config in, `events` rows
+    out, then the Phase 3 validation harness (DESIGN §5.10) against what
+    this run wrote.
+
+    `--config-name` names a config to run, but there is no named-config
+    registry to select from: `jobs.config.resolve_config` layers CLI/env/
+    `config.toml`/dataclass-default into exactly one config per invocation,
+    with no name attached to any of them. Accepting the flag and silently
+    ignoring its value would be worse than refusing outright (Task 11
+    brief), so any value here is a hard error.
+
+    The harness runs automatically after every non-sweep run (not behind a
+    separate flag): ADR 059 requires it before any sweep or hand-inspection
+    happens, and it is cheap relative to the backtest itself — it re-reads
+    only the `events` rows and bars/indicators this run touched, never the
+    whole `events` table. A run with zero events written skips it (nothing
+    to check); a run with events but a failing harness check still exits
+    non-zero.
+
+    `--sweep` implements only ADR 059's ordering gate (Task 11 scope). The
+    18-config sweep itself is Task 12 — passing the gate here reports that
+    and exits, rather than pretending to run something that does not exist
+    yet.
+    """
+    from capitalscan.core.config import Config
+    from capitalscan.jobs import db_io, ingest
+    from capitalscan.jobs.config import config_hash as compute_config_hash
+    from capitalscan.research.backtest import BacktestRunFailed, run_backtest
+    from capitalscan.research.harness import run_harness
+
+    if config_name is not None:
+        console.print(
+            "[red]error[/red]: --config-name is not implemented. There is no "
+            "named-config registry — `jobs.config.resolve_config` resolves exactly "
+            "one config per invocation from CLI/env/config.toml/dataclass defaults. "
+            "Drop --config-name; the default config is used unconditionally."
+        )
+        raise typer.Exit(code=1)
+
+    config = Config()
+    chash = compute_config_hash(config)
+    engine = db_io.get_engine()
+
+    if sweep:
+        if not _prior_clean_default_run_exists(engine, chash):
+            console.print(
+                "[red]error[/red]: --sweep refused (ADR 059). Sweeping over a buggy "
+                "engine produces 18 confidently wrong answers with no signal that "
+                f"anything is wrong. No prior clean, full-universe, default-config "
+                f"backtest run (config_hash={chash}, status='ok', no failed tickers) "
+                "was found in `runs`. Run `cscan backtest` (no --tickers, no --sweep) "
+                "first, confirm the harness passes, hand-inspect ~20 events, then "
+                "retry --sweep."
+            )
+            raise typer.Exit(code=1)
+        console.print(
+            "[yellow]note[/yellow]: the ADR 059 ordering gate passed, but the "
+            "18-config sweep itself is Task 12 scope and is not implemented here."
+        )
+        raise typer.Exit(code=1)
+
+    resolved = _resolve_tickers(tickers)
+    # A `--tickers` subset is a partial run by definition: `run_backtest`'s
+    # `full_universe` guard exists so this cannot silently overwrite a
+    # previously-correct universe-wide `cofire_count` (see its docstring).
+    full_universe = tickers is None
+
+    from dataclasses import asdict
+
+    run_params = {
+        "config_hash": chash,
+        "config": asdict(config),
+        "full_universe": full_universe,
+        "workers": workers,
+        "n_tickers": len(resolved),
+    }
+
+    try:
+        with ingest.run_job(engine, "backtest", run_params) as report:
+            bt_report = run_backtest(
+                resolved,
+                config,
+                report.run_id,
+                engine=engine,
+                max_workers=workers,
+                full_universe=full_universe,
+            )
+            report.rows_written = bt_report.rows_written
+            if bt_report.failed_tickers:
+                failed = sorted(bt_report.failed_tickers)
+                sample = ", ".join(failed[:10])
+                more = "" if len(failed) <= 10 else f", +{len(failed) - 10} more"
+                report.notes = (
+                    f"{len(failed)}/{len(resolved)} ticker(s) failed: {sample}{more}"
+                )
+    except BacktestRunFailed as exc:
+        console.print(
+            "[red]error[/red]: backtest run failed — every dispatched ticker's "
+            f"worker raised the same fault, which points at the config, not the "
+            f"data. {exc}"
+        )
+        raise typer.Exit(code=1) from None
+
+    console.print(f"[bold]config_hash[/bold]: {chash}")
+    console.print(
+        f"backtest: run_id={bt_report.run_id} rows_written={bt_report.rows_written} "
+        f"tickers={len(bt_report.tickers)}/{len(resolved)}"
+    )
+
+    exit_code = 0
+    if bt_report.failed_tickers:
+        exit_code = 1
+        console.print(f"[red]{len(bt_report.failed_tickers)} ticker(s) failed[/red]: {report.notes}")
+
+    if bt_report.tickers:
+        bars_by_ticker = _load_bars_by_ticker(engine, bt_report.tickers, config)
+        events_for_harness = _load_events_for_run(engine, bt_report.run_id)
+        harness_report = run_harness(events_for_harness, bars_by_ticker, config)
+        _print_harness_report(harness_report)
+        if not harness_report.all_passed:
+            exit_code = 1
+    else:
+        console.print("[yellow]harness skipped[/yellow]: no events written")
+
+    if exit_code:
+        raise typer.Exit(code=exit_code)
+
+
 SIGNAL_TYPE_LABELS = {
     "bb_lower_touch": "Bollinger Band Lower Bound",
     "bb_upper_touch": "Bollinger Band Upper Bound",
