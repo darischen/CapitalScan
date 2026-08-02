@@ -684,7 +684,18 @@ def poll(
     interval: int = typer.Option(300, help="Poll interval in seconds"),
     tickers: Optional[str] = typer.Option(None, help="Comma-separated ticker list"),
 ) -> None:
-    """Run live band-touch poller until market close (DESIGN §4.8)."""
+    """Run live band-touch poller until market close (DESIGN §4.8).
+
+    Resolves config via `_resolve_config_or_exit`, which reads and validates
+    all seven config sections at once (`jobs.config.resolve_config`'s
+    all-or-nothing contract) even though `poll` only consumes
+    `signals`/`exits`/`stats`. A malformed `CAPSCAN_COSTS` or
+    `CAPSCAN_UNIVERSE` — sections this command never touches — will still
+    block startup with a `ConfigError`. This is deliberate (ADR 091: raise
+    rather than default), not a `poll`-specific bug, but it means a poller
+    refusing to start at market open can be caused by an env var this
+    command doesn't otherwise care about.
+    """
     from capitalscan.jobs import poll as poll_job
 
     config = _resolve_config_or_exit()
@@ -879,6 +890,10 @@ def nightly() -> None:
     """
     from capitalscan.jobs import compute, db_io, ingest, scheduled_runs
 
+    # Resolved before any IO so a malformed config.toml/CAPSCAN_* aborts the
+    # chain up front, rather than after bars/actions/market/shares/earnings
+    # have already run and only `indicators`/`events` are left to fail on.
+    config = _resolve_config_or_exit()
     engine = db_io.get_engine()
     scheduled_runs.record(engine, "nightly")
     tickers = _resolve_tickers(None)
@@ -899,8 +914,8 @@ def nightly() -> None:
     ingest.run_market(lookback_days=5, engine=engine)
     ingest.run_shares(tickers, engine=engine)
     ingest.run_earnings(tickers, historical=False, forward_days=90, engine=engine)
-    compute.run_indicators(tickers, start, end, max_workers=1, engine=engine)
-    compute.run_events(tickers, start, end, engine=engine)
+    compute.run_indicators(tickers, start, end, params=config.indicators, max_workers=1, engine=engine)
+    compute.run_events(tickers, start, end, sp=config.signals, engine=engine)
     console.print("nightly: chain complete (sync --to-serving not yet implemented)")
 
 

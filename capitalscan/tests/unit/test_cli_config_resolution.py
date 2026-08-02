@@ -220,6 +220,25 @@ def test_poll_command_threads_resolved_params(monkeypatch, tmp_path):
     assert captured["ep"].max_hold_days == 7
 
 
+def test_poll_command_blocks_on_malformed_unrelated_section(monkeypatch, capsys):
+    """`resolve_config` validates all seven sections unconditionally
+    (`jobs/config.py::_read_env` loops over every `SECTIONS` key), so a
+    malformed `CAPSCAN_COSTS` blocks `poll` even though `poll` only ever
+    consumes `signals`/`exits`/`stats`. This is `resolve_config`'s existing
+    all-or-nothing contract (ADR 091: raise rather than default), not a
+    `poll`-specific special case — pinned here so the behavior is
+    deliberate, not incidental, and so a `poll` operator debugging a
+    startup failure has a test to point at.
+    """
+    monkeypatch.setenv("CAPSCAN_COSTS", "{bad json")
+
+    result = runner.invoke(cli.app, ["poll", "--tickers", "AAPL"])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "CAPSCAN_COSTS" in result.output
+
+
 # ---------------------------------------------------------------------------
 # `cscan backtest` resolves config instead of calling `Config()` directly
 # ---------------------------------------------------------------------------
@@ -262,3 +281,108 @@ def test_backtest_command_malformed_config_exits_clean_not_traceback(monkeypatch
     assert exc_info.value.exit_code == 1
     out = capsys.readouterr().out
     assert "Traceback" not in out
+
+
+# ---------------------------------------------------------------------------
+# `cscan nightly` threads the resolved IndicatorParams/SignalParams through
+# to `compute.run_indicators` / `compute.run_events`, its two config-taking
+# steps. Found missing in review: the original wiring pass touched the
+# standalone `indicators`/`events`/`universe`/`poll`/`backtest` commands but
+# not `nightly`'s own calls into the same two `compute` functions, so a
+# user with a `config.toml` got one config from `cscan indicators` and a
+# different (default) one from the Task Scheduler `nightly` chain calling
+# the identical function.
+# ---------------------------------------------------------------------------
+
+
+def _patch_nightly_io(monkeypatch):
+    """Stubs every IO call `nightly` makes except the two `compute.*` calls
+    under test, so this stays a unit test (CONSTRAINTS.md: no real IO)."""
+    from capitalscan.jobs import db_io, ingest, scheduled_runs
+
+    monkeypatch.setattr(db_io, "get_engine", lambda: "fake-engine")
+    monkeypatch.setattr(scheduled_runs, "record", lambda engine, job: None)
+    monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL"])
+    for name in (
+        "run_bars_daily",
+        "run_bars_hourly",
+        "run_actions",
+        "run_market",
+        "run_shares",
+        "run_earnings",
+    ):
+        monkeypatch.setattr(ingest, name, lambda *a, **k: None)
+
+
+def test_nightly_command_threads_resolved_config(monkeypatch, tmp_path):
+    from capitalscan.jobs import compute
+
+    monkeypatch.setattr(
+        cli,
+        "_CONFIG_FILE",
+        _toml(tmp_path, "[indicators]\nbb_window = 25\n[signals]\nstoch_oversold = 25.0\n"),
+    )
+    _patch_nightly_io(monkeypatch)
+
+    captured = {}
+
+    def _fake_run_indicators(tickers, start, end, engine=None, params=None, max_workers=1):
+        captured["params"] = params
+
+    def _fake_run_events(tickers, target_start, target_end, engine=None, sp=None):
+        captured["sp"] = sp
+
+    monkeypatch.setattr(compute, "run_indicators", _fake_run_indicators)
+    monkeypatch.setattr(compute, "run_events", _fake_run_events)
+
+    cli.nightly()
+
+    assert captured["params"].bb_window == 25
+    assert captured["sp"].stoch_oversold == 25.0
+
+
+def test_nightly_command_malformed_config_exits_before_any_io(monkeypatch, capsys):
+    """A malformed config must fail the chain before any bars/actions/
+    market/shares/earnings IO runs — verified by *not* patching those calls
+    away and asserting the config error wins first (they would raise
+    `AssertionError`/hit the network if the chain reached that far)."""
+    from capitalscan.jobs import db_io
+
+    monkeypatch.setenv("CAPSCAN_INDICATORS", "{bad json")
+    monkeypatch.setattr(
+        db_io, "get_engine", lambda: (_ for _ in ()).throw(AssertionError("IO reached"))
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        cli.nightly()
+
+    assert exc_info.value.exit_code == 1
+    out = capsys.readouterr().out
+    assert "Traceback" not in out
+
+
+# ---------------------------------------------------------------------------
+# Minors: CLI-layer coverage for a malformed config.toml and an unknown
+# section override, exercised through the CLI helper rather than only
+# `jobs/config.py`'s own suite.
+# ---------------------------------------------------------------------------
+
+
+def test_malformed_config_toml_exits_clean(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "_CONFIG_FILE", _toml(tmp_path, "[indicators\nbb_window = 25\n"))
+
+    with pytest.raises(typer.Exit) as exc_info:
+        cli._resolve_config_or_exit()
+
+    assert exc_info.value.exit_code == 1
+    out = capsys.readouterr().out
+    assert "Traceback" not in out
+
+
+def test_unknown_section_in_cli_overrides_exits_clean(capsys):
+    with pytest.raises(typer.Exit) as exc_info:
+        cli._resolve_config_or_exit(cli_overrides={"indicatorz": {"bb_window": 20}})
+
+    assert exc_info.value.exit_code == 1
+    out = capsys.readouterr().out
+    assert "indicatorz" in out
