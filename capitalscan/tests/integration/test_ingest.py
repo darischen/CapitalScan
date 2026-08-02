@@ -4,7 +4,7 @@ Requires a reachable `DATABASE_URL_RESEARCH` (the local Docker Postgres in
 dev, the CI service container in the slow tier). Network fetchers are
 mocked at the module boundary, same pattern as
 `tests/integration/test_fetchers.py` — deterministic, no dependence on
-live Yahoo/SEC/Stooq data.
+live Yahoo/SEC data.
 
 What this exercises end to end, matching BUILD.md's acceptance criterion:
 `cscan backfill --tickers TSM,NVDA,AAPL --start ... --through-validate`,
@@ -91,8 +91,6 @@ def _empty_actions(ticker: str) -> pd.DataFrame:
 def _mock_fetchers(monkeypatch):
     monkeypatch.setattr(yahoo, "fetch_bars_daily", _synthetic_daily)
     monkeypatch.setattr(yahoo, "fetch_actions", _empty_actions)
-    # Never hit real Stooq in the test suite.
-    monkeypatch.setattr(ingest.stooq, "fetch_daily", lambda *a, **k: pd.DataFrame())
 
 
 def test_backfill_writes_bars_and_reports_clean_validation(engine):

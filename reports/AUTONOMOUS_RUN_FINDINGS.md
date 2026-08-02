@@ -238,6 +238,54 @@ validation harness (task 9.8) exists to investigate, and it may be a parameter
 question rather than a defect. Flagging it because it is the Phase 3 criterion
 most likely to fail.
 
+## FINDING 8 RESOLVED — the ~4% estimate was wrong, not the engine
+
+Re-measured on clean data after every purge and fix. The engine fires
+confluence on **18.34%** of ticker-days against BUILD.md's "~4% of
+ticker-days for confluence", a 4.1x discrepancy that survived every data
+repair. That made it look like a detection defect. It is not.
+
+Measured directly from `bars` joined to `indicators` at **t−1** (the pairing
+`detect` actually uses), 2010-01-01 onward, 2,371,529 ticker-days:
+
+```
+                              rate
+confluence_low,  intraday extremes    7.16%
+confluence_low,  close                4.43%   <- matches the ~4% estimate
+either side,     intraday extremes   18.34%   <- what the engine measures
+either side,     close               11.38%
+```
+
+Component rates, same window:
+
+```
+P(low  <= bb_lower)   11.18%      P(close <= bb_lower)   5.29%
+P(k_full <= 20)       15.92%
+```
+
+Two definitional differences, both deliberate design choices, fully account
+for the gap:
+
+1. **ADR 005 uses the bar's intraday low/high, not the close** — "a daily
+   bar's extremes are the intraday touch". A textbook Bollinger figure of
+   ~2.5% per tail is a *close*-based number. Using extremes roughly doubles
+   the touch rate: 5.29% → 11.18%. Effect on confluence: 4.43% → 7.16%.
+2. **The criterion says "for confluence" without specifying one side or
+   both.** Counting `confluence_high` as well: 7.16% → 18.34%.
+
+Combined: 4.43% × 1.6 × 2.6 ≈ 18.3%. The engine also reconciles with itself
+— 18.34% computed from bars matches the 18.24% measured independently from
+the `events` table.
+
+**Action: restate the acceptance criterion, do not change the engine.** The
+criterion needs to name which side(s) it counts and whether it is measured on
+closes or extremes. As written it is ambiguous, and the one reading that
+makes it pass (`confluence_low`, on closes, 4.43%) is the one the engine
+deliberately does not implement.
+
+This does not tell you whether 18% is a *useful* event rate — that is a
+Phase 4 question about statistical power, not a Phase 3 correctness one.
+
 ## Still open from the session 0-8 verification
 
 1. `run_validate` never queries `trading_days` — the DESIGN §2.3 missing-bar check

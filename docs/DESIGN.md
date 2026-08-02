@@ -87,7 +87,6 @@ The rule holding this together: **nothing heavy runs in a request path** (ADR 02
 |---|---|---|---|---|
 | Daily OHLCV | yfinance | none | ~0.5 req/s, batch 50 | Nightly, 5-day overlap |
 | Hourly OHLCV | yfinance | none | ~0.5 req/s | Nightly, 2-day overlap |
-| Cross-check | Stooq | none | 2 req/s | 20-ticker sample, integration test |
 | Live quotes | yfinance batch | none | batch 50-100 | Every 5 min, market hours |
 | VIX, SPX | yfinance `^VIX`, `^GSPC` | none | — | Nightly |
 | Index membership | Wikipedia scrape | none | — | Once, frozen (ADR 055) |
@@ -97,6 +96,8 @@ The rule holding this together: **nothing heavy runs in a request path** (ADR 02
 | Option chains (Phase 2) | yfinance | none | on demand | Live only, never stored historically |
 
 `SEC_USER_AGENT` must contain a real email address. SEC blocks requests without it, and the block is IP-level and persistent.
+
+**Removed 2026-08-01: Stooq cross-check.** This table used to carry a `Cross-check | Stooq` row (2 req/s, 20-ticker sample, integration test). As of 2026-08-01 Stooq serves a JavaScript proof-of-work challenge to `requests` on every endpoint tried (`stooq.com` and `stooq.pl`, with and without a browser User-Agent), verified against the vendor blocking automated access rather than a network quirk. The owner decided to remove the check and accept single-source (Yahoo) data rather than keep a permanently-failing safeguard or add a keyed vendor. See §2.3 and §4.11 for the corresponding removals.
 
 ### 2.2 Price adjustment policy
 
@@ -132,7 +133,8 @@ Every rule runs on ingest and writes to `bar_rejects` rather than silently dropp
 | Duplicate `(ticker, ts, interval)` | any | Upsert, keep latest fetch |
 | Price below $1 | any | Flag, exclude from trade universe |
 | Identical close for 5+ days | any | Flag, exclude those bars from indicator windows |
-| Stooq close disagreement | > 0.5% on > 1% of bars | Flag for manual review |
+
+**Removed 2026-08-01:** `Stooq close disagreement | > 0.5% on > 1% of bars | Flag for manual review` was here. Removed with the rest of the Stooq cross-check (see §2.1) once the vendor began blocking automated requests; the pipeline is single-source on Yahoo, not covered by an independent cross-check.
 
 Trading calendar comes from `pandas_market_calendars` (NYSE). Do not infer trading days from the data; that hides exactly the gaps you want to find.
 
@@ -904,7 +906,9 @@ cscan backfill --all --resume             # ~2.5 hr
 cscan bars --hourly --backfill            # ~5.4 hr, overnight, checkpointed
 ```
 
-`cscan validate --report` is a deliberate human gate: reject counts by rule, coverage per ticker, and the Stooq cross-check on the 20-ticker sample. Proceeding past bad data costs more than the pause. `--yes` skips it for unattended reruns.
+`cscan validate --report` is a deliberate human gate: reject counts by rule and coverage per ticker. Proceeding past bad data costs more than the pause. `--yes` skips it for unattended reruns.
+
+(Until 2026-08-01 this gate also ran a Stooq cross-check on a 20-ticker sample; removed when the vendor began blocking automated requests — see §2.1.)
 
 Dependency graph:
 

@@ -23,7 +23,7 @@ from sqlalchemy import Engine, text
 
 from capitalscan.core.config import SplitParams
 from capitalscan.jobs import db_io
-from capitalscan.jobs.fetch import finnhub, sec, stooq, wikipedia, yahoo
+from capitalscan.jobs.fetch import finnhub, sec, wikipedia, yahoo
 from capitalscan.jobs.provenance import git_sha, new_run_id
 
 console = Console()
@@ -32,9 +32,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 UNIVERSE_CSV = REPO_ROOT / "data" / "universe_union.csv"
 
 FULL_SESSION = pd.Timedelta(hours=6, minutes=30)
-STOOQ_SAMPLE_SIZE = 20
-STOOQ_DISAGREEMENT_PCT = 0.005  # 0.5%
-STOOQ_DISAGREEMENT_FRACTION = 0.01  # flag if disagreement hits >1% of bars
 LARGE_MOVE_PCT = 0.40
 SPLIT_RATIOS = (2, 3, 4, 5, 7, 10, 20)  # forward and reverse splits both checked
 FLAT_CLOSE_RUN = 5
@@ -362,9 +359,8 @@ def validate_bars(
     """Apply DESIGN §2.3's per-batch checks. Returns (clean rows, reject rows).
 
     Rules that need broader context than one fetch batch — missing bars on
-    a trading day, and the Stooq cross-check — live in `run_validate`
-    instead, which has the full `trading_days` and `bars` history to work
-    against.
+    a trading day — live in `run_validate` instead, which has the full
+    `trading_days` and `bars` history to work against.
     """
     if df.empty:
         return df, []
@@ -467,10 +463,10 @@ def unresolved_rejects(
     ever written means a single transient rejection makes validation
     permanently dirty with no path back to clean.
 
-    That is the same failure shape as the Stooq cross-check above — `clean`
-    measuring something other than what it claims. Here the claim is "no
-    bar was dropped for failing validation", and a reject whose bar is now
-    on file did not drop anything.
+    Naively counting every logged reject would make `clean` measure
+    something other than what it claims. Here the claim is "no bar was
+    dropped for failing validation", and a reject whose bar is now on file
+    did not drop anything.
 
     Measured when this was written: 10 of 12 outstanding hard rejects had
     correct bars on file. The pattern is a batch fetched across a split
@@ -501,10 +497,9 @@ def find_missing_bars(bars: pd.DataFrame, trading_days: pd.DataFrame) -> pd.Data
     """Trading days with no bar, bounded to each ticker's own observed span.
 
     DESIGN §2.3 lists "missing bar on an NYSE trading day" with threshold
-    "any" — unlike the Stooq disagreement row, there is no tolerance
-    fraction here. That is only achievable, per DESIGN §4.3's silent-
-    truncation warning, if the calendar checked against is bounded to the
-    ticker's own `[min(d), max(d)]` rather than the whole `trading_days`
+    "any" — no tolerance fraction here. That is only achievable, per
+    DESIGN §4.3's silent-truncation warning, if the calendar checked against
+    is bounded to the ticker's own `[min(d), max(d)]` rather than the whole `trading_days`
     table: a ticker that listed in 2014 has no bars for 2010-2013 and a
     ticker delisted in 2019 has none after, and neither is a gap — it is
     exactly the expected absence DESIGN §4.3 says `first_bar`/`last_bar`
@@ -1022,23 +1017,7 @@ def run_earnings(
 class ValidationReport:
     reject_counts: pd.DataFrame
     coverage: pd.DataFrame
-    stooq_disagreements: pd.DataFrame
     clean: bool
-    # Every ticker the Stooq loop actually completed a comparison for
-    # (merged non-empty, `pct_diff` computed) — distinct from `len(sample)`,
-    # which also counts tickers skipped for a legitimate reason (no local
-    # data yet, ticker not on Stooq) or lost to an error. A 20-ticker
-    # sample with `stooq_checked == 0` means the cross-check never ran at
-    # all, which is the exact failure mode that used to read as "clean"
-    # because `disagreements` stays empty either way.
-    stooq_checked: int = 0
-    # One row per ticker the loop caught an exception for, with the
-    # message — previously only `console.print`ed and otherwise discarded,
-    # so a total failure of the check (every ticker erroring) looked
-    # identical in the report to a total success (every ticker agreeing).
-    stooq_errors: pd.DataFrame = field(
-        default_factory=lambda: pd.DataFrame(columns=["ticker", "error"])
-    )
     # DESIGN §2.3's missing-bar rule (see `find_missing_bars`): one row per
     # (ticker, missing_date) for a trading day inside that ticker's own
     # observed span with no bar.
@@ -1052,36 +1031,21 @@ class ValidationReport:
         default_factory=lambda: pd.DataFrame(columns=["ticker", "d", "severity"])
     )
 
-    @property
-    def data_clean(self) -> bool:
-        """Every check that ran found nothing wrong with the data.
-
-        Distinct from `clean`, which also requires that every check *ran*.
-        An operator reading the report needs to separate "the data is bad,
-        go fix it" from "a vendor is down, decide whether to proceed
-        without that safeguard" — one boolean forces them to read the prose
-        to work out which.
-        """
-        return (
-            self.open_rejects.empty and self.missing_bars.empty and self.stooq_disagreements.empty
-        )
-
-    @property
-    def checks_complete(self) -> bool:
-        """Every check actually executed.
-
-        As of 2026-08-01 Stooq serves a JavaScript proof-of-work challenge
-        to `requests` on every endpoint tried (stooq.com and stooq.pl, with
-        and without a browser UA), so this is False while the data is fine.
-        """
-        return not (self.stooq_checked == 0 and not self.stooq_errors.empty)
+    # No `data_clean`/`checks_complete` split here. That distinction existed
+    # only to separate "the Stooq cross-check found bad data" from "the
+    # Stooq cross-check could not run at all" (vendor outage, network
+    # block) — two different operator responses behind one boolean. Both
+    # remaining checks (`missing_bars`, `open_rejects`) are plain queries
+    # against this database: they always run, or the job itself has failed
+    # loudly rather than reporting a hollow "complete". There is no longer
+    # a "check ran but found nothing" vs. "check silently didn't run" gap
+    # for `clean` to paper over, so collapsing back to one boolean is not
+    # the same silent-success trap this removal is otherwise guarding
+    # against — it is removing a distinction that no longer has a second
+    # side.
 
 
-def run_validate(
-    tickers: list[str] | None = None,
-    sample_size: int = STOOQ_SAMPLE_SIZE,
-    engine: Engine | None = None,
-) -> ValidationReport:
+def run_validate(engine: Engine | None = None) -> ValidationReport:
     engine = engine or db_io.get_engine()
 
     with engine.connect() as conn:
@@ -1099,13 +1063,9 @@ def run_validate(
             ),
             conn,
         )
-        available = pd.read_sql(
-            text("SELECT DISTINCT ticker FROM bars WHERE interval = '1d'"), conn
-        )["ticker"].tolist()
         # Missing-bar rule (DESIGN §2.3): the full NYSE calendar plus every
-        # bar date on file. `find_missing_bars` bounds the comparison to
-        # each ticker's own observed span, so this covers the whole
-        # universe (like `coverage` above), not just the Stooq sample.
+        # bar date on file, covering the whole universe (like `coverage`
+        # above), not a sample.
         trading_days = pd.read_sql(text("SELECT d FROM trading_days"), conn)
         bar_dates = pd.read_sql(
             text("SELECT ticker, ts::date AS d FROM bars WHERE interval = '1d'"), conn
@@ -1123,68 +1083,14 @@ def run_validate(
         reject_rows, bar_dates, date.fromisoformat(SplitParams().ingest_start)
     )
 
-    sample = (tickers or available)[:sample_size]
-    disagreements = []
-    stooq_errors: list[dict] = []
-    stooq_checked = 0
-    for ticker in sample:
-        try:
-            with engine.connect() as conn:
-                local = pd.read_sql(
-                    text(
-                        "SELECT ts::date AS d, close FROM bars "
-                        "WHERE ticker = :ticker AND interval = '1d' ORDER BY ts DESC LIMIT 60"
-                    ),
-                    conn,
-                    params={"ticker": ticker},
-                )
-            if local.empty:
-                continue
-            stooq_bars = stooq.fetch_daily(ticker, local["d"].min(), local["d"].max())
-            if stooq_bars.empty:
-                continue
-            merged = local.merge(
-                stooq_bars, left_on="d", right_on="date", suffixes=("_local", "_stooq")
-            )
-            if merged.empty:
-                continue
-            # Both frames carry a `close` column, so the merge suffixes
-            # *both* sides (`close_local` / `close_stooq`) rather than
-            # leaving one plain `close` behind — this is the bug that made
-            # the cross-check raise a `KeyError` for every ticker, caught
-            # by the broad `except` below and printed with a message that
-            # happened to read like the bare ticker. Reproduced directly
-            # against pandas' own merge, no network involved.
-            pct_diff = (merged["close_local"] - merged["close_stooq"]).abs() / merged["close_stooq"]
-            frac_bad = (pct_diff > STOOQ_DISAGREEMENT_PCT).mean()
-            stooq_checked += 1
-            if frac_bad > STOOQ_DISAGREEMENT_FRACTION:
-                disagreements.append({"ticker": ticker, "frac_disagreeing": frac_bad})
-        except Exception as exc:  # noqa: BLE001 - one bad ticker must not kill the report
-            stooq_errors.append({"ticker": ticker, "error": str(exc)})
-            console.print(f"[yellow]stooq cross-check skipped for {ticker}: {exc}[/yellow]")
-
-    # A non-empty sample where not a single ticker produced a comparison —
-    # whether every attempt errored, every local frame was empty, or Stooq
-    # had nothing for any of them — is indistinguishable from "no
-    # disagreements" if `clean` only looks at `disagreements`. That silence
-    # is exactly what let the `close`/`close_stooq` bug above hide behind a
-    # per-ticker `except Exception` for as long as it did.
-    stooq_check_failed = bool(sample) and stooq_checked == 0
-
     # Gated on rejects that still cost a bar, not on every row the
     # append-only log ever recorded — see `unresolved_rejects`.
-    clean = (
-        open_rejects.empty and not disagreements and missing_bars.empty and not stooq_check_failed
-    )
+    clean = open_rejects.empty and missing_bars.empty
 
     return ValidationReport(
         reject_counts=reject_counts,
         coverage=coverage,
-        stooq_disagreements=pd.DataFrame(disagreements),
         clean=clean,
-        stooq_checked=stooq_checked,
-        stooq_errors=pd.DataFrame(stooq_errors, columns=["ticker", "error"]),
         missing_bars=missing_bars,
         open_rejects=open_rejects,
     )
@@ -1207,26 +1113,6 @@ def print_validation_report(report: ValidationReport) -> None:
     for _, row in report.coverage.iterrows():
         cov.add_row(row["ticker"], str(row["n_bars"]), str(row["first_ts"]), str(row["last_ts"]))
     console.print(cov)
-
-    if not report.stooq_errors.empty:
-        console.print(
-            f"[red]Stooq cross-check errored for {len(report.stooq_errors)} "
-            f"ticker(s) (checked {report.stooq_checked} successfully):[/red]"
-        )
-        console.print(report.stooq_errors)
-    if report.stooq_checked == 0 and not report.stooq_errors.empty:
-        console.print(
-            "[red]Stooq cross-check did not complete for any sampled ticker — "
-            "treat as UNAVAILABLE, not as agreement[/red]"
-        )
-    elif not report.stooq_disagreements.empty:
-        console.print("[red]Stooq disagreement above threshold:[/red]")
-        console.print(report.stooq_disagreements)
-    else:
-        console.print(
-            f"[green]Stooq cross-check: no disagreement above threshold "
-            f"({report.stooq_checked} ticker(s) compared)[/green]"
-        )
 
     if not report.missing_bars.empty:
         console.print(
@@ -1255,22 +1141,6 @@ def print_validation_report(report: ValidationReport) -> None:
         console.print(
             f"[green]No unresolved hard rejects "
             f"({n_logged} logged, all since refetched or outside the ingest window)[/green]"
-        )
-
-    # Two verdicts, because "the data is bad" and "a check could not run"
-    # need different responses from whoever is reading this.
-    if report.data_clean:
-        console.print("[green]DATA: clean — every check that ran found nothing wrong[/green]")
-    else:
-        console.print("[red]DATA: NOT clean — see the failures above[/red]")
-
-    if report.checks_complete:
-        console.print("[green]CHECKS: all complete[/green]")
-    else:
-        console.print(
-            "[yellow]CHECKS: incomplete — the Stooq cross-check could not run. "
-            "DESIGN §5.8 uses it to catch a Yahoo-side error that would otherwise "
-            "look like ground truth, so that safeguard is currently absent.[/yellow]"
         )
 
     if report.clean:
@@ -1312,7 +1182,7 @@ def run_backfill(
     steps.append(run_actions(tickers, engine=engine))
     steps.append(run_market(lookback_days=(end - start).days, engine=engine))
 
-    validation = run_validate(tickers, engine=engine)
+    validation = run_validate(engine=engine)
     # `through_validate` is the documented stopping point (DESIGN §4.11): a
     # human reads the report before `indicators`/`events` (session 6) run
     # against it. Both jobs land here for now since neither exists yet.

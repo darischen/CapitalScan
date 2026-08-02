@@ -357,26 +357,24 @@ def poll(
 @app.command()
 def validate(
     report: bool = typer.Option(False, help="Print validation report"),
-    tickers: Optional[str] = typer.Option(None, help="Restrict the Stooq cross-check sample"),
-    strict: bool = typer.Option(
-        False, help="Also fail when a check could not run at all, not just when data is bad"
-    ),
 ) -> None:
-    """Validate ingested data: reject counts, coverage, Stooq cross-check (DESIGN §5.8)."""
+    """Validate ingested data: reject counts, coverage, missing-bar and reject checks.
+
+    The Stooq cross-check (DESIGN §2.1, §2.3, §4.11) was removed 2026-08-01:
+    the vendor began serving a JavaScript proof-of-work challenge to
+    automated requests on every endpoint tried, so the pipeline is now
+    single-source on Yahoo.
+    """
     from capitalscan.jobs import ingest
 
-    resolved = [t.strip().upper() for t in tickers.split(",")] if tickers else None
-    result = ingest.run_validate(tickers=resolved)
+    result = ingest.run_validate()
     if report:
         ingest.print_validation_report(result)
     else:
         status = "clean" if result.clean else "NOT clean"
         console.print(f"validation: {status}")
 
-    # A vendor outage should not read the same as bad data. `--strict` is the
-    # unattended-rerun gate (DESIGN §5.8) and demands both; without it a
-    # non-zero exit means the data itself is bad.
-    if not result.data_clean or (strict and not result.checks_complete):
+    if not result.clean:
         raise typer.Exit(code=1)
 
 

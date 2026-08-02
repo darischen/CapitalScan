@@ -218,11 +218,7 @@ def test_no_nulls_after_warmup(indicators):
         assert post[col].isna().sum() == 0  # ADR 040
 ```
 
-```python
-def test_stooq_agreement(sample_tickers):  # integration tier
-    diff = compare_closes(yf_data, stooq_data)
-    assert (diff.abs() > 0.005).mean() < 0.01
-```
+Removed 2026-08-01: a `test_stooq_agreement` integration test used to compare Yahoo and Stooq closes here. Stooq began serving a JavaScript proof-of-work challenge to automated requests on every endpoint tried, so the cross-check it validated was removed along with `jobs/fetch/stooq.py`; the pipeline is single-source on Yahoo with no independent cross-check.
 
 ```python
 def test_ingest_idempotent(db, ticker):
@@ -392,8 +388,9 @@ cscan scan --ticker TSM --start 2026-07-01 --end 2026-07-30
 - Returns the 2026-07-29 event with correct %B and %K
 - All golden fixtures pass
 - Zero nulls in indicators after 2010-01-01
-- Stooq agreement within tolerance
 - Random-walk null test passes
+
+(This gate used to also require Stooq agreement within tolerance. Removed 2026-08-01 — Stooq began blocking automated requests; the pipeline is single-source on Yahoo.)
 
 ### Phase 2
 
@@ -406,9 +403,33 @@ cscan scan --ticker TSM --start 2026-07-01 --end 2026-07-30
 
 - Exit invariants hold across 10,000 property-generated cases each (`--hypothesis-profile=full -m exit_invariant`)
 - Ambiguity rate below 10%, or hourly escalation implemented
-- Event count within 20% of the analytical estimate (~4% of ticker-days for confluence)
+- Event rate passes all three checks below (see BUILD.md §9a for the derivation)
 - Determinism test passes
 - All five validation-harness checks pass (DESIGN §5.10)
+
+**Event-rate checks.** The former wording — "within 20% of the analytical
+estimate (~4% of ticker-days for confluence)" — named no side and no price
+field, and the three defensible readings span four-fold: `confluence_low` on
+closes 4.43%, on intraday extremes 7.16%, either side on extremes 18.34%
+(measured 2026-08-01 over 2,371,529 ticker-days at t−1). The ~4% figure
+matches the close-based reading, which ADR 005 explicitly rejects — "a daily
+bar's extremes are the intraday touch".
+
+Setting the criterion to the engine's own measured output would make it
+circular and unable to fail. These three are checkable against something
+other than the engine:
+
+1. **Structural** — `P(low ≤ bb_lower) ≥ P(close ≤ bb_lower)`, likewise for
+   the upper band, and `P(confluence) ≤ min(P(touch), P(oversold))`. These
+   follow from `low ≤ close ≤ high` and from confluence being a conjunction,
+   so a violation is a real detection bug.
+2. **Component rates** — `P(k_full ≤ 20)` near 20% (bounded, roughly uniform
+   oscillator; measured 15.92%), `P(close ≤ bb_lower)` near 2.5% under
+   normality and higher with fat tails (measured 5.29%), `P(low ≤ bb_lower)`
+   strictly above it (measured 11.18%).
+3. **Headline band** — confluence either side on intraday extremes fires on
+   **10-25%** of ticker-days. Deliberately wide: tight enough to catch a
+   dropped t−1 shift, loose enough not to encode today's number.
 
 ### Phase 4
 

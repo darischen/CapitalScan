@@ -116,7 +116,6 @@ def signal_date(monkeypatch) -> date:
 
     monkeypatch.setattr(yahoo, "fetch_bars_daily", fake_daily)
     monkeypatch.setattr(yahoo, "fetch_actions", fake_actions)
-    monkeypatch.setattr(ingest.stooq, "fetch_daily", lambda *a, **k: pd.DataFrame())
     return target_date
 
 

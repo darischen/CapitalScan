@@ -425,11 +425,12 @@ Retry on connection errors, timeouts, 429, 5xx. **Never retry 404** — that mea
 | yfinance | 0.5 req/s, batches of 50 |
 | SEC EDGAR | 8 req/s, `User-Agent` mandatory |
 | Finnhub | 0.8 req/s |
-| Stooq | 2 req/s |
+
+Removed 2026-08-01: a Stooq row (2 req/s) was here for the cross-check fetcher. Stooq began serving a JavaScript proof-of-work challenge to automated requests on every endpoint tried, so the fetcher and the cross-check it backed were both removed; the pipeline is single-source on Yahoo.
 
 **4.4 Fetchers**
 
-`yahoo.py` (daily bars, hourly bars, quotes, actions, chains), `sec.py` (XBRL company facts, 8-K submissions), `finnhub.py` (forward calendar), `stooq.py` (cross-check), `wikipedia.py` (membership history).
+`yahoo.py` (daily bars, hourly bars, quotes, actions, chains), `sec.py` (XBRL company facts, 8-K submissions), `finnhub.py` (forward calendar), `wikipedia.py` (membership history). (`stooq.py` was removed 2026-08-01; see §4.3.)
 
 **4.5 Progress reporting** *(ADR 052)*
 
@@ -482,7 +483,7 @@ Historical from EDGAR 8-K filings, frozen after backfill. Forward from Finnhub, 
 
 Every rule in DESIGN §2.3, writing to `bar_rejects` rather than dropping silently.
 
-`cscan validate --report` prints reject counts by rule, per-ticker coverage, and the Stooq cross-check on 20 tickers. This is a deliberate human gate in the backfill runbook.
+`cscan validate --report` prints reject counts by rule and per-ticker coverage. This is a deliberate human gate in the backfill runbook. (Until 2026-08-01 it also ran a Stooq cross-check on 20 tickers; removed when the vendor began blocking automated requests — see §4.3.)
 
 **5.9 Idempotency**
 
@@ -549,8 +550,9 @@ cscan scan --ticker TSM --start 2026-07-01 --end 2026-07-30
 Plus:
 - All golden fixtures pass
 - Zero nulls in indicators after 2010-01-01
-- Stooq agreement within tolerance
 - Random-walk null test passes (`TESTS.md` §6)
+
+(This gate used to also require Stooq agreement within tolerance. Removed 2026-08-01 — Stooq began blocking automated requests; the pipeline is single-source on Yahoo.)
 
 ---
 
@@ -663,9 +665,61 @@ Failure mode if skipped: `entry_price_for` returns null rather than raising when
 
 - Exit invariants hold across 10,000 property-generated cases
 - Ambiguity rate below 10%, or hourly escalation implemented
-- Event count within 20% of the analytical estimate (~4% of ticker-days for confluence)
+- Event rate passes the three checks in §9a below
 - Two runs with identical config produce identical output ignoring `run_id`
 - All five validation harness checks pass
+
+### 9a. Event-rate criterion
+
+The old wording — "within 20% of the analytical estimate (~4% of ticker-days
+for confluence)" — was **ambiguous and its estimate was wrong**. Measured
+2026-08-01 over 2,371,529 ticker-days from 2010-01-01, joining bars to
+indicators at t−1 (the pairing `detect` actually uses):
+
+| Reading of "confluence" | Rate |
+|---|---|
+| `confluence_low`, on closes | 4.43% |
+| `confluence_low`, on intraday extremes | 7.16% |
+| either side, on closes | 11.38% |
+| either side, on intraday extremes | **18.34%** |
+
+Three readings, four-fold spread. The one matching the old ~4% estimate is
+`confluence_low` on **closes** — which is exactly what ADR 005 says not to
+do, since "a daily bar's extremes are the intraday touch". The engine's
+18.34% is the deliberate design: intraday extremes, both sides.
+
+**Do not replace the estimate with the measured value.** A criterion set to
+what the engine currently emits is circular — it passes on the day it is
+written and every day after, including the days something breaks. An
+analytical estimate earns its place by being derived independently.
+
+Three checks instead, each verifiable against something other than itself:
+
+**1. Structural invariants.** Provable, and a violation means detection is
+genuinely broken:
+
+```
+P(low  <= bb_lower)  >=  P(close <= bb_lower)     (low <= close, always)
+P(high >= bb_upper)  >=  P(close >= bb_upper)
+P(confluence_low)    <=  min(P(lower touch), P(oversold))
+```
+
+**2. Component rates against theory.** Each has an independent prediction,
+so a drift is interpretable rather than just different:
+
+| Component | Independent prediction | Measured 2026-08-01 |
+|---|---|---|
+| `P(k_full <= 20)` | ~20%: the oscillator is bounded [0,100] and roughly uniform | 15.92% |
+| `P(close <= bb_lower)` | ~2.5% under normality; higher with fat tails | 5.29% |
+| `P(low <= bb_lower)` | strictly above the close rate | 11.18% |
+
+**3. Headline band, deliberately wide.** Confluence on either side, intraday
+extremes, fires on **10-25%** of ticker-days. Wide enough not to be
+circular; tight enough to catch an order-of-magnitude error such as a
+dropped t−1 shift.
+
+Whether 18% is a *useful* event rate is a Phase 4 statistical-power
+question, not a Phase 3 correctness one.
 
 ---
 

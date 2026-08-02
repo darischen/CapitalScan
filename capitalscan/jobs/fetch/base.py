@@ -2,7 +2,7 @@
 
 All external IO routes through this module so retry, rate limiting, and
 caching exist once rather than being reinvented per source. Individual
-fetchers in this package (`yahoo`, `sec`, `finnhub`, `stooq`, `wikipedia`)
+fetchers in this package (`yahoo`, `sec`, `finnhub`, `wikipedia`)
 compose `with_retry`, `rate_limited`, and `cached` around plain functions
 that return a `pd.DataFrame`.
 """
