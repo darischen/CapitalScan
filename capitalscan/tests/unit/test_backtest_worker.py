@@ -13,12 +13,19 @@ Every other bar's `low` (98.0) stays clear of the band, so nothing else
 fires and cluster/debounce behavior is not exercised here (that is
 `test_backtest_clusters.py`'s job). `k_full` is held at 50.0 (`stoch_
 oversold=20`, `stoch_overbought=80`), so only `bb_lower_touch` fires, never
-`confluence_low`. With `stop_mode="atr"` and no `atr_14` supplied, no stop
-is placed and `bb_upper=999.0` stays out of reach, so the position times
-out on day 5 of the exit window — a clean, fully-resolved TIMEOUT trade.
-`sma_200=90.0` against a constant `close=96.0` makes `above_sma200` a
-deterministic `True` on every row, so Finding 1's fix is checkable, not
-just null-tolerant.
+`confluence_low`. With `stop_mode="atr"`, `stop_atr_k=1.5` (config default),
+and a small constant `atr_14=0.5`, the ATR stop sits at roughly `entry -
+0.75`, well below every forward bar's `low` (95.5) — a stop is placed but
+never breached — and `bb_upper=999.0` stays out of reach, so the position
+still times out on day 5 of the exit window — a clean, fully-resolved
+TIMEOUT trade. `sma_200=90.0` against a constant `close=96.0` makes
+`above_sma200` a deterministic `True` on every row. `atr_14=0.5` and
+`days_to_earnings=45` (both previously `None` here) are non-null values,
+not just null-tolerant placeholders, per Review Finding B (fix round 2):
+`test_state_at_signal_columns_are_populated` needs a concrete, non-null
+fixture value for every state column to actually catch that column being
+dropped from the row dict again — a `None` fixture value can't distinguish
+"correctly read as null" from "silently never read at all."
 """
 
 from __future__ import annotations
@@ -78,13 +85,13 @@ def _indicators() -> pd.DataFrame:
                 "k_fast": 50.0,
                 "k_cross_up": False,
                 "k_cross_down": False,
-                "atr_14": None,
+                "atr_14": 0.5,
                 "rv_pct_252d": 0.5,
                 "dd_52w": 0.05,
                 "sma_200": 90.0,
                 "sma200_slope_60": 0.01,
                 "vol_z_20d": 0.0,
-                "days_to_earnings": None,
+                "days_to_earnings": 45,
             }
         )
     return pd.DataFrame(rows)
@@ -208,10 +215,12 @@ class TestBacktestOneTickerStateAtSignal:
         assert row["k_fast"] == pytest.approx(50.0)
         assert bool(row["k_cross_up"]) is False
         assert bool(row["k_cross_down"]) is False
+        assert row["atr_14"] == pytest.approx(0.5)
         assert row["rv_pct_252d"] == pytest.approx(0.5)
         assert row["dd_52w"] == pytest.approx(0.05)
         assert row["sma200_slope_60"] == pytest.approx(0.01)
         assert row["vol_z_20d"] == pytest.approx(0.0)
+        assert row["days_to_earnings"] == 45
         # sma_200=90.0 < close=96.0 on every fixture bar (module docstring).
         assert bool(row["above_sma200"]) is True
 
@@ -538,7 +547,13 @@ class TestRunBacktestPerTickerFailureIsolation:
         assert set(report.failed_tickers) == {"BAD"}
         assert "ValueError" in report.failed_tickers["BAD"]
 
-    def test_every_ticker_failing_writes_nothing_but_does_not_raise(self, monkeypatch):
+    def test_every_ticker_failing_raises_instead_of_returning_a_clean_report(self, monkeypatch):
+        """Review Finding A, fix round 2: total failure (every dispatched
+        ticker's worker raised) is a config-level fault — every worker
+        resolves the identical config — and must not be reported as a
+        routine empty run. Superseded `test_every_ticker_failing_writes_
+        nothing_but_does_not_raise`, which codified the pre-fix behavior."""
+
         def always_fails(ticker, config, run_id, database_url, today=None):
             raise RuntimeError("boom")
 
@@ -548,11 +563,41 @@ class TestRunBacktestPerTickerFailureIsolation:
             backtest.db_io, "upsert", lambda *a, **k: called.__setitem__("upsert", True) or 0
         )
 
-        report = backtest.run_backtest(["AAA", "BBB"], Config(), "run-1", engine=_FakeEngine())
+        with pytest.raises(backtest.BacktestRunFailed) as excinfo:
+            backtest.run_backtest(["AAA", "BBB"], Config(), "run-1", engine=_FakeEngine())
 
         assert called["upsert"] is False
-        assert report.rows_written == 0
-        assert set(report.failed_tickers) == {"AAA", "BBB"}
+        assert set(excinfo.value.failed_tickers) == {"AAA", "BBB"}
+        assert "boom" in str(excinfo.value)
+
+    def test_partial_failure_still_writes_what_succeeded_not_a_raise(self, monkeypatch):
+        """The companion boundary to the total-failure case above: even one
+        surviving ticker keeps `run_backtest` on the Finding 4 (non-raising)
+        path — only ALL tickers failing raises `BacktestRunFailed`."""
+
+        def fake_worker(ticker, config, run_id, database_url, today=None):
+            if ticker == "BAD":
+                raise RuntimeError("boom")
+            return pd.DataFrame(
+                [_minimal_row(ticker=ticker, signal_date=date(2026, 1, 5), entry_kind="touch")]
+            )
+
+        monkeypatch.setattr(backtest, "_backtest_one_ticker", fake_worker)
+        captured: dict = {}
+        monkeypatch.setattr(
+            backtest.db_io,
+            "upsert",
+            lambda engine, table_name, data, conflict_cols, update_columns=None: captured.update(
+                data=data
+            )
+            or len(data),
+        )
+
+        report = backtest.run_backtest(["BAD", "OK"], Config(), "run-1", engine=_FakeEngine())
+
+        assert list(captured["data"]["ticker"]) == ["OK"]
+        assert report.rows_written == 1
+        assert set(report.failed_tickers) == {"BAD"}
 
 
 class TestRunBacktestUnknownPathColumn:

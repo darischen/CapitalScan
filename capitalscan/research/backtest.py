@@ -42,7 +42,6 @@ import pandas as pd
 from sqlalchemy import Engine, text
 
 from capitalscan.core.config import Config
-from capitalscan.core.signals import _isnan
 from capitalscan.core.types import Side
 from capitalscan.jobs import db_io
 from capitalscan.jobs.config import config_hash, split_key_for
@@ -55,6 +54,7 @@ __all__ = [
     "config_hash",
     "split_key_for",
     "BacktestReport",
+    "BacktestRunFailed",
     "add_cofire_count",
     "run_backtest",
 ]
@@ -252,6 +252,44 @@ _RUN_BACKTEST_UPDATE_COLUMNS = [
     "vix_close",
     "spx_ret_1d",
 ]
+
+
+class BacktestRunFailed(RuntimeError):
+    """Raised by `run_backtest` when every dispatched ticker's worker raised
+    (Review Finding A, fix round 2).
+
+    Distinguishes a **config-level fault** from ordinary **per-ticker bad
+    data**. Every worker resolves the identical `config`, so a fault in the
+    config itself (Finding 5's example: `StatsParams.reach_targets` swept to
+    a value the fixed `events` schema has no column for) raises identically
+    on every ticker — the same failure N times, not N independent problems.
+    Ordinary bad data (a `tag_clusters` gap on one ticker's trading
+    calendar, a corrupt row) fails on some tickers and not others, and stays
+    in `BacktestReport.failed_tickers` for a partial run that still writes
+    what succeeded (Finding 4's fix, unchanged by this one).
+
+    Finding 4's per-ticker `try/except` made total failure silent: it turned
+    a hard config break into `BacktestReport(rows_written=0)`, indistinguishable
+    from a legitimate empty run to a caller checking only `rows_written`. A
+    Task 12 sweep running 18 configs needs a malformed one to stop the
+    sweep, not report a quiet zero next to 17 real results.
+
+    `failed_tickers` is preserved as an attribute (the full `{ticker:
+    "ExcType: message"}` mapping) for a caller that wants ticker-level
+    detail. The exception's own message deduplicates the failure strings —
+    a config fault produces the identical message on every ticker, and
+    repeating one line N times would bury the useful information instead of
+    surfacing it.
+    """
+
+    def __init__(self, failed_tickers: dict[str, str]):
+        self.failed_tickers = dict(failed_tickers)
+        unique_messages = sorted(set(failed_tickers.values()))
+        super().__init__(
+            f"run_backtest: all {len(failed_tickers)} dispatched ticker(s) failed — "
+            "a config-level fault is more likely than that many independent "
+            f"per-ticker data problems. Distinct failure(s): {'; '.join(unique_messages)}"
+        )
 
 
 @dataclass
@@ -495,7 +533,12 @@ def _backtest_one_ticker(
         # it describes the state the signal fired against, not the entry.
         # `above_sma200` needs the signal bar's own `close` (not `prior_ind`,
         # which is the day *before*), matching `jobs.compute._build_event_
-        # row`'s `bool(bar["close"] > ind_row["sma_200"])`. Genuine null
+        # row`'s `bool(bar["close"] > ind_row["sma_200"])` exactly — including
+        # its null test: `pd.isna`, not `core.signals._isnan` (Review
+        # Finding C, fix round 2). The two writers of this same column
+        # should use the same null spelling, not merely an equivalent one;
+        # `_isnan` also tolerates non-numeric strings via a try/except
+        # `float()` that `above_sma200`'s inputs never need. Genuine null
         # (not an omission) when either side is unavailable — e.g. this
         # module's own test fixtures, which do not carry `sma_200` at all.
         signal_ts = pd.Timestamp(signal_date)
@@ -504,7 +547,7 @@ def _backtest_one_ticker(
         close_at_signal = None if bar_at_signal is None else bar_at_signal.get("close")
         above_sma200 = (
             None
-            if _isnan(sma_200) or _isnan(close_at_signal)
+            if pd.isna(sma_200) or pd.isna(close_at_signal)
             else bool(float(close_at_signal) > float(sma_200))
         )
 
@@ -739,6 +782,12 @@ def run_backtest(
     corrects it until a following whole-universe run passes back over the
     same rows. A `UserWarning` is raised in this case so the gap is loud,
     not silent.
+
+    Raises `BacktestRunFailed` (Review Finding A, fix round 2) if **every**
+    dispatched ticker's worker raised — a config-level fault, since every
+    worker resolves the same `config`. Partial failure (some tickers failed,
+    at least one succeeded) does not raise: it writes what succeeded and
+    records the rest on `BacktestReport.failed_tickers`, per Finding 4.
     """
     engine = engine or db_io.get_engine()
     sorted_tickers = sorted(set(tickers))
@@ -782,6 +831,14 @@ def run_backtest(
                     frames.append(future.result())
                 except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
                     failed_tickers[ticker] = f"{type(exc).__name__}: {exc}"
+
+    # Review Finding A, fix round 2: total failure re-raises rather than
+    # returning a report Finding 4's partial-failure path would otherwise
+    # make look like a clean, empty run. Partial failure (some tickers
+    # failed, at least one succeeded) is untouched — that path is correct
+    # as-is per the round 1 review.
+    if sorted_tickers and len(failed_tickers) == len(sorted_tickers):
+        raise BacktestRunFailed(failed_tickers)
 
     events = pd.concat(frames, ignore_index=True) if frames else _empty_events_frame()
     events = add_cofire_count(events)
