@@ -341,17 +341,44 @@ def test_nightly_command_threads_resolved_config(monkeypatch, tmp_path):
     assert captured["sp"].stoch_oversold == 25.0
 
 
-def test_nightly_command_malformed_config_exits_before_any_io(monkeypatch, capsys):
+def test_nightly_command_malformed_config_exits_before_any_ingest_or_compute_io(
+    monkeypatch, capsys
+):
     """A malformed config must fail the chain before any bars/actions/
-    market/shares/earnings IO runs — verified by *not* patching those calls
-    away and asserting the config error wins first (they would raise
-    `AssertionError`/hit the network if the chain reached that far)."""
-    from capitalscan.jobs import db_io
+    market/shares/earnings/indicators/events job runs — verified by *not*
+    patching those calls away and asserting the config error wins first
+    (they would raise `AssertionError` if the chain reached that far).
+
+    `scheduled_runs.record` is the one exception, and deliberately so
+    (ADR 080): it is recorded *before* config resolution precisely so
+    `cscan status` can tell "the scheduler never fired" apart from "nightly
+    fired and died on a bad config" — both would otherwise be silently
+    absent from `scheduled_runs`. So this test asserts `record` WAS called,
+    while every `ingest.run_*`/`compute.run_*` step was NOT — "no partial
+    pipeline," not "no writes at all."
+    """
+    from capitalscan.jobs import db_io, ingest, scheduled_runs
 
     monkeypatch.setenv("CAPSCAN_INDICATORS", "{bad json")
+    monkeypatch.setattr(db_io, "get_engine", lambda: "fake-engine")
+
+    record_calls = []
     monkeypatch.setattr(
-        db_io, "get_engine", lambda: (_ for _ in ()).throw(AssertionError("IO reached"))
+        scheduled_runs, "record", lambda engine, job: record_calls.append((engine, job))
     )
+
+    def _unreached(*a, **k):
+        raise AssertionError("ingest/compute IO reached despite malformed config")
+
+    for name in (
+        "run_bars_daily",
+        "run_bars_hourly",
+        "run_actions",
+        "run_market",
+        "run_shares",
+        "run_earnings",
+    ):
+        monkeypatch.setattr(ingest, name, _unreached)
 
     with pytest.raises(typer.Exit) as exc_info:
         cli.nightly()
@@ -359,6 +386,7 @@ def test_nightly_command_malformed_config_exits_before_any_io(monkeypatch, capsy
     assert exc_info.value.exit_code == 1
     out = capsys.readouterr().out
     assert "Traceback" not in out
+    assert record_calls == [("fake-engine", "nightly")]
 
 
 # ---------------------------------------------------------------------------

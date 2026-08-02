@@ -890,12 +890,19 @@ def nightly() -> None:
     """
     from capitalscan.jobs import compute, db_io, ingest, scheduled_runs
 
-    # Resolved before any IO so a malformed config.toml/CAPSCAN_* aborts the
-    # chain up front, rather than after bars/actions/market/shares/earnings
-    # have already run and only `indicators`/`events` are left to fail on.
-    config = _resolve_config_or_exit()
     engine = db_io.get_engine()
+    # Recorded before config resolution, not after: `scheduled_runs.record`
+    # takes no config and does one cheap upsert (ADR 080), and it is what
+    # `cscan status` reads to tell "Task Scheduler never fired" apart from
+    # "nightly fired and died." If config resolution ran first and raised,
+    # this run would never appear in `scheduled_runs` at all, and a config
+    # failure would look identical to the scheduler never firing — two
+    # different problems needing different fixes, made indistinguishable.
+    # Config is still resolved before every `ingest.run_*`/`compute.run_*`
+    # call below, so a bad config still aborts before any partial pipeline
+    # runs — the property the original fix was for is unchanged.
     scheduled_runs.record(engine, "nightly")
+    config = _resolve_config_or_exit()
     tickers = _resolve_tickers(None)
     end = date.today()
     start = end - timedelta(days=5)
