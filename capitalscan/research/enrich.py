@@ -1,21 +1,24 @@
-"""Event enrichment — DESIGN §5.2 steps 7-11: entry, exit, path metrics,
-costs, context.
+"""Event enrichment — DESIGN §5.2 steps 7-12: entry, exit, path metrics,
+costs, context, split assignment.
 
 Orchestration, not new logic (Session 9 charter). Every hard decision this
 module needs already lives in `core/`, covered by the project's five
 load-bearing tests: `core.returns.entry_price_for` owns every entry-price
 decision (the `TOUCH` gap rule, the `NEXT_OPEN` terminal-bar null, the
 hourly interpolation for `TOUCH_5M`/`TOUCH_30M`), `core.returns.mfe_mae`
-owns path metrics, and `core.costs` owns slippage and borrow. This module's
-job is to slice the right `bar` / `next_bar` / `hourly` window out of the
-frames it is handed, apply costs, and shape the results into rows — never
-to make a second price decision (CLAUDE.md invariant 2).
+owns path metrics, `core.costs` owns slippage and borrow, and
+`research.backtest.split_key_for` (re-exported from `jobs/config.py`, Ruling
+C2) owns train/validate/holdout labelling. This module's job is to slice the
+right `bar` / `next_bar` / `hourly` window out of the frames it is handed,
+apply costs, and shape the results into rows — never to make a second price
+decision (CLAUDE.md invariant 2).
 
 This file grows across Session 9:
   - Task 5: `resolve_entries` — step 7, entry resolution.
   - Task 6: `resolve_exit_for_entry` — step 8, exit resolution.
-  - Task 7 (this task): `path_metrics` — step 9, path metrics.
-  - Task 8: cost application and context tagging — steps 10-11.
+  - Task 7: `path_metrics` — step 9, path metrics.
+  - Task 8 (this task): `enrich_context` — steps 10-12, cost application,
+    context tagging, split assignment.
 
 `research/` owns IO in principle, but nothing in this module touches a
 database, a socket, or a clock — `bars` and `hourly` arrive as already-
@@ -32,11 +35,18 @@ from datetime import date
 import pandas as pd
 
 from capitalscan.core import costs as core_costs
-from capitalscan.core.config import CostParams, ExitParams
+from capitalscan.core.config import CostParams, ExitParams, SplitParams, StatsParams
 from capitalscan.core.exits import resolve_exit
 from capitalscan.core.returns import entry_price_for, forward_returns, mfe_mae, realized_return
 from capitalscan.core.signals import _breach, _isnan
 from capitalscan.core.types import Bound, EntryKind, Side
+
+# `research/` may reach into `research/backtest.py` for the shared
+# labelling functions, but never into `jobs/` directly (that module's own
+# docstring: "so nothing in research/ reaches into jobs/ directly for
+# them"). `split_key_for` is canonical in `jobs/config.py` (Ruling C2);
+# this is the one re-exported import point.
+from capitalscan.research.backtest import split_key_for
 
 
 def _as_date(value: object) -> date:
@@ -490,3 +500,188 @@ def path_metrics(
             out[f"fwd_ret_{h}d"] = float("nan")
 
     return out
+
+
+def _dd_bucket_label(dd_52w: object, sp: StatsParams) -> str | None:
+    """DESIGN §5.2 step 11. Drawdown bucket label, derived from
+    `sp.dd_buckets` (invariant 9) rather than restated as literal strings.
+
+    `jobs.compute._dd_bucket` labels the same quantity off its own module
+    constant `DD_BUCKETS = ((0.10, "0-10"), (0.20, "10-20"), (0.35,
+    "20-35"))` — itself a hand-typed restatement of `StatsParams.dd_buckets
+    = (0.10, 0.20, 0.35)`, with a `"35+"` fallback above the last boundary.
+    That module constant is the pre-existing source of the "two lists that
+    can silently diverge" problem the task brief calls out; this function
+    is the fix on this side of it — it builds the identical strings
+    formulaically from the config tuple alone, so the same event never gets
+    a different `dd_bucket` depending on whether `jobs/compute.py` or this
+    module wrote it. `test_backtest_context.py`'s `TestDdBucketMatchesCompute`
+    proves the two stay byte-for-byte identical across representative
+    values, the `35+` fallback, and a null input.
+
+    `None`, not a computed bucket, when `dd_52w` itself is null — matches
+    `_dd_bucket`'s own null handling and invariant 4 (no fabricated value
+    for a missing input).
+
+    `round()` on each boundary times 100, not truncation: `0.10 * 100 ==
+    10.000000000000002` in binary floating point, the same guard
+    `_pct_suffix` already applies for the same reason.
+    """
+    if _isnan(dd_52w):
+        return None
+    dd = float(dd_52w)  # type: ignore[arg-type]
+    prev = 0.0
+    for threshold in sp.dd_buckets:
+        if dd <= threshold:
+            return f"{round(prev * 100)}-{round(threshold * 100)}"
+        prev = threshold
+    return f"{round(prev * 100)}+"
+
+
+def _era(signal_date: date, sp: StatsParams, splits: SplitParams) -> str:
+    """DESIGN §5.2 step 11; ADR 042. Reporting era — a DESIGN §6.10
+    stability check across four eras, never a Phase 4 grid dimension
+    (DESIGN §6.7: era is excluded from the model's own features precisely
+    because it "invites memorizing regime").
+
+    Boundaries come from `sp.era_bounds` (invariant 9): three ISO date
+    strings, each the *last* day of an era — `("2014-12-31", "2019-12-31",
+    "2023-12-31")` by default, matching ADR 042's four eras (2010-2014,
+    2015-2019, 2020-2023, 2024-2026).
+
+    The lower edge of the *first* era is `splits.event_start`'s year, not a
+    literal "2010" — the same field that already bounds every event's
+    earliest valid `signal_date` (`split_key_for` raises below it), so era 1
+    and the event universe start together by construction rather than by a
+    second hardcoded year that could drift from `SplitParams` independently.
+
+    ADR 042 closes its last era at a literal "2026" — a real fixed horizon
+    when that decision was written, but no config field names where the
+    *next* boundary lands, and baking in a year this code will silently
+    outlive is exactly what invariant 9 forbids ("a literal that happens to
+    match a default elsewhere"). The open era is labelled `"{year}+"`
+    instead — the same open-ended convention `_dd_bucket_label`'s `"35+"`
+    fallback already uses for "no further boundary configured." This is a
+    deliberate, documented deviation from ADR 042's literal wording; see the
+    Task 8 report for the full justification.
+    """
+    bounds = [date.fromisoformat(b) for b in sp.era_bounds]
+    lo = date.fromisoformat(splits.event_start).year
+    for bound in bounds:
+        if signal_date <= bound:
+            return f"{lo}-{bound.year}"
+        lo = bound.year + 1
+    return f"{lo}+"
+
+
+def _earnings_in_window(days_to_earnings: object, holding_days: int | None) -> bool | None:
+    """DESIGN §5.2 step 11; ADR 036: "A 5-day window containing an earnings
+    report is contaminated regardless of session."
+
+    `days_to_earnings` (`ind_row["days_to_earnings"]`) is calendar days from
+    the signal bar to the next scheduled report, computed once in
+    `jobs.compute._merge_days_to_earnings` and always `>= 0` or null (never
+    negative — that function masks a passed report to null rather than
+    reporting how long ago it happened, since this column only ever answers
+    "is one coming").
+
+    The window checked against is `event["holding_days"]` — the position's
+    *actual* resolved holding length for this exit config, not a literal 5
+    or `ExitParams.max_hold_days`. `enrich_context`'s pinned interface (task
+    brief) does not receive `ExitParams`, and `event` (built by steps 7-9,
+    upstream of this function) already carries the real answer: a trade that
+    exited early on a stop never had 5 days of exposure to begin with, so an
+    earnings report on day 4 did not contaminate a position closed on day 2.
+    Using the actual holding window is the more precise reading of "the
+    window this trade was open," not a looser approximation of ADR 036's
+    literal "5-day" — see the Task 8 report for the full reasoning.
+
+    `None`, not `False`, when either input is unknown (invariant 4):
+    `days_to_earnings` is null before ~2014 for a large share of events
+    (thin SEC 8-K coverage that far back — noted in the task brief's
+    autonomous-run findings), and writing `False` there would tell a
+    downstream contamination filter "confirmed clear," not "unknown,"
+    silently admitting exactly the events that could not be checked.
+    Likewise null when the position never resolved (`holding_days is None`)
+    — there is no window to check against.
+    """
+    if _isnan(days_to_earnings) or holding_days is None:
+        return None
+    return bool(0 <= float(days_to_earnings) <= float(holding_days))  # type: ignore[arg-type]
+
+
+def enrich_context(
+    event: dict,
+    ind_row: pd.Series,
+    market_row: pd.Series | None,
+    sp: StatsParams,
+    splits: SplitParams,
+    cp: CostParams,
+) -> dict:
+    """DESIGN §5.2 steps 10-12: cost application, context tagging, split
+    assignment. Turns one resolved event — the candidate plus its entry
+    (Task 5) and exit (Task 6), already merged by the caller into one dict
+    with `side`, `signal_date`, `entry_price`, `exit_price`, and
+    `holding_days` — into the remaining columns `events`/the backtest output
+    table need: `gross_ret`, `net_ret`, `dd_bucket`, `bw_regime`, `era`,
+    `earnings_in_window`, `split_key`, `vix_close`, `spx_ret_1d`.
+
+    `cp: CostParams` is not in the task brief's one-line interface sketch,
+    but `core.costs.apply_costs` requires it (invariant 2: apply costs
+    through that one implementation, never a second one written here) and
+    nothing else in scope can supply a cost schedule — so it is added as a
+    required parameter, the same way `resolve_entries` already takes `cp`
+    for entry-side slippage. Flagged in the Task 8 report rather than
+    silently deviating from the pinned signature.
+
+    `gross_ret` is `core.returns.realized_return(entry_price, exit_price,
+    side)` — never hand-computed (invariant 2). It is `NaN` whenever either
+    price is `NaN`/`None`, which `realized_return` already handles via
+    `_isnan`'s `None`-tolerant check, covering the unresolved-position case
+    (`_unresolved_exit`'s `entry_price`/`exit_price` are `NaN`) without a
+    special case here.
+
+    `net_ret` routes `gross_ret` through `core.costs.apply_costs` — the one
+    cost implementation (invariant 2) — which always subtracts (slippage on
+    both legs, commission if configured, borrow on shorts only), so a
+    losing trade gets worse on both sides, never better. Null whenever
+    `gross_ret` is itself null or `holding_days` is `None` (unresolved
+    position): `apply_costs` needs a real holding length for the borrow
+    term, and there is nothing to cost a trade that never happened.
+
+    `bw_regime` is `None` — deliberately unimplemented. DESIGN §6.7 lists
+    "bandwidth regime" as a continuous *feature*, not a bucketed Phase 4
+    cell, and no ADR or config field pins thresholds for one. Inventing a
+    bucketing here would fabricate a grid dimension the docs never defined
+    (task brief: "a wrong regime label is worse than an honest null"). See
+    the Task 8 report for the full reasoning and what a future ADR would
+    need to pin before this can be implemented.
+    """
+    side = event["side"] if isinstance(event["side"], Side) else Side(event["side"])
+    entry_price = event.get("entry_price")
+    exit_price = event.get("exit_price")
+    holding_days = event.get("holding_days")
+    signal_date = _as_date(event["signal_date"])
+
+    gross_ret = realized_return(entry_price, exit_price, side)
+    net_ret = (
+        float("nan")
+        if _isnan(gross_ret) or holding_days is None
+        else core_costs.apply_costs(
+            gross_ret, side, holding_days, cp, entry_price=entry_price
+        )
+    )
+
+    return {
+        "gross_ret": gross_ret,
+        "net_ret": net_ret,
+        "dd_bucket": _dd_bucket_label(ind_row.get("dd_52w"), sp),
+        "bw_regime": None,
+        "era": _era(signal_date, sp, splits),
+        "earnings_in_window": _earnings_in_window(
+            ind_row.get("days_to_earnings"), holding_days
+        ),
+        "split_key": split_key_for(signal_date, splits),
+        "vix_close": None if market_row is None else market_row.get("vix_close"),
+        "spx_ret_1d": None if market_row is None else market_row.get("spx_ret_1d"),
+    }
