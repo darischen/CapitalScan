@@ -119,7 +119,22 @@ def entry_price_for(
         close = float(hbar["close"])
         if kind is EntryKind.TOUCH_30M:
             return close
+
+        # Same gap principle as TOUCH (DESIGN §5.4), applied at hourly
+        # granularity. `_first_hourly_touch` picks the first hourly bar whose
+        # extreme reaches `touch_level` — on a gap day that condition is
+        # trivially true on the session's first bar even though the level
+        # sits outside the whole day's range, because the bar already opened
+        # past it. Interpolating from `touch_level` in that case anchors on a
+        # price nobody traded. If the bar's own open already breached the
+        # level, the level was never available inside this bar either; the
+        # only real anchor is the open. Otherwise the bar genuinely straddles
+        # the level and `touch_level` remains the honest anchor, unchanged
+        # from before.
+        open_ = float(hbar["open"])
+        bound = Bound.LOWER if side is Side.LONG else Bound.UPPER
+        anchor = open_ if _breach(open_, float(touch_level), bound) else float(touch_level)
         weight = _TOUCH_5M_MINUTES / _MINUTES_PER_HOURLY_BAR
-        return float(touch_level) + (close - float(touch_level)) * weight
+        return anchor + (close - anchor) * weight
 
     raise ValueError(kind)

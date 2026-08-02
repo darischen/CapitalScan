@@ -244,6 +244,60 @@ def test_touch_5m_is_null_when_no_hourly_bar_breaches():
     assert np.isnan(price)
 
 
+# ---------------------------------------------------------------------------
+# entry_price_for — TOUCH_5M gap rule (DESIGN §5.4, applied at hourly grain)
+# ---------------------------------------------------------------------------
+
+
+def test_touch_5m_long_fill_stays_inside_the_hourly_bar_on_a_gap():
+    # The stock gapped clean through the band overnight: the whole hourly
+    # bar trades below `touch_level` (95), so `open` already breaches it.
+    # The old code interpolated from `touch_level` (a price nobody traded)
+    # toward `close`, landing above the bar's own high. The honest anchor
+    # is `open`, a price that actually traded in this bar.
+    idx = pd.date_range("2026-07-29 09:30", periods=1, freq="h", tz="America/New_York")
+    hourly = pd.DataFrame(
+        {"open": [90.0], "high": [93.0], "low": [88.0], "close": [92.0]}, index=idx
+    )
+    price = ret.entry_price_for(
+        EntryKind.TOUCH_5M, bar=_bar(low=88.0), next_bar=None, touch_level=95.0,
+        side=Side.LONG, hourly=hourly,
+    )
+    assert 88.0 <= price <= 93.0
+    assert price == pytest.approx(90.0 + (92.0 - 90.0) * 5 / 60)
+
+
+def test_touch_5m_short_fill_stays_inside_the_hourly_bar_on_a_gap():
+    # Mirror of the long gap case: the stock gapped up through the upper
+    # band, so the whole hourly bar trades above `touch_level` (105) and
+    # `open` already breaches it.
+    idx = pd.date_range("2026-07-29 09:30", periods=1, freq="h", tz="America/New_York")
+    hourly = pd.DataFrame(
+        {"open": [110.0], "high": [112.0], "low": [108.0], "close": [109.0]}, index=idx
+    )
+    price = ret.entry_price_for(
+        EntryKind.TOUCH_5M, bar=_bar(high=112.0), next_bar=None, touch_level=105.0,
+        side=Side.SHORT, hourly=hourly,
+    )
+    assert 108.0 <= price <= 112.0
+    assert price == pytest.approx(110.0 + (109.0 - 110.0) * 5 / 60)
+
+
+def test_touch_5m_short_still_interpolates_from_the_band_on_a_genuine_straddle():
+    # Proves the fix is not over-broad: when the hourly bar genuinely
+    # straddles the touch level (open has NOT breached it yet), the
+    # interpolation anchor stays `touch_level`, exactly as before.
+    idx = pd.date_range("2026-07-29 09:30", periods=1, freq="h", tz="America/New_York")
+    hourly = pd.DataFrame(
+        {"open": [100.0], "high": [103.0], "low": [99.0], "close": [101.0]}, index=idx
+    )
+    price = ret.entry_price_for(
+        EntryKind.TOUCH_5M, bar=_bar(high=103.0), next_bar=None, touch_level=102.0,
+        side=Side.SHORT, hourly=hourly,
+    )
+    assert price == pytest.approx(102.0 + (101.0 - 102.0) * 5 / 60)
+
+
 def test_hourly_kinds_pick_the_first_breaching_bar_not_the_deepest():
     idx = pd.date_range("2026-07-29 09:30", periods=2, freq="h", tz="America/New_York")
     hourly = pd.DataFrame(
