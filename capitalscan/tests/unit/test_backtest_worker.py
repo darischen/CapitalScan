@@ -16,10 +16,14 @@ oversold=20`, `stoch_overbought=80`), so only `bb_lower_touch` fires, never
 `confluence_low`. With `stop_mode="atr"` and no `atr_14` supplied, no stop
 is placed and `bb_upper=999.0` stays out of reach, so the position times
 out on day 5 of the exit window — a clean, fully-resolved TIMEOUT trade.
+`sma_200=90.0` against a constant `close=96.0` makes `above_sma200` a
+deterministic `True` on every row, so Finding 1's fix is checkable, not
+just null-tolerant.
 """
 
 from __future__ import annotations
 
+import warnings
 from datetime import date
 
 import pandas as pd
@@ -77,6 +81,7 @@ def _indicators() -> pd.DataFrame:
                 "atr_14": None,
                 "rv_pct_252d": 0.5,
                 "dd_52w": 0.05,
+                "sma_200": 90.0,
                 "sma200_slope_60": 0.01,
                 "vol_z_20d": 0.0,
                 "days_to_earnings": None,
@@ -115,6 +120,16 @@ class _FakeEngine:
         @staticmethod
         def render_as_string(hide_password=False):
             return "postgresql://fake/db"
+
+
+def _minimal_row(**overrides) -> dict:
+    """A minimal `events` row dict, filled with `None` for every column this
+    module's row-shape tests don't care about — used by the dispatch/sort
+    and failure-handling tests below, which stub `_backtest_one_ticker`
+    itself rather than exercising the real per-signal pipeline."""
+    row = {col: None for col in backtest._EVENT_COLUMNS}
+    row.update(overrides)
+    return row
 
 
 class TestBacktestOneTicker:
@@ -164,6 +179,83 @@ class TestBacktestOneTicker:
         out = backtest._backtest_one_ticker(TICKER, Config(), "run-1", None)
         assert out.empty
         assert list(out.columns) == backtest._EVENT_COLUMNS
+
+    def test_today_override_replaces_the_per_ticker_derivation(self, stub_reads):
+        """Controller ruling, fix round 1: an explicit `today` overrides the
+        `max(bars.ts)` default. A `today` before the signal date must make
+        the signal ineligible (`apply_eligibility`'s window upper bound),
+        proving the override actually reaches `apply_eligibility` rather
+        than being silently ignored."""
+        early_today = date(2026, 1, 9)  # before the signal bar (index 5, ~2026-01-12)
+        out = backtest._backtest_one_ticker(TICKER, Config(), "run-1", None, today=early_today)
+        assert out.empty
+
+
+class TestBacktestOneTickerStateAtSignal:
+    """Review Finding 1: state-at-signal columns must be populated (not
+    left NULL) on every entry-kind row, and must be identical across
+    entry kinds for the same signal — they describe the t-1 indicator row
+    the signal fired against, which does not vary by entry kind.
+    """
+
+    def test_state_at_signal_columns_are_populated(self, stub_reads):
+        out = backtest._backtest_one_ticker(TICKER, Config(), "run-1", None)
+        row = out.iloc[0]
+        assert row["bb_pctb"] == pytest.approx(0.1)
+        assert row["bb_width_pct"] == pytest.approx(0.2)
+        assert row["k_full"] == pytest.approx(50.0)
+        assert row["d_full"] == pytest.approx(50.0)
+        assert row["k_fast"] == pytest.approx(50.0)
+        assert bool(row["k_cross_up"]) is False
+        assert bool(row["k_cross_down"]) is False
+        assert row["rv_pct_252d"] == pytest.approx(0.5)
+        assert row["dd_52w"] == pytest.approx(0.05)
+        assert row["sma200_slope_60"] == pytest.approx(0.01)
+        assert row["vol_z_20d"] == pytest.approx(0.0)
+        # sma_200=90.0 < close=96.0 on every fixture bar (module docstring).
+        assert bool(row["above_sma200"]) is True
+
+    def test_touch_and_next_open_siblings_carry_identical_state(self, stub_reads):
+        """The sharpest form of Finding 1: two rows for the SAME signal,
+        different entry kinds, must read the same t-1 state — not "touch
+        has it, next_open reads NULL."""
+        out = backtest._backtest_one_ticker(TICKER, Config(), "run-1", None)
+        touch = out.loc[out["entry_kind"] == "touch"].iloc[0]
+        next_open = out.loc[out["entry_kind"] == "next_open"].iloc[0]
+        state_cols = [
+            "bb_pctb",
+            "bb_width_pct",
+            "k_full",
+            "d_full",
+            "k_fast",
+            "k_cross_up",
+            "k_cross_down",
+            "atr_14",
+            "rv_pct_252d",
+            "dd_52w",
+            "sma200_slope_60",
+            "above_sma200",
+            "vol_z_20d",
+            "days_to_earnings",
+        ]
+        for col in state_cols:
+            left, right = touch[col], next_open[col]
+            if pd.isna(left) and pd.isna(right):
+                continue
+            assert left == right, f"{col} differs between touch and next_open: {left!r} vs {right!r}"
+
+    def test_touch_5m_and_touch_30m_also_carry_the_state_despite_a_null_entry_price(
+        self, stub_reads
+    ):
+        """The rows Finding 1 named explicitly: `run_events` never writes
+        these entry kinds at all, so if this worker leaves the state null
+        here, nothing ever fills it in."""
+        out = backtest._backtest_one_ticker(TICKER, Config(), "run-1", None)
+        for kind in ("touch_5m", "touch_30m"):
+            row = out.loc[out["entry_kind"] == kind].iloc[0]
+            assert pd.isna(row["entry_price"])  # unfilled, per DESIGN §5.4
+            assert row["k_full"] == pytest.approx(50.0)  # but state is still known
+            assert row["dd_52w"] == pytest.approx(0.05)
 
 
 class TestAddCofireCount:
@@ -253,11 +345,12 @@ class TestRunBacktestDispatchAndWrite:
         assert calls[0]["update_columns"] == backtest._RUN_BACKTEST_UPDATE_COLUMNS
         assert report.rows_written == 4
         assert report.tickers == [TICKER]
+        assert report.failed_tickers == {}
 
-    def test_tickers_are_sorted_before_dispatch(self, stub_reads, monkeypatch):
+    def test_tickers_are_sorted_before_dispatch(self, monkeypatch):
         seen: list[str] = []
 
-        def fake_worker(ticker, config, run_id, database_url):
+        def fake_worker(ticker, config, run_id, database_url, today=None):
             seen.append(ticker)
             return backtest._empty_events_frame()
 
@@ -268,34 +361,30 @@ class TestRunBacktestDispatchAndWrite:
 
         assert seen == ["AAA", "MMM", "ZZZ"]
 
-    def test_collected_frame_is_sorted_before_write(self, monkeypatch):
-        # Two tickers, deliberately handed back out of (ticker, signal_date,
-        # entry_kind) order — as `as_completed` legitimately could under
-        # `max_workers > 1` — must still be written sorted (ADR 060).
-        def fake_worker(ticker, config, run_id, database_url):
+    def test_collected_frame_is_sorted_by_ticker_signal_date_entry_kind(self, monkeypatch):
+        """Review Finding 2: the original version of this test passed with
+        `backtest.py`'s `sort_values` call deleted, because `max_workers=1`
+        already iterates `sorted_tickers` in order and each fake ticker
+        returned exactly one row — nothing in the assertion depended on the
+        sort actually running.
+
+        This version returns AAA's own two rows already reversed
+        (2026-01-07 before 2026-01-05) — `sorted_tickers` iterating AAA
+        before ZZZ cannot fix that on its own, only `sort_values` can. If
+        `backtest.py`'s sort is deleted, `written["signal_date"]` comes back
+        `[Jan 7, Jan 5, Jan 6]`, not `[Jan 5, Jan 6, Jan 7]`, and this test
+        fails.
+        """
+
+        def fake_worker(ticker, config, run_id, database_url, today=None):
             if ticker == "ZZZ":
                 return pd.DataFrame(
-                    [
-                        {
-                            "run_id": run_id,
-                            "config_hash": "c",
-                            "ticker": "ZZZ",
-                            "signal_date": date(2026, 1, 6),
-                            "signal_type": "bb_lower_touch",
-                            "entry_kind": "touch",
-                        }
-                    ]
+                    [_minimal_row(ticker="ZZZ", signal_date=date(2026, 1, 6), entry_kind="touch")]
                 )
             return pd.DataFrame(
                 [
-                    {
-                        "run_id": run_id,
-                        "config_hash": "c",
-                        "ticker": "AAA",
-                        "signal_date": date(2026, 1, 5),
-                        "signal_type": "bb_lower_touch",
-                        "entry_kind": "touch",
-                    }
+                    _minimal_row(ticker="AAA", signal_date=date(2026, 1, 7), entry_kind="touch"),
+                    _minimal_row(ticker="AAA", signal_date=date(2026, 1, 5), entry_kind="touch"),
                 ]
             )
 
@@ -311,7 +400,28 @@ class TestRunBacktestDispatchAndWrite:
         backtest.run_backtest(["ZZZ", "AAA"], Config(), "run-1", engine=_FakeEngine())
 
         written = captured["data"]
-        assert list(written["ticker"]) == ["AAA", "ZZZ"]
+        assert list(written["ticker"]) == ["AAA", "AAA", "ZZZ"]
+        assert list(written["signal_date"]) == [date(2026, 1, 5), date(2026, 1, 7), date(2026, 1, 6)]
+
+    def test_entry_kind_is_sorted_alphabetically_not_declaration_order(self, stub_reads, monkeypatch):
+        """The real worker emits entry kinds in `EntryKind` declaration
+        order (touch, touch_5m, touch_30m, next_open — `test_produces_one_
+        row_per_entry_kind` proves this). `run_backtest` must reorder them
+        alphabetically before writing. Deleting the sort makes this fail:
+        the unsorted order would be `touch, touch_5m, touch_30m, next_open`.
+        """
+        captured: dict = {}
+
+        def fake_upsert(engine, table_name, data, conflict_cols, update_columns=None):
+            captured["data"] = data
+            return len(data)
+
+        monkeypatch.setattr(backtest.db_io, "upsert", fake_upsert)
+
+        backtest.run_backtest([TICKER], Config(), "run-1", engine=_FakeEngine())
+
+        written = captured["data"]
+        assert list(written["entry_kind"]) == ["next_open", "touch", "touch_30m", "touch_5m"]
 
     def test_no_events_writes_nothing(self, monkeypatch):
         monkeypatch.setattr(
@@ -330,3 +440,129 @@ class TestRunBacktestDispatchAndWrite:
         assert called["upsert"] is False
         assert report.rows_written == 0
         assert report.tickers == []
+
+
+class TestRunBacktestFullUniverseCofire:
+    """Review Finding 3: `cofire_count` computed over a ticker subset must
+    never silently overwrite a correct universe-wide value already in the
+    database."""
+
+    def test_full_universe_default_writes_cofire_count(self, monkeypatch):
+        monkeypatch.setattr(
+            backtest,
+            "_backtest_one_ticker",
+            lambda *a, **k: pd.DataFrame(
+                [_minimal_row(ticker="AAA", signal_date=date(2026, 1, 5), entry_kind="touch")]
+            ),
+        )
+        captured: dict = {}
+        monkeypatch.setattr(
+            backtest.db_io,
+            "upsert",
+            lambda engine, table_name, data, conflict_cols, update_columns=None: captured.update(
+                update_columns=update_columns
+            )
+            or len(data),
+        )
+
+        backtest.run_backtest(["AAA"], Config(), "run-1", engine=_FakeEngine())
+
+        assert "cofire_count" in captured["update_columns"]
+
+    def test_partial_run_excludes_cofire_count_from_the_write_and_warns(self, monkeypatch):
+        monkeypatch.setattr(
+            backtest,
+            "_backtest_one_ticker",
+            lambda *a, **k: pd.DataFrame(
+                [_minimal_row(ticker="AAA", signal_date=date(2026, 1, 5), entry_kind="touch")]
+            ),
+        )
+        captured: dict = {}
+        monkeypatch.setattr(
+            backtest.db_io,
+            "upsert",
+            lambda engine, table_name, data, conflict_cols, update_columns=None: captured.update(
+                update_columns=update_columns, data=data
+            )
+            or len(data),
+        )
+
+        with pytest.warns(UserWarning, match="full_universe"):
+            backtest.run_backtest(
+                ["AAA"], Config(), "run-1", engine=_FakeEngine(), full_universe=False
+            )
+
+        assert "cofire_count" not in captured["update_columns"]
+        # Still present on the written frame itself (informational / for a
+        # brand-new row's INSERT) — only excluded from the UPDATE scope.
+        assert "cofire_count" in captured["data"].columns
+
+    def test_full_universe_true_raises_no_warning(self, monkeypatch, recwarn):
+        monkeypatch.setattr(
+            backtest, "_backtest_one_ticker", lambda *a, **k: backtest._empty_events_frame()
+        )
+        monkeypatch.setattr(backtest.db_io, "upsert", lambda *a, **k: 0)
+
+        backtest.run_backtest(["AAA"], Config(), "run-1", engine=_FakeEngine())
+
+        assert len(recwarn) == 0
+
+
+class TestRunBacktestPerTickerFailureIsolation:
+    """Review Finding 4: one ticker's worker raising must not discard every
+    other ticker's already-completed work."""
+
+    def test_a_failing_ticker_does_not_block_the_others(self, monkeypatch):
+        def fake_worker(ticker, config, run_id, database_url, today=None):
+            if ticker == "BAD":
+                raise ValueError("tag_clusters: ticker 'BAD' has candidate events but no trading_dates")
+            return pd.DataFrame(
+                [_minimal_row(ticker=ticker, signal_date=date(2026, 1, 5), entry_kind="touch")]
+            )
+
+        monkeypatch.setattr(backtest, "_backtest_one_ticker", fake_worker)
+        captured: dict = {}
+        monkeypatch.setattr(
+            backtest.db_io,
+            "upsert",
+            lambda engine, table_name, data, conflict_cols, update_columns=None: captured.update(
+                data=data
+            )
+            or len(data),
+        )
+
+        report = backtest.run_backtest(["AAA", "BAD", "ZZZ"], Config(), "run-1", engine=_FakeEngine())
+
+        assert list(captured["data"]["ticker"]) == ["AAA", "ZZZ"]
+        assert report.rows_written == 2
+        assert set(report.failed_tickers) == {"BAD"}
+        assert "ValueError" in report.failed_tickers["BAD"]
+
+    def test_every_ticker_failing_writes_nothing_but_does_not_raise(self, monkeypatch):
+        def always_fails(ticker, config, run_id, database_url, today=None):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(backtest, "_backtest_one_ticker", always_fails)
+        called = {"upsert": False}
+        monkeypatch.setattr(
+            backtest.db_io, "upsert", lambda *a, **k: called.__setitem__("upsert", True) or 0
+        )
+
+        report = backtest.run_backtest(["AAA", "BBB"], Config(), "run-1", engine=_FakeEngine())
+
+        assert called["upsert"] is False
+        assert report.rows_written == 0
+        assert set(report.failed_tickers) == {"AAA", "BBB"}
+
+
+class TestRunBacktestUnknownPathColumn:
+    """Review Finding 5: a swept `StatsParams` that produces a column name
+    the fixed `events` schema has no slot for must raise, not silently drop
+    the column via `pd.DataFrame(rows, columns=_EVENT_COLUMNS)`."""
+
+    def test_an_unrecognized_reach_target_raises(self, stub_reads):
+        from dataclasses import replace
+
+        swept = replace(Config(), stats=replace(Config().stats, reach_targets=(0.02, 0.07)))
+        with pytest.raises(ValueError, match="touched_7pct"):
+            backtest._backtest_one_ticker(TICKER, swept, "run-1", None)

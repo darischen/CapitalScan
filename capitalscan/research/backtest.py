@@ -33,6 +33,7 @@ split-labelling rules that drift would produce rows whose provenance lies.
 
 from __future__ import annotations
 
+import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date
@@ -41,6 +42,7 @@ import pandas as pd
 from sqlalchemy import Engine, text
 
 from capitalscan.core.config import Config
+from capitalscan.core.signals import _isnan
 from capitalscan.core.types import Side
 from capitalscan.jobs import db_io
 from capitalscan.jobs.config import config_hash, split_key_for
@@ -88,6 +90,28 @@ _EVENT_COLUMNS = [
     "signal_strength",
     "side",
     "touch_level",
+    # state at signal, all read from the t-1 indicator row `_prior_indicator`
+    # already looked up (Review Finding 1, session 9 task 9b fix round 1):
+    # this worker holds `prior_ind` in hand for every candidate anyway (it
+    # is `enrich_context`'s own `ind_row` argument), so leaving these NULL
+    # on a row this worker is the sole writer of (`touch_5m`/`touch_30m`/
+    # `next_open` — `run_events` never creates those rows, ever, since it
+    # hardcodes `entry_kind=EntryKind.TOUCH.value`) would be an unpopulated
+    # column, not an honestly-absent one.
+    "bb_pctb",
+    "bb_width_pct",
+    "k_full",
+    "d_full",
+    "k_fast",
+    "k_cross_up",
+    "k_cross_down",
+    "atr_14",
+    "rv_pct_252d",
+    "dd_52w",
+    "sma200_slope_60",
+    "above_sma200",
+    "vol_z_20d",
+    "days_to_earnings",
     # clustering (§5.3) — backtest-owned (Ruling C5)
     "cluster_id",
     "seq_in_cluster",
@@ -140,38 +164,54 @@ _EVENT_COLUMNS = [
 # overwrite on an `events` row that already exists (e.g. one `run_events`
 # wrote first, per `jobs/compute.py`'s module docstring: "session 9 fills
 # them in on the same row"). Everything the backtest actually *computes* —
-# entry (all four kinds, not just TOUCH), exit, outcome, reachability,
-# forward-return, context/split columns, and the four cluster columns Ruling
-# C5 assigns to the backtest exclusively.
+# signal identity, state-at-signal, entry (all four kinds, not just TOUCH),
+# exit, outcome, reachability, forward-return, context/split columns, and
+# the four cluster columns Ruling C5 assigns to the backtest exclusively.
 #
-# Deliberately excludes the indicator-state columns `run_events` alone
-# fills in (`bb_pctb`, `bb_width_pct`, `k_full`, `d_full`, `k_fast`,
-# `k_cross_up`, `k_cross_down`, `atr_14`, `rv_pct_252d`, `sma200_slope_60`,
-# `above_sma200`, `vol_z_20d`, `days_to_earnings`): this worker's own
-# candidate scan (`research.candidates.scan_candidates`) never reads or
-# retains those fields (`_CANDIDATE_COLUMNS` in that module carries only
-# `touch_level`, not the indicator row itself), so the backtest has nothing
-# to write there and must not claim ownership it cannot honor. A brand-new
-# event this job discovers before `run_events` ever ran (or one on an entry
-# kind `run_events` never writes at all — `touch_5m`/`touch_30m`/
-# `next_open`) is still a real, insertable row: those columns simply arrive
-# NULL until `run_events` next runs and fills them in, which is the honest
-# outcome under invariant 4, not a defect of this job.
+# Review Finding 1 (session 9 task 9b fix round 1) corrected this list: an
+# earlier version excluded the state-at-signal columns (`bb_pctb`,
+# `bb_width_pct`, `k_full`, `d_full`, `k_fast`, `k_cross_up`, `k_cross_down`,
+# `atr_14`, `rv_pct_252d`, `dd_52w`, `sma200_slope_60`, `above_sma200`,
+# `vol_z_20d`, `days_to_earnings`) on the theory that `scan_candidates`
+# doesn't retain them. That reasoning missed that `_backtest_one_ticker`
+# independently looks up the same t-1 indicator row via `_prior_indicator`
+# to build `enrich_context`'s `ind_row` argument — the value is already in
+# hand, known, and was simply omitted from the row dict. Worse: `run_events`
+# hardcodes `entry_kind=EntryKind.TOUCH.value` (`jobs/compute.py:721`), so
+# the `touch_5m`/`touch_30m`/`next_open` rows have no second writer, ever —
+# there is no future `run_events` pass that fills these in. Leaving them
+# NULL there was an unpopulated column, not an honestly-absent one
+# (invariant 4 sanctions the latter, not the former).
 #
-# `run_id`, `signal_types_all`, `signal_strength`, `side`, and `touch_level`
-# *are* included even though `run_events` also writes them: this worker
-# independently re-derives them from the same `core.signals.detect` this
-# session's `run_events` uses (invariant 2 — one signal implementation,
-# reached two ways), so the two jobs cannot disagree on these values, and
-# keeping both writable is the same precedent `_RUN_EVENTS_UPDATE_COLUMNS`
-# already set for `entry_date`/`entry_price`/`entry_gapped`, `dd_bucket`,
-# `split_key`, `vix_close`, and `spx_ret_1d`.
+# All of these overlap with `_RUN_EVENTS_UPDATE_COLUMNS` (`run_id`,
+# `signal_types_all`, `signal_strength`, `side`, `touch_level`, and now the
+# state-at-signal columns too). This is deliberate, not an oversight: both
+# jobs derive them from the same `core.signals.detect` output read off the
+# same t-1 indicator row (invariant 2 — one signal implementation, reached
+# two ways), so the two jobs cannot disagree on these values. Keeping both
+# writable is the same precedent `_RUN_EVENTS_UPDATE_COLUMNS` already set for
+# `entry_date`/`entry_price`/`entry_gapped`, `dd_bucket`, `split_key`,
+# `vix_close`, and `spx_ret_1d`.
 _RUN_BACKTEST_UPDATE_COLUMNS = [
     "run_id",
     "signal_types_all",
     "signal_strength",
     "side",
     "touch_level",
+    "bb_pctb",
+    "bb_width_pct",
+    "k_full",
+    "d_full",
+    "k_fast",
+    "k_cross_up",
+    "k_cross_down",
+    "atr_14",
+    "rv_pct_252d",
+    "dd_52w",
+    "sma200_slope_60",
+    "above_sma200",
+    "vol_z_20d",
+    "days_to_earnings",
     "cluster_id",
     "seq_in_cluster",
     "is_cluster_head",
@@ -218,11 +258,22 @@ _RUN_BACKTEST_UPDATE_COLUMNS = [
 class BacktestReport:
     """Mirrors `jobs.ingest.IngestReport`'s shape without importing `jobs/`
     at module level for it — `research/` owns its own IO per CLAUDE.md, and
-    the two report types have no reason to share an implementation."""
+    the two report types have no reason to share an implementation.
+
+    `failed_tickers` (Review Finding 4, fix round 1): `{ticker: "ExcType:
+    message"}` for every ticker whose worker raised. `run_backtest` writes
+    every *successful* ticker's rows regardless — a `tag_clusters` or
+    `resolve_exit_for_entry` raise on one ticker must not discard hours of
+    work already done for the rest of a full-universe run. Mirrors
+    `IngestReport.rows_flagged`'s idiom of surfacing a problem on the report
+    object rather than the caller having no way to find out which ticker(s)
+    need a rerun.
+    """
 
     run_id: str
     rows_written: int = 0
     tickers: list[str] = field(default_factory=list)
+    failed_tickers: dict[str, str] = field(default_factory=dict)
 
 
 def _empty_events_frame() -> pd.DataFrame:
@@ -332,6 +383,7 @@ def _backtest_one_ticker(
     config: Config,
     run_id: str,
     database_url: str | None,
+    today: date | None = None,
 ) -> pd.DataFrame:
     """Runs in a worker process under `ProcessPoolExecutor(spawn)` — mirrors
     `jobs.compute._compute_one_ticker`'s spawn-safety template (CLAUDE.md
@@ -354,12 +406,18 @@ def _backtest_one_ticker(
     (invariant 4; DESIGN §5.4 treats pre-2024 hourly absence as an expected
     data limitation, not an error a missing row should silently hide from a
     downstream `COUNT(*)`). Every exit/outcome/path column on that row is
-    null instead.
+    null instead. State-at-signal columns (`bb_pctb`, `k_full`, `dd_52w`,
+    ...), by contrast, are the SAME on all four rows for one signal — they
+    describe the t-1 indicator row the signal fired against, not the entry
+    kind — so every row gets them, never just `touch` (Review Finding 1).
 
-    No wall-clock read (ADR 060): `apply_eligibility`'s `today` bound is
-    derived from the loaded bars themselves (`max(bars.ts)`), not
-    `date.today()`. The same config against the same database snapshot
-    always resolves the same bound this way; a clock read would not.
+    No wall-clock read (ADR 060): `apply_eligibility`'s `today` bound
+    defaults to `None`, which resolves to `max(bars.ts)` — a function of the
+    loaded data, not the clock, so the same config against the same database
+    snapshot always resolves the same bound. `run_backtest` may pass an
+    explicit `today` to override this uniformly across every ticker in a
+    run (controller ruling, fix round 1); `None` here always means
+    "per-ticker, derived from that ticker's own data."
     """
     # Deferred import — see the module-level comment above `_EVENT_COLUMNS`
     # on why `candidates`/`enrich` cannot be imported at module scope here.
@@ -382,9 +440,9 @@ def _backtest_one_ticker(
     if candidates.empty:
         return _empty_events_frame()
 
-    today = bars["ts"].max().date()
+    resolved_today = today if today is not None else bars["ts"].max().date()
     eligible, _elig_rejects = research_candidates.apply_eligibility(
-        candidates, universe_flags, config.splits, today=today
+        candidates, universe_flags, config.splits, today=resolved_today
     )
     if eligible.empty:
         return _empty_events_frame()
@@ -430,6 +488,24 @@ def _backtest_one_ticker(
             market_by_date.loc[signal_date]
             if (not market.empty and signal_date in market_by_date.index)
             else None
+        )
+
+        # State at signal (Review Finding 1): read once per candidate — the
+        # same t-1 row backs all four entry-kind rows for this signal, since
+        # it describes the state the signal fired against, not the entry.
+        # `above_sma200` needs the signal bar's own `close` (not `prior_ind`,
+        # which is the day *before*), matching `jobs.compute._build_event_
+        # row`'s `bool(bar["close"] > ind_row["sma_200"])`. Genuine null
+        # (not an omission) when either side is unavailable — e.g. this
+        # module's own test fixtures, which do not carry `sma_200` at all.
+        signal_ts = pd.Timestamp(signal_date)
+        bar_at_signal = ticker_bars.loc[signal_ts] if signal_ts in ticker_bars.index else None
+        sma_200 = prior_ind.get("sma_200")
+        close_at_signal = None if bar_at_signal is None else bar_at_signal.get("close")
+        above_sma200 = (
+            None
+            if _isnan(sma_200) or _isnan(close_at_signal)
+            else bool(float(close_at_signal) > float(sma_200))
         )
 
         # `bars`, not `ticker_bars`: `resolve_entries` -> `_ticker_bars`
@@ -487,6 +563,24 @@ def _backtest_one_ticker(
                 adj_close_fwd=adj_close_fwd,
                 horizons=config.stats.fwd_ret_horizons,
             )
+            # Review Finding 5: `StatsParams.reach_targets`/`fwd_ret_horizons`
+            # are sweepable (invariant 9's config values, not literals), but
+            # the `events` schema's reachability/forward-return columns are
+            # fixed (DESIGN §5.7: 2/3/5/10pct, 1/2/3/5/10d). A sweep cell
+            # that changes either tuple would make `path_metrics` return a
+            # column name `_EVENT_COLUMNS` has no slot for —
+            # `pd.DataFrame(rows, columns=_EVENT_COLUMNS)` would silently
+            # drop it, and the "real" column stays NaN with no error at all.
+            # Raise loudly instead.
+            unknown_path_keys = set(path) - set(_EVENT_COLUMNS)
+            if unknown_path_keys:
+                raise ValueError(
+                    f"path_metrics returned column(s) {sorted(unknown_path_keys)} not "
+                    "present in _EVENT_COLUMNS — StatsParams.reach_targets or "
+                    "fwd_ret_horizons was swept to a value the fixed `events` schema "
+                    "has no column for (DESIGN §5.7 fixes these at 2/3/5/10pct and "
+                    "1/2/3/5/10d)."
+                )
 
             context = research_enrich.enrich_context(
                 {
@@ -515,6 +609,20 @@ def _backtest_one_ticker(
                 "signal_strength": cand["signal_strength"],
                 "side": side.value,
                 "touch_level": cand["touch_level"],
+                "bb_pctb": prior_ind.get("bb_pctb"),
+                "bb_width_pct": prior_ind.get("bb_width_pct"),
+                "k_full": prior_ind.get("k_full"),
+                "d_full": prior_ind.get("d_full"),
+                "k_fast": prior_ind.get("k_fast"),
+                "k_cross_up": prior_ind.get("k_cross_up"),
+                "k_cross_down": prior_ind.get("k_cross_down"),
+                "atr_14": prior_ind.get("atr_14"),
+                "rv_pct_252d": prior_ind.get("rv_pct_252d"),
+                "dd_52w": prior_ind.get("dd_52w"),
+                "sma200_slope_60": prior_ind.get("sma200_slope_60"),
+                "above_sma200": above_sma200,
+                "vol_z_20d": prior_ind.get("vol_z_20d"),
+                "days_to_earnings": prior_ind.get("days_to_earnings"),
                 "cluster_id": cand["cluster_id"],
                 "seq_in_cluster": cand["seq_in_cluster"],
                 "is_cluster_head": cand["is_cluster_head"],
@@ -561,6 +669,16 @@ def add_cofire_count(events: pd.DataFrame) -> pd.DataFrame:
     that fan-out — two tickers firing the same type on the same date read
     `cofire_count == 2` regardless of how many entry-kind rows each wrote.
 
+    **This counts only the tickers present in `events`.** It is correct
+    precisely when `events` covers the whole trade universe for its
+    `signal_date` range — a partial-ticker run undercounts every co-fire,
+    and `run_backtest`'s `full_universe` parameter (Review Finding 3, fix
+    round 1) exists to keep an undercount from silently overwriting a
+    previously-correct universe-wide value in the database. This function
+    itself has no way to know whether its input is the whole universe or
+    not — that judgment belongs to the caller, which is why `run_backtest`
+    makes it an explicit, named parameter rather than inferring it here.
+
     Returns a new frame (CLAUDE.md "never mutate in place").
     """
     out = events.copy()
@@ -577,6 +695,8 @@ def run_backtest(
     run_id: str,
     engine: Engine | None = None,
     max_workers: int = 1,
+    today: date | None = None,
+    full_universe: bool = True,
 ) -> BacktestReport:
     """DESIGN §5.1/§5.8: config in, `events` rows out. Dispatches one worker
     per ticker (`_backtest_one_ticker`), runs the cross-ticker
@@ -595,28 +715,82 @@ def run_backtest(
     url)`, which masks the password as `***` and leaves a spawned worker
     unable to connect (CONSTRAINTS.md item 1) — is what turns the (unpicklable)
     `Engine` into a string every worker can rebuild its own connection from.
+
+    `today` (controller ruling, fix round 1): `None` (the default) means
+    "per-ticker, derived from that ticker's own loaded bars" — the original
+    ADR 060-compliant behavior, still the honest bound for a ticker whose
+    data happens to end earlier than another's. Passing an explicit `date`
+    overrides that derivation uniformly across every ticker in this run, for
+    a caller (Task 11's future CLI) that needs one fixed "as of" boundary
+    instead.
+
+    `full_universe` (Review Finding 3, fix round 1): `add_cofire_count`
+    counts distinct tickers **within this run's own frame**, which is only
+    the true cross-ticker co-fire count when `tickers` is the whole trade
+    universe. `full_universe=True` (the default, matching every existing
+    caller) asserts that it is, and `cofire_count` is written normally.
+    Pass `full_universe=False` for a deliberately partial run (e.g. a future
+    `--tickers` debug flag) — `cofire_count` is still computed and returned
+    on the frame for visibility, but is dropped from this write's
+    `update_columns`, so a subset run can never silently overwrite a
+    previously-correct universe-wide count with an undercount capped at
+    `len(tickers)`. A brand-new row from a partial run still gets the
+    subset-scoped count on INSERT (nothing else has computed one yet); nothing
+    corrects it until a following whole-universe run passes back over the
+    same rows. A `UserWarning` is raised in this case so the gap is loud,
+    not silent.
     """
     engine = engine or db_io.get_engine()
     sorted_tickers = sorted(set(tickers))
     database_url = engine.url.render_as_string(hide_password=False)
 
+    if not full_universe:
+        warnings.warn(
+            "run_backtest(full_universe=False): cofire_count computed over "
+            f"this run's {len(sorted_tickers)}-ticker subset will NOT overwrite "
+            "any existing universe-wide value in the database (excluded from "
+            "this write's update_columns) — it is only correct within this "
+            "subset. A following whole-universe run is required to correct it.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    # Review Finding 4: one ticker's worker raising (`tag_clusters` on a
+    # missing trading date, `resolve_exit_for_entry` on an entry_idx
+    # mismatch — both live, not theoretical) must not discard every other
+    # ticker's already-completed work. Caught per-ticker, recorded on the
+    # report, and the run proceeds to write whatever succeeded.
     frames: list[pd.DataFrame] = []
+    failed_tickers: dict[str, str] = {}
     if max_workers <= 1:
         for ticker in sorted_tickers:
-            frames.append(_backtest_one_ticker(ticker, config, run_id, database_url))
+            try:
+                frames.append(_backtest_one_ticker(ticker, config, run_id, database_url, today))
+            except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
+                failed_tickers[ticker] = f"{type(exc).__name__}: {exc}"
     else:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(_backtest_one_ticker, ticker, config, run_id, database_url): ticker
+                executor.submit(
+                    _backtest_one_ticker, ticker, config, run_id, database_url, today
+                ): ticker
                 for ticker in sorted_tickers
             }
             for future in as_completed(futures):
-                frames.append(future.result())
+                ticker = futures[future]
+                try:
+                    frames.append(future.result())
+                except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
+                    failed_tickers[ticker] = f"{type(exc).__name__}: {exc}"
 
     events = pd.concat(frames, ignore_index=True) if frames else _empty_events_frame()
     events = add_cofire_count(events)
     if not events.empty:
         events = events.sort_values(["ticker", "signal_date", "entry_kind"]).reset_index(drop=True)
+
+    update_columns = _RUN_BACKTEST_UPDATE_COLUMNS
+    if not full_universe:
+        update_columns = [c for c in _RUN_BACKTEST_UPDATE_COLUMNS if c != "cofire_count"]
 
     rows_written = 0
     if not events.empty:
@@ -625,13 +799,14 @@ def run_backtest(
             "events",
             events,
             ["config_hash", "ticker", "signal_date", "signal_type", "entry_kind"],
-            update_columns=_RUN_BACKTEST_UPDATE_COLUMNS,
+            update_columns=update_columns,
         )
 
     return BacktestReport(
         run_id=run_id,
         rows_written=rows_written,
         tickers=sorted(events["ticker"].unique().tolist()) if not events.empty else [],
+        failed_tickers=failed_tickers,
     )
 
 

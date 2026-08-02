@@ -134,6 +134,30 @@ class TestWorkerDeterminism:
         assert captured["today"] is not None
         assert captured["today"] == _bars()["ts"].max().date()
 
+    def test_an_explicit_today_override_is_deterministic_too(self, stub_reads):
+        """Controller ruling, fix round 1: passing `today` explicitly must
+        be just as deterministic as the default per-ticker derivation."""
+        from datetime import date
+
+        fixed = date(2026, 3, 1)
+        first = backtest._backtest_one_ticker(TICKER, Config(), "run-1", None, today=fixed)
+        second = backtest._backtest_one_ticker(TICKER, Config(), "run-2", None, today=fixed)
+
+        pd.testing.assert_frame_equal(_drop_run_id(first), _drop_run_id(second))
+
+
+class _FakeEngine:
+    class url:  # noqa: N801
+        @staticmethod
+        def render_as_string(hide_password=False):
+            return "postgresql://fake/db"
+
+
+def _minimal_row(**overrides) -> dict:
+    row = {col: None for col in backtest._EVENT_COLUMNS}
+    row.update(overrides)
+    return row
+
 
 class TestRunBacktestDeterminism:
     def test_two_full_runs_write_identical_frames_ignoring_run_id(self, stub_reads, monkeypatch):
@@ -145,14 +169,65 @@ class TestRunBacktestDeterminism:
 
         monkeypatch.setattr(backtest.db_io, "upsert", fake_upsert)
 
-        class _FakeEngine:
-            class url:  # noqa: N801
-                @staticmethod
-                def render_as_string(hide_password=False):
-                    return "postgresql://fake/db"
-
         backtest.run_backtest([TICKER], Config(), "run-1", engine=_FakeEngine())
         backtest.run_backtest([TICKER], Config(), "run-2", engine=_FakeEngine())
 
         assert len(captured) == 2
         pd.testing.assert_frame_equal(_drop_run_id(captured[0]), _drop_run_id(captured[1]))
+
+    def test_two_full_runs_with_multiple_tickers_out_of_order_are_still_identical(self, monkeypatch):
+        """Review Finding 2: the single-ticker version above stays green
+        even with `backtest.py`'s `sort_values` call deleted, because one
+        ticker's rows arrive in only one possible order. This version uses
+        two tickers, each returning rows out of `(signal_date, entry_kind)`
+        order, run through the real `run_backtest` dispatch-and-sort path
+        twice — proving determinism holds on the actual sorted output, not
+        merely on whatever order dispatch happened to produce.
+        """
+        from datetime import date as date_
+
+        def fake_worker(ticker, config, run_id, database_url, today=None):
+            if ticker == "ZZZ":
+                return pd.DataFrame(
+                    [
+                        _minimal_row(
+                            run_id=run_id, ticker="ZZZ", signal_date=date_(2026, 1, 8), entry_kind="touch"
+                        ),
+                        _minimal_row(
+                            run_id=run_id, ticker="ZZZ", signal_date=date_(2026, 1, 6), entry_kind="touch"
+                        ),
+                    ]
+                )
+            return pd.DataFrame(
+                [
+                    _minimal_row(
+                        run_id=run_id, ticker="AAA", signal_date=date_(2026, 1, 7), entry_kind="touch"
+                    ),
+                    _minimal_row(
+                        run_id=run_id, ticker="AAA", signal_date=date_(2026, 1, 5), entry_kind="touch"
+                    ),
+                ]
+            )
+
+        monkeypatch.setattr(backtest, "_backtest_one_ticker", fake_worker)
+        captured: list[pd.DataFrame] = []
+
+        def fake_upsert(engine, table_name, data, conflict_cols, update_columns=None):
+            captured.append(data)
+            return len(data)
+
+        monkeypatch.setattr(backtest.db_io, "upsert", fake_upsert)
+
+        backtest.run_backtest(["ZZZ", "AAA"], Config(), "run-1", engine=_FakeEngine())
+        backtest.run_backtest(["ZZZ", "AAA"], Config(), "run-2", engine=_FakeEngine())
+
+        assert len(captured) == 2
+        pd.testing.assert_frame_equal(_drop_run_id(captured[0]), _drop_run_id(captured[1]))
+        # And the shared, sorted shape is the real target, not an accident:
+        assert list(captured[0]["ticker"]) == ["AAA", "AAA", "ZZZ", "ZZZ"]
+        assert list(captured[0]["signal_date"]) == [
+            date_(2026, 1, 5),
+            date_(2026, 1, 7),
+            date_(2026, 1, 6),
+            date_(2026, 1, 8),
+        ]
