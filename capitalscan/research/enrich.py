@@ -12,8 +12,8 @@ frames it is handed, apply costs, and shape the results into rows — never
 to make a second price decision (CLAUDE.md invariant 2).
 
 This file grows across Session 9:
-  - Task 5 (this task): `resolve_entries` — step 7, entry resolution.
-  - Task 6: exit resolution — step 8.
+  - Task 5: `resolve_entries` — step 7, entry resolution.
+  - Task 6 (this task): `resolve_exit_for_entry` — step 8, exit resolution.
   - Task 7: path metrics — step 9.
   - Task 8: cost application and context tagging — steps 10-11.
 
@@ -32,7 +32,8 @@ from datetime import date
 import pandas as pd
 
 from capitalscan.core import costs as core_costs
-from capitalscan.core.config import CostParams
+from capitalscan.core.config import CostParams, ExitParams
+from capitalscan.core.exits import resolve_exit
 from capitalscan.core.returns import entry_price_for
 from capitalscan.core.signals import _breach, _isnan
 from capitalscan.core.types import Bound, EntryKind, Side
@@ -177,3 +178,121 @@ def resolve_entries(
         )
 
     return rows
+
+
+def _unresolved_exit() -> dict:
+    """The dict shape for a position that has nothing to resolve — either
+    it never filled, or its signal fired on the last bar of available
+    data. Every field reads as "not applicable," the same convention
+    `entry_gapped=None` already uses in `resolve_entries`: `None`/`NaN`
+    here means "not computed," never a defaulted zero or a fabricated
+    TIMEOUT that would misreport a real evaluation that never ran.
+    """
+    return {
+        "exit_idx": None,
+        "exit_date": None,
+        "exit_price": float("nan"),
+        "exit_reason": None,
+        "holding_days": None,
+        "ambiguous": None,
+    }
+
+
+def resolve_exit_for_entry(
+    entry: dict,
+    entry_idx: int,
+    side: Side,
+    bars: pd.DataFrame,
+    indicators: pd.DataFrame,
+    ep: ExitParams,
+) -> dict:
+    """DESIGN §5.2 step 8. Slices `bars`/`indicators` around one entry and
+    hands the window to `core.exits.resolve_exit` — the only exit
+    implementation in the repo (invariant 2, BUILD §9.3). No threshold is
+    read from anywhere but `ep` (invariant 9): every level `resolve_exit`
+    needs — stop, target, band, stochastic — is either derived inside it
+    from `ep`'s fields or, for `atr_at_entry`, read here straight off the
+    indicator row with no comparison or default applied.
+
+    `bars` and `indicators` are one ticker's frames, sharing a positional
+    index — the same convention `core.exits.resolve_exit`'s own
+    `fwd_bars`/`fwd_ind` use. `entry_idx` is the position of the bar the
+    entry **actually filled on**, taken from `entry["entry_date"]`, not
+    the signal bar: `NEXT_OPEN` fills one session later, so a caller that
+    passes the signal bar's position here shifts every exit in this
+    position by one bar. Locating that position from `entry_date` is the
+    caller's job (this function receives frames, not a date-to-position
+    index) — documented here because it is the sharpest way to misuse
+    this function silently.
+
+    `ind_at_entry` is always passed to `resolve_exit`. Band levels for
+    forward bar i come from bar i-1; `resolve_exit` derives that by
+    shifting `fwd_ind`, which has no i-1 row for the first forward bar.
+    `ind_at_entry` — the entry bar's own indicator row — is the only
+    source for it. Omitting it does not raise; it silently skips band
+    exits on the first forward bar only, which is exactly the kind of bug
+    that would look fine in aggregate and wrong in the tail.
+
+    Two cases never reach `resolve_exit`, and return `_unresolved_exit()`
+    instead of a fabricated result:
+
+    - `entry["entry_price"]` is `NaN` — the position never filled (a
+      pre-2024 hourly entry kind, or a terminal-bar `NEXT_OPEN`).
+      Resolving an exit for a position that was never opened is not a
+      real event; calling `resolve_exit` anyway would still return a
+      band or stochastic exit reason (those checks don't reference
+      `entry_price` at all), which would misreport a phantom trade as a
+      resolved one.
+    - The forward window is completely empty — the signal fired on the
+      last bar of available data, with no forward bar to price an exit
+      against. `resolve_exit` raises on a wholly empty `fwd_bars`
+      (`core/exits.py:210`); a single fresh signal at the edge of the
+      ingested history is a real, expected case in production, not an
+      input error, so it resolves to "not yet resolvable" rather than
+      crashing a batch run.
+
+    A window shorter than `ep.max_hold_days` but not empty (end-of-data
+    truncation, a delisting) is a normal case `resolve_exit` already
+    handles — it times out on the last available bar rather than raising,
+    and this function does not special-case it.
+    """
+    entry_price = entry["entry_price"]
+    if _isnan(entry_price):
+        return _unresolved_exit()
+
+    fwd_bars = bars.iloc[entry_idx + 1 : entry_idx + 1 + ep.max_hold_days]
+    if len(fwd_bars) == 0:
+        return _unresolved_exit()
+    fwd_ind = indicators.iloc[entry_idx + 1 : entry_idx + 1 + ep.max_hold_days]
+    ind_at_entry = indicators.iloc[entry_idx]
+
+    # `.get` (not `[]`) tolerates an indicator frame without `atr_14` — a
+    # non-ATR stop mode never reads this value, and `resolve_exit`'s own
+    # `stop_level` already treats a null ATR as "no stop," never a
+    # substituted level, so there is nothing to guard against here beyond
+    # not raising on a missing column.
+    raw_atr = ind_at_entry.get("atr_14")
+    atr_at_entry = float("nan") if _isnan(raw_atr) else float(raw_atr)
+
+    result = resolve_exit(
+        entry_price=float(entry_price),
+        entry_idx=entry_idx,
+        side=side,
+        fwd_bars=fwd_bars,
+        fwd_ind=fwd_ind,
+        atr_at_entry=atr_at_entry,
+        ep=ep,
+        ind_at_entry=ind_at_entry,
+    )
+
+    # `exit_idx` is surfaced (not just `holding_days`) so Task 7's path
+    # metrics can bound their own window without recomputing it from
+    # `holding_days - 1`.
+    return {
+        "exit_idx": result.exit_idx,
+        "exit_date": result.exit_date,
+        "exit_price": result.exit_price,
+        "exit_reason": result.reason.value,
+        "holding_days": result.holding_days,
+        "ambiguous": result.ambiguous,
+    }
