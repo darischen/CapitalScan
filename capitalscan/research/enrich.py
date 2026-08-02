@@ -13,8 +13,8 @@ to make a second price decision (CLAUDE.md invariant 2).
 
 This file grows across Session 9:
   - Task 5: `resolve_entries` — step 7, entry resolution.
-  - Task 6 (this task): `resolve_exit_for_entry` — step 8, exit resolution.
-  - Task 7: path metrics — step 9.
+  - Task 6: `resolve_exit_for_entry` — step 8, exit resolution.
+  - Task 7 (this task): `path_metrics` — step 9, path metrics.
   - Task 8: cost application and context tagging — steps 10-11.
 
 `research/` owns IO in principle, but nothing in this module touches a
@@ -34,7 +34,7 @@ import pandas as pd
 from capitalscan.core import costs as core_costs
 from capitalscan.core.config import CostParams, ExitParams
 from capitalscan.core.exits import resolve_exit
-from capitalscan.core.returns import entry_price_for
+from capitalscan.core.returns import entry_price_for, forward_returns, mfe_mae, realized_return
 from capitalscan.core.signals import _breach, _isnan
 from capitalscan.core.types import Bound, EntryKind, Side
 
@@ -348,3 +348,145 @@ def resolve_exit_for_entry(
         "holding_days": result.holding_days,
         "ambiguous": result.ambiguous,
     }
+
+
+def _pct_suffix(target: float) -> str:
+    """`0.05` -> `"5pct"`, `0.10` -> `"10pct"` — the `events` schema's
+    reachability columns (`touched_5pct`, `day_touched_5pct`, ...) are named
+    off `StatsParams.reach_targets` percentages, not off the raw fraction.
+
+    `round()`, not truncation or an f-string on the float directly: `0.10 *
+    100` is `10.000000000000002` in binary floating point, and formatting
+    that raw would produce `touched_10.000000000000002pct` — silently
+    writing to a column that doesn't exist. `round()` is exact here because
+    every target in practice is a multiple of a whole percentage point.
+    """
+    return f"{round(target * 100)}pct"
+
+
+def path_metrics(
+    entry_price: float,
+    side: Side,
+    fwd_bars: pd.DataFrame,
+    exit_idx: int | None,
+    exit_price: float,
+    targets: tuple,
+    adj_close_fwd: pd.Series | None,
+    horizons: tuple,
+) -> dict:
+    """DESIGN §5.6, step 9. Two different windows over the same forward
+    bars, and conflating them is the whole difficulty here:
+
+    - MFE/MAE (`core.returns.mfe_mae`) are measured over `[t+1, exit_idx]`
+      — the bars the position was actually open for. `fwd_bars` already
+      starts at t+1 (the same frame `resolve_exit_for_entry` slices for
+      `core.exits.resolve_exit`), and `exit_idx` is 0-based *within* that
+      frame (`ExitResult.exit_idx`'s own convention), so the held window is
+      `fwd_bars.iloc[:exit_idx + 1]` — inclusive of the exit bar itself.
+    - Reachability (`touched_*pct` / `day_touched_*pct`) is measured over
+      the FULL `fwd_bars`, regardless of where `exit_idx` landed. "Would a
+      limit order at +5% have filled" is a question about the price path,
+      independent of when the actual position closed — an exit on bar 2
+      does not stop a bar-4 touch from being real.
+
+    `exit_idx is None` means the position never resolved (never filled, or
+    the forward window was empty — see `_unresolved_exit`), so every
+    exit-dependent field is `None`/`NaN`, the same "not applicable, not a
+    fabricated zero" convention `resolve_entries`/`resolve_exit_for_entry`
+    already use. `fwd_ret_*d` is the one exception: DESIGN §5.6 calls it
+    "unconditional... for baseline comparison" — it depends only on the
+    price series, not on whether this particular entry kind ever filled —
+    so it is computed whenever `adj_close_fwd` is given, even then.
+
+    `targets` and `horizons` come from `StatsParams.reach_targets` and
+    `StatsParams.fwd_ret_horizons` respectively (invariant 9: no magic
+    numbers outside `core/config.py`) — this function only derives column
+    *names* from them, via `_pct_suffix`.
+
+    Two price series, matching DESIGN §2.2 (see also `core/returns.py`'s
+    own module docstring): `fwd_bars` is split-adjusted OHLC — the series
+    the market actually traded at, which is what a limit order or an MFE
+    excursion needs. `adj_close_fwd` is **total-return** adjusted close —
+    `forward_returns` measures return, and dividends are real return.
+
+    `capture_ratio` (`η = R_exit / MFE`) needs `R_exit`, computed here via
+    `core.returns.realized_return(entry_price, exit_price, side)` — never
+    hand-rolled (invariant 2) — from an `exit_price` this function accepts
+    as a parameter, since `core.returns` owns the one realized-return
+    calculation and this module's job is only to route the right prices
+    into it. Null (not a division by a negative or by zero) when `MFE <=
+    0` — a zero MFE is a division by zero, not merely an odd ratio.
+
+    `adj_close_fwd`, when given, must start at the entry bar itself (its
+    `iloc[0]` is the entry's own close) and extend forward at least
+    `max(horizons)` bars — `core.returns.forward_returns` computes
+    `close.shift(-h) / close - 1` elementwise over whatever it is given, so
+    this function reads only its first row. This is a different window
+    than `fwd_bars`: `max_hold_days` bounds `fwd_bars` at (by default) 5
+    bars, but `fwd_ret_10d` needs a 10-bar horizon that a position-bounded
+    frame cannot supply, which is why this is a second, separate parameter
+    rather than a slice of `fwd_bars` — see the module-level note in
+    `core/config.py`'s `StatsParams.fwd_ret_horizons` for why the horizons
+    themselves live in config instead of literal in this module.
+    """
+    out: dict = {}
+
+    if exit_idx is None or len(fwd_bars) == 0:
+        # Not applicable, never a fabricated zero — the position never
+        # resolved (unfilled entry, or a signal at the very edge of
+        # available history; see `_unresolved_exit`).
+        out["mfe"] = float("nan")
+        out["mae"] = float("nan")
+        out["time_to_mfe"] = None
+        out["capture_ratio"] = None
+        for target in targets:
+            suffix = _pct_suffix(target)
+            out[f"touched_{suffix}"] = None
+            out[f"day_touched_{suffix}"] = None
+    else:
+        held_window = fwd_bars.iloc[: exit_idx + 1]
+        mfe, mae, time_to_mfe = mfe_mae(entry_price, side, held_window)
+        out["mfe"] = mfe
+        out["mae"] = mae
+        out["time_to_mfe"] = time_to_mfe
+
+        r_exit = realized_return(entry_price, exit_price, side)
+        # Boundary is <=, not <: MFE == 0 is a division by zero, not merely
+        # an odd ratio (DESIGN §5.6, ADR 089).
+        out["capture_ratio"] = None if _isnan(mfe) or mfe <= 0 else float(r_exit / mfe)
+
+        # Reachability: the level a limit order would need to fill, in the
+        # favorable direction for `side` — the same direction `mfe_mae`
+        # already uses, just against the FULL forward window rather than
+        # the held one. Routed through `_breach`, the one band comparison
+        # in the repo (invariant 2), not a second `>=`/`<=` written here.
+        bound = Bound.UPPER if side is Side.LONG else Bound.LOWER
+        price_col = "high" if side is Side.LONG else "low"
+        entry = float(entry_price)
+        for target in targets:
+            suffix = _pct_suffix(target)
+            level = entry * (1 + target) if side is Side.LONG else entry * (1 - target)
+            touched = False
+            day: int | None = None
+            for day_number, (_, bar) in enumerate(fwd_bars.iterrows(), start=1):
+                if _breach(float(bar[price_col]), level, bound):
+                    touched = True
+                    day = day_number
+                    break
+            out[f"touched_{suffix}"] = touched
+            out[f"day_touched_{suffix}"] = day
+
+    # Unconditional forward returns (DESIGN §5.6): independent of whether
+    # this entry kind ever filled, so computed whenever a close window is
+    # available at all — see the docstring's `fwd_ret_*d` note.
+    if adj_close_fwd is not None and len(adj_close_fwd) > 0:
+        fwd = forward_returns(adj_close_fwd, list(horizons))
+        entry_row = fwd.iloc[0]
+        for h in horizons:
+            val = entry_row[f"fwd_ret_{h}d"]
+            out[f"fwd_ret_{h}d"] = float("nan") if _isnan(val) else float(val)
+    else:
+        for h in horizons:
+            out[f"fwd_ret_{h}d"] = float("nan")
+
+    return out

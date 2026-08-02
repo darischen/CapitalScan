@@ -134,6 +134,15 @@ class StatsParams:
     n_replications_default: int = 200
     n_replications_sweep: int = 50
     reach_targets: tuple = (0.02, 0.03, 0.05, 0.10)
+    # Horizons for the `events.fwd_ret_*d` columns (DESIGN §5.6, §5.7). Not
+    # bounded by `ExitParams.max_hold_days` (5) — 10 exceeds it on purpose,
+    # since these are unconditional baseline returns on the raw price series,
+    # not a statement about how long any position was held. Session 9 Task 7
+    # added this field: `path_metrics`'s pinned interface took only
+    # `fwd_bars` (bounded at `max_hold_days`), which cannot supply a 10-day
+    # horizon, so the horizons live here rather than as a literal in
+    # `research/enrich.py` (invariant 9).
+    fwd_ret_horizons: tuple = (1, 2, 3, 5, 10)
     adverse_targets: tuple = (0.03, 0.05)
     dd_buckets: tuple = (0.10, 0.20, 0.35)
     era_bounds: tuple = ("2014-12-31", "2019-12-31", "2023-12-31")
