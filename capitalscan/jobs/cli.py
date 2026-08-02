@@ -433,6 +433,8 @@ def backtest(
     and exits, rather than pretending to run something that does not exist
     yet.
     """
+    from dataclasses import asdict
+
     from capitalscan.core.config import Config
     from capitalscan.jobs import db_io, ingest
     from capitalscan.jobs.config import config_hash as compute_config_hash
@@ -475,8 +477,6 @@ def backtest(
     # `full_universe` guard exists so this cannot silently overwrite a
     # previously-correct universe-wide `cofire_count` (see its docstring).
     full_universe = tickers is None
-
-    from dataclasses import asdict
 
     run_params = {
         "config_hash": chash,
