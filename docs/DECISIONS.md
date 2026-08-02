@@ -331,6 +331,8 @@ Rationale. Picking names in 2026 knowing their outcome measures whether those na
 
 Role. The 200-day SMA and its slope are a health filter, not a signal component. Bollinger and Stochastic generate the entry. The filter decides which names are eligible.
 
+Note, 2026-08-02. The market-cap criterion's threshold moved from $200B nominal to $100B nominal (`core.config.UniverseParams.min_mcap_usd`, Session 9 config-thresholds task, user's decision). CPI deflation was considered and rejected as the mechanism: deflation factors across the ingest window span only 0.677 (2010) to 1.000 (2025), a 47% move, far short of the 2x change made here. The actual motivation is candidate-pool size: in 2010, 23 tickers already cleared $100B nominal and 6 cleared $200B, yet `in_trade` was zero for the entire universe that year regardless, because `is_tradeable` requires all four criteria in `required_criteria` and the SMA-200 / slope / relative-return conditions were the binding ones, not market cap. Widening the threshold widens the candidate pool; it does not, by itself, fix the historical emptiness this note describes. This changes `config_hash` for every `Config` (ADR 060) since `UniverseParams` is a field of it.
+
 ---
 
 ## 015. Drawdown from 52-week high is a first-class dimension

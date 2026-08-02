@@ -78,7 +78,29 @@ class CostParams:
 
 @dataclass(frozen=True)
 class UniverseParams:
-    min_mcap_usd: float = 200e9
+    # ADR 014 pins $200B nominal as the mega-cap threshold. Session 9
+    # config-thresholds task (user's decision, 2026-08-02) lowers this to
+    # $100B nominal — see the dated note appended to ADR 014 in
+    # `docs/DECISIONS.md`. This is a genuine change to the pinned decision,
+    # not an interpretation of it, and is recorded there rather than left
+    # implicit here.
+    #
+    # CPI deflation of the original $200B was considered and rejected as
+    # the mechanism: deflation factors across the ingest window span only
+    # 0.677 (2010) to 1.000 (2025), a 47% move, nowhere near enough to
+    # explain widening from $200B to $100B. The real motivation is
+    # candidate-pool size: in 2010, 23 tickers already cleared $100B
+    # nominal and 6 cleared $200B, yet `in_trade` was still zero for the
+    # whole universe that year, because `is_tradeable` requires all four
+    # ADR 014 criteria in `required_criteria` below, and the SMA-200 /
+    # slope / relative-return conditions were the binding ones, not market
+    # cap. Widening this threshold widens the candidate pool; it is not
+    # claimed to fix that historical emptiness by itself.
+    #
+    # This value changes `config_hash` for every `Config` (ADR 060: a
+    # different universe threshold is genuinely a different config). Report
+    # the new hash prominently — a Postgres GUC is set from it.
+    min_mcap_usd: float = 100e9
     min_price: float = 1.0
     rel_return_lookback_days: int = 756  # 3 years
     rebalance_freq: str = "Q"
@@ -232,23 +254,50 @@ class SharesPlausibility:
     keeps clearance for a legitimately low-float name without weakening the
     guard against any bad value actually observed.
 
-    **`max_shares`.** Set from the highest genuine share count on file:
-    Citigroup pre-2011-reverse-split, ~29.2 billion (2011-05-05 filing).
-    32 billion gives that roughly 10% headroom. The next value up on file
-    is a confirmed-bad one — Alaska Air's three 2011 filings at ~35.8-36
-    billion, which are its real ~35.8 million shares with three extra
-    zeros — so 32 billion also sits comfortably (~12%) below the lowest
-    confirmed-bad value found.
+    **`max_shares`.** Originally set from the highest genuine share count on
+    file, Citigroup pre-2011-reverse-split at ~29.2 billion (2011-05-05
+    filing), with the ceiling at 32 billion for roughly 10% headroom above
+    it. Review finding (Session 9, config-thresholds task) rejected that
+    number: 32B sits only ~10% above a *live, current* count — Citigroup's
+    own 2026 count is still ~29.2B, TSM is ~25.9B, and NVDA is ~24.5B
+    post its 2024 10:1 split. A single ordinary 2:1 split on any of those
+    three real constituents produces a genuine filing above 32B, and the
+    old ceiling rejected it permanently: `run_shares` never retries a
+    rejected accession, so once a real filing sits outside the band, every
+    later filing for that ticker is rejected too, and the ticker is frozen
+    at its last-accepted share count forever, silently.
+    **The ceiling is now 320 billion** — 10x the old value, chosen so a
+    10:1 split on today's largest issuer (Citigroup, ~29.2B) still clears
+    with room (292B, well inside 320B), not just a 2:1. `min_shares` is
+    untouched: every real value on file is orders of magnitude above it and
+    every bad value found sits far below it, so the floor is sound and the
+    review confirmed no change is warranted there.
 
-    **Known limit, stated plainly.** These two numbers are close together
-    (32B sits between 29.2B genuine and 35.8B corrupted) because a x1,000
-    filer error on a company whose real share count is in the tens of
-    millions lands in the same absolute neighborhood as a genuine mega-cap's
-    real count in the billions — the corruption factor and the market's own
-    genuine range overlap at that boundary. A hypothetical x1,000 error on
-    a ~15-20 million-share company (15-20 billion after corruption) would
-    NOT be caught by `max_shares` alone; nothing in the 73k-row scan found
-    an instance of that shape, but the guard cannot rule one out structurally.
+    **Known limit, stated plainly — the direction this project already
+    knew about.** A x1,000 filer error on a company whose real share count
+    is in the tens of millions lands in the same absolute neighborhood as a
+    genuine mega-cap's real count in the billions, so `max_shares` alone
+    cannot always distinguish the two. Moving the ceiling to 320B widens
+    this gap: a x1,000 error on a company with real shares in the tens of
+    *millions* (tens of billions after corruption, e.g. 15-20M real shares
+    corrupted to 15-20B) now lands comfortably inside `[min_shares,
+    max_shares]` and is accepted undetected, whereas at the old 32B ceiling
+    only errors on companies with real shares up to ~32M would have cleared
+    undetected. Nothing in the 73k-row scan found an instance of this
+    shape at either ceiling, but the guard cannot rule one out structurally,
+    and moving the ceiling up makes the blind spot wider, not narrower.
+
+    **The asymmetry that justifies this anyway.** Rejecting good data is
+    worse than admitting bad data here. A bad share count surfaces
+    downstream as an absurd market cap — that is exactly how the original
+    32B-ceiling defect was found (`docs/DECISIONS.md`, the ADR-mcap-outlier
+    diagnosis). A rejected genuine filing is invisible: nothing downstream
+    can detect a filing that was never stored, and the ticker silently
+    stops updating rather than throwing a loud, greppable market-cap
+    outlier. Given a choice between a rare, structurally-undetectable bad
+    value slipping through and a real ticker going permanently stale with
+    no error, this guard is deliberately tuned toward the former.
+
     `min_shares` has no equivalent gap: every real value is orders of
     magnitude above it and every bad value found sits far below it, with the
     sole exception of two BRK-B 2009-2010 filings (1,103,764 and 1,056,884)
@@ -266,7 +315,7 @@ class SharesPlausibility:
     """
 
     min_shares: int = 1_000_000
-    max_shares: int = 32_000_000_000
+    max_shares: int = 320_000_000_000
 
 
 DEFAULT_SHARES_PLAUSIBILITY = SharesPlausibility()

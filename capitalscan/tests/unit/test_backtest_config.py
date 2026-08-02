@@ -14,7 +14,7 @@ from datetime import date
 
 import pytest
 
-from capitalscan.core.config import Config, SplitParams
+from capitalscan.core.config import Config, SplitParams, UniverseParams
 from capitalscan.research.backtest import BacktestConfig, config_hash, split_key_for
 
 
@@ -36,6 +36,15 @@ class TestConfigHashReexport:
 
     def test_reexported_hash_still_works(self):
         assert config_hash(Config()) == config_hash(Config())
+
+
+class TestUniverseMinMcapThreshold:
+    def test_default_min_mcap_usd_is_100_billion(self):
+        """Session 9 config-thresholds task, Change 2 (user's decision):
+        ADR 014's mega-cap threshold moves from a fixed $200B nominal to
+        $100B nominal, widening the candidate pool. See `UniverseParams`'s
+        docstring and `docs/DECISIONS.md` ADR 014's dated note for why."""
+        assert UniverseParams().min_mcap_usd == 100e9
 
 
 class TestSplitKeyFor:

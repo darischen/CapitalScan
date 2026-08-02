@@ -93,9 +93,20 @@ def test_default_bounds_bracket_the_confirmed_genuine_and_bad_extremes():
     assert bounds.min_shares < 29_206_440_560 < bounds.max_shares
     # PSKY's one confirmed-genuine filing.
     assert bounds.min_shares < 1_071_666_977 < bounds.max_shares
-    # Confirmed-bad: ORCL x1e6, Alaska Air x1e3.
+    # A 10:1 split on today's largest issuer (Citigroup, ~29.2B) still
+    # clears the ceiling (Change 1, Session 9 config-thresholds task): the
+    # old 32B ceiling sat only ~10% above a *live* count and would reject a
+    # single genuine 2:1 split on Citigroup, TSM, or NVDA. 320B leaves room
+    # above even a 10:1 split (292B).
+    assert 292_000_000_000 < bounds.max_shares
+    # Confirmed-bad: ORCL x1e6 is still caught at the new ceiling.
     assert 4_819_056_000_000_000 > bounds.max_shares
-    assert 35_828_450_000 > bounds.max_shares
+    # Confirmed-bad: Alaska Air x1e3 (~35.8B) is NO LONGER caught by
+    # max_shares alone at the raised ceiling — see
+    # test_alk_1e3_scaled_filing_is_no_longer_caught_by_raised_ceiling and
+    # SharesPlausibility's docstring ("Known limit, stated plainly") for
+    # why this is an accepted, documented cost of Change 1.
+    assert 35_828_450_000 < bounds.max_shares
     # Confirmed-bad: PSKY's two placeholder-shaped rows.
     assert 1_000 < bounds.min_shares
 
@@ -131,11 +142,25 @@ def test_a_1e6_scaled_filing_is_rejected_and_logged(monkeypatch, upserted, rejec
     assert report.rows_rejected == 1
 
 
-# ============ 2. a x1,000 filing is rejected and logged ============
+# ============ 2. a x1,000 filing is no longer rejected (Change 1 tradeoff) ============
 
 
-def test_a_1e3_scaled_filing_is_rejected_and_logged(monkeypatch, upserted, rejected):
-    """Alaska Air's real 2011 shape: ~35.8M shares reported as ~35.8B."""
+def test_alk_1e3_scaled_filing_is_no_longer_caught_by_raised_ceiling(
+    monkeypatch, upserted, rejected
+):
+    """Alaska Air's real 2011 shape: ~35.8M shares reported as ~35.8B.
+
+    Before Change 1 (Session 9 config-thresholds task) this was rejected by
+    the 32B ceiling. Change 1 raised the ceiling to 320B so a genuine 2:1 or
+    even 10:1 split on Citigroup/TSM/NVDA is never permanently rejected
+    (see `SharesPlausibility`'s docstring). That widened ceiling has a
+    documented cost: a x1,000 filer error on a company whose real share
+    count is in the tens of millions, exactly ALK's shape, now lands inside
+    `[min_shares, max_shares]` and is accepted rather than rejected. This
+    test pins that known, accepted tradeoff rather than silently losing
+    coverage of it — do not "fix" this test by shrinking max_shares back
+    down; that reintroduces the frozen-ticker defect Change 1 exists to fix.
+    """
     _stub(
         monkeypatch,
         pd.DataFrame({"ticker": ["ALK"], "cik": [766421]}),
@@ -153,11 +178,10 @@ def test_a_1e3_scaled_filing_is_rejected_and_logged(monkeypatch, upserted, rejec
 
     report = ingest.run_shares(["ALK"], engine=_FakeEngine())
 
-    assert upserted == []
-    assert len(rejected) == 1
-    assert rejected[0]["rule"] == "shares_above_plausible_ceiling"
-    assert rejected[0]["payload"]["shares"] == 35831543000
-    assert report.rows_rejected == 1
+    assert rejected == []
+    assert len(upserted) == 1
+    assert upserted[0]["shares"] == 35831543000
+    assert report.rows_rejected == 0
 
 
 # ============ 3. an implausibly small filing is rejected (the PSKY shape) ============
@@ -256,6 +280,40 @@ def test_a_legitimate_10_for_1_split_jump_is_accepted(monkeypatch, upserted, rej
 
     assert rejected == []
     assert sorted(r["shares"] for r in upserted) == [2494000000, 24530000000]
+    assert report.rows_rejected == 0
+
+
+# ============ 4b. a post-2:1-split Citigroup-scale count is accepted ============
+
+
+def test_a_post_2_for_1_split_citigroup_scale_count_is_accepted(monkeypatch, upserted, rejected):
+    """Review finding (Change 1): the ceiling used to sit at 32B, only ~10%
+    above Citigroup's real 29.2B pre-2011-reverse-split count. A single 2:1
+    split on Citigroup, TSM, or NVDA today produces a genuine filing above
+    32B that the old ceiling rejected permanently, with no fallback and no
+    error. This filing (~58.4B, Citigroup's 29,206,440,560 doubled by a
+    hypothetical forward split) must clear the raised ceiling.
+    """
+    _stub(
+        monkeypatch,
+        pd.DataFrame({"ticker": ["C"], "cik": [831001]}),
+        {
+            831001: pd.DataFrame(
+                {
+                    "filed_on": ["2026-06-01"],
+                    "end": ["2026-03-31"],
+                    "value": [58412881120],
+                    "accn": ["0000831001-26-000001"],
+                }
+            )
+        },
+    )
+
+    report = ingest.run_shares(["C"], engine=_FakeEngine())
+
+    assert rejected == []
+    assert len(upserted) == 1
+    assert upserted[0]["shares"] == 58412881120
     assert report.rows_rejected == 0
 
 

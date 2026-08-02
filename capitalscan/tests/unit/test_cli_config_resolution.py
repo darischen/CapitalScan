@@ -70,8 +70,13 @@ def _toml(tmp_path, body: str) -> str:
 
 def test_default_config_hash_is_pinned():
     """This value is tracked by the human partner to set a Postgres GUC.
-    Wiring the resolver in must not move it."""
-    assert config_hash(Config()) == "22df3117b890793b"
+    Wiring the resolver in must not move it.
+
+    Updated in the Session 9 config-thresholds task: `UniverseParams.
+    min_mcap_usd` moved 200e9 -> 100e9 (Change 2, user's decision), which
+    is a field of `Config` and therefore genuinely moves `config_hash`
+    (ADR 060). Old value: `22df3117b890793b`. New value: `3e598c59e7d71eae`."""
+    assert config_hash(Config()) == "3e598c59e7d71eae"
 
 
 # ---------------------------------------------------------------------------
