@@ -313,6 +313,61 @@ class TestReturnIdentity:
         assert not report.return_identity.passed
         assert report.return_identity.violations[0]["reason"] == "gross_ret_mismatch"
 
+    def test_numeric_12_4_rounding_noise_at_a_low_entry_price_does_not_violate(self):
+        """harness-gate-diagnosis.md's worst observed row from the live
+        config_hash=3e598c59e7d71eae run: AAPL, next_open,
+        entry_price=6.8817, exit_price=7.1569, stored gross_ret=0.040000.
+        `entry_price`/`exit_price` are `numeric(12,4)` — already-rounded
+        when the harness reads them back off Postgres — so recomputing
+        `gross_ret` from them cannot reproduce the engine's own float64
+        computation to `1e-9`; the diagnosis measured this exact row's
+        diff at 9.881e-6. A flat `1e-9` tolerance is structurally
+        unsatisfiable here even though nothing is wrong with the data —
+        this is real rounding noise from the schema's own storage
+        precision, not an engine defect."""
+        from capitalscan.core.returns import realized_return
+
+        entry_price, exit_price = 6.8817, 7.1569
+        events = _events(
+            [
+                _event_row(
+                    entry_price=entry_price,
+                    exit_price=exit_price,
+                    gross_ret=0.04,  # numeric(12,6): the stored, independently-rounded value
+                )
+            ]
+        )
+
+        report = run_harness(events, {}, CONFIG)
+
+        assert report.return_identity.passed, report.return_identity.violations
+
+    def test_a_diff_larger_than_the_derived_tolerance_is_still_a_violation(self):
+        """The derived tolerance must not be so loose it stops catching a
+        genuine return-computation error. At `entry_price=6.8817` the
+        derived bound is roughly 1.5e-5 (see `_return_tolerance`'s
+        docstring); a stored `gross_ret` off by 5e-5 — more than 3x that
+        bound — is a real discrepancy the check must still flag, not
+        rounding noise it should now wave through."""
+        from capitalscan.core.returns import realized_return
+
+        entry_price, exit_price = 6.8817, 7.1569
+        recomputed = realized_return(entry_price, exit_price, Side.LONG)
+        events = _events(
+            [
+                _event_row(
+                    entry_price=entry_price,
+                    exit_price=exit_price,
+                    gross_ret=recomputed + 5e-5,
+                )
+            ]
+        )
+
+        report = run_harness(events, {}, CONFIG)
+
+        assert not report.return_identity.passed
+        assert report.return_identity.violations[0]["reason"] == "gross_ret_mismatch"
+
 
 # ---------------------------------------------------------------------------
 # Non-overlap
@@ -448,6 +503,68 @@ class TestNonOverlap:
 
         assert not report.non_overlap.passed
         assert report.non_overlap.violations[0]["reason"] == "cluster_head_windows_overlap"
+
+    def test_duplicate_entry_kind_rows_at_one_head_do_not_count_as_overlap(self):
+        """harness-gate-diagnosis.md: `events` grain is one row per
+        `(config_hash, ticker, signal_date, signal_type, entry_kind)` — one
+        signal produces four rows (`touch`, `touch_5m`, `touch_30m`,
+        `next_open`), all sharing `is_cluster_head`, `cluster_id`, and
+        `signal_date`. Without deduping across entry kinds before the gap
+        walk, four identical-date heads sort adjacently and produce 3
+        zero-gap "overlaps" per head that are actually the same signal
+        counted four times — exactly the 100%-artifact defect measured on
+        the live run (2128 head rows, 532 distinct head signals, 1596
+        surplus violations, precisely `3 * 532`).
+
+        This test would fail (report violations) if the dedupe were
+        removed: four entry-kind rows for ONE head, alone, must produce
+        zero violations. A second, genuinely separate head only 2 trading
+        bars later — well inside `max_hold_days=5` — must still be caught,
+        proving the dedupe does not also swallow real cross-cluster
+        overlaps."""
+        trading_days = {
+            date(2026, 1, d): (100.0, 101.0, 99.0, 100.5) for d in range(5, 12)
+        }
+        bars = {"TSM": _daily_bars("TSM", trading_days)}
+        head_one_kinds = [
+            _event_row(
+                signal_date=date(2026, 1, 5),
+                entry_kind=kind,
+                cluster_id=1,
+                is_cluster_head=True,
+            )
+            for kind in ("touch", "touch_5m", "touch_30m", "next_open")
+        ]
+        events = _events(head_one_kinds)
+
+        report = run_harness(events, bars, CONFIG)
+
+        assert report.non_overlap.passed
+        assert report.non_overlap.violations == []
+
+        # Now add a second, genuinely overlapping head 2 trading bars later
+        # (also duplicated across all four entry kinds, matching real data
+        # shape) — the dedupe must still catch this as exactly ONE
+        # violation, not zero (swallowed) and not three (undercounted).
+        head_two_kinds = [
+            _event_row(
+                signal_date=date(2026, 1, 7),
+                entry_kind=kind,
+                cluster_id=2,
+                is_cluster_head=True,
+            )
+            for kind in ("touch", "touch_5m", "touch_30m", "next_open")
+        ]
+        events_with_overlap = _events(head_one_kinds + head_two_kinds)
+
+        report_with_overlap = run_harness(events_with_overlap, bars, CONFIG)
+
+        assert not report_with_overlap.non_overlap.passed
+        assert len(report_with_overlap.non_overlap.violations) == 1
+        assert (
+            report_with_overlap.non_overlap.violations[0]["reason"]
+            == "cluster_head_windows_overlap"
+        )
 
     def test_a_ticker_with_heads_but_no_bar_data_is_a_violation_not_a_silent_skip(self):
         """Review Finding 2: a ticker with `is_cluster_head` events but no

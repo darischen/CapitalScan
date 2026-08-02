@@ -315,10 +315,72 @@ def _check_exit_sanity(
 # ---------------------------------------------------------------------------
 
 
+def _return_tolerance(entry_price: float, recomputed_gross_ret: float) -> float:
+    """Derived per-row tolerance for `_check_return_identity`, replacing
+    the flat `1e-9` DESIGN §5.10 originally specified — see
+    harness-gate-diagnosis.md §1 ("`return_identity`'s 1e-9 tolerance is
+    structurally unsatisfiable").
+
+    The harness never sees the engine's original float64 prices. It reads
+    `entry_price`/`exit_price` back off Postgres (`jobs/cli.py`'s
+    `_load_events_for_run`, a plain `SELECT *`), where they are stored as
+    `numeric(12,4)` — each independently rounded from the engine's
+    float64 value to the nearest $0.0001, an error `e_E`/`e_X` with
+    `|e_E|, |e_X| <= 5e-5`. `gross_ret` is `numeric(12,6)`, itself
+    independently rounded from the engine's float64
+    `(X_true-E_true)/E_true` to the nearest `1e-6`, error `|e_G| <= 5e-7`.
+    Recomputing `gross_ret` from the *already-rounded* `entry_price`/
+    `exit_price` and comparing it to the *separately, already-rounded*
+    stored `gross_ret` is diffing two independent roundings of two
+    different quantities, not one value re-derived from itself — `1e-9`
+    agreement between them is unsatisfiable by construction, not a signal
+    of anything wrong with the data.
+
+    Exact first-order error propagation, `E`/`X` the stored (rounded)
+    prices, `G_true = (X_true-E_true)/E_true` the engine's un-rounded
+    return:
+
+        G_recomp - G_true = (e_X - e_E)/(E+e_E) - G_true * e_E/(E+e_E)
+
+    `E+e_E` is replaced with `E` below (the correction is at most
+    `5e-5/E`, itself second-order against the terms it would adjust — at
+    this dataset's minimum `E` of $6.87 that is a ~7e-6 relative nudge on
+    terms already at the 1e-5 scale). Bounding each remaining term:
+
+        |G_recomp - G_true| <= (|e_X|+|e_E|)/E + |G_true|*|e_E|/E
+                             <= 1e-4/E + |G_true|*5e-5/E
+
+    Then `gross_ret`'s own independent rounding (`|e_G| <= 5e-7`) adds on
+    top, by the triangle inequality against the stored value:
+
+        tolerance(E, G) = 1e-4/E + |G|*5e-5/E + 5e-7
+
+    This differs from the diagnosis's suggested `1e-4/E + 5e-7`: that
+    version drops the `|G|*5e-5/E` term as second-order, which holds for
+    the *observed* data (G ~ 0.03-0.04 at the dataset's minimum entry
+    price, where the term is ~2.9e-7, under half the 5e-7 rounding
+    budget) but is not a bound that holds for every possible `G` — a
+    later run with a larger realized return at a low entry price could
+    make that term non-negligible. Keeping it costs nothing (it is
+    computed, not assumed away) and makes the bound a genuine one for any
+    `G`, rather than one calibrated to what today's run happens to
+    measure (CLAUDE.md invariant 9's spirit: a check must not be
+    calibrated to its own current output).
+
+    Verified against harness-gate-diagnosis.md's worst observed row
+    (AAPL, entry_price=6.8817, gross_ret=0.04, measured diff=9.881e-6):
+    this formula gives tolerance=1.532e-5, comfortably above the diff.
+    """
+    return 1e-4 / entry_price + abs(recomputed_gross_ret) * 5e-5 / entry_price + 5e-7
+
+
 def _check_return_identity(events: pd.DataFrame) -> CheckResult:
     """`gross_ret` recomputed from `(entry_price, exit_price, side)` via
     `core.returns.realized_return` — the one return implementation
-    (invariant 2) — must match the stored value to 1e-9.
+    (invariant 2) — must match the stored value to within `_return_tolerance`
+    (see its docstring for the derivation; DESIGN §5.10's original flat
+    `1e-9` cannot be satisfied by a value recomputed from `numeric(12,4)`
+    storage, per harness-gate-diagnosis.md §1).
 
     NaN handling (task brief: "decide how those are treated and justify
     it"): `realized_return` returns NaN whenever either price is NaN — the
@@ -341,7 +403,11 @@ def _check_return_identity(events: pd.DataFrame) -> CheckResult:
         reported_nan, recomputed_nan = pd.isna(reported), pd.isna(recomputed)
         if reported_nan and recomputed_nan:
             continue
-        if reported_nan != recomputed_nan or abs(float(reported) - float(recomputed)) >= 1e-9:
+        is_mismatch = reported_nan != recomputed_nan
+        if not is_mismatch:
+            tol = _return_tolerance(float(row["entry_price"]), float(recomputed))
+            is_mismatch = abs(float(reported) - float(recomputed)) >= tol
+        if is_mismatch:
             violations.append(
                 {
                     "ticker": row["ticker"],
@@ -409,6 +475,21 @@ def _check_non_overlap(
     while a subset of the input was never actually checked — the "a check
     that cannot fail" failure mode this task exists to prevent, just
     scoped to a subset of tickers instead of the whole check.
+
+    **Deduped to one row per `(ticker, side, signal_date)` before the gap
+    walk** (harness-gate-diagnosis.md §2). `events`' grain is one row per
+    `(config_hash, ticker, signal_date, signal_type, entry_kind)` — one
+    signal produces four rows (`touch`, `touch_5m`, `touch_30m`,
+    `next_open`), all sharing `is_cluster_head`, `cluster_id`, and
+    `signal_date`. Without the dedupe, four rows at the identical date
+    sort adjacently and the walk reports 3 zero-gap "overlaps" per head
+    that are the same signal counted four times, not a genuine
+    cross-cluster overlap — verified on the live run as a 100% artifact:
+    2128 head rows, 532 distinct head signals, exactly 1596 (= 3 x 532)
+    surplus violations, zero left over once deduped. This is the same
+    defect class as the `(ticker, side)` grouping fix above, one axis
+    over: the checker's grouping didn't match the contract of the thing
+    it's checking.
     """
     if events.empty:
         return CheckResult(
@@ -432,8 +513,14 @@ def _check_non_overlap(
             )
             continue
         dates = sorted(frame.index)
-        ordered = group.assign(_signal_date=group["signal_date"].map(_as_date)).sort_values(
-            "_signal_date"
+        # Dedupe across entry kinds before the walk (docstring above) — one
+        # row per distinct signal_date within this (ticker, side) group.
+        # Which of the (up to) four entry-kind rows survives is irrelevant
+        # past this point: only ticker/side/signal_date drive the gap test.
+        ordered = (
+            group.assign(_signal_date=group["signal_date"].map(_as_date))
+            .drop_duplicates(subset="_signal_date")
+            .sort_values("_signal_date")
         )
         prev_date: date | None = None
         for _, row in ordered.iterrows():
