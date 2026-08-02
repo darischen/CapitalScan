@@ -27,7 +27,7 @@ DEFECT 4 lives in `test_scan_indicator_lag.py`.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import pytest
@@ -234,3 +234,274 @@ def _no_op_run_job_factory(calls: list[str]):
         yield IngestReport(job=job, run_id="test-run")
 
     return _fake_run_job
+
+
+# ---------------------------------------------------------------------------
+# PERF: run_universe's O(n^2) query pattern (controller-added task)
+#
+# `_sector_median_return` is pure in `(sector, as_of, lookback_days)`, and
+# `_rel_return_756d` is pure in `(ticker, as_of, lookback_days)`. Within one
+# `run_universe` call both are constant-shaped: `as_of` and
+# `up.rel_return_lookback_days` never change across the ticker loop, and
+# `tickers.sector` is null for every row today, so every ticker takes the
+# same "median over ALL active tickers" fallback branch. Recomputing that
+# fallback (up to N `_rel_return_756d` queries) once per ticker is what made
+# a 620-ticker quarter cost ~385k queries. These tests pin the fix: same
+# answers, linear query count.
+# ---------------------------------------------------------------------------
+
+
+class TestRelReturnMemoization:
+    """`_rel_return_756d`'s optional `cache` kwarg must not change the
+    answer, must serve repeat `(ticker, as_of, lookback_days)` lookups
+    without re-querying, and must distinguish a cached `None` (a real
+    "insufficient history" answer) from "not yet cached".
+    """
+
+    def _engine_with_counter(self, rows_by_ticker: dict[str, list[tuple]]):
+        calls = {"n": 0}
+
+        class _Conn:
+            def execute(self, stmt, params=None):
+                calls["n"] += 1
+                ticker = params["ticker"]
+                data = rows_by_ticker.get(ticker, [])
+                n = params["n"]
+                return _Result(_BarRow(ts, px) for ts, px in data[:n])
+
+        class _Engine:
+            @contextmanager
+            def connect(self):
+                yield _Conn()
+
+        return _Engine(), calls
+
+    def test_cached_result_equals_uncached_result(self):
+        """The memoized path must be a pure speedup: identical answer."""
+        rows = {"AAPL": [(date(2026, 6, 30) - timedelta(days=i), 100.0 + i) for i in range(760)]}
+        as_of = date(2026, 6, 30)
+
+        engine_a, _ = self._engine_with_counter(rows)
+        uncached = compute._rel_return_756d(engine_a, "AAPL", as_of, 756)
+
+        engine_b, _ = self._engine_with_counter(rows)
+        cache: dict = {}
+        cached = compute._rel_return_756d(engine_b, "AAPL", as_of, 756, cache=cache)
+
+        assert cached == uncached
+        assert cached is not None
+
+    def test_second_call_with_same_key_does_not_requery(self):
+        rows = {"AAPL": [(date(2026, 6, 30) - timedelta(days=i), 100.0 + i) for i in range(760)]}
+        engine, calls = self._engine_with_counter(rows)
+        cache: dict = {}
+        as_of = date(2026, 6, 30)
+
+        first = compute._rel_return_756d(engine, "AAPL", as_of, 756, cache=cache)
+        assert calls["n"] == 1
+        second = compute._rel_return_756d(engine, "AAPL", as_of, 756, cache=cache)
+
+        assert calls["n"] == 1, "second lookup with an identical key must be served from cache"
+        assert second == first
+
+    def test_cached_none_is_not_requeried(self):
+        """A ticker with too little history returns None. That None is a
+        real, cacheable answer, not an absence -- a truthiness check on the
+        cache (`if cache.get(key):`) would wrongly requery every time.
+        """
+        rows = {"THIN": [(date(2026, 6, 30), 100.0)]}  # far short of 757 bars
+        engine, calls = self._engine_with_counter(rows)
+        cache: dict = {}
+        as_of = date(2026, 6, 30)
+
+        first = compute._rel_return_756d(engine, "THIN", as_of, 756, cache=cache)
+        assert first is None
+        assert calls["n"] == 1
+
+        second = compute._rel_return_756d(engine, "THIN", as_of, 756, cache=cache)
+        assert second is None
+        assert calls["n"] == 1, "a cached None must still short-circuit the query"
+
+    def test_different_as_of_is_a_different_cache_key(self):
+        """Omitting `as_of` from the key would serve a stale historical
+        answer to a different quarter -- the exact bug the task warns about.
+        """
+        rows = {
+            "AAPL": [(date(2026, 6, 30) - timedelta(days=i), 100.0 + i) for i in range(760)]
+        }
+        engine, calls = self._engine_with_counter(rows)
+        cache: dict = {}
+
+        compute._rel_return_756d(engine, "AAPL", date(2026, 6, 30), 756, cache=cache)
+        assert calls["n"] == 1
+        compute._rel_return_756d(engine, "AAPL", date(2026, 3, 31), 756, cache=cache)
+        assert calls["n"] == 2, "a different as_of must not be served from another quarter's entry"
+
+
+class _BarRow:
+    def __init__(self, ts, adj_close):
+        self.ts = ts
+        self.adj_close = adj_close
+        self.close = adj_close
+        self.volume = 1_000_000
+
+
+class TestSectorMedianMemoization:
+    def test_cached_result_equals_uncached_result(self):
+        active = ["AAPL", "MSFT", "GOOG"]
+        returns = {"AAPL": 0.1, "MSFT": 0.2, "GOOG": 0.3}
+        as_of = date(2026, 6, 30)
+
+        conn = _FakeConn(sector_peers=[], all_active=active)
+        engine = _FakeEngine(conn)
+
+        def fake_rel_return(engine, ticker, as_of, lookback, cache=None):
+            return returns[ticker]
+
+        import capitalscan.jobs.compute as compute_mod
+
+        orig = compute_mod._rel_return_756d
+        compute_mod._rel_return_756d = fake_rel_return
+        try:
+            uncached = compute._sector_median_return(engine, None, as_of, 756)
+            cached = compute._sector_median_return(engine, None, as_of, 756, cache={})
+        finally:
+            compute_mod._rel_return_756d = orig
+
+        assert cached == uncached
+
+    def test_second_call_with_same_key_does_not_requery_ticker_list(self, monkeypatch):
+        conn = _FakeConn(sector_peers=[], all_active=["AAPL", "MSFT", "GOOG"])
+        engine = _FakeEngine(conn)
+        monkeypatch.setattr(
+            compute,
+            "_rel_return_756d",
+            lambda engine, ticker, as_of, lookback, cache=None: {
+                "AAPL": 0.1,
+                "MSFT": 0.2,
+                "GOOG": 0.3,
+            }[ticker],
+        )
+        cache: dict = {}
+        as_of = date(2026, 6, 30)
+
+        first = compute._sector_median_return(engine, None, as_of, 756, cache=cache)
+        queries_after_first = len(conn.queries)
+        assert queries_after_first > 0
+        second = compute._sector_median_return(engine, None, as_of, 756, cache=cache)
+
+        assert len(conn.queries) == queries_after_first, "repeat call must not re-list tickers"
+        assert second == first
+
+
+class TestRunUniverseQueryCountIsLinear:
+    """The end-to-end regression: `run_universe` over N tickers must issue
+    O(N) queries for the rel-return / sector-median work, not O(N^2).
+
+    Before the fix, `_sector_median_return`'s "sector is None -> median over
+    all active tickers" fallback recomputed `_rel_return_756d` for every one
+    of the N tickers, on every one of the N iterations of `run_universe`'s
+    own loop -- N^2 `_rel_return_756d` queries just for that, plus another N
+    from the outer loop's own (redundant) `_rel_return_756d(ticker)` call.
+    """
+
+    def _make_fake_engine(self, tickers: list[str], lookback_days: int, as_of: date):
+        counts: dict[str, int] = {
+            "indicator": 0,
+            "ticker_meta": 0,
+            "shares": 0,
+            "rel_return": 0,
+            "adv_20d": 0,
+            "active_list": 0,
+        }
+        bar_history = [(as_of - timedelta(days=i), 100.0 + i) for i in range(lookback_days + 5)]
+
+        class _Conn:
+            def execute(self, stmt, params=None):
+                sql = str(stmt)
+                params = params or {}
+                if "FROM indicators i" in sql:
+                    counts["indicator"] += 1
+                    return _OneRow(close=100.0, sma_200=90.0, sma200_slope_60=0.05)
+                if "SELECT cik, sector FROM tickers WHERE ticker" in sql:
+                    counts["ticker_meta"] += 1
+                    return _OneRow(cik=None, sector=None)
+                if "FROM shares_outstanding" in sql:
+                    counts["shares"] += 1
+                    return _OneRow()
+                if "adj_close FROM bars" in sql:
+                    counts["rel_return"] += 1
+                    n = params["n"]
+                    return _Result(_BarRow(ts, px) for ts, px in bar_history[:n])
+                if "close, volume FROM bars" in sql:
+                    counts["adv_20d"] += 1
+                    return _Result(_BarRow(ts, px) for ts, px in bar_history[:20])
+                if "WHERE is_active" in sql:
+                    counts["active_list"] += 1
+                    return _Result(_Row(t) for t in tickers)
+                raise AssertionError(f"unexpected query: {sql}")
+
+        class _Engine:
+            @contextmanager
+            def connect(self):
+                yield _Conn()
+
+        return _Engine(), counts
+
+    def _run(self, monkeypatch, n_tickers: int):
+        from capitalscan.jobs.ingest import IngestReport
+
+        tickers = [f"T{i:04d}" for i in range(n_tickers)]
+        as_of = date(2026, 6, 30)
+        lookback = 756
+
+        @contextmanager
+        def fake_run_job(engine, job, params):
+            yield IngestReport(job=job, run_id="test-run")
+
+        monkeypatch.setattr(compute, "run_job", fake_run_job)
+        monkeypatch.setattr(compute.db_io, "upsert", lambda *a, **k: len(a[2]))
+
+        engine, counts = self._make_fake_engine(tickers, lookback, as_of)
+        up = UniverseParams(rel_return_lookback_days=lookback)
+        report = compute.run_universe(
+            "2026Q2", tickers=tickers, engine=engine, up=up, today=date(2026, 8, 1)
+        )
+        assert report.tickers == tickers
+        return counts
+
+    def test_query_counts_scale_linearly_not_quadratically(self, monkeypatch):
+        counts_10 = self._run(monkeypatch, 10)
+        counts_40 = self._run(monkeypatch, 40)
+
+        # Per-ticker helpers stay exactly N (unaffected by this fix).
+        assert counts_10["indicator"] == 10
+        assert counts_40["indicator"] == 40
+        assert counts_10["ticker_meta"] == 10
+        assert counts_40["ticker_meta"] == 40
+
+        # The memoized hot path: at most one active-ticker listing and at
+        # most N rel-return queries total, however many times
+        # `_sector_median_return` is invoked (once per ticker).
+        assert counts_10["active_list"] == 1
+        assert counts_40["active_list"] == 1
+        assert counts_10["rel_return"] <= 10
+        assert counts_40["rel_return"] <= 40
+
+        # The tell: quadrupling N (10 -> 40) must not quadruple (16x) the
+        # rel-return query count. It must stay linear (4x, i.e. <= 40).
+        assert counts_40["rel_return"] <= 4 * counts_10["rel_return"] + 4
+
+
+class _OneRow:
+    def __init__(self, **kw):
+        self._kw = kw
+
+    def __getattr__(self, name):
+        try:
+            return self._kw[name]
+        except KeyError as e:
+            raise AttributeError(name) from e
+
+    def one_or_none(self):
+        return self if self._kw else None

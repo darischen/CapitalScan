@@ -279,7 +279,28 @@ def _latest_shares(engine: Engine, ticker: str, as_of: date) -> float | None:
     return float(row.shares) if row is not None else None
 
 
-def _rel_return_756d(engine: Engine, ticker: str, as_of: date, lookback_days: int) -> float | None:
+def _rel_return_756d(
+    engine: Engine,
+    ticker: str,
+    as_of: date,
+    lookback_days: int,
+    cache: dict[tuple, float | None] | None = None,
+) -> float | None:
+    """Trailing return over `lookback_days` bars ending on or before `as_of`.
+
+    `cache`, when given, is an explicit call-scoped memo (perf task,
+    controller-added — see `run_universe`'s docstring for why it must not
+    outlive one call). The key is `(ticker, as_of, lookback_days)` — every
+    argument this function's answer actually depends on. `None` (too little
+    history) is a real, cacheable answer, so this checks membership
+    (`key in cache`) rather than truthiness, and stores `None` explicitly
+    rather than skipping the store.
+    """
+    if cache is not None:
+        key = (ticker, as_of, lookback_days)
+        if key in cache:
+            return cache[key]
+
     with engine.connect() as conn:
         rows = conn.execute(
             text(
@@ -289,11 +310,14 @@ def _rel_return_756d(engine: Engine, ticker: str, as_of: date, lookback_days: in
             {"ticker": ticker, "as_of": as_of, "n": lookback_days + 1},
         ).fetchall()
     if len(rows) < lookback_days + 1:
-        return None
-    latest, oldest = float(rows[0].adj_close), float(rows[-1].adj_close)
-    if oldest == 0:
-        return None
-    return latest / oldest - 1.0
+        result = None
+    else:
+        latest, oldest = float(rows[0].adj_close), float(rows[-1].adj_close)
+        result = None if oldest == 0 else latest / oldest - 1.0
+
+    if cache is not None:
+        cache[key] = result
+    return result
 
 
 def _adv_20d(engine: Engine, ticker: str, as_of: date) -> float | None:
@@ -334,7 +358,11 @@ def _revenue_growth_positive(
 
 
 def _sector_median_return(
-    engine: Engine, sector: str | None, as_of: date, lookback_days: int
+    engine: Engine,
+    sector: str | None,
+    as_of: date,
+    lookback_days: int,
+    cache: dict[tuple, Any] | None = None,
 ) -> tuple[float | None, bool]:
     """Median trailing return across tickers sharing `sector` at `as_of`.
 
@@ -350,7 +378,26 @@ def _sector_median_return(
     makes `crit_rel_return` resolve to a real True/False instead of always
     None; the "too few members" flag continues to mean the same thing it
     always did.
+
+    `cache`, when given, is the same call-scoped memo `_rel_return_756d`
+    takes (perf task, controller-added). This function is pure in
+    `(sector, as_of, lookback_days)` within one `run_universe` call, so the
+    `(median, used_fallback)` pair itself is memoized under
+    `("sector_median", sector, as_of, lookback_days)` — a 4-tuple tagged
+    with a literal, which can never collide with `_rel_return_756d`'s
+    3-tuple `(ticker, as_of, lookback_days)` keys even if a ticker symbol
+    happened to equal the tag string. The same `cache` is threaded into
+    every `_rel_return_756d(..., cache)` call below so a peer's return
+    computed here is reused by `run_universe`'s own per-ticker call, and by
+    every other ticker's identical fallback-branch median — this is what
+    collapses the O(n^2) query pattern (DESIGN §4.6's fallback iterates all
+    active tickers, once per caller, unmemoized).
     """
+    if cache is not None:
+        median_key = ("sector_median", sector, as_of, lookback_days)
+        if median_key in cache:
+            return cache[median_key]
+
     tickers: list[str] = []
     if sector is not None:
         with engine.connect() as conn:
@@ -365,15 +412,27 @@ def _sector_median_return(
             tickers = [
                 r.ticker for r in conn.execute(text("SELECT ticker FROM tickers WHERE is_active"))
             ]
-    returns = [
-        r for t in tickers if (r := _rel_return_756d(engine, t, as_of, lookback_days)) is not None
-    ]
+
+    def _peer_return(t: str) -> float | None:
+        # Only pass `cache` through when it was actually given, so a caller
+        # (or test) that monkeypatches `_rel_return_756d` with the old
+        # 4-argument shape keeps working unmodified.
+        if cache is not None:
+            return _rel_return_756d(engine, t, as_of, lookback_days, cache)
+        return _rel_return_756d(engine, t, as_of, lookback_days)
+
+    returns = [r for t in tickers if (r := _peer_return(t)) is not None]
     if not returns:
-        return None, fallback
-    returns.sort()
-    mid = len(returns) // 2
-    median = returns[mid] if len(returns) % 2 else (returns[mid - 1] + returns[mid]) / 2
-    return median, fallback
+        result = (None, fallback)
+    else:
+        returns.sort()
+        mid = len(returns) // 2
+        median = returns[mid] if len(returns) % 2 else (returns[mid - 1] + returns[mid]) / 2
+        result = (median, fallback)
+
+    if cache is not None:
+        cache[median_key] = result
+    return result
 
 
 class FutureQuarterError(ValueError):
@@ -475,6 +534,20 @@ def run_universe(
                     r[0] for r in conn.execute(text("SELECT ticker FROM tickers WHERE is_active"))
                 ]
 
+        # Call-scoped memo for `_rel_return_756d` / `_sector_median_return`.
+        # Both are pure in inputs that are constant across this loop
+        # (`as_of`, `up.rel_return_lookback_days`) or repeat heavily across
+        # it (`tickers.sector` is null for every row today, so every ticker
+        # takes the identical "median over all active tickers" fallback).
+        # A plain dict created here and threaded through by parameter -- not
+        # a module-level or `functools.lru_cache` -- so it lives exactly as
+        # long as this one call: it goes out of scope when `run_universe`
+        # returns, so a second call (a different quarter, a different
+        # `as_of`) starts with an empty cache and can never serve another
+        # quarter's stale answer, and a long-lived process (the scheduler)
+        # never accumulates entries across runs.
+        rel_return_cache: dict[tuple, Any] = {}
+
         rows = []
         for ticker in tickers:
             ind_row = _latest_indicator_row(engine, ticker, as_of)
@@ -495,9 +568,11 @@ def run_universe(
                 ticker, _latest_shares(engine, ticker, as_of), up
             )
             mcap = shares * float(ind_row["close"]) if shares is not None else None
-            rel_return = _rel_return_756d(engine, ticker, as_of, up.rel_return_lookback_days)
+            rel_return = _rel_return_756d(
+                engine, ticker, as_of, up.rel_return_lookback_days, rel_return_cache
+            )
             sector_median, _ = _sector_median_return(
-                engine, sector, as_of, up.rel_return_lookback_days
+                engine, sector, as_of, up.rel_return_lookback_days, rel_return_cache
             )
             rev_growth = _revenue_growth_positive(engine, ticker, cik, as_of)
             adv_20d = _adv_20d(engine, ticker, as_of)
