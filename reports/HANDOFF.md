@@ -48,38 +48,33 @@ earnings      176,398   483/607 tickers reach 2010
 shares         73,000+  sec_xbrl + yahoo_shares_full
 ```
 
-## THE ONE OPEN CORRECTNESS ISSUE — ADR market caps are wrong
+## ADR market caps — FIXED (`2c6725f`)
 
-Found at the very end of the session, not yet fixed, needs your decision.
+An ADR's Form 20-F reports **ordinary** shares while the bar price is per
+**ADR**. TSM filed 25,932,524,521 ordinary against 5,186,474,013 ADRs —
+exactly 5:1 — and priced to $12.4T against an actual ~$2.1T.
 
-SEC 20-F filings report **ordinary** shares; the bar price is per **ADR**.
-Multiplying them directly overstates market cap by the ADR ratio:
+Only one of the four was genuinely wrong, which is why the fix is narrow:
 
 ```
-        our DB (SEC)      yfinance (ADR-equiv)   ratio
-TSM     25,932,524,521     5,186,474,013         5.00
-ASML       385,417,665       384,100,000         1.00
-SAP      1,228,504,232     1,154,204,232         1.06
-NVO      4,421,895,520     3,347,023,520         1.32
+TSM   25,932,524,521 / 5,186,474,013 = 5.00   real ADR ratio
+ASML     385,417,665 /   384,100,000 = 1.00
+SAP    1,228,504,232 / 1,154,204,232 = 1.06   filing-date drift
+NVO    4,421,895,520 / 3,347,023,520 = 1.32   A+B share classes
 ```
 
-TSM computes to **$10.5T against an actual ~$2.1T**. NVO is 1.32x, consistent
-with Novo's A+B share classes where only the B shares underlie the ADR.
+SAP's 6% is filing timing. NVO's 1.32 is Novo's A and B classes, and
+yfinance's own `marketCap` agrees with the A+B total, so that number was
+already right. "Correct all four" would have broken three.
 
-Impact is bounded but real: TSM clears the $200B threshold either way, so
-`in_trade` is accidentally correct, but the stored `mcap_usd` and `mcap_rank`
-are wrong for these four tickers. Any analysis conditioning on market cap
-inherits that.
+`UniverseParams.adr_ordinary_per_adr` holds the ratio;
+`core.universe.adr_adjusted_shares` applies it. Absent tickers are 1:1.
+TSM is now $2,477B, ranked between AMZN and AVGO. `min_mkcp_200b.csv`
+regenerated.
 
-Not fixed because the obvious fix is not clean: yfinance's `get_shares_full`
-(what `run_shares` falls back to) and `.info["sharesOutstanding"]` **disagree
-for NVO**, so "prefer yfinance for ADRs" trades one wrong number for another.
-Options worth weighing: a per-ticker ADR-ratio constant in `core/config.py`
-(only four tickers, and ADR 035 caps the list); preferring `.info` for ADRs
-specifically; or excluding ADRs from `crit_mcap` and documenting it.
-
-`data/min_mkcp_200b.csv` was regenerated from the current universe and
-therefore carries the inflated TSM figure. Regenerate it after fixing.
+**Watch for:** ADR ratios can be revised, which would silently rescale every
+historical market cap. If one ever changes, the fix is a dated mapping, not
+editing the constant in place. Noted in the config comment.
 
 ## What changed today
 
@@ -145,6 +140,11 @@ output can never fail.
 6. **Single-source data.** Stooq is gone, so nothing independently
    cross-checks Yahoo. A keyed vendor (Alpha Vantage, Tiingo) would restore
    it if that matters later.
+7. **`events.mcap_usd`, `sector` and `cofire_count` are NULL across all
+   1,292,276 rows.** They are DESIGN §5.7 columns that `run_events` never
+   populates. Not a defect to chase — they belong to the backtest engine's
+   context-tagging and cofire post-pass (DESIGN §5.2 steps 11 and 13), which
+   are Session 9 tasks 8 and 9. Flagged so nobody rediscovers it as a bug.
 
 ## Lessons worth carrying
 
