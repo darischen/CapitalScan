@@ -28,6 +28,8 @@ bar's own date, looked up by date value, not by row position.
 
 from __future__ import annotations
 
+import bisect
+import hashlib
 from datetime import date
 from types import SimpleNamespace
 
@@ -232,3 +234,169 @@ def debounce(candidates: pd.DataFrame) -> pd.DataFrame:
         keep.loc[idx] = True
 
     return candidates.loc[keep].reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# tag_clusters
+# ---------------------------------------------------------------------------
+
+
+def _deterministic_cluster_id(*parts: object) -> int:
+    """A stable bigint from `parts` — reruns must produce the same
+    `cluster_id` for the same (ticker, side, cluster head), or a downstream
+    join across two runs would silently drift (ADR 060).
+
+    Same construction as `jobs/compute.py:_deterministic_id` (Ruling C5):
+    sha256 the pipe-joined parts, take the leading 60 bits. Not shared by
+    import — `compute.py` is a `jobs/` module with IO elsewhere in it, and
+    this one has to stay importable and callable with zero side effects for
+    the spawn worker rule (CLAUDE.md "Platform"); duplicating six lines is
+    cheaper than adding a cross-package dependency for them. Report to the
+    controller if a shared home is wanted later.
+    """
+    digest = hashlib.sha256("|".join(str(p) for p in parts).encode()).hexdigest()
+    return int(digest[:15], 16)  # 60 bits, comfortably inside bigint
+
+
+def _trading_bars_between(dates: list[date], start: date, end: date) -> int:
+    """Count of entries in the sorted, deduplicated `dates` that fall
+    strictly after `start` and up to and including `end`.
+
+    This is a bar count, not a calendar-day count (Ruling C5): the gap that
+    matters for clustering is "how many forward bars would a position from
+    `start` have been open," which is exactly what `ExitParams.max_hold_days`
+    measures, and a weekend or holiday between two signal dates does not
+    open or close a position. `bisect` gives an O(log n) lookup per event
+    rather than an O(n) scan of the ticker's whole date list; a backtest
+    with a mega-cap universe over a decade-plus window means this runs for
+    every event, so the asymptotics are the difference between a lookup and
+    a linear scan on the read-window's mega-cap ticker history.
+
+    `end <= start` (the head event itself, or a mis-ordered pair) returns 0
+    rather than a negative count.
+    """
+    if end <= start:
+        return 0
+    lo = bisect.bisect_right(dates, start)
+    hi = bisect.bisect_right(dates, end)
+    return hi - lo
+
+
+def _as_date(value: object) -> date:
+    """Same defensive Timestamp -> date coercion `apply_eligibility` and
+    `debounce` already do above — `signal_date` is a plain `date` when it
+    comes straight from `scan_candidates` (`core.signals._bar_date` returns
+    one), but nothing enforces that a caller building a candidates frame by
+    hand used the same type, and comparing a `date` to a `pandas.Timestamp`
+    either raises or silently returns a wrong answer depending on pandas
+    version.
+    """
+    if isinstance(value, pd.Timestamp):
+        return value.date()
+    return value
+
+
+def tag_clusters(
+    candidates: pd.DataFrame,
+    max_hold_days: int,
+    trading_dates: dict[str, list[date]],
+) -> pd.DataFrame:
+    """DESIGN §5.3, ADR 056. Overlapping events on one ticker are tagged,
+    never suppressed, so a later question like "does the second touch in a
+    run outperform the first?" stays answerable. Primary statistics filter
+    `is_cluster_head = true` for a clean, non-overlapping sample; secondary
+    statistics use every row.
+
+    Adds four columns without mutating `candidates` (CLAUDE.md "Never
+    mutate in place, always return a new object"): `cluster_id` (a
+    deterministic hash of `(ticker, side, head_date)`, not a row counter —
+    ADR 060 requires reruns to reproduce identical ids), `seq_in_cluster`
+    (1-based position within the cluster), `is_cluster_head` (true only for
+    seq 1), and `days_since_head` (trading bars since the cluster's first
+    event, 0 for the head itself).
+
+    Clusters key on `(ticker, side)`, matching the shipped v1 tagger at
+    `jobs/compute.py:_tag_clusters` (compute.py:552-556) — a long cluster
+    and a short cluster on one ticker are different positions and must
+    never merge, even on identical dates. Two different tickers never
+    share a cluster regardless of side or date, because `ticker` is part
+    of both the grouping key and the `cluster_id` hash input.
+
+    **Divergence from `jobs/compute.py:_tag_clusters` (Ruling C5, session 9
+    task 4).** That function's gap test and its `days_since_head` are both
+    calendar days (`compute.py:559,569`, `(event["signal_date"] -
+    prev["last_date"]).days`). This function measures both in trading bars
+    instead, because `ExitParams.max_hold_days` counts forward *bars*, and
+    a calendar-day gap test silently shrinks across a weekend — 5 calendar
+    days spanning a weekend is only 3 trading bars, so the v1 tagger would
+    close a cluster the backtest's own exit horizon says is still open. The
+    two jobs will therefore disagree on cluster boundaries for the same
+    events until a later task gives cluster tagging a single writer at the
+    database layer (the controller has already ruled this function owns
+    the columns for the backtest; `compute.py` is intentionally left
+    unchanged here).
+
+    `trading_dates` maps each ticker to its sorted, deduplicated trading
+    dates — the set the gap is measured against. It is a parameter, not a
+    calendar table this function looks up itself, because `core/`'s "no
+    IO" rule (invariant 1) extends here by convention: this module owns IO
+    for the rest of `research/`, but this one function is kept pure and
+    directly unit-testable with plain dicts, and the caller already has
+    the bars frame in hand (build it once with e.g.
+    `bars.groupby("ticker")["ts"].apply(lambda s: sorted(s.dt.date.unique()))`
+    and pass the same dict across a whole run rather than re-deriving it
+    per call).
+    """
+    if candidates.empty:
+        out = candidates.copy()
+        out["cluster_id"] = pd.Series(dtype="int64")
+        out["seq_in_cluster"] = pd.Series(dtype="int64")
+        out["is_cluster_head"] = pd.Series(dtype="bool")
+        out["days_since_head"] = pd.Series(dtype="int64")
+        return out
+
+    # One sorted date list per ticker actually present, built once rather
+    # than per event — see `_trading_bars_between`'s docstring on why the
+    # per-event lookup needs to be O(log n), not O(n).
+    sorted_dates: dict[str, list[date]] = {
+        ticker: sorted(set(trading_dates.get(ticker, [])))
+        for ticker in candidates["ticker"].unique()
+    }
+
+    working = candidates.copy()
+    working["_signal_date_norm"] = working["signal_date"].map(_as_date)
+
+    cluster_id_col: list[int] = [0] * len(working)
+    seq_col: list[int] = [0] * len(working)
+    head_col: list[bool] = [False] * len(working)
+    days_col: list[int] = [0] * len(working)
+
+    # (ticker, side) keying, matching compute.py:552-556 (Ruling C5) — never
+    # ticker alone, or a long cluster and a short cluster on one ticker
+    # would merge into one position.
+    for (ticker, side), group in working.groupby(["ticker", "side"], sort=False):
+        dates = sorted_dates.get(ticker, [])
+        ordered = group.sort_values("_signal_date_norm")
+
+        head_date: date | None = None
+        seq = 0
+        for idx, signal_date in ordered["_signal_date_norm"].items():
+            gap = None if head_date is None else _trading_bars_between(dates, head_date, signal_date)
+            if head_date is None or gap > max_hold_days:
+                head_date = signal_date
+                seq = 1
+            else:
+                seq += 1
+
+            pos = working.index.get_loc(idx)
+            cluster_id_col[pos] = _deterministic_cluster_id(ticker, side, head_date)
+            seq_col[pos] = seq
+            head_col[pos] = seq == 1
+            days_col[pos] = _trading_bars_between(dates, head_date, signal_date)
+
+    out = candidates.copy()
+    out["cluster_id"] = cluster_id_col
+    out["seq_in_cluster"] = seq_col
+    out["is_cluster_head"] = head_col
+    out["days_since_head"] = days_col
+    return out
