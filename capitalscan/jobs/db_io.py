@@ -77,13 +77,32 @@ def upsert(
     table_name: str,
     data: list[dict] | pd.DataFrame,
     conflict_cols: list[str],
+    update_columns: list[str] | None = None,
 ) -> int:
     """`INSERT ... ON CONFLICT (conflict_cols) DO UPDATE`. Returns rows sent.
 
-    Every non-key column is overwritten with the new value — "keep latest
-    fetch" (DESIGN §2.3's duplicate-row rule) is the only policy used
-    anywhere in this system, so there is no per-column merge strategy to
-    configure.
+    By default (`update_columns=None`), every non-key column is overwritten
+    with the new value — "keep latest fetch" (DESIGN §2.3's duplicate-row
+    rule) is the policy every existing caller (`run_indicators`,
+    `run_universe`, the ingest jobs, and `run_events` before Session 9) uses,
+    and that default is unchanged: this branch runs the exact same
+    dict-comprehension it always did.
+
+    `update_columns`, when given, narrows `DO UPDATE SET` to exactly that
+    list (Ruling C4). This exists because `events` gets written by two jobs
+    that share a natural key but compute disjoint columns — `run_events`
+    (signal-side) and `run_backtest` (exit-side, Task 9b). Postgres fills
+    any column absent from the INSERT's VALUES with NULL before `EXCLUDED`
+    ever sees it, so an unscoped update from a row dict that only carries
+    half the columns silently nulls the other half on every conflict. A
+    column-scoped update is how each job avoids nulling the other's work.
+
+    A name in `update_columns` that is not a real column, or that is itself
+    one of `conflict_cols`, raises `ValueError` rather than being ignored.
+    Silently dropping an unrecognized column is exactly the failure mode
+    this function exists to close off — a typo would produce the same
+    silent-NULL defect this whole feature was added to fix, just one layer
+    up.
 
     Inserts in batches of 1,000 rows to avoid exceeding Postgres parameter limits.
     """
@@ -91,15 +110,29 @@ def upsert(
     if not rows:
         return 0
     table = _table(engine, table_name)
+
+    if update_columns is not None:
+        table_col_names = {c.name for c in table.columns}
+        invalid = [c for c in update_columns if c not in table_col_names or c in conflict_cols]
+        if invalid:
+            raise ValueError(
+                f"update_columns for {table_name!r} contains invalid entries {invalid!r}: "
+                "each name must be a real column on the table and must not be one of "
+                f"conflict_cols {conflict_cols!r}"
+            )
+
     batch_size = 1000
     total_inserted = 0
 
     for i in range(0, len(rows), batch_size):
         batch = rows[i : i + batch_size]
         stmt = pg_insert(table).values(batch)
-        update_cols = {
-            c.name: stmt.excluded[c.name] for c in table.columns if c.name not in conflict_cols
-        }
+        target_cols = (
+            update_columns
+            if update_columns is not None
+            else [c.name for c in table.columns if c.name not in conflict_cols]
+        )
+        update_cols = {c: stmt.excluded[c] for c in target_cols}
         stmt = stmt.on_conflict_do_update(index_elements=conflict_cols, set_=update_cols)
         with engine.begin() as conn:
             conn.execute(stmt)

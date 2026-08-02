@@ -10,14 +10,17 @@ per invariant 5). Every exit/return column is left null; session 9 fills
 them in on the same row via the `(config_hash, ticker, signal_date,
 signal_type, entry_kind)` key.
 
-**Known gap, to close in session 9's upsert path.** `jobs.db_io.upsert`
-overwrites every non-key column with `EXCLUDED`, including columns a row
+**Closed in Session 9 Task 9a (Ruling C4).** `jobs.db_io.upsert` used to
+overwrite every non-key column with `EXCLUDED`, including columns a row
 dict omits (Postgres fills those as NULL before `EXCLUDED` sees them). A
-plain re-run of `run_events` is safe — it always sends the same columns —
-but session 9 writing entry/exit columns onto a row this job already wrote
-must not go through this same blind upsert, or it will null out session
-9's own columns on any later `run_events` re-run. Session 9 needs an
-upsert that only sets the columns it actually computed.
+plain re-run of `run_events` was always safe on its own — it always sends
+the same columns — but the backtest (`research/backtest.py`, Task 9b)
+writing entry/exit columns onto a row this job already wrote could not go
+through that same blind upsert without nulling its own columns on the next
+`run_events` re-run. `db_io.upsert` now takes an optional `update_columns`
+list; `run_events` passes `_RUN_EVENTS_UPDATE_COLUMNS` (declared just above
+`_build_event_row`), which is scoped to the signal-side columns this job
+actually computes.
 """
 
 from __future__ import annotations
@@ -621,18 +624,54 @@ def _read_universe_flags(engine: Engine, tickers: list[str]) -> pd.DataFrame:
         )
 
 
-def _in_trade(universe_flags: pd.DataFrame, ticker: str, signal_date: date) -> bool:
-    """True when no universe evaluation exists yet (v1 simplification, so
-    `run_events` works before `run_universe` has ever run — see the module
-    docstring), or when the most recent evaluation on or before
-    `signal_date` says so.
-    """
-    rows = universe_flags.loc[
-        (universe_flags["ticker"] == ticker) & (universe_flags["as_of"] <= signal_date)
-    ]
-    if rows.empty:
-        return True
-    return bool(rows.sort_values("as_of").iloc[-1]["in_trade"])
+# `events` column ownership for `db_io.upsert`'s `update_columns` (Ruling
+# C4). `run_events` (this module) and `run_backtest` (research/backtest.py,
+# Task 9b) both write onto the same `(config_hash, ticker, signal_date,
+# signal_type, entry_kind)` row. Each names only the columns it computes so
+# a re-run of one job never nulls the other's columns by omission.
+#
+# Cluster columns are owned exclusively by the backtest (Ruling C5):
+# `research.candidates.tag_clusters` counts trading bars while
+# `_tag_clusters` below counts calendar days, and the two disagree on
+# cluster boundaries. `_tag_clusters` still populates these on every row
+# dict here so a brand-new event (INSERT, not UPDATE) is never missing
+# them, but they are deliberately absent from `_RUN_EVENTS_UPDATE_COLUMNS`
+# below — once the backtest has written a row, a plain `run_events` re-run
+# must leave its cluster columns alone.
+_CLUSTER_COLUMNS = ["cluster_id", "seq_in_cluster", "is_cluster_head", "days_since_head"]
+
+# The signal-detection columns `_build_event_row` computes, i.e. everything
+# `run_events` actually knows how to fill in. `run_id` is included even
+# though `run_backtest` also writes it: Ruling C4 keeps `run_id` writable by
+# both jobs, since each row should record whichever run last touched it.
+_RUN_EVENTS_UPDATE_COLUMNS = [
+    "run_id",
+    "signal_types_all",
+    "signal_strength",
+    "side",
+    "touch_level",
+    "bb_pctb",
+    "bb_width_pct",
+    "k_full",
+    "d_full",
+    "k_fast",
+    "k_cross_up",
+    "k_cross_down",
+    "atr_14",
+    "rv_pct_252d",
+    "dd_52w",
+    "sma200_slope_60",
+    "above_sma200",
+    "vol_z_20d",
+    "days_to_earnings",
+    "vix_close",
+    "spx_ret_1d",
+    "dd_bucket",
+    "entry_date",
+    "entry_price",
+    "entry_gapped",
+    "split_key",
+]
 
 
 def _build_event_row(
@@ -742,7 +781,7 @@ def run_events(
                     skipped_null += 1
                     continue
                 # Step 3: skip if not in the trade universe.
-                if not _in_trade(universe_flags, ticker, bar_date):
+                if not core_universe.in_trade(universe_flags, ticker, bar_date):
                     continue
 
                 for hit in core_signals.detect(bar, prior_ind, sp):
@@ -763,6 +802,7 @@ def run_events(
                 "events",
                 clustered,
                 ["config_hash", "ticker", "signal_date", "signal_type", "entry_kind"],
+                update_columns=_RUN_EVENTS_UPDATE_COLUMNS,
             )
         report.rows_flagged = skipped_null
         report.tickers = sorted({row["ticker"] for row in clustered})

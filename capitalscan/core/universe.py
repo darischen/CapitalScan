@@ -18,6 +18,8 @@ never sees a clock; the caller supplies the as-of row.
 
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 
 from capitalscan.core.config import UniverseParams
@@ -92,6 +94,34 @@ def evaluate_criteria(
         "crit_rel_return": _cmp(ind_row.get("rel_return_756d"), sector_median_return),
         "crit_rev_growth": rev_growth_positive,
     }
+
+
+def in_trade(universe_flags: pd.DataFrame, ticker: str, signal_date: date) -> bool:
+    """Whether `ticker` is in the trade universe as of `signal_date`.
+
+    True when no universe evaluation exists yet for that ticker on or
+    before `signal_date` — the v1 fail-open simplification, so a caller
+    (`jobs.compute.run_events`) works before `jobs.compute.run_universe` has
+    ever run for a name. Otherwise, the most recent evaluation on or before
+    `signal_date` decides.
+
+    This is the single home for what used to be two identical copies —
+    `jobs/compute.py:_in_trade` and `research/candidates.py:_in_trade`
+    (Session 9 Task 3 duplicated it on purpose and flagged it for a ruling;
+    Session 9 Task 9a Ruling C4-adjacent cleanup consolidates it here).
+    It lives in `core/` rather than either caller's module because both
+    `jobs/` and `research/` need it and neither may import a private from
+    the other; `core/` performing no IO (invariant 1) is not violated here
+    because `universe_flags` arrives as an already-loaded DataFrame — this
+    function reads no database, file, or clock itself, same as the rest of
+    this module.
+    """
+    rows = universe_flags.loc[
+        (universe_flags["ticker"] == ticker) & (universe_flags["as_of"] <= signal_date)
+    ]
+    if rows.empty:
+        return True
+    return bool(rows.sort_values("as_of").iloc[-1]["in_trade"])
 
 
 def is_tradeable(

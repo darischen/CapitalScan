@@ -36,6 +36,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from capitalscan.core import signals as core_signals
+from capitalscan.core import universe as core_universe
 from capitalscan.core.config import SignalParams, SplitParams
 from capitalscan.core.signals import debounce_key
 from capitalscan.core.types import Side
@@ -131,25 +132,6 @@ def scan_candidates(
     return candidates, rejects
 
 
-def _in_trade(universe_flags: pd.DataFrame, ticker: str, signal_date: date) -> bool:
-    """True when no universe evaluation exists yet (v1 fail-open, so this
-    module works before `run_universe` has ever run), or when the most
-    recent evaluation on or before `signal_date` says so.
-
-    This is a second copy of `jobs/compute.py:624`'s `_in_trade` — the brief
-    for this task explicitly forbids importing a private from `compute.py`
-    and asks that this duplication be flagged, not silently consolidated
-    (task-3 instructions). Report to the controller for a ruling on
-    consolidating the two into one shared function.
-    """
-    rows = universe_flags.loc[
-        (universe_flags["ticker"] == ticker) & (universe_flags["as_of"] <= signal_date)
-    ]
-    if rows.empty:
-        return True
-    return bool(rows.sort_values("as_of").iloc[-1]["in_trade"])
-
-
 def apply_eligibility(
     candidates: pd.DataFrame,
     universe_flags: pd.DataFrame,
@@ -186,7 +168,7 @@ def apply_eligibility(
                 }
             )
             continue
-        if not _in_trade(universe_flags, row["ticker"], signal_date):
+        if not core_universe.in_trade(universe_flags, row["ticker"], signal_date):
             rejects.append(
                 {
                     "ticker": row["ticker"],
