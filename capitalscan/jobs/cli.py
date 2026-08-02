@@ -399,6 +399,52 @@ def _load_bars_by_ticker(engine, tickers: list[str], config) -> dict:
     return out
 
 
+def _load_hourly_by_ticker(engine, tickers: list[str], config) -> dict:
+    """One raw hourly-bar frame per ticker, for `research.harness.run_harness`'s
+    `hourly_by_ticker` argument.
+
+    Kept as its own read rather than folded into `_load_bars_by_ticker`
+    (see `run_harness`'s docstring on why the two are separate parameters):
+    that function's frame is one row per `(ticker, date)`, the grain the
+    no-look-ahead/exit/non-overlap checks all rely on, while hourly bars
+    are several rows per date — merging them in would break that grain for
+    every check except `entry_sanity`, the only one that reads hourly data
+    at all (DESIGN §5.4: `TOUCH_5M`/`TOUCH_30M` price from an hourly bar,
+    `core.returns.entry_price_for` -> `_first_hourly_touch`).
+
+    Same `config.splits.ingest_start` lower bound as `_load_bars_by_ticker`
+    and `research.backtest._backtest_one_ticker`'s own hourly read
+    (`_read_bars(engine, ticker, ingest_start, "1h")`), so the harness sees
+    the same hourly history the backtest run itself had available. A
+    ticker with no hourly rows in that window is omitted, same convention
+    `_load_bars_by_ticker` uses — `entry_sanity` already treats a missing
+    ticker in `hourly_by_ticker` as "cannot validate this row," not a
+    silent pass.
+    """
+    from sqlalchemy import text
+
+    import pandas as pd
+
+    start = date.fromisoformat(config.splits.ingest_start)
+    out: dict = {}
+    with engine.connect() as conn:
+        for ticker in tickers:
+            hourly = pd.read_sql(
+                text(
+                    "SELECT ticker, ts, open, high, low, close, adj_close, volume "
+                    "FROM bars WHERE ticker = :ticker AND interval = '1h' AND ts >= :start "
+                    "ORDER BY ts"
+                ),
+                conn,
+                params={"ticker": ticker, "start": start},
+            )
+            if hourly.empty:
+                continue
+            hourly["ts"] = pd.to_datetime(hourly["ts"]).dt.tz_localize(None)
+            out[ticker] = hourly
+    return out
+
+
 def _load_events_for_run(engine, run_id: str):
     """The `events` rows this run itself wrote — the harness's `events`
     argument. Scoped to `run_id`, not `config_hash`, so a rerun against the
@@ -563,8 +609,11 @@ def backtest(
 
     if bt_report.tickers:
         bars_by_ticker = _load_bars_by_ticker(engine, bt_report.tickers, config)
+        hourly_by_ticker = _load_hourly_by_ticker(engine, bt_report.tickers, config)
         events_for_harness = _load_events_for_run(engine, bt_report.run_id)
-        harness_report = run_harness(events_for_harness, bars_by_ticker, config)
+        harness_report = run_harness(
+            events_for_harness, bars_by_ticker, config, hourly_by_ticker=hourly_by_ticker
+        )
         _print_harness_report(harness_report)
         if not harness_report.all_passed:
             exit_code = 1

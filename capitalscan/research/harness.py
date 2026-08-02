@@ -42,8 +42,8 @@ from datetime import date
 import pandas as pd
 
 from capitalscan.core.config import Config, CostParams
-from capitalscan.core.returns import realized_return
-from capitalscan.core.types import Side
+from capitalscan.core.returns import _first_hourly_touch, realized_return
+from capitalscan.core.types import EntryKind, Side
 from capitalscan.research.candidates import _trading_bars_between, scan_candidates
 
 # ---------------------------------------------------------------------------
@@ -85,6 +85,15 @@ _BAR_COLUMNS = frozenset({"ticker", "ts", "open", "high", "low", "close", "adj_c
 # below even begins, so the sanity checks tolerate that much before calling
 # a difference a violation, never more.
 _PRICE_TOL = 1e-4
+
+# `TOUCH_5M`/`TOUCH_30M` are priced from an hourly bar, never the daily bar
+# (`core.returns.entry_price_for` -> `_first_hourly_touch`; DESIGN §5.4).
+# `_check_entry_sanity` reads this set to pick the reference frame per row —
+# validating either kind against the daily bar compares a fill to a frame it
+# was never drawn from, which is exactly the defect this module exists to
+# not have (task brief: real production example, PGR 2025-02-25, where the
+# hourly feed's range escapes the daily feed's on both sides).
+_HOURLY_ENTRY_KINDS = frozenset({EntryKind.TOUCH_5M.value, EntryKind.TOUCH_30M.value})
 
 
 @dataclass(frozen=True)
@@ -166,6 +175,42 @@ def _bar_row(indexed: dict[str, pd.DataFrame], ticker: str, target: date) -> pd.
     return row
 
 
+def _hourly_bar_for_entry(
+    hourly_by_ticker: dict[str, pd.DataFrame] | None,
+    ticker: str,
+    day: date,
+    touch_level: float,
+    side: Side,
+) -> pd.Series | None:
+    """The hourly bar a `TOUCH_5M`/`TOUCH_30M` fill was actually priced
+    from, or `None` if it cannot be determined.
+
+    Reproduces exactly how `research.enrich.resolve_entries` scopes
+    `hourly` before handing it to `core.returns.entry_price_for` — filtered
+    to this ticker's own frame, then to rows whose `ts` falls on this
+    calendar day, sorted by `ts` — and then calls
+    `core.returns._first_hourly_touch` itself (invariant 2: not a second
+    copy of that selection logic) to pick the same bar the engine picked.
+
+    `None` covers every case where no such bar can be identified: no
+    `hourly_by_ticker` supplied at all, the ticker missing from it, no
+    hourly rows on this day, or a `touch_level` that (defensively; should
+    not occur when `entry_price` is non-null — see `entry_price_for`) is
+    itself NaN. The caller treats all of these as "cannot validate this
+    row" and reports a violation rather than skipping it (task brief: a
+    row this check cannot check must not silently count as passing).
+    """
+    if pd.isna(touch_level):
+        return None
+    frame = hourly_by_ticker.get(ticker) if hourly_by_ticker else None
+    if frame is None or frame.empty:
+        return None
+    day_hourly = frame.loc[frame["ts"].dt.date == day].sort_values("ts")
+    if day_hourly.empty:
+        return None
+    return _first_hourly_touch(day_hourly, float(touch_level), side)
+
+
 # ---------------------------------------------------------------------------
 # Entry / exit sanity
 # ---------------------------------------------------------------------------
@@ -193,18 +238,40 @@ def _pre_slippage_price(price: float, side: Side, cp: CostParams) -> float:
 
 
 def _check_entry_sanity(
-    events: pd.DataFrame, indexed_bars: dict[str, pd.DataFrame], config: Config
+    events: pd.DataFrame,
+    indexed_bars: dict[str, pd.DataFrame],
+    config: Config,
+    hourly_by_ticker: dict[str, pd.DataFrame] | None = None,
 ) -> CheckResult:
-    """`entry_price` (slippage reversed) must fall inside its fill bar's
-    `[low, high]`, for every entry kind. `NEXT_OPEN` fills on bar t+1, so
-    `entry_date` (not `signal_date`) selects the bar — `resolve_entries`
-    already sets `entry_date` to the next session's date for that kind, so
-    reading it off the row is correct and requires no entry-kind branching
-    here.
+    """`entry_price` (slippage reversed) must fall inside the `[low, high]`
+    of the bar it was actually priced from — which bar that is depends on
+    `entry_kind` (task brief; the defect this fix addresses):
+
+    - `TOUCH` / `NEXT_OPEN` price off the **daily** bar. `NEXT_OPEN` fills
+      on bar t+1, so `entry_date` (not `signal_date`) selects the bar —
+      `resolve_entries` already sets `entry_date` to the next session's
+      date for that kind, so reading it off the row is correct and
+      requires no further branching here.
+    - `TOUCH_5M` / `TOUCH_30M` price off an **hourly** bar
+      (`core.returns.entry_price_for` -> `_first_hourly_touch`). Checking
+      these against the daily bar is comparing a fill to a reference frame
+      it was never drawn from: on most days the daily bar's range contains
+      the hourly bars', so the mistake is invisible, but the two feeds are
+      independently sourced and can disagree (a real production example,
+      quantified separately in the harness report, not fixed here — that
+      is an ingest-side `bar_rejects` concern). `_hourly_bar_for_entry`
+      reproduces `resolve_entries`' own scoping and calls
+      `core.returns._first_hourly_touch` to find the same bar the engine
+      priced from (invariant 2: not a second copy of that selection).
 
     Rows with a null `entry_price` (an unfilled position: pre-2024 hourly
     kinds, or a terminal-bar `NEXT_OPEN`) are skipped — there is no price
-    to check, and CLAUDE.md invariant 4 forbids fabricating one.
+    to check, and CLAUDE.md invariant 4 forbids fabricating one. A priced
+    `TOUCH_5M`/`TOUCH_30M` row whose hourly fill bar cannot be identified
+    (no `hourly_by_ticker` supplied, or the identified bar disagrees with
+    the engine's own selection) is a violation, not a skip — the check
+    must stay capable of failing for exactly the rows it exists to
+    protect, not go silent on them (task brief).
     """
     if events.empty:
         return CheckResult("entry_sanity", True, [], {"n_priced": 0, "n_validated": 0})
@@ -214,15 +281,27 @@ def _check_entry_sanity(
     for _, row in priced.iterrows():
         ticker = row["ticker"]
         entry_date = _as_date(row["entry_date"])
+        entry_kind = row.get("entry_kind")
         side = Side(row["side"])
-        bar = _bar_row(indexed_bars, ticker, entry_date)
+
+        if entry_kind in _HOURLY_ENTRY_KINDS:
+            frame_label = "hourly"
+            bar = _hourly_bar_for_entry(
+                hourly_by_ticker, ticker, entry_date, row.get("touch_level"), side
+            )
+            no_bar_reason = "no_hourly_bar_for_entry"
+        else:
+            frame_label = "daily"
+            bar = _bar_row(indexed_bars, ticker, entry_date)
+            no_bar_reason = "no_bar_for_entry_date"
+
         if bar is None:
             violations.append(
                 {
                     "ticker": ticker,
                     "entry_date": entry_date,
-                    "entry_kind": row.get("entry_kind"),
-                    "reason": "no_bar_for_entry_date",
+                    "entry_kind": entry_kind,
+                    "reason": no_bar_reason,
                 }
             )
             continue
@@ -234,21 +313,23 @@ def _check_entry_sanity(
                 {
                     "ticker": ticker,
                     "entry_date": entry_date,
-                    "entry_kind": row.get("entry_kind"),
+                    "entry_kind": entry_kind,
                     "entry_price": float(row["entry_price"]),
                     "pre_slippage_price": raw_price,
                     "bar_low": low,
                     "bar_high": high,
+                    "frame": frame_label,
                     "reason": "entry_price_outside_bar_range",
                 }
             )
     # `n_priced` is every row with a non-null `entry_price` (what invariant
     # 4 lets this check look at); `n_validated` is the subset that actually
     # found a fill bar and was compared to it — a row hitting
-    # `no_bar_for_entry_date` counts in the first, not the second, so the
-    # two numbers answer different questions ("how many rows could this
-    # check have examined" vs "how many did it actually compare") rather
-    # than the same count reported twice under one name.
+    # `no_bar_for_entry_date`/`no_hourly_bar_for_entry` counts in the
+    # first, not the second, so the two numbers answer different questions
+    # ("how many rows could this check have examined" vs "how many did it
+    # actually compare") rather than the same count reported twice under
+    # one name.
     return CheckResult(
         "entry_sanity",
         len(violations) == 0,
@@ -697,16 +778,36 @@ def _check_no_lookahead(
 
 
 def run_harness(
-    events: pd.DataFrame, bars_by_ticker: dict[str, pd.DataFrame], config: Config
+    events: pd.DataFrame,
+    bars_by_ticker: dict[str, pd.DataFrame],
+    config: Config,
+    hourly_by_ticker: dict[str, pd.DataFrame] | None = None,
 ) -> HarnessReport:
     """DESIGN §5.10. Runs all five checks and returns a `HarnessReport`
     regardless of whether any individual check failed — this is the Phase 3
     gate, and a gate that raises on the first problem only ever reports one
-    problem per run."""
+    problem per run.
+
+    `hourly_by_ticker` is a second, optional per-ticker dict — one raw
+    hourly-bar frame per ticker, the same shape `jobs.cli`'s own hourly
+    read produces (`ticker, ts, open, high, low, close, ...`) — used only
+    by `entry_sanity`, to validate `TOUCH_5M`/`TOUCH_30M` fills against the
+    hourly bar they were actually priced from instead of the daily bar
+    (see `_check_entry_sanity`'s docstring). It is kept separate from
+    `bars_by_ticker` rather than merged into it: `bars_by_ticker` is one
+    row per `(ticker, date)` (the module docstring's "one frame per
+    ticker" shape every other check also relies on), while hourly bars are
+    several rows per date — merging them in would break that grain for the
+    four checks that do not need hourly data at all. Defaults to `None`
+    (no hourly data available): every `TOUCH_5M`/`TOUCH_30M` priced row
+    then reports `no_hourly_bar_for_entry` rather than silently skipping,
+    since a check that cannot fail is worse than one reporting it lacks
+    the data it needs (task brief).
+    """
     indexed_bars = _indexed_bars(bars_by_ticker)
     return HarnessReport(
         no_lookahead=_check_no_lookahead(events, bars_by_ticker, config),
-        entry_sanity=_check_entry_sanity(events, indexed_bars, config),
+        entry_sanity=_check_entry_sanity(events, indexed_bars, config, hourly_by_ticker),
         exit_sanity=_check_exit_sanity(events, indexed_bars, config),
         return_identity=_check_return_identity(events),
         non_overlap=_check_non_overlap(events, indexed_bars, config),

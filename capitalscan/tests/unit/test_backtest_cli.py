@@ -71,10 +71,12 @@ def _no_real_io(monkeypatch):
     monkeypatch.setattr(db_io, "get_engine", lambda: "fake-engine")
     monkeypatch.setattr(ingest, "run_job", _fake_run_job)
     # `_prior_clean_default_run_exists` / `_load_bars_by_ticker` /
-    # `_load_events_for_run` are cli.py's own DB-touching helpers; default
-    # to inert, DB-free behavior and let individual tests override.
+    # `_load_hourly_by_ticker` / `_load_events_for_run` are cli.py's own
+    # DB-touching helpers; default to inert, DB-free behavior and let
+    # individual tests override.
     monkeypatch.setattr(cli, "_prior_clean_default_run_exists", lambda engine, chash: False)
     monkeypatch.setattr(cli, "_load_bars_by_ticker", lambda engine, tickers, config: {})
+    monkeypatch.setattr(cli, "_load_hourly_by_ticker", lambda engine, tickers, config: {})
     monkeypatch.setattr(
         cli, "_load_events_for_run", lambda engine, run_id: pd.DataFrame(columns=["ticker"])
     )
@@ -357,7 +359,9 @@ def test_partial_failure_reports_failed_tickers_and_exits_nonzero(monkeypatch, c
     monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL", "MSFT"])
     monkeypatch.setattr(cli, "_load_bars_by_ticker", lambda engine, tickers, config: {})
     monkeypatch.setattr(
-        harness_mod, "run_harness", lambda events, bars_by_ticker, config: _passing_harness_report()
+        harness_mod,
+        "run_harness",
+        lambda events, bars_by_ticker, config, hourly_by_ticker=None: _passing_harness_report(),
     )
 
     with pytest.raises(typer.Exit) as exc_info:
@@ -377,7 +381,9 @@ def test_full_success_no_failed_tickers_exits_zero_when_harness_passes(monkeypat
     monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL"])
     monkeypatch.setattr(cli, "_load_bars_by_ticker", lambda engine, tickers, config: {"AAPL": pd.DataFrame()})
     monkeypatch.setattr(
-        harness_mod, "run_harness", lambda events, bars_by_ticker, config: _passing_harness_report()
+        harness_mod,
+        "run_harness",
+        lambda events, bars_by_ticker, config, hourly_by_ticker=None: _passing_harness_report(),
     )
 
     # Should not raise.
@@ -420,7 +426,7 @@ def test_harness_runs_automatically_and_gates_exit_code(monkeypatch, capsys):
 
     captured = {}
 
-    def _fake_run_harness(events, bars_by_ticker, config):
+    def _fake_run_harness(events, bars_by_ticker, config, hourly_by_ticker=None):
         captured["events"] = events
         captured["bars_by_ticker"] = bars_by_ticker
         return _failing_harness_report()

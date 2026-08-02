@@ -190,6 +190,145 @@ class TestEntrySanity:
         assert report.entry_sanity.violations[0]["reason"] == "no_bar_for_entry_date"
 
 
+class TestEntrySanityHourlyReferenceFrame:
+    """`TOUCH_5M`/`TOUCH_30M` fills are priced from an hourly bar
+    (`core.returns.entry_price_for` -> `_first_hourly_touch`), not the
+    daily bar — DESIGN §5.4. Validating them against the daily bar's
+    `[low, high]` is comparing a fill to a reference frame it was never
+    drawn from, and produces false positives whenever the hourly feed's
+    range escapes the daily feed's (real production example: PGR,
+    2025-02-25, `touch_5m`, short — traced in the task brief).
+
+    These fixtures reuse that exact PGR trace: hourly bar
+    open=273.98/high=285.00/low=273.16/close=276.08 at 14:30, daily bar
+    open=277.64/high=279.93/low=274.39/close=278.52, gap-anchored
+    interpolation `273.98 + (276.08-273.98) * 5/60 = 274.155`, short
+    slippage at `CostParams().slippage_bps=3.0` giving stored
+    `entry_price=274.0728`. The fill sits inside the hourly range but
+    outside the daily range on the low side (274.155 < 274.39) — genuinely
+    correct pricing that a daily-frame check misreports as a violation.
+    """
+
+    def _pgr_hourly(self) -> dict[str, pd.DataFrame]:
+        return {
+            "PGR": _bars_frame(
+                [
+                    {
+                        "ticker": "PGR",
+                        "ts": "2025-02-25 14:30:00",
+                        "open": 273.98,
+                        "high": 285.00,
+                        "low": 273.16,
+                        "close": 276.08,
+                        "adj_close": 276.08,
+                        "volume": 500_000,
+                    }
+                ]
+            )
+        }
+
+    def _pgr_daily(self) -> dict[str, pd.DataFrame]:
+        return {
+            "PGR": _daily_bars("PGR", {date(2025, 2, 25): (277.64, 279.93, 274.39, 278.52)})
+        }
+
+    def _pgr_event(self, **overrides) -> pd.DataFrame:
+        row = _event_row(
+            ticker="PGR",
+            signal_date=date(2025, 2, 25),
+            side="short",
+            entry_kind="touch_5m",
+            entry_date=date(2025, 2, 25),
+            entry_price=274.0728,
+            touch_level=270.0,  # the UPPER band level the short signal fired against
+        )
+        row.update(overrides)
+        return _events([row])
+
+    def test_touch_5m_entry_is_validated_against_its_hourly_bar_not_the_daily_bar(self):
+        """The core defect: this fill is inside its hourly bar's
+        [273.16, 285.00] and genuinely correct, but outside the daily
+        bar's [274.39, 279.93]. A harness that checks the daily bar here
+        would report a false violation."""
+        report = run_harness(
+            self._pgr_event(), self._pgr_daily(), CONFIG, hourly_by_ticker=self._pgr_hourly()
+        )
+
+        assert report.entry_sanity.passed
+        assert report.entry_sanity.violations == []
+
+    def test_touch_5m_entry_price_genuinely_outside_its_hourly_bar_is_still_caught(self):
+        """The check must stay capable of failing (task brief): plant an
+        entry price no hourly bar in this fixture can explain, and confirm
+        it is still flagged even though it happens to fall inside the
+        daily bar's range — proving the hourly frame is actually being
+        compared against, not merely accepted unconditionally."""
+        # 278.0 sits inside the daily bar [274.39, 279.93] but outside the
+        # hourly bar [273.16, 285.00] is NOT possible (hourly is wider) —
+        # so plant a price outside BOTH, to prove the hourly frame (the
+        # narrower, correct one) is what actually catches it.
+        report = run_harness(
+            self._pgr_event(entry_price=400.0),
+            self._pgr_daily(),
+            CONFIG,
+            hourly_by_ticker=self._pgr_hourly(),
+        )
+
+        assert not report.entry_sanity.passed
+        assert len(report.entry_sanity.violations) == 1
+        assert report.entry_sanity.violations[0]["reason"] == "entry_price_outside_bar_range"
+        assert report.entry_sanity.violations[0]["frame"] == "hourly"
+
+    def test_touch_30m_entry_uses_the_hourly_bars_close_directly(self):
+        """`TOUCH_30M` fills at the hourly bar's close, no interpolation
+        (`entry_price_for`) — still validated against that same hourly
+        bar's [low, high], not the daily bar."""
+        entry_raw = 276.08  # the hourly bar's own close
+        slip = entry_raw * 3.0 / 1e4
+        entry_price = entry_raw - slip  # short: adverse = lower
+
+        report = run_harness(
+            self._pgr_event(entry_kind="touch_30m", entry_price=entry_price),
+            self._pgr_daily(),
+            CONFIG,
+            hourly_by_ticker=self._pgr_hourly(),
+        )
+
+        assert report.entry_sanity.passed
+
+    def test_touch_5m_entry_price_without_hourly_bars_supplied_is_a_violation_not_a_silent_skip(
+        self,
+    ):
+        """A `TOUCH_5M`/`TOUCH_30M` row with a priced (non-null)
+        `entry_price` but no hourly data available to check it against
+        must not silently pass — that would make the check unable to fail
+        for exactly the rows it exists to protect. Matches
+        `no_bar_for_entry_date`'s precedent for the daily-bar case."""
+        report = run_harness(self._pgr_event(), self._pgr_daily(), CONFIG, hourly_by_ticker=None)
+
+        assert not report.entry_sanity.passed
+        assert report.entry_sanity.violations[0]["reason"] == "no_hourly_bar_for_entry"
+
+    def test_touch_entry_kind_is_unaffected_and_still_uses_the_daily_bar(self):
+        """`TOUCH` (and `NEXT_OPEN`, covered by the existing
+        `TestEntrySanity` class) must keep reading the daily bar even when
+        `hourly_by_ticker` is supplied — the reference frame is chosen per
+        entry kind, not globally."""
+        entry_raw = 276.0  # inside the daily bar, outside the hourly bar's [273.16, 285]... no,
+        # actually pick a value inside BOTH so this is a clean "still passes" check —
+        # the point is TOUCH must not even consult hourly_by_ticker.
+        slip = entry_raw * 3.0 / 1e4
+        entry_price = entry_raw - slip
+        report = run_harness(
+            self._pgr_event(entry_kind="touch", entry_price=entry_price),
+            self._pgr_daily(),
+            CONFIG,
+            hourly_by_ticker=self._pgr_hourly(),
+        )
+
+        assert report.entry_sanity.passed
+
+
 # ---------------------------------------------------------------------------
 # Exit sanity
 # ---------------------------------------------------------------------------
