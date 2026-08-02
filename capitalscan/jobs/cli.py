@@ -539,11 +539,20 @@ def nightly() -> None:
     start = end - timedelta(days=5)
 
     ingest.run_bars_daily(tickers, start, end, engine=engine)
+    # BUILD.md §9.0: `run_bars_hourly`'s only other caller is the `bars` CLI
+    # command, so without this the hourly table goes stale and
+    # `core.returns.entry_price_for` returns NaN instead of raising,
+    # silently dropping two of four entry kinds in the backtest. Same
+    # 5-day `start` as the daily pull above, which is well inside Yahoo's
+    # per-request window and yields one 60-day fetch window per ticker
+    # rather than the 13 a full 730-day backfill walks (~21 min for ~630
+    # tickers at RATE_LIMIT_PER_SEC = 0.5, vs. hours for a full backfill).
+    ingest.run_bars_hourly(tickers, start, end, engine=engine)
     ingest.run_actions(tickers, engine=engine)
     ingest.run_market(lookback_days=5, engine=engine)
     ingest.run_shares(tickers, engine=engine)
     ingest.run_earnings(tickers, historical=False, forward_days=90, engine=engine)
-    compute.run_indicators(tickers, start, end, engine=engine)
+    compute.run_indicators(tickers, start, end, max_workers=1, engine=engine)
     compute.run_events(tickers, start, end, engine=engine)
     console.print("nightly: chain complete (sync --to-serving not yet implemented)")
 
