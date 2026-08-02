@@ -207,10 +207,11 @@ def _check_entry_sanity(
     to check, and CLAUDE.md invariant 4 forbids fabricating one.
     """
     if events.empty:
-        return CheckResult("entry_sanity", True, [], {"n_checked": 0})
+        return CheckResult("entry_sanity", True, [], {"n_priced": 0, "n_validated": 0})
     violations: list[dict] = []
-    checked = events.loc[events["entry_price"].notna()]
-    for _, row in checked.iterrows():
+    priced = events.loc[events["entry_price"].notna()]
+    n_validated = 0
+    for _, row in priced.iterrows():
         ticker = row["ticker"]
         entry_date = _as_date(row["entry_date"])
         side = Side(row["side"])
@@ -225,6 +226,7 @@ def _check_entry_sanity(
                 }
             )
             continue
+        n_validated += 1
         raw_price = _pre_slippage_price(float(row["entry_price"]), side, config.costs)
         low, high = float(bar["low"]), float(bar["high"])
         if not (low - _PRICE_TOL <= raw_price <= high + _PRICE_TOL):
@@ -240,8 +242,18 @@ def _check_entry_sanity(
                     "reason": "entry_price_outside_bar_range",
                 }
             )
+    # `n_priced` is every row with a non-null `entry_price` (what invariant
+    # 4 lets this check look at); `n_validated` is the subset that actually
+    # found a fill bar and was compared to it — a row hitting
+    # `no_bar_for_entry_date` counts in the first, not the second, so the
+    # two numbers answer different questions ("how many rows could this
+    # check have examined" vs "how many did it actually compare") rather
+    # than the same count reported twice under one name.
     return CheckResult(
-        "entry_sanity", len(violations) == 0, violations, {"n_checked": len(checked)}
+        "entry_sanity",
+        len(violations) == 0,
+        violations,
+        {"n_priced": len(priced), "n_validated": n_validated},
     )
 
 
@@ -256,10 +268,11 @@ def _check_exit_sanity(
     skipped, same reasoning as `_check_entry_sanity`.
     """
     if events.empty:
-        return CheckResult("exit_sanity", True, [], {"n_checked": 0})
+        return CheckResult("exit_sanity", True, [], {"n_priced": 0, "n_validated": 0})
     violations: list[dict] = []
-    checked = events.loc[events["exit_price"].notna()]
-    for _, row in checked.iterrows():
+    priced = events.loc[events["exit_price"].notna()]
+    n_validated = 0
+    for _, row in priced.iterrows():
         ticker = row["ticker"]
         exit_date = _as_date(row["exit_date"])
         bar = _bar_row(indexed_bars, ticker, exit_date)
@@ -273,6 +286,7 @@ def _check_exit_sanity(
                 }
             )
             continue
+        n_validated += 1
         exit_price = float(row["exit_price"])
         low, high = float(bar["low"]), float(bar["high"])
         if not (low - _PRICE_TOL <= exit_price <= high + _PRICE_TOL):
@@ -287,7 +301,13 @@ def _check_exit_sanity(
                     "reason": "exit_price_outside_bar_range",
                 }
             )
-    return CheckResult("exit_sanity", len(violations) == 0, violations, {"n_checked": len(checked)})
+    # See `_check_entry_sanity`'s comment on `n_priced` vs `n_validated`.
+    return CheckResult(
+        "exit_sanity",
+        len(violations) == 0,
+        violations,
+        {"n_priced": len(priced), "n_validated": n_validated},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -345,8 +365,8 @@ def _check_return_identity(events: pd.DataFrame) -> CheckResult:
 def _check_non_overlap(
     events: pd.DataFrame, indexed_bars: dict[str, pd.DataFrame], config: Config
 ) -> CheckResult:
-    """No two `is_cluster_head` events on one ticker have overlapping
-    windows.
+    """No two `is_cluster_head` events on one `(ticker, side)` have
+    overlapping windows.
 
     Measured in **trading bars**, not calendar days, and via
     `research.candidates._trading_bars_between` specifically (not a
@@ -359,34 +379,57 @@ def _check_non_overlap(
     it is checking (CONSTRAINTS.md: "the overlap test must use the same
     measure or it will disagree with the tagger that produced the data").
 
-    Grouped by **ticker alone**, not `(ticker, side)` — the task brief's
-    check is phrased as "no two cluster-head events *on one ticker*", and
-    `tag_clusters` itself keys clusters by `(ticker, side)`, so a long
-    cluster's head and a short cluster's head on the same ticker are, by
-    construction, never checked against each other by the tagger. This
-    function checks them against each other anyway: two overlapping
-    positions on one ticker are not independent samples for the statistics
-    layer's purposes regardless of which side each one took, and that is
-    exactly the kind of cross-cutting invariant a validation harness
-    exists to catch that a per-side tagger structurally cannot see.
+    **Grouped by `(ticker, side)`, matching `tag_clusters` exactly**
+    (`candidates.py:281-305`, Ruling C5 — "a long cluster and a short
+    cluster on one ticker are different positions and must never merge,
+    even on identical dates"). An earlier version of this check grouped by
+    ticker alone on the theory that a long and a short over the same
+    window are not independent observations; that reasoning does not hold
+    against DESIGN §5.3's own stated purpose for `is_cluster_head`
+    filtering ("non-overlapping, clean standard errors" — avoiding
+    double-counting *same-side* observations, not merging opposite-side
+    trades into one unit), and the primary-statistics consumer already
+    separates cells by `signal_type`, which is itself side-bearing
+    (`confluence_low`/`bb_lower_touch` vs `confluence_high`/
+    `bb_upper_touch`) — a long head and a short head land in different
+    cells, not one over-counted sample. Grouping by ticker alone therefore
+    flagged a stock touching both bands in one choppy window — normal,
+    expected mega-cap behavior, and exactly what `tag_clusters` itself
+    produces — as a false `cluster_head_windows_overlap` violation. The
+    code that produced the data settles the question: `tag_clusters`'s own
+    key is `(ticker, side)`, so this check uses the same one.
 
-    A cluster head with no bar in `indexed_bars` for its own ticker still
-    participates in the gap test using whatever trading dates are
-    available for that ticker; a ticker entirely absent from
-    `indexed_bars` is skipped (there is no trading calendar to measure
-    bars against), which reports as zero pairs checked for that ticker
-    rather than a spurious violation or a raise — `run_harness` is handed
-    the same `bars_by_ticker` used for the other four checks, and a gap
-    here is a caller-side input-completeness question, not this check's.
+    A ticker with `is_cluster_head` events but **no entry in
+    `indexed_bars` at all** cannot be gap-tested (there is no trading
+    calendar to measure bars against) and is reported as a violation, not
+    silently skipped — matching `_check_entry_sanity`/`_check_exit_sanity`'s
+    `no_bar_for_entry_date`/`no_bar_for_exit_date` precedent for the
+    identical condition (missing bar data for a row this check needs to
+    price). Silently skipping would let `non_overlap.passed` read `True`
+    while a subset of the input was never actually checked — the "a check
+    that cannot fail" failure mode this task exists to prevent, just
+    scoped to a subset of tickers instead of the whole check.
     """
     if events.empty:
-        return CheckResult("non_overlap", True, [], {"n_heads": 0, "n_pairs_checked": 0})
+        return CheckResult(
+            "non_overlap", True, [], {"n_heads": 0, "n_pairs_checked": 0, "n_groups_no_bars": 0}
+        )
     violations: list[dict] = []
     heads = events.loc[events["is_cluster_head"] == True]  # noqa: E712 - pandas bool mask
     n_pairs_checked = 0
-    for ticker, group in heads.groupby("ticker"):
+    n_groups_no_bars = 0
+    for (ticker, side), group in heads.groupby(["ticker", "side"]):
         frame = indexed_bars.get(ticker)
         if frame is None:
+            n_groups_no_bars += 1
+            violations.append(
+                {
+                    "ticker": ticker,
+                    "side": side,
+                    "n_heads_unchecked": len(group),
+                    "reason": "no_bars_for_ticker",
+                }
+            )
             continue
         dates = sorted(frame.index)
         ordered = group.assign(_signal_date=group["signal_date"].map(_as_date)).sort_values(
@@ -402,6 +445,7 @@ def _check_non_overlap(
                     violations.append(
                         {
                             "ticker": ticker,
+                            "side": side,
                             "first_head_date": prev_date,
                             "second_head_date": signal_date,
                             "trading_bar_gap": gap,
@@ -414,7 +458,11 @@ def _check_non_overlap(
         "non_overlap",
         len(violations) == 0,
         violations,
-        {"n_heads": len(heads), "n_pairs_checked": n_pairs_checked},
+        {
+            "n_heads": len(heads),
+            "n_pairs_checked": n_pairs_checked,
+            "n_groups_no_bars": n_groups_no_bars,
+        },
     )
 
 

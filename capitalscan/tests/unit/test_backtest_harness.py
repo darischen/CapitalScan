@@ -175,7 +175,19 @@ class TestEntrySanity:
         report = run_harness(events, bars, CONFIG)
 
         assert report.entry_sanity.passed
-        assert report.entry_sanity.detail["n_checked"] == 0
+        assert report.entry_sanity.detail["n_priced"] == 0
+        assert report.entry_sanity.detail["n_validated"] == 0
+
+    def test_ticker_entirely_absent_from_bars_by_ticker_is_a_violation(self):
+        """Same condition `no_bar_for_entry_date` already covers when a
+        ticker is present but the specific date is missing — this is the
+        coarser case, a ticker with no entry in `bars_by_ticker` at all."""
+        events = _events([_event_row()])
+
+        report = run_harness(events, {}, CONFIG)
+
+        assert not report.entry_sanity.passed
+        assert report.entry_sanity.violations[0]["reason"] == "no_bar_for_entry_date"
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +239,16 @@ class TestExitSanity:
         report = run_harness(events, bars, CONFIG)
 
         assert report.exit_sanity.passed
-        assert report.exit_sanity.detail["n_checked"] == 0
+        assert report.exit_sanity.detail["n_priced"] == 0
+        assert report.exit_sanity.detail["n_validated"] == 0
+
+    def test_ticker_entirely_absent_from_bars_by_ticker_is_a_violation(self):
+        events = _events([_event_row()])
+
+        report = run_harness(events, {}, CONFIG)
+
+        assert not report.exit_sanity.passed
+        assert report.exit_sanity.violations[0]["reason"] == "no_bar_for_exit_date"
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +382,93 @@ class TestNonOverlap:
         report = run_harness(events, bars, CONFIG)
 
         assert report.non_overlap.passed
+
+    def test_a_long_head_and_a_short_head_overlapping_is_not_a_violation(self):
+        """Review Finding 1: `tag_clusters` keys clusters by `(ticker,
+        side)` (Ruling C5) — a long cluster and a short cluster on one
+        ticker are different positions and never merge, even on identical
+        dates. A stock touching both bands in a choppy window legitimately
+        produces a long head and a short head with overlapping windows;
+        that is normal mega-cap behavior the tagger itself produces, not a
+        defect, and grouping this check by ticker alone (the pre-fix
+        version) incorrectly flagged it."""
+        trading_days = {
+            date(2026, 1, d): (100.0, 101.0, 99.0, 100.5) for d in range(5, 12)
+        }
+        bars = {"TSM": _daily_bars("TSM", trading_days)}
+        events = _events(
+            [
+                _event_row(
+                    signal_date=date(2026, 1, 5),
+                    side="long",
+                    cluster_id=1,
+                    is_cluster_head=True,
+                ),
+                _event_row(
+                    signal_date=date(2026, 1, 6),
+                    side="short",
+                    cluster_id=2,
+                    is_cluster_head=True,
+                ),
+            ]
+        )
+
+        report = run_harness(events, bars, CONFIG)
+
+        assert report.non_overlap.passed
+
+    def test_same_side_overlap_is_still_caught_after_the_ticker_side_fix(self):
+        """The converse of the test above: grouping by `(ticker, side)`
+        must not accidentally stop catching the same-side violation
+        `test_catches_two_cluster_heads_whose_windows_overlap` already
+        covers — restated here explicitly on `side="long"` to make the fix
+        direction unambiguous."""
+        trading_days = {
+            date(2026, 1, d): (100.0, 101.0, 99.0, 100.5) for d in range(5, 12)
+        }
+        bars = {"TSM": _daily_bars("TSM", trading_days)}
+        events = _events(
+            [
+                _event_row(
+                    signal_date=date(2026, 1, 5),
+                    side="long",
+                    cluster_id=1,
+                    is_cluster_head=True,
+                ),
+                _event_row(
+                    signal_date=date(2026, 1, 7),
+                    side="long",
+                    cluster_id=2,
+                    is_cluster_head=True,
+                ),
+            ]
+        )
+
+        report = run_harness(events, bars, CONFIG)
+
+        assert not report.non_overlap.passed
+        assert report.non_overlap.violations[0]["reason"] == "cluster_head_windows_overlap"
+
+    def test_a_ticker_with_heads_but_no_bar_data_is_a_violation_not_a_silent_skip(self):
+        """Review Finding 2: a ticker with `is_cluster_head` events but no
+        entry in `bars_by_ticker` at all used to be silently skipped —
+        `non_overlap.passed` could read `True` while this ticker was never
+        actually gap-tested. Matches `_check_entry_sanity`/
+        `_check_exit_sanity`'s `no_bar_for_*` precedent for the identical
+        missing-bar-data condition."""
+        events = _events(
+            [
+                _event_row(signal_date=date(2026, 1, 5), cluster_id=1, is_cluster_head=True),
+                _event_row(signal_date=date(2026, 1, 7), cluster_id=2, is_cluster_head=True),
+            ]
+        )
+
+        report = run_harness(events, {}, CONFIG)
+
+        assert not report.non_overlap.passed
+        reasons = {v["reason"] for v in report.non_overlap.violations}
+        assert "no_bars_for_ticker" in reasons
+        assert report.non_overlap.detail["n_groups_no_bars"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +618,37 @@ class TestNoLookahead:
 
         assert not report.no_lookahead.passed
         assert report.no_lookahead.violations[0]["reason"] == "no_bars_supplied"
+
+
+# ---------------------------------------------------------------------------
+# Empty events
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyEvents:
+    def test_a_genuinely_empty_events_frame_vacuously_passes_the_four_events_checks(self):
+        """`TestNoLookahead` already passes `_events([])` incidentally
+        (that check does not read `events` at all), but nothing directly
+        asserted the other four checks' behavior on a truly empty frame —
+        called out explicitly since an empty `events` means "nothing to
+        check," not "checked and clean," and the two must still resolve to
+        the same `passed=True` verdict with a `detail` that says zero rows
+        were examined."""
+        bars = {"TSM": _daily_bars("TSM", {date(2026, 1, 8): (96.0, 97.0, 94.0, 96.5)})}
+        report = run_harness(_events([]), bars, CONFIG)
+
+        assert report.entry_sanity.passed
+        assert report.entry_sanity.detail == {"n_priced": 0, "n_validated": 0}
+        assert report.exit_sanity.passed
+        assert report.exit_sanity.detail == {"n_priced": 0, "n_validated": 0}
+        assert report.return_identity.passed
+        assert report.return_identity.detail == {"n_checked": 0}
+        assert report.non_overlap.passed
+        assert report.non_overlap.detail == {
+            "n_heads": 0,
+            "n_pairs_checked": 0,
+            "n_groups_no_bars": 0,
+        }
 
 
 # ---------------------------------------------------------------------------
