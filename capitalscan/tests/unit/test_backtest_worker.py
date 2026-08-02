@@ -412,6 +412,54 @@ class TestRunBacktestDispatchAndWrite:
         assert list(written["ticker"]) == ["AAA", "AAA", "ZZZ"]
         assert list(written["signal_date"]) == [date(2026, 1, 5), date(2026, 1, 7), date(2026, 1, 6)]
 
+    def test_sort_key_includes_signal_type_so_same_day_long_and_short_signals_are_deterministic(
+        self, monkeypatch
+    ):
+        """Final-review Finding 2: the sort key `["ticker", "signal_date",
+        "entry_kind"]` omits `signal_type`. One ticker firing both a
+        long-side and a short-side signal on the same day yields two rows
+        that share every original sort-key value and differ only in
+        `signal_type` — `sort_values`'s default `kind="quicksort"` is not
+        stable, so their relative order is not reproducible across runs
+        without `signal_type` (or `side`) in the key.
+
+        Returns the two rows in `stoch_overbought`-before-`bb_lower_touch`
+        order (the wrong alphabetical order) so a passing test proves
+        `signal_type` actually drove the sort, not incidental input order.
+        """
+
+        def fake_worker(ticker, config, run_id, database_url, today=None):
+            return pd.DataFrame(
+                [
+                    _minimal_row(
+                        ticker="AAA",
+                        signal_date=date(2026, 1, 5),
+                        entry_kind="touch",
+                        signal_type="stoch_overbought",
+                    ),
+                    _minimal_row(
+                        ticker="AAA",
+                        signal_date=date(2026, 1, 5),
+                        entry_kind="touch",
+                        signal_type="bb_lower_touch",
+                    ),
+                ]
+            )
+
+        monkeypatch.setattr(backtest, "_backtest_one_ticker", fake_worker)
+        captured: dict = {}
+
+        def fake_upsert(engine, table_name, data, conflict_cols, update_columns=None):
+            captured["data"] = data
+            return len(data)
+
+        monkeypatch.setattr(backtest.db_io, "upsert", fake_upsert)
+
+        backtest.run_backtest(["AAA"], Config(), "run-1", engine=_FakeEngine())
+
+        written = captured["data"]
+        assert list(written["signal_type"]) == ["bb_lower_touch", "stoch_overbought"]
+
     def test_entry_kind_is_sorted_alphabetically_not_declaration_order(self, stub_reads, monkeypatch):
         """The real worker emits entry kinds in `EntryKind` declaration
         order (touch, touch_5m, touch_30m, next_open — `test_produces_one_

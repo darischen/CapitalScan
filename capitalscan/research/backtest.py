@@ -844,7 +844,18 @@ def run_backtest(
     events = pd.concat(frames, ignore_index=True) if frames else _empty_events_frame()
     events = add_cofire_count(events)
     if not events.empty:
-        events = events.sort_values(["ticker", "signal_date", "entry_kind"]).reset_index(drop=True)
+        # Final-review Finding 2: `signal_type` must be part of the sort key.
+        # One ticker can fire both a long-side and a short-side signal on
+        # the same day, giving two rows equal on `["ticker", "signal_date",
+        # "entry_kind"]` alone — `sort_values`'s default `kind="quicksort"`
+        # is not stable, so those rows' relative order was not reproducible
+        # across runs without this (ADR 060 determinism). `signal_type`
+        # rather than `kind="stable"` because it names the actual tiebreaker
+        # explicitly, instead of leaning on sort-algorithm behavior to paper
+        # over an underspecified key.
+        events = events.sort_values(
+            ["ticker", "signal_date", "signal_type", "entry_kind"]
+        ).reset_index(drop=True)
 
     update_columns = _RUN_BACKTEST_UPDATE_COLUMNS
     if not full_universe:

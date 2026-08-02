@@ -267,7 +267,7 @@ def events(
     resolved = _resolve_tickers(tickers)
     end = date.today()
     start = end - timedelta(days=lookback)
-    report = compute.run_events(resolved, start, end, sp=config.signals)
+    report = compute.run_events(resolved, start, end, config=config)
     console.print(
         f"events: {report.rows_written} written, "
         f"{report.rows_flagged} bars skipped (null indicator)"
@@ -922,7 +922,7 @@ def nightly() -> None:
     ingest.run_shares(tickers, engine=engine)
     ingest.run_earnings(tickers, historical=False, forward_days=90, engine=engine)
     compute.run_indicators(tickers, start, end, params=config.indicators, max_workers=1, engine=engine)
-    compute.run_events(tickers, start, end, sp=config.signals, engine=engine)
+    compute.run_events(tickers, start, end, config=config, engine=engine)
     console.print("nightly: chain complete (sync --to-serving not yet implemented)")
 
 

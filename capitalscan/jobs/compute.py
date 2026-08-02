@@ -756,6 +756,7 @@ def _build_event_row(
     market_row: pd.Series | None,
     chash: str,
     run_id: str,
+    splits: SplitParams | None = None,
 ) -> dict:
     bound = Bound.LOWER if hit.side.value == "long" else Bound.UPPER
     entry_gapped = None
@@ -797,7 +798,7 @@ def _build_event_row(
         "entry_date": hit.ts if entry_price is not None else None,
         "entry_price": entry_price,
         "entry_gapped": entry_gapped,
-        "split_key": _split_key(hit.ts, SplitParams()),
+        "split_key": _split_key(hit.ts, splits or SplitParams()),
     }
 
 
@@ -807,11 +808,48 @@ def run_events(
     target_end: date,
     engine: Engine | None = None,
     sp: SignalParams | None = None,
+    config: Config | None = None,
 ) -> IngestReport:
-    """`events` job (DESIGN §4.7). See module docstring for v1 scope."""
+    """`events` job (DESIGN §4.7). See module docstring for v1 scope.
+
+    **Final-review Finding 1 fix.** Before this, `config_hash` was computed
+    from `Config(signals=sp)` (every other section silently defaulted) and
+    `split_key` from a hardcoded `SplitParams()` (ignoring `config.splits`
+    entirely) — so the moment a caller resolved a `Config` with any
+    non-`signals` override, this job's `config_hash` diverged from
+    `research.backtest.run_backtest`'s, which correctly uses the full
+    resolved `Config`. Since `config_hash` is part of the natural key
+    `(config_hash, ticker, signal_date, signal_type, entry_kind)`, a
+    divergent hash makes `run_backtest`'s upsert miss this job's row
+    entirely and INSERT a disconnected duplicate instead of enriching it.
+
+    `config` takes the full resolved `Config` — the same shape
+    `run_backtest` takes — rather than a narrower `SplitParams`-only fix,
+    specifically so `config_hash` and `split_key` are guaranteed to derive
+    from the identical object `run_backtest` uses. A `SplitParams`-only
+    parameter would have repaired the split-key drift but left the hash
+    divergence (the join-breaking half of the bug) untouched.
+
+    `sp` is kept for backward compatibility (existing callers, existing
+    tests): passing only `sp` behaves exactly as before, wrapping it in a
+    `Config(signals=sp)` with every other section defaulted. Passing both
+    `sp` and `config` is only accepted when they agree — `config.signals ==
+    sp` — since disagreeing values would leave it ambiguous which one this
+    job's caller actually meant to run.
+    """
     engine = engine or db_io.get_engine()
-    sp = sp or SignalParams()
-    chash = config_hash(Config(signals=sp))
+    if config is not None:
+        if sp is not None and sp != config.signals:
+            raise ValueError(
+                "run_events: `sp` and `config.signals` disagree "
+                f"({sp!r} vs {config.signals!r}); pass one, not conflicting "
+                "values for both"
+            )
+        resolved_config = config
+    else:
+        resolved_config = Config(signals=sp or SignalParams())
+    sp = resolved_config.signals
+    chash = config_hash(resolved_config)
 
     with run_job(
         engine, "events", {"tickers": tickers, "start": str(target_start), "end": str(target_end)}
@@ -866,7 +904,15 @@ def run_events(
                     seen.add(key)
                     market_row = market.loc[bar_date] if bar_date in market.index else None
                     deduped.append(
-                        _build_event_row(hit, bar, prior_ind, market_row, chash, report.run_id)
+                        _build_event_row(
+                            hit,
+                            bar,
+                            prior_ind,
+                            market_row,
+                            chash,
+                            report.run_id,
+                            resolved_config.splits,
+                        )
                     )
 
         clustered = _tag_clusters(deduped, ExitParams().max_hold_days)

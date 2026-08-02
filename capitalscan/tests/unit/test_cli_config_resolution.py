@@ -185,8 +185,8 @@ def test_events_command_threads_resolved_params(monkeypatch, tmp_path):
     )
     captured = {}
 
-    def _fake_run_events(tickers, target_start, target_end, engine=None, sp=None):
-        captured["sp"] = sp
+    def _fake_run_events(tickers, target_start, target_end, engine=None, sp=None, config=None):
+        captured["config"] = config
         return SimpleNamespace(rows_written=0, rows_flagged=0)
 
     monkeypatch.setattr("capitalscan.jobs.compute.run_events", _fake_run_events)
@@ -194,7 +194,7 @@ def test_events_command_threads_resolved_params(monkeypatch, tmp_path):
     result = runner.invoke(cli.app, ["events", "--tickers", "AAPL"])
 
     assert result.exit_code == 0, result.output
-    assert captured["sp"].stoch_oversold == 25.0
+    assert captured["config"].signals.stoch_oversold == 25.0
 
 
 # ---------------------------------------------------------------------------
@@ -329,8 +329,8 @@ def test_nightly_command_threads_resolved_config(monkeypatch, tmp_path):
     def _fake_run_indicators(tickers, start, end, engine=None, params=None, max_workers=1):
         captured["params"] = params
 
-    def _fake_run_events(tickers, target_start, target_end, engine=None, sp=None):
-        captured["sp"] = sp
+    def _fake_run_events(tickers, target_start, target_end, engine=None, sp=None, config=None):
+        captured["config"] = config
 
     monkeypatch.setattr(compute, "run_indicators", _fake_run_indicators)
     monkeypatch.setattr(compute, "run_events", _fake_run_events)
@@ -338,7 +338,7 @@ def test_nightly_command_threads_resolved_config(monkeypatch, tmp_path):
     cli.nightly()
 
     assert captured["params"].bb_window == 25
-    assert captured["sp"].stoch_oversold == 25.0
+    assert captured["config"].signals.stoch_oversold == 25.0
 
 
 def test_nightly_command_malformed_config_exits_before_any_ingest_or_compute_io(
