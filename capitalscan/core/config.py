@@ -168,3 +168,31 @@ class Config:
 
 
 DEFAULT_CONFIG = Config()
+
+
+@dataclass(frozen=True)
+class SweepParams:
+    """DESIGN §5.9's exit-parameter grid (Session 9 Task 12). Deliberately
+    **not** a field of `Config`: `jobs.config.config_hash` hashes
+    `dataclasses.asdict(config)`, and every value a sweep cell actually
+    varies (`stop_mode`, `stop_atr_k`, `target_pct`) already lives in
+    `ExitParams`. Adding `SweepParams` here as a *standalone* dataclass — one
+    `research.backtest.sweep_configs` reads to build 18 `ExitParams`
+    variants — keeps the grid values out of `research/backtest.py` as bare
+    literals (invariant 9) without adding a field to `Config` and changing
+    `config_hash` for every existing config, swept or not (see
+    `task-12-report.md` for the exact hash this session is already tracking
+    for the Postgres GUC).
+
+    `stop_atr_k` only has behavioral meaning under `stop_mode="atr"` —
+    `"fixed"` uses `stop_fixed_pct` instead, `"none"` places no stop at all
+    — so this dataclass does not enumerate `stop_mode` x `stop_atr_k` as an
+    independent cross product; `sweep_configs` collapses that pairing to 6
+    stop variants (4 atr k-values + 1 fixed + 1 none) itself.
+    """
+
+    stop_atr_ks: tuple[float, ...] = (1.0, 1.5, 2.0, 2.5)
+    target_pcts: tuple[float, ...] = (0.03, 0.04, 0.05)
+
+
+DEFAULT_SWEEP = SweepParams()

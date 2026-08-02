@@ -35,13 +35,13 @@ from __future__ import annotations
 
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 
 import pandas as pd
 from sqlalchemy import Engine, text
 
-from capitalscan.core.config import Config
+from capitalscan.core.config import DEFAULT_SWEEP, Config, ExitParams
 from capitalscan.core.types import Side
 from capitalscan.jobs import db_io
 from capitalscan.jobs.config import config_hash, split_key_for
@@ -57,6 +57,7 @@ __all__ = [
     "BacktestRunFailed",
     "add_cofire_count",
     "run_backtest",
+    "sweep_configs",
 ]
 
 
@@ -865,6 +866,60 @@ def run_backtest(
         tickers=sorted(events["ticker"].unique().tolist()) if not events.empty else [],
         failed_tickers=failed_tickers,
     )
+
+
+def sweep_configs(base: BacktestConfig) -> list[BacktestConfig]:
+    """DESIGN §5.9's exit-parameter grid (Session 9 Task 12): exactly 18
+    `Config` variants of `base`, each with a distinct `config_hash`.
+
+    **Config generator only — this function does not run anything.** It
+    reads no bars, opens no database connection, and resolves no entry or
+    exit. Turning the 18 configs it returns into 18 `run_backtest` calls
+    (the actual sweep) is a decision the controller has explicitly held
+    pending human approval — see CONSTRAINTS.md and task-12-report.md — so
+    it is out of scope here on purpose, not an oversight.
+
+    Grid: `stop_mode` (atr, fixed, none) x `stop_atr_k` (1.0, 1.5, 2.0, 2.5)
+    x `target_pct` (0.03, 0.04, 0.05), collapsing to `(4 + 1 + 1) x 3 = 18`,
+    never `3 x 4 x 3 = 36`. `stop_atr_k` only has behavioral meaning under
+    `stop_mode="atr"` (`core/exits.py`: `"fixed"` uses `stop_fixed_pct`
+    instead, `"none"` places no stop at all), so sweeping it under `"fixed"`
+    or `"none"` too would produce pairs of configs that resolve to the
+    identical stop but hash differently — Phase 4 would then report the
+    same result twice as if it were two independent findings. Instead this
+    builds exactly 6 stop variants (4 atr k-values + 1 fixed + 1 none), each
+    then paired with all 3 targets.
+
+    Under `"fixed"`/`"none"`, `stop_atr_k` is held at `base.exits.
+    stop_atr_k` rather than swept — it has no effect on either mode's
+    resolved stop, so sweeping it there would be varying a parameter the
+    engine never reads, purely to manufacture a distinct hash. Holding it
+    at the base value keeps every hash difference in the 18-config set tied
+    to an actual behavioral difference, per the brief.
+
+    `SweepParams` (`core/config.py`) holds the grid literals, not this
+    function, per invariant 9 — see that dataclass's docstring for why it
+    is not a field of `Config` (it does not change `config_hash` for any
+    resolved config, swept or not).
+
+    `dataclasses.replace` derives each variant from `base` without mutating
+    it (CLAUDE.md "never mutate in place"); only `exits` differs from
+    `base` in the returned configs — `indicators`, `signals`, `costs`,
+    `universe`, `stats`, and `splits` are untouched, including
+    `ExitParams.exit_stoch_threshold`/`exit_stoch_threshold_short`, which
+    DESIGN §5.9 does not put in this grid.
+    """
+    stop_variants: list[ExitParams] = [
+        replace(base.exits, stop_mode="atr", stop_atr_k=k) for k in DEFAULT_SWEEP.stop_atr_ks
+    ]
+    stop_variants.append(replace(base.exits, stop_mode="fixed"))
+    stop_variants.append(replace(base.exits, stop_mode="none"))
+
+    return [
+        replace(base, exits=replace(stop_exits, target_pct=target))
+        for stop_exits in stop_variants
+        for target in DEFAULT_SWEEP.target_pcts
+    ]
 
 
 if __name__ == "__main__":
