@@ -66,6 +66,22 @@ def upserted(monkeypatch) -> list[str]:
 
     monkeypatch.setattr(ingest.db_io, "append", lambda *a, **k: None)
     monkeypatch.setattr(ingest.db_io, "upsert", fake_upsert)
+    # No splits, no daily bars on file — these tests exercise checkpointing,
+    # not the split-adjustment/range-escape guard added alongside it (see
+    # test_bars_hourly_split_adjust.py), and `_FakeEngine` has no `.connect()`
+    # for the two reads those features need.
+    monkeypatch.setattr(
+        ingest,
+        "_read_corporate_actions",
+        lambda engine, tickers: pd.DataFrame(
+            columns=["ticker", "ex_date", "action_type", "ratio", "amount"]
+        ),
+    )
+    monkeypatch.setattr(
+        ingest,
+        "_read_daily_range",
+        lambda engine, tickers: pd.DataFrame(columns=["ticker", "d", "high", "low"]),
+    )
     return seen
 
 

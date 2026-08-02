@@ -21,7 +21,7 @@ from rich.progress import Progress
 from rich.table import Table
 from sqlalchemy import Engine, text
 
-from capitalscan.core.config import SharesPlausibility, SplitParams
+from capitalscan.core.config import DEFAULT_HOURLY_SPLIT_GUARD, SharesPlausibility, SplitParams
 from capitalscan.jobs import db_io
 from capitalscan.jobs.fetch import finnhub, sec, wikipedia, yahoo
 from capitalscan.jobs.provenance import git_sha, new_run_id
@@ -526,6 +526,166 @@ def find_missing_bars(bars: pd.DataFrame, trading_days: pd.DataFrame) -> pd.Data
     return pd.DataFrame(gaps, columns=["ticker", "missing_date"])
 
 
+# ============ hourly split back-adjustment (Session 9 hourly-split-adjust) ============
+
+
+def _split_adjustment_factor(ts: pd.Series, splits: pd.DataFrame) -> pd.Series:
+    """Cumulative back-adjustment factor for one ticker's hourly bars.
+
+    `corporate_actions.ratio` is `new_shares / old_shares`: 10 for KLAC's
+    2026-06-12 10-for-1 split, 0.2 for AMCR's 2026-01-15 1-for-5 reverse
+    split — verified directly against the live table (`SELECT ticker,
+    ex_date, ratio FROM corporate_actions WHERE ticker = 'KLAC'` returns
+    `ratio = 10` for that row), and it matches the measured defect: KLAC's
+    unadjusted hourly `high` sits at ~10x the adjusted daily `high` on
+    pre-split days. Dividing pre-split OHLC by `ratio` is exactly Yahoo's
+    own back-adjustment, so this reproduces what the daily endpoint already
+    does upstream.
+
+    For a bar at time `t`, the factor is the product of `ratio` over every
+    split whose `ex_date > t.date()` — a bar on or after the ex-date is
+    already on the post-split share count and needs no adjustment for that
+    split. Multiple splits inside the window compound: each is applied
+    independently, so a bar before two splits gets divided by both ratios.
+
+    A ticker with no splits (or a splits frame already filtered empty)
+    returns 1.0 for every row — never fabricated. A null or non-positive
+    `ratio` is dropped rather than applied, per invariant 4: a missing
+    ratio must not become a guess or a divide-by-zero.
+    """
+    factor = pd.Series(1.0, index=ts.index, dtype="float64")
+    if splits.empty:
+        return factor
+
+    ratios = pd.to_numeric(splits["ratio"], errors="coerce")
+    valid = ratios.notna() & (ratios > 0)
+    if not valid.any():
+        return factor
+
+    row_dates = pd.to_datetime(ts).dt.date
+    ex_dates = pd.to_datetime(splits.loc[valid, "ex_date"]).dt.date
+    for ex_date, ratio in zip(ex_dates, ratios[valid]):
+        pre_split = row_dates < ex_date
+        factor = factor.where(~pre_split, factor * float(ratio))
+    return factor
+
+
+def _back_adjust_hourly(raw: pd.DataFrame, splits: pd.DataFrame) -> pd.DataFrame:
+    """Divide OHLC by `_split_adjustment_factor`, rounded to 4dp (convention).
+
+    Computed fresh from the just-fetched `raw` frame and the current
+    `corporate_actions` snapshot every call — never applied to a
+    previously-stored adjusted value — so a rerun of `run_bars_hourly`
+    recomputes the same factor from the same raw input and rewrites the
+    same numbers rather than adjusting an already-adjusted price a second
+    time. That is what makes the upsert on `(ticker, ts, interval)` safe
+    to repeat.
+    """
+    if raw.empty:
+        return raw
+
+    out = raw.copy()
+    factor = _split_adjustment_factor(out["ts"], splits)
+    for col in ("open", "high", "low", "close"):
+        out[col] = (out[col] / factor).round(4)
+    return out
+
+
+def _read_daily_range(engine: Engine, tickers: list[str]) -> pd.DataFrame:
+    """Per-(ticker, day) daily high/low, for the range-escape guard below.
+
+    Not date-bounded to the hourly fetch window: the guard only ever looks
+    up days that actually appear in the hourly batch being checked, and a
+    single small query per run is simpler than re-querying per ticker.
+    """
+    if not tickers:
+        return pd.DataFrame(columns=["ticker", "d", "high", "low"])
+    with engine.connect() as conn:
+        return pd.read_sql(
+            text(
+                "SELECT ticker, ts::date AS d, high, low FROM bars "
+                "WHERE interval = '1d' AND ticker = ANY(:tickers)"
+            ),
+            conn,
+            params={"tickers": tickers},  # type: ignore[arg-type]
+        )
+
+
+def _flag_range_escape(
+    hourly: pd.DataFrame, daily_range: pd.DataFrame, guard=DEFAULT_HOURLY_SPLIT_GUARD
+) -> list[dict]:
+    """Reject rows whose day-aggregate hourly range escapes the matching
+    daily bar's range by more than `guard.range_escape_tolerance`.
+
+    This is the durable half (BUILD task spec): back-adjustment fixes the
+    17 tickers already mismatched, but nothing stops the *next* split from
+    silently reintroducing the same bug. Every hourly bar for a day whose
+    aggregate range escapes is rejected — not just the offending hour —
+    because an unadjusted split corrupts every bar on that side of the
+    ex-date equally, and `bar_rejects` needs to name a row that is actually
+    present in `hourly` to log against.
+
+    Needs the matching daily bar, which may not exist yet on a from-scratch
+    backfill (daily and hourly are ingested by separate jobs with no
+    ordering guarantee). Absence is not evidence of a problem — a day with
+    no daily counterpart is silently skipped (invariant 4: never guess),
+    not rejected and not flagged clean. This lives in `run_bars_hourly`
+    rather than `run_validate` because the reject needs to reference the
+    specific hourly rows at ingest time, in the same run that already
+    upserts `bar_rejects` for that ticker; `run_validate` only sees rejects
+    already on file and has no per-bar granularity to attach a new one to.
+    In the common case — daily ingested before hourly, which is how this
+    codebase already runs backfills — the daily rows this guard needs are
+    already on file, so the check fires every time it matters.
+    """
+    if hourly.empty or daily_range.empty:
+        return []
+
+    day_agg = (
+        hourly.assign(d=pd.to_datetime(hourly["ts"]).dt.date)
+        .groupby(["ticker", "d"])
+        .agg(h_high=("high", "max"), h_low=("low", "min"))
+        .reset_index()
+    )
+    joined = day_agg.merge(daily_range, on=["ticker", "d"], how="inner")
+    if joined.empty:
+        return []
+
+    tol = guard.range_escape_tolerance
+    escapes = joined.loc[
+        (joined["high"] > 0)
+        & (joined["low"] > 0)
+        & (
+            (joined["h_high"] > joined["high"] * (1 + tol))
+            | (joined["h_low"] < joined["low"] * (1 - tol))
+        )
+    ]
+    if escapes.empty:
+        return []
+
+    bad_days = set(zip(escapes["ticker"], escapes["d"], strict=False))
+    hourly_days = pd.to_datetime(hourly["ts"]).dt.date
+    rejects: list[dict] = []
+    for idx, row in hourly.iterrows():
+        key = (row["ticker"], hourly_days.at[idx])
+        if key not in bad_days:
+            continue
+        rejects.append(
+            {
+                "ticker": row["ticker"],
+                "ts": row["ts"],
+                "rule": "hourly_daily_range_escape",
+                "severity": "reject",
+                "payload": {
+                    "high": row["high"],
+                    "low": row["low"],
+                    "tolerance": tol,
+                },
+            }
+        )
+    return rejects
+
+
 # ============ bars_daily / bars_hourly ============
 
 
@@ -569,6 +729,15 @@ def run_bars_hourly(
         # well past CLAUDE.md's 10-minute checkpoint threshold. Buffering
         # every frame and writing once at the end meant an interrupt threw
         # away the whole run, which is exactly what happened twice.
+        # Splits back-adjust the raw fetch (Yahoo's hourly endpoint, unlike
+        # its daily one, does not); the daily range backs the range-escape
+        # guard. Both read once for the whole ticker list, same shape as
+        # `run_bars_daily`'s `_read_corporate_actions` call — a handful of
+        # queries against small tables, not one per ticker.
+        actions = _read_corporate_actions(engine, tickers)
+        splits = actions.loc[actions["action_type"] == "split"] if not actions.empty else actions
+        daily_range = _read_daily_range(engine, tickers)
+
         fetched: list[str] = []
         with Progress() as progress:
             task = progress.add_task("[cyan]hourly bars...", total=len(tickers))
@@ -580,14 +749,40 @@ def run_bars_hourly(
                     # most of the union, not an error.
                     continue
 
-                raw = hourly.copy()
+                ticker_splits = (
+                    splits.loc[splits["ticker"] == ticker] if not splits.empty else splits
+                )
+                raw = _back_adjust_hourly(hourly, ticker_splits)
                 raw["interval"] = "1h"
+                # `adj_close` is total-return: DESIGN §2.2 keeps it separate
+                # from the split-adjusted series. Hourly does not carry a
+                # dividend adjustment (unchanged pre-existing limitation,
+                # out of scope here) — `adj_close = close` inherits the
+                # split back-adjustment above for free since `close` is
+                # already back-adjusted by this point. `adj_factor` stays a
+                # placeholder 1.0 for the same reason: neither line's
+                # *meaning* changes, only the value `close` already carries
+                # into them.
                 raw["adj_close"] = raw["close"]
                 raw["adj_factor"] = 1.0
                 raw["source"] = "yahoo"
                 raw["run_id"] = report.run_id
 
-                clean, rejects = validate_bars(raw, corporate_actions=None)
+                # `corporate_actions` real (not None): enables validate_bars'
+                # large-move-explained-by-split check on hourly bars too.
+                # Safe here — after back-adjustment, a true split no longer
+                # produces a jump for it to (mis)explain; the check remains
+                # as a safety net for the same batch-boundary artifact
+                # `unresolved_rejects` documents for daily (ANET 2024-10-07).
+                clean, rejects = validate_bars(raw, corporate_actions=actions)
+
+                guard_rejects = _flag_range_escape(clean, daily_range)
+                if guard_rejects:
+                    bad_keys = {(r["ticker"], r["ts"]) for r in guard_rejects}
+                    keep = ~clean.apply(lambda r: (r["ticker"], r["ts"]) in bad_keys, axis=1)
+                    clean = clean.loc[keep].reset_index(drop=True)
+                    rejects = rejects + guard_rejects
+
                 for r in rejects:
                     r["run_id"] = report.run_id
                 report.rows_rejected += sum(1 for r in rejects if r["severity"] == "reject")

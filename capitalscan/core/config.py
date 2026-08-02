@@ -332,3 +332,46 @@ class SharesPlausibility:
 
 
 DEFAULT_SHARES_PLAUSIBILITY = SharesPlausibility()
+
+
+@dataclass(frozen=True)
+class HourlySplitGuard:
+    """Tolerance for `jobs.ingest`'s hourly/daily range-escape guard
+    (Session 9 hourly-split-adjust task).
+
+    Deliberately **not** a field of `Config`: this bounds a data-quality
+    check, not a backtest input — nothing here varies a signal, exit, or
+    cost, so folding it into `Config` would change `config_hash` for every
+    existing config for a value with no effect on backtest output.
+    Standalone, same rationale as `SweepParams` and `SharesPlausibility`
+    above.
+
+    **What it catches.** An hourly bar's day-aggregate range (max high,
+    min low across that ticker's hourly bars for the day) escaping its
+    matching daily bar's range by more than this fraction. A ticker that
+    splits inside the hourly window and is not back-adjusted shows this as
+    a sustained, multi-hundred-day escape at exactly the split ratio
+    (Session 9: KLAC ~10x, CRWD ~4x, AMCR ~0.2x) — the defect this guard
+    exists to catch reappearing on the next unadjusted split.
+
+    **Where `range_escape_tolerance` comes from.** Queried against the
+    live database (297,790 (ticker, day) pairs where hourly and daily
+    bars both exist): ordinary tick-level noise between the two feeds has
+    a median absolute gap of ~$0.005 and stays under roughly 10% relative
+    deviation for the overwhelming majority of pairs; the largest
+    relative deviation found among pairs with **no** corresponding split
+    in `corporate_actions` was ~33% (FTV, WDC — a separate, smaller
+    daily/hourly data-quality gap, not this defect). The smallest relative
+    deviation among the 17 tickers with a confirmed, unadjusted split in
+    the window was AMCR's reverse split (ratio 0.2, an 80% deviation);
+    every other confirmed split deviates by 200% or more (CRWD 4x, KLAC
+    10x, BKNG 25x). 0.50 (50%) sits with wide margin above the largest
+    non-split anomaly (0.33) and well below the smallest real split
+    (0.80), so it flags every known split-factor mismatch while leaving
+    every known non-split anomaly alone.
+    """
+
+    range_escape_tolerance: float = 0.50
+
+
+DEFAULT_HOURLY_SPLIT_GUARD = HourlySplitGuard()
