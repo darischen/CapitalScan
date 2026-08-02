@@ -273,19 +273,32 @@ class SharesPlausibility:
     every bad value found sits far below it, so the floor is sound and the
     review confirmed no change is warranted there.
 
-    **Known limit, stated plainly — the direction this project already
-    knew about.** A x1,000 filer error on a company whose real share count
-    is in the tens of millions lands in the same absolute neighborhood as a
-    genuine mega-cap's real count in the billions, so `max_shares` alone
-    cannot always distinguish the two. Moving the ceiling to 320B widens
-    this gap: a x1,000 error on a company with real shares in the tens of
-    *millions* (tens of billions after corruption, e.g. 15-20M real shares
-    corrupted to 15-20B) now lands comfortably inside `[min_shares,
-    max_shares]` and is accepted undetected, whereas at the old 32B ceiling
-    only errors on companies with real shares up to ~32M would have cleared
-    undetected. Nothing in the 73k-row scan found an instance of this
-    shape at either ceiling, but the guard cannot rule one out structurally,
-    and moving the ceiling up makes the blind spot wider, not narrower.
+    **Known limit, quantified, not just described.** A x1,000 filer error
+    on a company whose real share count is in the tens of millions lands in
+    the same absolute neighborhood as a genuine mega-cap's real count in
+    the billions, so `max_shares` alone cannot always distinguish the two.
+    Moving the ceiling to 320B widens this gap: a x1,000 error on a company
+    with real shares in the tens of *millions* (tens of billions after
+    corruption) now lands inside `[min_shares, max_shares]` and is accepted
+    undetected, whereas the old 32B ceiling only missed errors on companies
+    with real shares up to ~32M.
+
+    This is not a one-ticker gap. The controller backed up every row this
+    guard has ever rejected to `shares_outstanding_rejected_20260802`
+    before deleting them. Querying that table for rows the widened ceiling
+    now admits (`shares BETWEEN 32e9 AND 320e9`) returns **26 filings
+    across 12 tickers**: AAP (4), GRMN (5), PKG (3), ALK (3), FTNT (2),
+    SWKS (2), MAA (2), and one each for AIZ, CNX, EOG, PNR, REG — every one
+    a real company with real shares in the tens-to-hundreds of millions,
+    x1,000-corrupted, that the old 32B ceiling caught and the new 320B
+    ceiling would silently accept.
+
+    The ceiling is not vestigial, though: the same reject-log query with
+    `shares > 320e9` returns 33 rows across 23 tickers (ORCL, AMD, EXC,
+    TFC, AEP, and others) that still exceed the new ceiling and would still
+    be caught — real x10^5/x10^6-class filer corruption, not the x1,000
+    class the widened band now misses. Re-run both queries against
+    `shares_outstanding_rejected_20260802` to verify either count.
 
     **The asymmetry that justifies this anyway.** Rejecting good data is
     worse than admitting bad data here. A bad share count surfaces
