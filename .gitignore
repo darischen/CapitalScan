@@ -39,3 +39,6 @@ htmlcov/
 capitalscan/models/**/*.pkl
 capitalscan/models/**/*.txt
 capitalscan/models/**/*.parquet
+
+# Git worktrees (subagent-driven-development scratch workspaces)
+.worktrees/
