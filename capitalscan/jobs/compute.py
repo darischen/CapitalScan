@@ -974,8 +974,45 @@ def scan(
     statistics, not to detected events.
     """
     engine = engine or db_io.get_engine()
+
+    # DEFECT (Session 9): scan() selected neither config_hash nor entry_kind,
+    # so one signal returned once per (config_hash, entry_kind) combination
+    # -- 148 rows for 27 real signals on 2026-07-31, growing without bound as
+    # the sweep and the backtest add more of each. `events`' grain is
+    # (config_hash, ticker, signal_date, signal_type, entry_kind)
+    # (CONSTRAINTS.md); ADR 049 wants one row per event, so both dimensions
+    # must be pinned to a single value here.
+    #
+    # config_hash: the same GUC v_events already reads (invariant 5b -- no
+    # second config-selection mechanism). `current_setting(..., true)`
+    # returns NULL rather than raising when unset; resolving it with a
+    # separate SELECT (instead of embedding current_setting() in the main
+    # query) makes "unset" an explicit branch instead of a silent
+    # `config_hash = NULL` clause that happens to match zero rows. Returning
+    # everything (the current bug) is wrong, and guessing a config is worse
+    # than admitting there is nothing to show, so unset returns empty --
+    # the same outcome `v_events` already produces in that state.
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT current_setting('capitalscan.default_config_hash', true)")
+        ).fetchone()
+    default_chash = row[0] if row else None
+    if not default_chash:
+        return pd.DataFrame(columns=_SCAN_COLUMNS)
+
     clauses = ["1=1"]
-    params: dict[str, Any] = {}
+    params: dict[str, Any] = {"config_hash": default_chash, "entry_kind": EntryKind.TOUCH.value}
+    clauses.append("e.config_hash = :config_hash")
+    # entry_kind: filter to one kind rather than SELECT DISTINCT on the
+    # projected columns. Every entry_kind row for one event shares identical
+    # signal-level columns today (that is *why* they were byte-identical
+    # duplicates), but DISTINCT silently stops deduplicating the moment a
+    # future column varies by entry_kind -- filtering to one kind stays
+    # correct regardless. 'touch' is the row `run_events` itself writes at
+    # detection time (jobs/compute.py `_build_event_row`), before any
+    # backtest-added entry_kind row exists, and it's the same kind
+    # `jobs/poll.py` already treats as canonical for existing-event lookups.
+    clauses.append("e.entry_kind = :entry_kind")
     if tickers:
         clauses.append("e.ticker = ANY(:tickers)")
         params["tickers"] = tickers

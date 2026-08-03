@@ -31,7 +31,15 @@ from capitalscan.jobs import compute
 
 
 class _FakeConn:
-    pass
+    def execute(self, stmt, *args, **kwargs):
+        # scan() resolves capitalscan.default_config_hash via a plain
+        # SELECT before building the events query this test inspects (Task
+        # 3 dedupe fix) -- pin a fixed value so that lookup doesn't error.
+        class _Result:
+            def fetchone(self_inner):
+                return ("3e598c59e7d71eae",)
+
+        return _Result()
 
 
 class _FakeEngine:
