@@ -4,7 +4,7 @@ Architecture decision record for `CapitalScan`.
 
 Format: each entry states the decision, why, and what it costs. Status is one of Pinned, Provisional, or Superseded. Never delete an entry. Mark it Superseded and add the replacement below it.
 
-Last updated: 2026-07-28
+Last updated: 2026-08-02
 
 ---
 
@@ -104,6 +104,7 @@ Last updated: 2026-07-28
 | 090 | Absence is None, never NaN; debounce keys on a tuple | Pinned |
 | 091 | Config resolution lives in jobs, not core | Pinned |
 | 092 | Exit thresholds are ExitParams fields, never literals | Pinned |
+| 093 | Terminal quantiles expand to five horizons | Provisional. Authorizes a Phase 6 rewrite of DESIGN §7.4 |
 
 ---
 
@@ -1564,3 +1565,27 @@ Decision. Bar ingest begins 2009-01-01. Event detection begins 2010-01-01. The g
 Rationale. The longest indicator chain is `rv_pct_252d`, a 252-day percentile of a 20-day realized volatility, requiring 272 prior bars. `sma200_slope_60` requires 260. Starting event detection on the first ingested bar produces a year of null indicator values, and null features silently drop events rather than failing loudly. One extra year of bars costs nothing and removes the boundary entirely.
 
 Enforcement. A test asserts zero null values in every indicator column on or after 2010-01-01 for any ticker with continuous coverage.
+
+---
+
+## 093. Terminal quantiles expand to five horizons
+
+Status: Provisional. Authorizes a Phase 6 rewrite of DESIGN §7.4
+
+Decision. Terminal-return prediction moves from one horizon to five. Where DESIGN §7.4 currently pins a single terminal-quantile head, `Q̂_τ(R_5)` for τ ∈ {0.05, 0.25, 0.50, 0.75, 0.95}, Phase 6 instead fits that quantile fan independently at each of `h ∈ {1, 2, 3, 5, 10}` trading days:
+
+$$\hat{Q}_\tau(R_h), \quad \tau \in \{0.05, 0.25, 0.50, 0.75, 0.95\}, \quad h \in \{1, 2, 3, 5, 10\}$$
+
+Twenty-five terminal-quantile outputs in place of five. Reachability (4 heads) and adverse excursion (2 heads) are unchanged, so the eleven-head count in ADR 064 becomes roughly thirty-one.
+
+Rationale. `touched_Xpct` answers whether a move happens inside the window, not when. A signal whose favorable excursion typically peaks on day 2 and one that typically peaks on day 9 both read as "touched" under a single 5-day reachability flag, and the current single-horizon terminal quantile carries no timing information either — `Q̂_τ(R_5)` is silent on the path between t and t+5. The two signals call for different holding behavior and look identical to every head in the current design. Fitting the quantile fan at each of the five horizons already carried by `events.fwd_ret_1d/2d/3d/5d/10d` (populated by session 9) makes peak timing a first-class model output instead of information the label set discards.
+
+This is not a departure from §7.4's existing position, it is the same argument carried one step further. §7.4 already states the model describes the underlying path and exit policy sits as a separate layer on top, specifically to avoid coupling the model to a config that changes on every stop or target sweep. A per-horizon quantile fan is a more complete description of that same path, not a different kind of target. The horizon set is not a new invented number either: it is exactly the five horizons `events` already carries, so this decision asks the model to predict a distribution at each horizon that already exists as a point value, rather than introducing horizons the pipeline has never computed.
+
+Why now, not at Phase 6. Session 10 builds the forward path store (`docs/session10.md`). A path table sized to the exit window (`ExitParams.max_hold_days`, 5 days) would make any label past day 5 permanently underivable, including day 10 terminal quantiles. The path table has to be built to the full ten-trading-day window before that decision is foreclosed by schema, even though the model that consumes it is several sessions away. Session 10 already fixes its window at ten trading days for this reason; this ADR is the record of why that window has to reach that far, not a decision Session 10 needed to make on its own.
+
+Cost. Roughly triple the terminal-quantile heads, in line with training time (5 minutes for eleven heads per ADR 064 scales toward, not exactly with, head count, since heads share the walk-forward CV loop and feature construction). More calibration work: DESIGN §7.6 checks quantile-head coverage per τ, and ADR 067's four-check promotion gate evaluates coverage within 5 points of nominal for every τ, so twenty-five coverage checks replace five. Quantile crossing within a horizon is already fixed post-fit by sorting (§7.4); five horizons adds a second, previously nonexistent question of monotonicity *across* horizons for a fixed τ — whether $\hat{Q}_\tau(R_1) \le \hat{Q}_\tau(R_{10})$ should hold in expectation and what to do when a fit violates it. Phase 6 resolves that when it writes the rewritten §7.4, not here.
+
+What this does not change. Reachability and adverse-excursion head definitions are untouched, still `touched_Xpct` and `touched_-Ypct` over the existing horizon and threshold sets. Exit policy remains a separate layer on top of timeout return, per §7.4's existing rule. Nothing about signal detection, entry, or exit resolution moves. `DESIGN §7.4` itself is not rewritten by this ADR — that table is a Phase 6 implementation spec, and pinning its exact head list now would front-run Phase 4's statistics, which ADR 033's kill criteria could still retire the two-indicator hypothesis before Phase 6 opens. This ADR authorizes the rewrite when Phase 6 begins; it does not perform it.
+
+Status rationale. Provisional rather than Pinned: this constrains a schema decision Session 10 makes now (the path table's window), but the model surface itself is not built until Phase 6, and ADR 033's kill criteria sit between here and there. If Phase 4 finds no cell survives FDR correction, there may be no model to expand.
