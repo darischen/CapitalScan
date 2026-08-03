@@ -22,6 +22,32 @@ If a task appears to require contradicting one, **stop and ask.** Do not work ar
 
 ---
 
+## Before running anything
+
+**Never run bare `pytest` or `uv run pytest`.** `pyproject.toml` sets `testpaths = ["capitalscan/tests"]`, so a bare invocation collects `capitalscan/tests/integration/`, which runs `TRUNCATE TABLE ... CASCADE` against live production data (4.5M+ rows in `bars`). `test_ingest.py` and `test_compute.py` truncate `bars` directly; `test_poll.py` truncates `tickers`, which CASCADEs to `bars`.
+
+The only safe invocation: `uv run pytest capitalscan/tests/unit capitalscan/tests/property`. Never invoke anything under `capitalscan/tests/integration/` against the real database.
+
+`docker` is not on PATH in agent shells. Reach Postgres directly:
+
+```
+PGPASSWORD=capscan "/c/Program Files/PostgreSQL/18/bin/psql" -h localhost -U capscan -d capitalscan
+```
+
+Prefix `SET max_parallel_workers_per_gather=0;` if a query hits a shared-memory error.
+
+No `cscan db migrate` or `uv sync`/`uv add` while a job is running. Migrate takes an ACCESS EXCLUSIVE lock against a live writer; `uv sync`/`uv add` on Windows locks `.venv` files a running process holds open.
+
+Long jobs, measured, so nobody starts one blind:
+
+- `cscan backtest --workers 8`, full universe: **2h48m**. Write phase ~20 min; the validation harness is single-threaded and takes ~2h28m regardless of worker count — more workers do not shorten it.
+- `cscan bars --hourly --backfill`, all tickers: **~4.5-5.5 hours**. Yahoo caps hourly at 60 days per request, so backfill walks 13 sequential windows per ticker at 0.5 req/s. No incremental path — already-stored data does not reduce the cost.
+- `cscan universe --quarter`, one quarter: ~10s.
+
+**Verify before you assert.** Query the database rather than trusting a prior report, including this one — several confident claims in earlier session reports did not hold up under direct measurement.
+
+---
+
 ## Non-negotiable invariants
 
 1. **`core/` performs no IO.** No database, no HTTP, no file reads, no clock access. `jobs/` and `research/` own all IO.

@@ -34,6 +34,8 @@ tests/
 
 Tooling: `pytest`, `pytest-xdist` for parallelism, `hypothesis` for property tests, `testcontainers[postgres]` for integration.
 
+**Danger: a bare `pytest` collects `integration/` and truncates live tables against the real database, not a testcontainer.** See `CLAUDE.md` § Before running anything for the mechanism and the only safe invocation.
+
 ---
 
 ## 3. The five correctness tests
