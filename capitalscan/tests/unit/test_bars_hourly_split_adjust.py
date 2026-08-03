@@ -213,6 +213,189 @@ def test_rerunning_does_not_double_adjust(monkeypatch, written):
     )
 
 
+def test_a_vendor_preadjusted_window_is_left_alone_while_earlier_bars_still_divide(
+    monkeypatch, written
+):
+    """The Session 9 hourly-residual regression: ANET's shape.
+
+    A split's ex-date is 2024-02-01, ratio 4. The day far from the ex-date
+    (2024-01-02) is raw, unadjusted Yahoo hourly at the pre-split (~4x)
+    scale — dividing by 4 is correct and must still happen. The day close
+    to the ex-date (2024-01-30) is a day Yahoo's hourly endpoint already
+    back-adjusted (its raw aggregate already sits at the same scale as the
+    daily bar) — dividing by 4 again would double-adjust it, which is
+    exactly the bug 1,880 residual rows came from. This must fail against
+    the pre-fix code, which divides both days unconditionally.
+    """
+    ts = pd.to_datetime(["2024-01-02 09:30", "2024-01-30 09:30", "2024-02-02 09:30"])
+    raw = pd.DataFrame(
+        {
+            "ticker": "ANET",
+            "ts": ts,
+            # Day 1: raw Yahoo hourly still at the pre-split (~4x) scale.
+            # Day 2: raw Yahoo hourly already back-adjusted by the vendor —
+            #        matches the daily bar's ~105 scale already.
+            # Day 3: on/after ex_date, untouched either way.
+            "open": [396.0, 104.0, 106.0],
+            "high": [404.0, 105.0, 107.0],
+            "low": [396.0, 103.0, 105.0],
+            "close": [400.0, 104.0, 106.0],
+            "volume": [1_000, 1_100, 1_200],
+        }
+    )
+    monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly", lambda t, s, e: raw)
+    monkeypatch.setattr(
+        ingest,
+        "_read_corporate_actions",
+        lambda engine, tickers: _splits(
+            [{"ticker": "ANET", "ex_date": date(2024, 2, 1), "action_type": "split", "ratio": 4}]
+        ),
+    )
+    monkeypatch.setattr(
+        ingest,
+        "_read_daily_range",
+        lambda engine, tickers: pd.DataFrame(
+            {
+                "ticker": ["ANET", "ANET"],
+                "d": [date(2024, 1, 2), date(2024, 1, 30)],
+                "high": [101.0, 105.0],
+                "low": [99.0, 103.0],
+            }
+        ),
+    )
+
+    ingest.run_bars_hourly(["ANET"], START, END, engine=_FakeEngine())
+
+    out = written["bars"][0].set_index("ts")
+
+    # Day 1: genuinely unadjusted vendor data — still divided by the split ratio.
+    assert out.loc["2024-01-02 09:30", "close"] == pytest.approx(100.0, abs=1e-4)
+    assert out.loc["2024-01-02 09:30", "high"] == pytest.approx(101.0, abs=1e-4)
+
+    # Day 2: vendor already pre-adjusted this day — must NOT be divided again.
+    assert out.loc["2024-01-30 09:30", "close"] == pytest.approx(104.0, abs=1e-4)
+    assert out.loc["2024-01-30 09:30", "high"] == pytest.approx(105.0, abs=1e-4)
+
+    # Day 3: on/after ex_date — untouched regardless.
+    assert out.loc["2024-02-02 09:30", "close"] == pytest.approx(106.0, abs=1e-4)
+
+
+def test_a_small_ratio_split_vendor_already_adjusted_is_left_alone(monkeypatch, written):
+    """Regression for the coordinator's finding: a split with ratio 1.2 is
+    close enough to 1.0 that the range-escape guard's 0.50 tolerance can't
+    tell "already adjusted" from "not yet adjusted" — both land inside a
+    band around 1.0. The nearer-hypothesis test must still resolve this
+    correctly: here the raw day's high already matches daily (ratio ~1.0,
+    the "already adjusted" hypothesis), so no division should happen.
+    This must fail against the tolerance-borrowing implementation, which
+    reads "close to 1.0" as sufficient on its own and reaches the right
+    answer here only by accident — the paired test below with the same
+    ratio proves it is not applying the two-hypothesis test at all.
+    """
+    ts = pd.to_datetime(["2024-01-15 09:30"])
+    raw = pd.DataFrame(
+        {
+            "ticker": "SPLT12",
+            "ts": ts,
+            "open": [119.8],
+            "high": [120.5],
+            "low": [119.5],
+            "close": [120.0],
+            "volume": [1_000],
+        }
+    )
+    monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly", lambda t, s, e: raw)
+    monkeypatch.setattr(
+        ingest,
+        "_read_corporate_actions",
+        lambda engine, tickers: _splits(
+            [
+                {
+                    "ticker": "SPLT12",
+                    "ex_date": date(2024, 2, 1),
+                    "action_type": "split",
+                    "ratio": 1.2,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        ingest,
+        "_read_daily_range",
+        lambda engine, tickers: pd.DataFrame(
+            {
+                "ticker": ["SPLT12"],
+                "d": [date(2024, 1, 15)],
+                "high": [120.5],
+                "low": [119.5],
+            }
+        ),
+    )
+
+    ingest.run_bars_hourly(["SPLT12"], START, END, engine=_FakeEngine())
+
+    out = written["bars"][0].set_index("ts")
+    assert out.loc["2024-01-15 09:30", "close"] == pytest.approx(120.0, abs=1e-4)
+    assert out.loc["2024-01-15 09:30", "high"] == pytest.approx(120.5, abs=1e-4)
+
+
+def test_a_small_ratio_split_vendor_unadjusted_still_divides(monkeypatch, written):
+    """Same ratio (1.2), opposite state: the vendor did NOT pre-adjust this
+    day, so the raw aggregate sits at ~1.2x daily (the "not yet adjusted"
+    hypothesis), not ~1.0x. The nearer-hypothesis test must still divide
+    by 1.2 here. Paired with the test above, this is the regression that
+    fails against the tolerance-borrowing implementation: that code reads
+    "close to 1.0 within 0.50" and a ratio of 1.2 sits inside that band
+    too (|1.2 - 1.0| = 0.2 <= 0.50), so it wrongly treats this unadjusted
+    day as already-adjusted and skips the division it should perform.
+    """
+    ts = pd.to_datetime(["2024-01-15 09:30"])
+    raw = pd.DataFrame(
+        {
+            "ticker": "SPLT12B",
+            "ts": ts,
+            "open": [143.76],
+            "high": [144.6],
+            "low": [143.4],
+            "close": [144.0],
+            "volume": [1_000],
+        }
+    )
+    monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly", lambda t, s, e: raw)
+    monkeypatch.setattr(
+        ingest,
+        "_read_corporate_actions",
+        lambda engine, tickers: _splits(
+            [
+                {
+                    "ticker": "SPLT12B",
+                    "ex_date": date(2024, 2, 1),
+                    "action_type": "split",
+                    "ratio": 1.2,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        ingest,
+        "_read_daily_range",
+        lambda engine, tickers: pd.DataFrame(
+            {
+                "ticker": ["SPLT12B"],
+                "d": [date(2024, 1, 15)],
+                "high": [120.5],
+                "low": [119.5],
+            }
+        ),
+    )
+
+    ingest.run_bars_hourly(["SPLT12B"], START, END, engine=_FakeEngine())
+
+    out = written["bars"][0].set_index("ts")
+    assert out.loc["2024-01-15 09:30", "close"] == pytest.approx(120.0, abs=1e-4)
+    assert out.loc["2024-01-15 09:30", "high"] == pytest.approx(120.5, abs=1e-4)
+
+
 def test_a_ratio_escaping_the_daily_range_by_more_than_noise_is_rejected(monkeypatch):
     """The durable guard: if corporate_actions is missing a split (the
     exact bug this task exists to prevent from recurring), an unadjusted

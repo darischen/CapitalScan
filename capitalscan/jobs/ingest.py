@@ -21,7 +21,12 @@ from rich.progress import Progress
 from rich.table import Table
 from sqlalchemy import Engine, text
 
-from capitalscan.core.config import DEFAULT_HOURLY_SPLIT_GUARD, SharesPlausibility, SplitParams
+from capitalscan.core.config import (
+    DEFAULT_HOURLY_SPLIT_DETECTION,
+    DEFAULT_HOURLY_SPLIT_GUARD,
+    SharesPlausibility,
+    SplitParams,
+)
 from capitalscan.jobs import db_io
 from capitalscan.jobs.fetch import finnhub, sec, wikipedia, yahoo
 from capitalscan.jobs.provenance import git_sha, new_run_id
@@ -529,66 +534,185 @@ def find_missing_bars(bars: pd.DataFrame, trading_days: pd.DataFrame) -> pd.Data
 # ============ hourly split back-adjustment (Session 9 hourly-split-adjust) ============
 
 
-def _split_adjustment_factor(ts: pd.Series, splits: pd.DataFrame) -> pd.Series:
-    """Cumulative back-adjustment factor for one ticker's hourly bars.
+def _split_adjustment_factor(
+    raw: pd.DataFrame, splits: pd.DataFrame, daily_range: pd.DataFrame
+) -> tuple[pd.Series, set]:
+    """Cumulative back-adjustment factor for one ticker's hourly bars, plus
+    the set of (day) values where the vendor's adjustment state could not
+    be resolved (see "Unresolved days" below).
 
     `corporate_actions.ratio` is `new_shares / old_shares`: 10 for KLAC's
     2026-06-12 10-for-1 split, 0.2 for AMCR's 2026-01-15 1-for-5 reverse
     split — verified directly against the live table (`SELECT ticker,
     ex_date, ratio FROM corporate_actions WHERE ticker = 'KLAC'` returns
-    `ratio = 10` for that row), and it matches the measured defect: KLAC's
-    unadjusted hourly `high` sits at ~10x the adjusted daily `high` on
-    pre-split days. Dividing pre-split OHLC by `ratio` is exactly Yahoo's
-    own back-adjustment, so this reproduces what the daily endpoint already
-    does upstream.
+    `ratio = 10` for that row). Dividing pre-split OHLC by `ratio` is
+    exactly Yahoo's own back-adjustment, so this reproduces what the daily
+    endpoint already does upstream — *when* the raw hourly fetch is
+    genuinely unadjusted, which the detection below no longer assumes
+    unconditionally.
 
-    For a bar at time `t`, the factor is the product of `ratio` over every
-    split whose `ex_date > t.date()` — a bar on or after the ex-date is
-    already on the post-split share count and needs no adjustment for that
-    split. Multiple splits inside the window compound: each is applied
-    independently, so a bar before two splits gets divided by both ratios.
+    For a bar at time `t`, the **naive** factor is the product of `ratio`
+    over every split whose `ex_date > t.date()` — a bar on or after the
+    ex-date is already on the post-split share count and needs no
+    adjustment for that split. Multiple splits inside the window compound:
+    each is applied independently, so a bar before two splits gets divided
+    by both ratios.
 
     A ticker with no splits (or a splits frame already filtered empty)
-    returns 1.0 for every row — never fabricated. A null or non-positive
-    `ratio` is dropped rather than applied, per invariant 4: a missing
-    ratio must not become a guess or a divide-by-zero.
+    returns factor 1.0 for every row and no unresolved days — never
+    fabricated. A null or non-positive `ratio` is dropped rather than
+    applied, per invariant 4: a missing ratio must not become a guess or a
+    divide-by-zero.
+
+    **Session 9 hourly-residual fix (2026-08-02), and the follow-up
+    correction the same day.** The premise "Yahoo's hourly endpoint never
+    back-adjusts" is false for a window of sessions immediately before
+    certain splits' `ex_date` — diagnosed against the live database
+    (`hourly-residual-diagnosis.md`): 1,880 bars across 15 tickers where
+    dividing by the naive factor over-corrected by exactly the split
+    ratio, because the raw hourly fetch for those specific days was
+    *already* split-adjusted by the vendor.
+
+    The first attempt at a fix asked one question per pending day: "is the
+    raw aggregate within `range_escape_tolerance` (0.50) of daily?" — that
+    fails for any split whose ratio itself sits near 1.0. `corporate_actions`
+    measured live has 11 of 33 splits in the hourly window with `ratio`
+    between 0.667 and 1.5: for those, an *unadjusted* day's ratio-to-daily
+    (~1.2, say) is itself inside a 0.50 band around 1.0, so the first
+    version misread "not yet adjusted" as "already adjusted" for exactly
+    the splits it needed to get right.
+
+    **The corrected test.** Per (ticker, day) with a pending naive factor
+    `F != 1.0`, aggregate the raw (pre-adjustment) hourly `high` for the
+    day (`day_high`) and the matching daily bar's `high` (`daily_high`) —
+    daily is the reliable reference, since Yahoo's daily endpoint
+    back-adjusts consistently (verified in the original fix report).
+    Compute `observed = day_high / daily_high` and score it against two
+    competing hypotheses instead of one absolute threshold:
+
+    - `already adjusted`: `observed` should sit near `1.0`
+    - `not yet adjusted`: `observed` should sit near `F`
+
+    Take whichever hypothesis `observed` sits nearer to, but only when
+    that nearness is decisive — the two distances must differ by more than
+    `HourlySplitDetection.resolution_margin` (0.10, see `core/config.py`
+    for where that number comes from and why it cannot reuse
+    `range_escape_tolerance`). A day where `observed` sits roughly midway
+    between `1.0` and `F` is not resolved either way: recorded as
+    **unresolved** and returned separately, so the caller can refuse to
+    write it rather than silently pick a hypothesis (invariant 4). This is
+    the deliberate asymmetry the review flagged: guessing wrong here
+    writes a plausible-looking but silently corrupt number that the
+    downstream range-escape guard likely cannot catch either (the whole
+    reason the ratio is ambiguous is that the resulting error is too small
+    to trip a 50%-tolerance guard) — dropping the row instead means the
+    prior good value, if any, survives untouched, and the gap is visible
+    in `bar_rejects` rather than invisible in `bars`.
+
+    An absent daily reference for a pending day leaves that day out of the
+    unresolved set and defaults to the naive factor (divide) — the
+    pre-existing baseline behavior, not a new guess, and the only decision
+    obtainable with zero information about which hypothesis holds.
+
+    **Residual limit.** As `HourlySplitDetection`'s docstring states, a
+    split whose ratio sits within roughly `2 * resolution_margin` of 1.0
+    can occasionally have a noisy day land in the unresolved band even
+    when most of its days resolve cleanly — inherent to comparing two
+    nearby points under real measurement noise, not a bug in the margin.
+
+    This check runs once per pending split each day is under, not once
+    globally, so a day with two compounding pending splits (as observed
+    for DD, non-overlapping in practice) is only ever resolved as a unit
+    for the whole pending set — a day where the vendor pre-adjusted only
+    one of two simultaneously-pending splits is not something the
+    diagnosis observed, and such a day would score against `F` = the full
+    product, not either split individually, and most likely land in
+    "not yet adjusted" or "unresolved" rather than a false "already
+    adjusted" — still conservative, not a silent guess.
     """
-    factor = pd.Series(1.0, index=ts.index, dtype="float64")
+    ts = raw["ts"]
+    naive = pd.Series(1.0, index=ts.index, dtype="float64")
     if splits.empty:
-        return factor
+        return naive, set()
 
     ratios = pd.to_numeric(splits["ratio"], errors="coerce")
     valid = ratios.notna() & (ratios > 0)
     if not valid.any():
-        return factor
+        return naive, set()
 
     row_dates = pd.to_datetime(ts).dt.date
     ex_dates = pd.to_datetime(splits.loc[valid, "ex_date"]).dt.date
     for ex_date, ratio in zip(ex_dates, ratios[valid]):
         pre_split = row_dates < ex_date
-        factor = factor.where(~pre_split, factor * float(ratio))
-    return factor
+        naive = naive.where(~pre_split, naive * float(ratio))
+
+    pending = naive.ne(1.0)
+    if not pending.any() or daily_range.empty:
+        return naive, set()
+
+    margin = DEFAULT_HOURLY_SPLIT_DETECTION.resolution_margin
+    raw_day_high = raw.assign(d=row_dates).loc[pending].groupby("d")["high"].max()
+    naive_by_day = naive.groupby(row_dates).first()
+    daily_by_day = daily_range.set_index("d")["high"]
+
+    already_adjusted_days: set = set()
+    unresolved_days: set = set()
+    for d, rh in raw_day_high.items():
+        dh = daily_by_day.get(d)
+        if dh is None or pd.isna(dh) or dh <= 0 or rh <= 0:
+            continue  # no reliable daily reference: default to naive division
+        f = naive_by_day.get(d, 1.0)
+        observed = rh / dh
+        dist_adjusted = abs(observed - 1.0)
+        dist_unadjusted = abs(observed - f)
+        if dist_adjusted + margin < dist_unadjusted:
+            already_adjusted_days.add(d)
+        elif dist_unadjusted + margin < dist_adjusted:
+            continue  # decisively unadjusted: naive factor already correct
+        else:
+            unresolved_days.add(d)
+
+    factor = naive.copy()
+    if already_adjusted_days:
+        skip_mask = row_dates.isin(already_adjusted_days)
+        factor = factor.where(~skip_mask, 1.0)
+    return factor, unresolved_days
 
 
-def _back_adjust_hourly(raw: pd.DataFrame, splits: pd.DataFrame) -> pd.DataFrame:
+def _back_adjust_hourly(
+    raw: pd.DataFrame, splits: pd.DataFrame, daily_range: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Divide OHLC by `_split_adjustment_factor`, rounded to 4dp (convention).
 
-    Computed fresh from the just-fetched `raw` frame and the current
-    `corporate_actions` snapshot every call — never applied to a
-    previously-stored adjusted value — so a rerun of `run_bars_hourly`
-    recomputes the same factor from the same raw input and rewrites the
-    same numbers rather than adjusting an already-adjusted price a second
-    time. That is what makes the upsert on `(ticker, ts, interval)` safe
-    to repeat.
+    Computed fresh from the just-fetched `raw` frame, the current
+    `corporate_actions` snapshot, and the current daily `bars` range every
+    call — never applied to a previously-stored adjusted value — so a
+    rerun of `run_bars_hourly` recomputes the same factor from the same
+    raw input and rewrites the same numbers rather than adjusting an
+    already-adjusted price a second time. That is what makes the upsert on
+    `(ticker, ts, interval)` safe to repeat.
+
+    Returns `(adjusted, unresolved)`: `adjusted` carries every input row
+    (including unresolved-day rows, still divided by the naive factor —
+    the caller drops them before upserting, this function only computes);
+    `unresolved` is the subset of rows whose day landed in
+    `_split_adjustment_factor`'s unresolved set, for the caller to reject
+    and log rather than write.
     """
     if raw.empty:
-        return raw
+        return raw, raw.iloc[:0]
 
     out = raw.copy()
-    factor = _split_adjustment_factor(out["ts"], splits)
+    factor, unresolved_days = _split_adjustment_factor(out, splits, daily_range)
     for col in ("open", "high", "low", "close"):
         out[col] = (out[col] / factor).round(4)
-    return out
+
+    if not unresolved_days:
+        return out, out.iloc[:0]
+
+    row_dates = pd.to_datetime(out["ts"]).dt.date
+    unresolved = out.loc[row_dates.isin(unresolved_days)]
+    return out, unresolved
 
 
 def _read_daily_range(engine: Engine, tickers: list[str]) -> pd.DataFrame:
@@ -729,9 +853,13 @@ def run_bars_hourly(
         # well past CLAUDE.md's 10-minute checkpoint threshold. Buffering
         # every frame and writing once at the end meant an interrupt threw
         # away the whole run, which is exactly what happened twice.
-        # Splits back-adjust the raw fetch (Yahoo's hourly endpoint, unlike
-        # its daily one, does not); the daily range backs the range-escape
-        # guard. Both read once for the whole ticker list, same shape as
+        # Splits back-adjust the raw fetch — but only where the vendor has
+        # not already done so (Session 9 hourly-residual fix: Yahoo's
+        # hourly endpoint pre-adjusts a window of sessions immediately
+        # before certain ex-dates, so `_split_adjustment_factor` checks
+        # each pending day against the daily range before dividing); the
+        # same daily range also backs the range-escape guard below. Both
+        # read once for the whole ticker list, same shape as
         # `run_bars_daily`'s `_read_corporate_actions` call — a handful of
         # queries against small tables, not one per ticker.
         actions = _read_corporate_actions(engine, tickers)
@@ -752,7 +880,40 @@ def run_bars_hourly(
                 ticker_splits = (
                     splits.loc[splits["ticker"] == ticker] if not splits.empty else splits
                 )
-                raw = _back_adjust_hourly(hourly, ticker_splits)
+                ticker_daily_range = (
+                    daily_range.loc[daily_range["ticker"] == ticker]
+                    if not daily_range.empty
+                    else daily_range
+                )
+                raw, unresolved = _back_adjust_hourly(hourly, ticker_splits, ticker_daily_range)
+
+                unresolved_rejects: list[dict] = []
+                if not unresolved.empty:
+                    # Neither hypothesis ("vendor already adjusted this day"
+                    # vs. "vendor did not") is decisively closer to the
+                    # observed ratio — see _split_adjustment_factor's
+                    # docstring. Dropped and logged rather than guessed
+                    # (invariant 4): a wrong guess here would likely land
+                    # inside the range-escape guard's own tolerance and
+                    # pass through silently, the same failure shape this
+                    # whole fix exists to close.
+                    margin = DEFAULT_HOURLY_SPLIT_DETECTION.resolution_margin
+                    for _, row in unresolved.iterrows():
+                        unresolved_rejects.append(
+                            {
+                                "ticker": row["ticker"],
+                                "ts": row["ts"],
+                                "rule": "hourly_split_adjustment_unresolved",
+                                "severity": "reject",
+                                "payload": {
+                                    "high": row["high"],
+                                    "low": row["low"],
+                                    "resolution_margin": margin,
+                                },
+                            }
+                        )
+                    raw = raw.loc[~raw["ts"].isin(unresolved["ts"])].reset_index(drop=True)
+
                 raw["interval"] = "1h"
                 # `adj_close` is total-return: DESIGN §2.2 keeps it separate
                 # from the split-adjusted series. Hourly does not carry a
@@ -775,6 +936,7 @@ def run_bars_hourly(
                 # as a safety net for the same batch-boundary artifact
                 # `unresolved_rejects` documents for daily (ANET 2024-10-07).
                 clean, rejects = validate_bars(raw, corporate_actions=actions)
+                rejects = rejects + unresolved_rejects
 
                 guard_rejects = _flag_range_escape(clean, daily_range)
                 if guard_rejects:

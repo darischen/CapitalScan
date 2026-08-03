@@ -375,3 +375,62 @@ class HourlySplitGuard:
 
 
 DEFAULT_HOURLY_SPLIT_GUARD = HourlySplitGuard()
+
+
+@dataclass(frozen=True)
+class HourlySplitDetection:
+    """Decisiveness margin for `jobs.ingest._split_adjustment_factor`'s
+    per-day "did the vendor already adjust this?" test (Session 9
+    double-adjust-fix follow-up, 2026-08-02).
+
+    Deliberately **not** a field of `Config`, and deliberately **not**
+    reusing `HourlySplitGuard.range_escape_tolerance` — a review finding
+    caught that borrowing: this dataclass answers a different question at
+    a different scale.
+
+    **Why this can't share `range_escape_tolerance` (0.50).** That value
+    separates "clean bar" from "split-sized escape" *after* adjustment,
+    calibrated against the single worst non-split anomaly ever observed
+    (~33%) versus the smallest real split's post-adjustment deviation
+    (~80%) — a wide gap with room for a threshold in the middle. This
+    dataclass instead has to pick between two competing hypotheses for
+    what the *raw, pre-adjustment* value should be — "already adjusted"
+    (ratio to daily ~1.0) vs. "not yet adjusted" (ratio to daily ~ the
+    split factor) — and for a split with a small ratio (measured live:
+    `SELECT count(*) FILTER (WHERE ratio BETWEEN 0.667 AND 1.5) FROM
+    corporate_actions WHERE action_type='split' AND ex_date > '2024-08-01'`
+    returns 11 of 33 splits in the hourly window), the two hypotheses sit
+    close enough together that 0.50 would make everything look like
+    either answer — it has no discriminating power at that scale. What
+    varies here is measurement noise around one of two nearby points, not
+    a decision about a huge range.
+
+    **Where `resolution_margin` (0.10) comes from.** `HourlySplitGuard`'s
+    own docstring already characterizes ordinary hourly/daily tick noise
+    from the live 297,790-pair measurement: it "stays under roughly 10%
+    relative deviation for the large majority of mismatched pairs." That
+    is the number this margin reuses — not `range_escape_tolerance`
+    itself, but the underlying noise floor it was derived from, applied
+    to its actual purpose (bounding ordinary noise) instead of stretched
+    to also bound split-decisiveness. A day's observed ratio must sit
+    closer to one hypothesis than the other by more than this margin to
+    be called decisively either way; within it, the two hypotheses are
+    not reliably distinguishable from noise and the day is treated as
+    unresolved rather than guessed (invariant 4) — see
+    `_split_adjustment_factor`'s docstring for what "unresolved" does.
+
+    **Residual limit, stated directly.** A split whose ratio sits within
+    roughly `2 * resolution_margin` of 1.0 (i.e. inside about [0.80, 1.20]
+    for a forward split, symmetric for reverse) can still land in the
+    unresolved band on an unlucky noisy day even though most days for
+    that same split resolve cleanly, because the two hypotheses are close
+    enough that ordinary noise can occasionally straddle the midpoint.
+    This is inherent to the physical measurement, not a bug in the
+    margin: no threshold makes two nearby points reliably separable when
+    noise is large enough relative to their separation.
+    """
+
+    resolution_margin: float = 0.10
+
+
+DEFAULT_HOURLY_SPLIT_DETECTION = HourlySplitDetection()
