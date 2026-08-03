@@ -73,6 +73,66 @@ def mfe_mae(entry_price: float, side: Side, fwd_bars: pd.DataFrame) -> tuple[flo
     return mfe, mae, time_to_mfe
 
 
+def entry_offset_for(entry_kind: EntryKind) -> int:
+    """Trading-day offset of an entry fill from its signal date.
+
+    `TOUCH`, `TOUCH_5M`, and `TOUCH_30M` all fill on the signal bar itself
+    (offset 0). `NEXT_OPEN` fills exactly one trading day later, always —
+    never more, because `entry_price_for`'s own `NEXT_OPEN` branch either
+    returns the very next bar's open or, if there is no next bar, `NaN`
+    (a position that never filled, which never reaches the path table at
+    all). This makes the offset a pure function of `entry_kind`, needing
+    no price lookup — the path table's `day_offset` column (DESIGN §5.7b)
+    counts from the signal date, not the entry date, and this is the
+    translation between the two anchors every path-derived, entry-anchored
+    quantity (MFE, MAE, reachability, `fwd_ret_*d`) needs.
+    """
+    return 1 if entry_kind is EntryKind.NEXT_OPEN else 0
+
+
+def path_for_event(entry_price: float, side: Side, fwd_bars: pd.DataFrame) -> pd.DataFrame:
+    """Per-day forward path (DESIGN §5.7b): one row per trading day after
+    whatever date `fwd_bars` starts at (the caller decides — Task 10.2's
+    caller passes bars starting the day after `signal_date`), with
+    direction-neutral `favorable`/`adverse` extremes and a `terminal`
+    mark, all anchored to `entry_price` and expressed as a return
+    fraction.
+
+    Reuses `mfe_mae` one bar at a time (rather than a second hand-rolled
+    `(high - entry) / entry` here) and `realized_return` for the terminal
+    mark — invariant 2, one implementation. `mfe_mae` on a single-row
+    window degenerates to exactly the per-bar formula: max/min over one
+    element is that element.
+
+    Split-adjusted OHLC only (`high`, `low`, `close`) — never `adj_close`.
+    This intentionally does not match `forward_returns`' total-return
+    convention; see the plan header ("Price series discipline") for why.
+
+    `day_offset` is 1-based and contiguous, matching the row's position in
+    `fwd_bars` — never padded past however many rows `fwd_bars` actually
+    has (invariant 4: a short window near the end of price history yields
+    fewer rows, never a filled/interpolated one).
+    """
+    columns = ["day_offset", "favorable", "adverse", "terminal"]
+    if len(fwd_bars) == 0:
+        return pd.DataFrame(columns=columns)
+
+    rows: list[dict] = []
+    for i in range(len(fwd_bars)):
+        one_bar = fwd_bars.iloc[i : i + 1]
+        favorable, adverse, _ = mfe_mae(entry_price, side, one_bar)
+        terminal = realized_return(entry_price, float(one_bar.iloc[0]["close"]), side)
+        rows.append(
+            {
+                "day_offset": i + 1,
+                "favorable": favorable,
+                "adverse": adverse,
+                "terminal": terminal,
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
+
+
 def _first_hourly_touch(hourly: pd.DataFrame, touch_level: float, side: Side) -> pd.Series | None:
     """First hourly bar whose range reaches `touch_level`, or None."""
     price_col, bound = ("low", Bound.LOWER) if side is Side.LONG else ("high", Bound.UPPER)
