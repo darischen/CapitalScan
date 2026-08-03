@@ -25,8 +25,8 @@ import pandas as pd
 from sqlalchemy import Engine, text
 
 from capitalscan.core.config import Config
-from capitalscan.core.returns import path_for_event
-from capitalscan.core.types import Side
+from capitalscan.core.returns import entry_offset_for, path_for_event
+from capitalscan.core.types import EntryKind, Side
 from capitalscan.jobs import db_io
 from capitalscan.jobs.progress import track
 
@@ -84,6 +84,29 @@ class PathBackfillReport:
     tickers: list[str] = field(default_factory=list)
 
 
+def window_days_for_config(config: Config) -> int:
+    """The `path` window size (Task 10.2): `max(fwd_ret_horizons) +
+    max(entry_offset_for(k) for k in EntryKind)` — 11, not 10, with the
+    default config — not just `max(fwd_ret_horizons)`.
+
+    `path.day_offset` counts from `signal_date`, but `derive_labels_from_path`
+    (Task 10.3) reads a horizon's terminal mark at `day_offset = entry_offset
+    + horizon` (`core.returns.entry_offset_for`). A `NEXT_OPEN` event has
+    `entry_offset=1`, so its `fwd_ret_10d` needs `day_offset=11`. Sizing the
+    window at exactly 10 would leave that offset permanently missing from
+    `path`, so every `NEXT_OPEN` event's `fwd_ret_10d` would come back
+    structurally NaN — not because of the documented price-series difference
+    (`path_reconcile.EXPLAINED_COLUMNS`), but because of a real coverage gap.
+    The `+ max_entry_offset` pads the window for every entry kind uniformly
+    so the slowest (largest-offset) entry kind's full horizon is always
+    covered.
+    """
+    if not config.stats.fwd_ret_horizons:
+        return 0
+    max_entry_offset = max(entry_offset_for(kind) for kind in EntryKind)
+    return max(config.stats.fwd_ret_horizons) + max_entry_offset
+
+
 def run_path_backfill(engine: Engine, config: Config, quiet: bool = False) -> PathBackfillReport:
     """Backfills `path` and `events.fwd_window_days` for every event with a
     filled entry, one ticker at a time (each ticker's `bars` loaded once
@@ -94,8 +117,11 @@ def run_path_backfill(engine: Engine, config: Config, quiet: bool = False) -> Pa
     same rows with the same values rather than duplicating or erroring.
     `events.fwd_window_days` is written through a plain `UPDATE ... WHERE
     id = :id`, also idempotent by construction.
+
+    See `window_days_for_config` for why the window is 11 days, not 10,
+    with the default config.
     """
-    window_days = max(config.stats.fwd_ret_horizons) if config.stats.fwd_ret_horizons else 0
+    window_days = window_days_for_config(config)
     report = PathBackfillReport()
 
     with engine.connect() as conn:

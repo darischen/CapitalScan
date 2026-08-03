@@ -144,6 +144,44 @@ def test_capture_ratio_null_when_mfe_non_positive():
     assert out["capture_ratio"] is None
 
 
+def test_reachability_uses_breach_rounding_at_the_boundary():
+    # favorable is 0.05 minus a sub-hundredth-of-a-cent float artifact
+    # (below _breach's 4-decimal rounding threshold): a raw `>=` comparison
+    # would call this "not touched," but `_breach` rounds both operands to
+    # 4 decimals first (DESIGN §3.2), so 0.0499999996 rounds to 0.05 and
+    # matches the target exactly — this must register as touched.
+    path = _path([(1, 0.0499999996, -0.01, 0.05)])
+    out = derive_labels_from_path(
+        path=path,
+        entry_offset=0,
+        holding_days=1,
+        entry_price=100.0,
+        exit_price=105.0,
+        side=Side.LONG,
+        max_hold_days=5,
+        targets=(0.05,),
+        horizons=(1,),
+    )
+    assert out["touched_5pct"] is True
+    assert out["day_touched_5pct"] == 1
+
+
+def test_reachability_exact_target_match_counts_as_touched():
+    path = _path([(1, 0.05, -0.01, 0.05)])
+    out = derive_labels_from_path(
+        path=path,
+        entry_offset=0,
+        holding_days=1,
+        entry_price=100.0,
+        exit_price=105.0,
+        side=Side.LONG,
+        max_hold_days=5,
+        targets=(0.05,),
+        horizons=(1,),
+    )
+    assert out["touched_5pct"] is True
+
+
 def test_derive_labels_from_path_is_deterministic():
     path = _path([(1, 0.01, -0.005, 0.01), (2, 0.03, -0.01, 0.02)])
     kwargs = dict(

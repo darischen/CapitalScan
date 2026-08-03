@@ -5,10 +5,13 @@ from datetime import date
 import pandas as pd
 import pytest
 
+from capitalscan.core.config import DEFAULT_CONFIG
+from capitalscan.core.returns import entry_offset_for
 from capitalscan.core.types import EntryKind, Side
 from capitalscan.research.path_backfill import (
     fwd_window_for_signal,
     rows_for_event,
+    window_days_for_config,
 )
 
 
@@ -58,6 +61,14 @@ def test_rows_for_event_skips_unfilled_entries():
     )
     assert rows.empty
     assert n is None
+
+
+def test_window_days_for_config_pads_by_max_entry_offset():
+    # Default config: max(fwd_ret_horizons)=10, max entry_offset (NEXT_OPEN)=1.
+    # A NEXT_OPEN event's fwd_ret_10d needs day_offset=11, so the window
+    # must be 11, not 10 (finding #2 of the final review).
+    assert max(entry_offset_for(k) for k in EntryKind) == 1
+    assert window_days_for_config(DEFAULT_CONFIG) == 11
 
 
 def test_rows_for_event_full_window_sets_fwd_window_days():

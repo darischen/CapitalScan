@@ -23,7 +23,8 @@ from sqlalchemy import Engine, text
 
 from capitalscan.core.config import Config
 from capitalscan.core.returns import entry_offset_for, realized_return
-from capitalscan.core.types import EntryKind, Side
+from capitalscan.core.signals import _breach
+from capitalscan.core.types import Bound, EntryKind, Side
 from capitalscan.research.enrich import _pct_suffix
 
 
@@ -99,7 +100,18 @@ def derive_labels_from_path(
         reach = by_offset.loc[by_offset.index.isin(reach_offsets)].sort_index()
         for target in targets:
             suffix = _pct_suffix(target)
-            touched_rows = reach.loc[reach["favorable"] >= target]
+            # Routed through `_breach`, the one band comparison in the repo
+            # (invariant 2), matching `research.enrich.path_metrics`'s own
+            # reachability check. `favorable` is already direction-neutral
+            # (always "distance moved in the favorable direction for this
+            # side," as a return fraction), so the comparison is always
+            # `Bound.UPPER` ("at or above target") regardless of `side` —
+            # `side` already got baked into `favorable`'s sign upstream in
+            # `core.returns.mfe_mae`/`path_for_event`.
+            touched_mask = reach["favorable"].apply(
+                lambda v: _breach(float(v), target, Bound.UPPER)
+            )
+            touched_rows = reach.loc[touched_mask]
             if touched_rows.empty:
                 out[f"touched_{suffix}"] = False
                 out[f"day_touched_{suffix}"] = None
@@ -148,9 +160,17 @@ def derive_session9_labels(engine: Engine, config: Config, run_id: str) -> pd.Da
     targets = config.stats.reach_targets
     horizons = config.stats.fwd_ret_horizons
 
+    # Grouped once, outside the loop, rather than `path.loc[path["event_id"]
+    # == ev["event_id"]]` inside it — the latter rescans the whole `path`
+    # frame per event (O(events * len(path))), which matters once `path`
+    # holds the full 11-day window for every event in a run (finding #8 of
+    # the final review).
+    empty_path = path.iloc[0:0]
+    path_by_event = {eid: grp for eid, grp in path.groupby("event_id")}
+
     rows = []
     for _, ev in events.iterrows():
-        event_path = path.loc[path["event_id"] == ev["event_id"]]
+        event_path = path_by_event.get(ev["event_id"], empty_path)
         holding_days = None if pd.isna(ev["holding_days"]) else int(ev["holding_days"])
         labels = derive_labels_from_path(
             path=event_path,

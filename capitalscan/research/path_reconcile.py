@@ -58,6 +58,21 @@ EXPLAINED_COLUMNS = {
 
 _FLOAT_TOL = 1e-9
 
+# `mfe`/`mae` are compared at `_FLOAT_TOL` because both sides derive from
+# already-quantized (`numeric(12,6)`) `path.favorable`/`path.adverse`
+# values, so they agree to near bit-exactness. `capture_ratio = r_exit /
+# mfe` divides by `mfe`, which amplifies that same quantization error: a
+# `numeric(12,6)` value carries up to ~5e-7 of rounding noise, and dividing
+# a fixed numerator by an `mfe` that differs by that much produces a
+# *relative* error of `~5e-7/mfe` in the ratio — for realistic MFE values
+# (a few percent), that is several orders of magnitude above `1e-9`. Using
+# the absolute tolerance here would flag mass false-positive mismatches on
+# a real reconciliation run for a reason that has nothing to do with an
+# actual defect (finding #3 of the final review). Columns listed here
+# compare with *relative* tolerance instead; everything else keeps the
+# absolute `_FLOAT_TOL` above.
+RELATIVE_TOLERANCE_COLUMNS = {"capture_ratio": 1e-4}
+
 
 def diff_labels(derived: pd.DataFrame, actual: pd.DataFrame, columns: list[str]) -> dict[str, pd.DataFrame]:
     """Per-column mismatch frames, keyed by column name. A column with no
@@ -68,7 +83,10 @@ def diff_labels(derived: pd.DataFrame, actual: pd.DataFrame, columns: list[str])
     by both sides). Floats compare within `_FLOAT_TOL` absolute tolerance
     — comparing two independently computed float pipelines for bit-exact
     equality would fail on ordinary floating-point round-off, which is not
-    what this check exists to catch.
+    what this check exists to catch. Columns in `RELATIVE_TOLERANCE_COLUMNS`
+    (currently just `capture_ratio` — see its comment above) compare with
+    relative tolerance instead, since an absolute tolerance sized for
+    `mfe`/`mae` is too tight for a ratio that divides by `mfe`.
     """
     merged = derived.merge(actual, on="event_id", suffixes=("_derived", "_actual"))
     mismatches: dict[str, pd.DataFrame] = {}
@@ -78,8 +96,23 @@ def diff_labels(derived: pd.DataFrame, actual: pd.DataFrame, columns: list[str])
 
         both_null = d_vals.isna() & a_vals.isna()
         if pd.api.types.is_numeric_dtype(d_vals) or pd.api.types.is_numeric_dtype(a_vals):
-            diff = (d_vals.astype(float) - a_vals.astype(float)).abs()
-            mismatch_mask = ~both_null & (diff.isna() | (diff > _FLOAT_TOL))
+            d_float, a_float = d_vals.astype(float), a_vals.astype(float)
+            diff = (d_float - a_float).abs()
+            if col in RELATIVE_TOLERANCE_COLUMNS:
+                rel_tol = RELATIVE_TOLERANCE_COLUMNS[col]
+                # Relative to the actual (Session 9's stored) value — the
+                # reference the derived value is being checked against.
+                # Denominator zeros are guarded explicitly (rather than
+                # dividing and letting inf/NaN propagate) so a ratio
+                # Session 9 stored as exactly 0 still flags on any nonzero
+                # `diff`, without a division-by-zero warning along the way.
+                zero_denom = a_float == 0
+                safe_denom = a_float.abs().where(~zero_denom, 1.0)
+                rel_diff = diff / safe_denom
+                exceeds = (zero_denom & (diff > 0)) | (~zero_denom & (rel_diff > rel_tol))
+                mismatch_mask = ~both_null & (diff.isna() | exceeds)
+            else:
+                mismatch_mask = ~both_null & (diff.isna() | (diff > _FLOAT_TOL))
         else:
             mismatch_mask = ~both_null & (d_vals != a_vals)
 
@@ -104,6 +137,74 @@ class ReconciliationReport:
         return len(self.unexplained_mismatch_columns) == 0
 
 
+def assert_event_ids_match(derived: pd.DataFrame, actual: pd.DataFrame) -> None:
+    """Raises if `derived` and `actual` don't cover the exact same
+    `event_id` set (finding #5 of the final review).
+
+    `diff_labels`'s inner `merge` on `event_id` silently drops any
+    `event_id` present on only one side — a real coverage gap (a
+    half-written `derive_session9_labels` result, or a Session 9 write
+    that never landed) would otherwise vanish from the diff instead of
+    being reported, making the reconciliation itself untrustworthy.
+    """
+    derived_ids = set(derived["event_id"]) if "event_id" in derived else set()
+    actual_ids = set(actual["event_id"]) if "event_id" in actual else set()
+    only_derived = derived_ids - actual_ids
+    only_actual = actual_ids - derived_ids
+    if only_derived or only_actual:
+        raise ValueError(
+            "reconcile: derived and actual event_id sets differ — "
+            f"{len(only_derived)} event_id(s) only in derived, "
+            f"{len(only_actual)} only in actual. The reconciliation diff "
+            "cannot be trusted while this gap exists (an inner join would "
+            "silently drop them)."
+        )
+
+
+def _unbackfilled_resolved_event_ids(rows: pd.DataFrame) -> pd.Series:
+    """Pure helper (unit-testable with in-memory frames, no engine): the
+    `event_id`s in `rows` (columns `event_id`, `holding_days`,
+    `fwd_window_days`) with a resolved position but no path backfill.
+
+    A resolved position (`holding_days IS NOT NULL`) with zero `path` rows
+    (`fwd_window_days IS NULL`) is a real coverage gap, not a legitimate
+    "never filled" case (which is `entry_price IS NULL` and never gets a
+    `holding_days` value in the first place — see `path_backfill`'s module
+    docstring). `derive_labels_from_path` returns `touched_*pct=False` /
+    `day_touched_*pct=None` for every threshold on an empty `path` frame,
+    which for the majority of real events (which never touch high
+    thresholds anyway) matches Session 9's stored value by coincidence,
+    hiding the gap instead of surfacing it as a mismatch (finding #5 of
+    the final review).
+    """
+    return rows.loc[rows["holding_days"].notna() & rows["fwd_window_days"].isna(), "event_id"]
+
+
+def assert_backfill_covers_resolved_events(engine: Engine, run_id: str) -> None:
+    """Raises if any event in `run_id` with a resolved position
+    (`holding_days IS NOT NULL`) has no path backfill
+    (`fwd_window_days IS NULL`). See `_unbackfilled_resolved_event_ids`.
+    """
+    with engine.connect() as conn:
+        rows = pd.read_sql(
+            text(
+                "SELECT id AS event_id, holding_days, fwd_window_days FROM events "
+                "WHERE run_id = :run_id"
+            ),
+            conn,
+            params={"run_id": run_id},
+        )
+    gap = _unbackfilled_resolved_event_ids(rows)
+    if len(gap) > 0:
+        sample = list(gap.head(10))
+        raise ValueError(
+            f"reconcile: {len(gap)} event(s) in run_id={run_id} have a resolved "
+            "position (holding_days IS NOT NULL) but no path backfill "
+            f"(fwd_window_days IS NULL). Run `cscan path backfill` before "
+            f"reconciling. Sample event_ids: {sample}"
+        )
+
+
 def reconcile(engine: Engine, config: Config, run_id: str) -> ReconciliationReport:
     derived = derive_session9_labels(engine, config, run_id)
     with engine.connect() as conn:
@@ -115,6 +216,9 @@ def reconcile(engine: Engine, config: Config, run_id: str) -> ReconciliationRepo
             conn,
             params={"run_id": run_id},
         )
+
+    assert_event_ids_match(derived, actual)
+    assert_backfill_covers_resolved_events(engine, run_id)
 
     mismatches = diff_labels(derived, actual, LABEL_COLUMNS) if not derived.empty else {}
     explained = {col: reason for col, reason in EXPLAINED_COLUMNS.items() if col in mismatches}

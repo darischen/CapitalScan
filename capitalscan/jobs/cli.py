@@ -1009,13 +1009,13 @@ def path_backfill_cmd(
     quiet: bool = typer.Option(False, "--quiet", help="JSON-lines progress instead of a live bar"),
 ) -> None:
     """Populate `path` and `events.fwd_window_days` for every filled entry."""
-    from capitalscan.core.config import DEFAULT_CONFIG
     from capitalscan.jobs import db_io, ingest
     from capitalscan.research.path_backfill import run_path_backfill
 
+    config = _resolve_config_or_exit()
     engine = db_io.get_engine()
     with ingest.run_job(engine, "path_backfill", {}) as job_report:
-        report = run_path_backfill(engine, DEFAULT_CONFIG, quiet=quiet)
+        report = run_path_backfill(engine, config, quiet=quiet)
         job_report.rows_written = report.rows_written
     console.print(
         f"path backfill: events_processed={report.events_processed} "
@@ -1028,17 +1028,22 @@ def path_reconcile_cmd(
     run_id: str = typer.Option(..., "--run-id", help="events.run_id to reconcile against"),
 ) -> None:
     """Task 10.4: diff path-derived labels against Session 9's stored labels."""
-    from capitalscan.core.config import DEFAULT_CONFIG
     from capitalscan.jobs import db_io
     from capitalscan.research.path_reconcile import reconcile
 
+    config = _resolve_config_or_exit()
     engine = db_io.get_engine()
-    report = reconcile(engine, DEFAULT_CONFIG, run_id)
+    report = reconcile(engine, config, run_id)
     console.print(f"reconcile: run_id={run_id} total_events={report.total_events}")
     for col, frame in report.mismatches.items():
         tag = "[yellow]explained[/yellow]" if col in report.explained else "[red]UNEXPLAINED[/red]"
-        console.print(f"  {col}: {len(frame)} mismatches {tag}")
+        sample_ids = list(frame["event_id"].head(5))
+        console.print(
+            f"  {col}: {len(frame)} mismatches {tag} (sample event_ids: {sample_ids})"
+        )
     console.print("[green]PASS[/green]" if report.passes else "[red]FAIL[/red]")
+    if not report.passes:
+        raise typer.Exit(code=1)
 
 
 app.add_typer(path_app, name="path")
