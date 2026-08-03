@@ -14,6 +14,8 @@ A new table holding the forward price path of every event, and a derived label l
 
 The path store keeps, for each event, the per-day forward outcome across the full evaluation window: the extreme favorable move, the extreme adverse move, and the terminal mark. Direction-neutral, so both tails exist for every event regardless of signal type.
 
+The full evaluation window is **ten trading days**, `max(StatsParams.fwd_ret_horizons)` — the longest horizon any label family in this session needs, not a new number. This is deliberately not `ExitParams.max_hold_days` (5). The exit window is a policy parameter the 18-config sweep varies; the path window is a measurement span that must stay fixed regardless of exit policy, or the path table's shape would depend on which exit config happened to run, which is exactly the coupling DESIGN §7.4 rejects when it says the model describes the underlying path and exit policy is a separate layer on top. Every later reference in this document to "the full evaluation window" or "the window" means these ten trading days unless a task says otherwise.
+
 The derived layer recomputes the labels session 9 already produces, then adds three new families:
 
 1. Terminal return distribution inputs at multiple horizons inside the window.
@@ -75,7 +77,7 @@ No Opus needed. The session is deliberately structured so the one high-risk step
 
 Add the path table to the research schema. One row per event per forward day. Foreign key to the event table, composite primary key on event plus day offset, cascade delete.
 
-Add a nullable column to the event table recording whether the forward window completed, and how many days of it exist. Events near the end of available price history have short windows and must be identifiable.
+Add a nullable column to the event table recording whether the forward window completed, and how many days of it exist. "Completed" means all ten trading days of the window defined in §0 exist for that event, not the five days of `ExitParams.max_hold_days`. Events near the end of available price history have short windows and must be identifiable.
 
 Acceptance:
 
@@ -90,6 +92,7 @@ Populate the path table for every existing event from the price history already 
 
 Rules the implementation must follow:
 
+- The window is ten trading days per event (§0), sourced from `StatsParams.fwd_ret_horizons`. Do not derive it from `ExitParams.max_hold_days` — that governs the exit path, not the path table.
 - Day offsets count trading days, never calendar days. The price history defines the trading calendar. Do not compute it independently.
 - The entry price definition must match whatever session 9 uses. Read the existing code and reuse it rather than reimplementing.
 - Use the same price adjustment convention as the rest of the pipeline. A mismatch here produces plausible but wrong returns.
@@ -139,6 +142,13 @@ Known mismatch causes worth checking first:
   `[t+1, exit_idx]`; reachability covers the full `[t+1, t+5]` regardless of
   when the exit fired (DESIGN §5.6). Reconciliation using one window for
   both will mismatch on every early-exit event.
+- **Five-day labels against a ten-day path table.** The path table spans
+  the full ten trading days defined in §0; session 9's reachability labels
+  span only `[t+1, t+5]`. Reconciling reachability means comparing against
+  the path table's five-day *prefix*, not its full span — a threshold first
+  touched on day 6-10 is a legitimate path-table result with no session 9
+  counterpart, not a mismatch. This is the same two-window cause above, on
+  the path table's own boundary instead of the exit boundary.
 - Look-ahead in the old path, where a label used information unavailable at detection time.
 
 Do not start 10.5 until this task passes clean.
@@ -148,7 +158,11 @@ Do not start 10.5 until this task passes clean.
 The requirement driving this task grew since it was first scoped: a return
 *distribution* at each of 1, 2, 3, 5, and 10 days, not just "P(reach X%
 within 5 days)." Modeling the peak's timing, not only its occurrence, turns
-the label space from a vector into a grid:
+the label space from a vector into a grid. The day-10 horizon is why the
+path table's window (§0) is ten trading days rather than the five of
+`ExitParams.max_hold_days` — a 5-day table cannot supply first-touch or
+reachability for days 6-10, and nothing in this task's acceptance criteria
+would catch the gap after the fact:
 
 ```
 thresholds x horizons x directions  =  4 x 5 x 2  =  40 touched flags
