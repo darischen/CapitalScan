@@ -62,20 +62,96 @@ This file exists so that a null result is a recorded finding rather than a conve
 
 ### Backfill record
 
-**2026-07-31 Session 7: Initial 51-ticker backfill (2015-2026)**
+**2026-08-02, measured against the live research database, HEAD `455d64b`.**
 
-Testing backfill pipeline with subset of major mega-cap tickers before full production run.
+The 51-ticker Session 7 dry run above never became the production backfill.
+The state below supersedes it — every figure is a `SELECT` against the
+research database, shown alongside its query so it can be re-run.
 
-- Ticker count: 51 (AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA, TSM, BRK-B, JNJ, etc.)
-- Date range: 2015-01-01 to present
-- Status: In progress (validation gate phase)
+**Ticker registry**
 
-Expected next steps: Complete bars download, compute indicators, detect events, validate clean at reject severity.
+```sql
+SELECT count(*) FROM tickers;
+```
 
-**Note**: Full session 7 production run will use:
-- 750 tickers from universe_union.csv (ADR 055, requires Wikipedia scraper fix)
-- Start date: 2009-01-01 (ADR 040: ingest 2009, events 2010)
-- Acceptance criteria from BUILD.md §7: 750 tickers with first_bar/last_bar, validation clean, indicators computed with no post-2010 nulls, scan command returns plausible results
+711 tickers registered (`data/universe_union.csv`, ADR 055).
+
+**Bars ingested**
+
+```sql
+SELECT interval, count(*) AS bars, count(DISTINCT ticker) AS tickers,
+       min(ts), max(ts)
+FROM bars GROUP BY interval ORDER BY interval;
+```
+
+| Interval | Bars | Tickers | Range |
+|---|---|---|---|
+| `1d` | 2,900,865 | 615 | 2005-10-11 .. 2026-07-31 |
+| `1h` | 2,069,250 | 605 | 2024-08-06 .. 2026-07-31 |
+
+615 of the 711 registered tickers have any daily bars at all.
+
+**`bar_rejects`, by rule and severity**
+
+```sql
+SELECT rule, severity, count(*) FROM bar_rejects
+GROUP BY rule, severity ORDER BY count(*) DESC;
+```
+
+| Rule | Severity | Count |
+|---|---|---|
+| `price_below_min` | flag | 30,493 |
+| `zero_or_null_volume` | flag | 18,565 |
+| `identical_close_run` | flag | 9,894 |
+| `large_unexplained_return` | flag | 526 |
+| `insufficient_history` | flag | 22 |
+| `unexplained_split_like_move` | reject | 11 |
+| `large_return_explained_by_split` | flag | 3 |
+| `open_outside_range` | reject | 1 |
+
+59,515 rows total. Only two rules ever reach `reject` severity (12 rows
+combined); everything else is a `flag`, logged per invariant 4 rather than
+silently dropped or filled.
+
+**Coverage gaps — dropped tickers**
+
+```sql
+SELECT is_active, delisted_on IS NOT NULL AS has_delisted_date,
+       first_bar IS NOT NULL AS has_first_bar, count(*)
+FROM tickers t
+WHERE NOT EXISTS (SELECT 1 FROM bars b WHERE b.ticker = t.ticker)
+GROUP BY 1, 2, 3 ORDER BY 4 DESC;
+```
+
+96 registered tickers have zero rows in `bars`. All 96 are `is_active = false`
+(delisted/acquired historical constituents — e.g. `ABMD`, `ADS`, `AKS`,
+`ALXN`, `ANR`, `ANSS`, `ARG`, `ARNC`, `ATVI`, `AYE`, `BXLT`, `CCR`, `CDAY`,
+`CERN`, `CMCSK`, `COG`, `COV`, `CPGX`, `CTLT`, `CVC`, `CXO`, `DAY`, `DFS`,
+`DISCK`, `DISH`, ...). None has a `delisted_on` date recorded, so the reason
+they were never fetched is not stored anywhere — worth a follow-up rule if a
+future backfill needs to distinguish "delisted before the data source's
+coverage" from "fetch never attempted."
+
+19 of the 96 have a `first_bar`/`last_bar` populated on `tickers` (e.g.
+`CPWR`: `first_bar=2009-01-02`, `last_bar=2026-07-30`) despite having no rows
+in `bars` — those two columns on `tickers` are stale relative to the actual
+`bars` content for this subset and should not be trusted as a coverage proxy
+on their own.
+
+**Known open data-quality items, not corrected as part of this documentation
+pass:**
+
+- 17 tickers (`KLAC`, `BKNG`, `CRWD`, `TPL`, `AMCR`, `BNY`, `CVNA`, `NOW`, and
+  others) carry hourly bars on a different split-adjustment basis than their
+  daily bars — exact split-factor ratios (e.g. BKNG ~25:1, KLAC ~10:1). A
+  fix to reject the mismatch at ingestion is committed; the repair refetch
+  for the 17 affected tickers' hourly history has not run yet.
+- `BNY` has no split row in `corporate_actions`, so back-adjustment cannot
+  repair its hourly/daily mismatch even after a refetch.
+- Two `BRK-B` shares filings (2009-2010, ~1.1B shares) look like Class A
+  share counts filed under the Class B ticker — implausible against BRK-B's
+  contemporaneous price, and not caught by the shares-outstanding
+  plausibility guard because the values sit inside its bounds.
 
 ### Indicator verification
 
@@ -87,7 +163,71 @@ Expected next steps: Complete bars download, compute indicators, detect events, 
 
 ### Default config run
 
-*(Append after session 9. Event counts, exit mix, ambiguity rate, hand-inspection notes on the 20 reviewed events.)*
+**2026-08-02.** `run_id=backtest_20260802T183304_6b1c5b52`,
+`config_hash=3e598c59e7d71eae`, `git_sha` on the `runs` row is `unknown`
+(not populated by this job — a gap, not a data error), branch
+`session-9-backtest`, HEAD `455d64b`.
+
+246,116 event rows written, 575 of 615 ticker-with-bars tickers producing at
+least one event, 2h48m17s wall clock at 8 workers (write phase ~20 min,
+single-threaded validation harness ~2h28m — the harness, not the writer, is
+the bottleneck).
+
+```sql
+SELECT split_key, count(*) AS rows, count(DISTINCT ticker) AS tickers,
+       count(*) FILTER (WHERE entry_price IS NOT NULL) AS priced,
+       count(*) FILTER (WHERE exit_date IS NOT NULL) AS exited,
+       count(*) FILTER (WHERE ambiguous) AS ambiguous,
+       min(signal_date), max(signal_date)
+FROM events WHERE config_hash = '3e598c59e7d71eae'
+GROUP BY split_key ORDER BY split_key;
+```
+
+| `split_key` | rows | tickers | priced | exited | ambiguous | range |
+|---|---|---|---|---|---|---|
+| `train` | 156,848 | 564 | 61,535 | 61,535 | 15 | 2010-01-05 .. 2021-12-31 |
+| `validate` | 21,672 | 69 | 8,418 | 8,418 | 0 | 2022-01-03 .. 2023-12-29 |
+| `holdout` | 67,596 | 124 | 41,001 | 40,941 | 13 | 2024-01-02 .. 2026-07-31 |
+
+**`validate` holds far fewer tickers than `train` or `holdout` (69 vs 564 and
+124).** Likely cause: the trade-universe filter (ADR 014, `crit_above_sma200`
+and `crit_sma200_slope` in particular) meeting the 2022-2023 drawdown —
+those two criteria would fail broadly across a down market, thinning the
+in-trade population for exactly the years `validate` covers. Not diagnosed
+further here. It weakens the train-vs-validate comparison ADR 033's kill
+criteria depend on, since 69 tickers is a materially smaller base than the
+other two splits.
+
+**Phase 3 gate — all five criteria PASS.**
+
+| Criterion | Result |
+|---|---|
+| Exit invariants, 10,000 property cases | PASS — `full` profile, 5/5 tests, `capitalscan/tests/property/test_exit_invariants.py` |
+| Ambiguity rate < 10% | PASS — 28 / 110,954 priced rows = 0.025% |
+| Event rate, BUILD §9a three checks | PASS — confluence 18.34% all-ticker, 19.07% in-trade-only, inside the 10-25% headline band; see BUILD §9a for the check definitions |
+| Two runs identical ignoring `run_id` | PASS — confirmed twice independently (in-process, monkeypatched `db_io.upsert`, zero DB writes), zero differing cells across 22,168 rows / 62 columns |
+| All five validation-harness checks | PASS — `no_lookahead`, `entry_sanity`, `exit_sanity`, `return_identity`, `non_overlap`, all against the `3e598c59e7d71eae` run |
+
+Full measurement detail, including the queries behind the event-rate check
+and the harness-gate debugging history, is in
+`.superpowers/sdd/2026-08-01-session-9-backtest/phase3-gate-measurement.md`
+and `progress.md` in the same directory.
+
+**Caveats on record, not blocking the gate:**
+
+- The event-rate measurement flagged a +2.2-2.7pp drift on the raw
+  band-touch marginals (`P(close <= bb_lower)`, `P(low <= bb_lower)`)
+  against the 2026-08-01 baseline — real and moderate-sized (20-50%
+  relative), unexplained after a bounded investigation, and not reproduced
+  in the confluence/headline composites. See phase3-gate-measurement.md §2
+  for what was ruled out.
+- The 17-ticker hourly/daily split-adjustment mismatch above currently
+  affects zero priced `touch_5m`/`touch_30m` rows in this run — by
+  coincidence, not by a guard that prevents it. A universe-threshold change
+  or a new signal date on one of those tickers could make it live.
+- `BNY` cannot be back-adjusted (no split row) even once the refetch runs.
+- The two `BRK-B` filings noted under coverage gaps above feed
+  `crit_mcap`/`in_trade` for those two years if uncorrected.
 
 ### Entry timing sweep
 

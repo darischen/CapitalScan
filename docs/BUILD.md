@@ -12,7 +12,7 @@ Every task points at an ADR or a DESIGN section rather than restating the rule. 
 
 Work is grouped into **sessions**. A session is one coherent goal that fits in a single Claude Code context window and ends with a passing test. Session boundaries follow dependency seams, which is what keeps context switching low.
 
-Sessions 0-7 deliver v1 (Phase 1). Sessions 8-9 deliver Phases 2-3. Later phases are sketched at the end and get their own session plan once Phase 4 results exist.
+Sessions 0-7 deliver v1 (Phase 1). Sessions 8-9 deliver Phases 2-3. Session 10 is a data-layer session between the Phase 3 gate and Phase 4. Later phases are sketched at the end and get their own session plan once Phase 4 results exist.
 
 | # | Session | Delivers | Exit test |
 |---|---|---|---|
@@ -25,9 +25,23 @@ Sessions 0-7 deliver v1 (Phase 1). Sessions 8-9 deliver Phases 2-3. Later phases
 | 6 | Compute jobs | indicators, universe, events, `scan()` | **Phase 1 gate** |
 | 7 | Full backfill | Run it, inspect, fix | 750 tickers ingested, validation clean |
 | 8 | Poller & notify | `poll`, Notifier, positions, call overlay | **Phase 2 gate** |
-| 9 | Backtest engine | `research/backtest.py`, exit sweep | **Phase 3 gate** |
+| 9 | Backtest engine | `research/backtest.py`, exit sweep | **Phase 3 gate — complete, passed** |
+| 10 | Forward path store and derived label layer | Path table, reconciled label layer, new label families | Reconciliation against Session 9 labels passes with zero unexplained differences |
 
 Sessions 0-2 can run back to back in one sitting. Session 7 is mostly waiting.
+
+**Session 9 is complete.** Phase 3 gate passed on all five criteria — see
+`docs/RESULTS.md` (Phase 3 — Engine validation) for the run of record
+(`run_id=backtest_20260802T183304_6b1c5b52`, `config_hash=3e598c59e7d71eae`)
+and `.superpowers/sdd/2026-08-01-session-9-backtest/phase3-gate-measurement.md`
+for the full measurement detail. The 18-config sweep and the entry-reuse
+refactor decision remain open, tracked outside this document.
+
+The Phase 4 boundary now sits after Session 10, not after Session 9. Session
+10 builds the forward-path store and derived label layer that Phase 4's
+statistics layer reads from; it changes no behavior and adds no new
+statistic on its own (see `docs/session10.md` §0). Phase 4 does not start
+until Session 10's gate (`docs/session10.md` §4) passes.
 
 ---
 
@@ -625,7 +639,8 @@ Nightly dump to the second local disk. Monthly to a GitHub Release asset (~300 M
 
 ## SESSION 9 — Backtest engine
 
-**Goal:** Phase 3.
+**Goal:** Phase 3. **Complete — Phase 3 gate passed 2026-08-02.** See
+`docs/RESULTS.md` for the run of record and the gate table.
 
 ### Tasks
 
