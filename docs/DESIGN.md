@@ -1170,6 +1170,35 @@ CREATE INDEX events_cluster ON events (cluster_id, seq_in_cluster);
 
 `split_key` is assigned at creation by date, never computed at query time — leakage becomes a schema violation rather than a discipline problem (ADR 019).
 
+### 5.7b Path table
+
+Per session10.md §0 and §1 (forward path store), the `path` table holds per-day forward price paths for every event:
+
+```sql
+CREATE TABLE path (
+  event_id bigint NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  day_offset int NOT NULL,
+  favorable numeric(12,6) NOT NULL,
+  adverse numeric(12,6) NOT NULL,
+  terminal numeric(12,6) NOT NULL,
+  PRIMARY KEY (event_id, day_offset)
+);
+CREATE INDEX path_event_id ON path (event_id);
+```
+
+**Grain:** one row per event per forward day. The window spans ten trading days (the maximum `StatsParams.fwd_ret_horizons`), though events near the end of available price history may have partial windows.
+
+**Fields:**
+- `event_id`: foreign key to events(id), cascade delete ensures orphans never exist.
+- `day_offset`: trading day offset from signal date (1-10 for complete windows, 1-N for partial). Null windows have no rows.
+- `favorable`: the best (highest for long, lowest for short) intraday extreme over that day, expressed as return pct from entry price. Direction-neutral.
+- `adverse`: the worst intraday extreme, also direction-neutral.
+- `terminal`: the closing price on that day, expressed as return pct from entry price.
+
+The path table replaces label materialization. Rather than adding columns for every (threshold, horizon) pair (which would explode to ~80+ columns as thresholds and horizons expand), labels are derived as queries against the path table. Session 9's existing `touched_*pct`, `day_touched_*pct`, and `fwd_ret_*d` columns on `events` remain as a precomputed cache for frequently accessed labels and for the serving views; new thresholds and new horizons are computed on demand.
+
+**Events table extension:** the `fwd_window_days` column (nullable int, 1-10) tracks how many trading days of the forward window exist for each event. Null means no forward data; 10 means the full window is available; 1-9 means a partial window near the end of price history.
+
 ### 5.8 Parallelism and determinism
 
 Per-ticker workers, no shared state. `cofire_count` requires a post-pass since it groups across tickers.

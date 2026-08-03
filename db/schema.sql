@@ -337,6 +337,7 @@ CREATE TABLE public.events (
     earnings_in_window boolean,
     is_terminal boolean,
     split_key text NOT NULL,
+    fwd_window_days integer,
     CONSTRAINT events_side_check CHECK ((side = ANY (ARRAY['long'::text, 'short'::text]))),
     CONSTRAINT events_split_key_check CHECK ((split_key = ANY (ARRAY['train'::text, 'validate'::text, 'holdout'::text])))
 );
@@ -1441,6 +1442,36 @@ CREATE INDEX events_ticker_date ON public.events USING btree (ticker, signal_dat
 
 
 --
+-- Name: path; Type: TABLE; Schema: public; Owner: capscan
+--
+
+CREATE TABLE public.path (
+    event_id bigint NOT NULL,
+    day_offset integer NOT NULL,
+    favorable numeric(12,6) NOT NULL,
+    adverse numeric(12,6) NOT NULL,
+    terminal numeric(12,6) NOT NULL
+);
+
+
+ALTER TABLE public.path OWNER TO capscan;
+
+--
+-- Name: path path_pkey; Type: CONSTRAINT; Schema: public; Owner: capscan
+--
+
+ALTER TABLE ONLY public.path
+    ADD CONSTRAINT path_pkey PRIMARY KEY (event_id, day_offset);
+
+
+--
+-- Name: path_event_id; Type: INDEX; Schema: public; Owner: capscan
+--
+
+CREATE INDEX path_event_id ON public.path USING btree (event_id);
+
+
+--
 -- Name: indicators_ts_idx; Type: INDEX; Schema: public; Owner: capscan
 --
 
@@ -1469,6 +1500,14 @@ ALTER TABLE ONLY public.corporate_actions
 
 ALTER TABLE ONLY public.events
     ADD CONSTRAINT events_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.runs(run_id);
+
+
+--
+-- Name: path path_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: capscan
+--
+
+ALTER TABLE ONLY public.path
+    ADD CONSTRAINT path_event_id_fkey FOREIGN KEY (event_id) REFERENCES public.events(id) ON DELETE CASCADE;
 
 
 --
