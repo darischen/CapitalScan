@@ -344,6 +344,43 @@ def _prior_clean_default_run_exists(engine, config_hash: str) -> bool:
     return row is not None
 
 
+def _sweep_config_already_done(engine, config_hash: str) -> bool:
+    """Task 12's per-config checkpoint/resume check for `--sweep`.
+
+    Mirrors `_prior_clean_default_run_exists` exactly, but scoped to
+    `job = 'backtest_sweep'` rather than `job = 'backtest'` — a sweep
+    member and the Task 11 default-config run are different jobs in the
+    `runs` table on purpose, so a clean default run is never mistaken for a
+    completed sweep member (which would wrongly skip every one of the 18
+    configs) and a completed sweep member is never mistaken for the
+    default-config run the ADR 059 gate above looks for.
+
+    A full-universe sweep run of ~20 minutes' write phase per config makes
+    18 configs ~6 hours (BUILD §9.10, CONSTRAINTS.md), well past CLAUDE.md's
+    10-minute checkpoint threshold. `run_backtest`'s single `db_io.upsert`
+    at the end of each config's dispatch is that config's checkpoint unit:
+    it either lands whole or not at all. This function is what lets a
+    rerun after an interrupt recognize "config 7 already has a clean,
+    full-universe `runs` row" and skip straight to resuming at 8, instead
+    of either re-running (correct but ~20 minutes wasted per already-done
+    config, since `events` writes are idempotent on `(config_hash, ticker,
+    signal_date, signal_type, entry_kind)`) or — worse — silently skipping
+    a config that never actually finished.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT 1 FROM runs WHERE job = 'backtest_sweep' AND status = 'ok' "
+                "AND notes IS NULL AND params->>'config_hash' = :chash "
+                "AND params->>'full_universe' = 'true' LIMIT 1"
+            ),
+            {"chash": config_hash},
+        ).fetchone()
+    return row is not None
+
+
 def _load_bars_by_ticker(engine, tickers: list[str], config) -> dict:
     """One bars+indicators frame per ticker, left-joined on `ts`, in the
     shape `research.harness.run_harness` requires (see module docstring on
@@ -513,16 +550,27 @@ def backtest(
     to check); a run with events but a failing harness check still exits
     non-zero.
 
-    `--sweep` implements only ADR 059's ordering gate (Task 11 scope). The
-    18-config sweep itself is Task 12 — passing the gate here reports that
-    and exits, rather than pretending to run something that does not exist
-    yet.
+    `--sweep` runs ADR 059's ordering gate first (Task 11), then, once it
+    passes, the full 18-config exit sweep itself (DESIGN §5.9, Task 12):
+    `research.backtest.sweep_configs` generates the 18 variants and each is
+    dispatched through the same `run_backtest` a single default run uses,
+    one `runs` row per config (see `_sweep_config_already_done`'s
+    docstring for the checkpoint/resume story). The Phase 3 harness is
+    **not** rerun per sweep config — DESIGN §5.9's ordering rule is that
+    the *default* config passes the full harness before any sweep runs,
+    which the ADR 059 gate above already establishes; rerunning it 18 more
+    times (~2.5h each, per BUILD §9.10) would turn a ~6 hour sweep into
+    a multi-day one for no additional signal, since every config shares
+    the same detection/entry engine the harness already validated — only
+    the exit parameters vary.
     """
     from dataclasses import asdict
 
+    from rich.progress import Progress
+
     from capitalscan.jobs import db_io, ingest
     from capitalscan.jobs.config import config_hash as compute_config_hash
-    from capitalscan.research.backtest import BacktestRunFailed, run_backtest
+    from capitalscan.research.backtest import BacktestRunFailed, run_backtest, sweep_configs
     from capitalscan.research.harness import run_harness
 
     if config_name is not None:
@@ -550,11 +598,85 @@ def backtest(
                 "retry --sweep."
             )
             raise typer.Exit(code=1)
+
+        resolved = _resolve_tickers(tickers)
+        full_universe = tickers is None
+        configs = sweep_configs(config)  # deterministic order (ADR 060) — pure function of `config`
+
         console.print(
-            "[yellow]note[/yellow]: the ADR 059 ordering gate passed, but the "
-            "18-config sweep itself is Task 12 scope and is not implemented here."
+            f"[bold]sweep[/bold]: {len(configs)} configs x {len(resolved)} tickers "
+            "(DESIGN §5.9, Task 12)"
         )
-        raise typer.Exit(code=1)
+
+        n_run = 0
+        n_skipped = 0
+        with Progress() as progress:
+            task = progress.add_task("[cyan]sweep...", total=len(configs))
+            for i, sweep_config in enumerate(configs, start=1):
+                sweep_hash = compute_config_hash(sweep_config)
+                progress.update(
+                    task, description=f"[cyan]config {i}/{len(configs)} {sweep_hash}[/cyan]"
+                )
+
+                # Resume: a config already checkpointed by a prior --sweep
+                # invocation is never re-dispatched. Idempotent either way
+                # (upsert keys on config_hash, not run_id) but re-running a
+                # finished config wastes ~20 minutes of write phase for
+                # nothing (docstring on `_sweep_config_already_done`).
+                if _sweep_config_already_done(engine, sweep_hash):
+                    n_skipped += 1
+                    progress.update(task, advance=1)
+                    continue
+
+                sweep_params = {
+                    "config_hash": sweep_hash,
+                    "config": asdict(sweep_config),
+                    "full_universe": full_universe,
+                    "workers": workers,
+                    "n_tickers": len(resolved),
+                    "sweep_index": i,
+                }
+                try:
+                    with ingest.run_job(engine, "backtest_sweep", sweep_params) as report:
+                        bt_report = run_backtest(
+                            resolved,
+                            sweep_config,
+                            report.run_id,
+                            engine=engine,
+                            max_workers=workers,
+                            full_universe=full_universe,
+                        )
+                        report.rows_written = bt_report.rows_written
+                        if bt_report.failed_tickers:
+                            failed = sorted(bt_report.failed_tickers)
+                            sample = ", ".join(failed[:10])
+                            more = "" if len(failed) <= 10 else f", +{len(failed) - 10} more"
+                            report.notes = (
+                                f"{len(failed)}/{len(resolved)} ticker(s) failed: "
+                                f"{sample}{more}"
+                            )
+                except BacktestRunFailed as exc:
+                    console.print(
+                        f"[red]error[/red]: sweep config {i}/{len(configs)} "
+                        f"(config_hash={sweep_hash}) failed — every dispatched "
+                        f"ticker's worker raised, which points at this config, not "
+                        f"the data. {exc}"
+                    )
+                    console.print(
+                        f"[yellow]{n_run} config(s) already completed and written "
+                        f"before this failure; rerun `cscan backtest --sweep` to "
+                        f"resume at config {i}.[/yellow]"
+                    )
+                    raise typer.Exit(code=1) from None
+
+                n_run += 1
+                progress.update(task, advance=1)
+
+        console.print(
+            f"[bold]sweep complete[/bold]: {n_run} config(s) run, "
+            f"{n_skipped} already done (resumed)"
+        )
+        return
 
     resolved = _resolve_tickers(tickers)
     # A `--tickers` subset is a partial run by definition: `run_backtest`'s
@@ -685,6 +807,7 @@ def scan(
     start: Optional[str] = typer.Option(None, help="Start date (YYYY-MM-DD)"),
     end: Optional[str] = typer.Option(None, help="End date (YYYY-MM-DD)"),
     date_: Optional[str] = typer.Option(None, "--date", help="Specific date (YYYY-MM-DD)"),
+    confluence_only: bool = typer.Option(False, help="Show only confluence signals (both Bollinger and stochastic agree)"),
 ) -> None:
     """Query detected events (ADR 049)."""
     from datetime import date as date_cls
@@ -700,6 +823,12 @@ def scan(
     if result.empty:
         console.print("[yellow]no events found[/yellow]")
         raise typer.Exit(code=0)
+
+    if confluence_only:
+        result = result[result["signal_type"].isin(["confluence_low", "confluence_high"])]
+        if result.empty:
+            console.print("[yellow]no confluence events found[/yellow]")
+            raise typer.Exit(code=0)
 
     console.print(result.to_string(index=False))
 

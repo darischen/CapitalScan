@@ -233,26 +233,186 @@ def test_sweep_without_prior_clean_run_refuses(monkeypatch, capsys):
     assert "ADR 059" in out
 
 
-def test_sweep_with_prior_clean_run_does_not_execute_sweep(monkeypatch, capsys):
-    """Task 11 scope is the ordering *gate* only — the 18-config sweep
-    itself is Task 12. Passing the gate must not silently run a single
-    default-config backtest instead and call it a sweep.
+def test_sweep_with_prior_clean_run_does_not_run_a_single_default_backtest(monkeypatch, capsys):
+    """Passing the ADR 059 gate must actually run the 18-config sweep (Task
+    12), not silently fall back to a single default-config backtest and
+    call it a sweep. `run_backtest` must be called 18 times, not once.
     """
     monkeypatch.setattr(cli, "_prior_clean_default_run_exists", lambda engine, chash: True)
-    run_backtest_called = []
-    monkeypatch.setattr(
-        backtest_mod,
-        "run_backtest",
-        lambda *a, **k: run_backtest_called.append(1) or BacktestReport(run_id="x"),
-    )
+    monkeypatch.setattr(cli, "_sweep_config_already_done", lambda engine, chash: False)
+    monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL"])
+    monkeypatch.setattr(cli, "_load_bars_by_ticker", lambda engine, tickers, config: {})
+
+    run_backtest_calls = []
+
+    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+        run_backtest_calls.append(config)
+        return BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
+
+    monkeypatch.setattr(backtest_mod, "run_backtest", _fake_run_backtest)
+    monkeypatch.setattr(ingest, "run_job", _counting_run_job())
+
+    _call(sweep=True)
+
+    assert len(run_backtest_calls) == 18
+
+
+# ---------------------------------------------------------------------------
+# The 18-config sweep itself (Task 12)
+# ---------------------------------------------------------------------------
+
+
+def _counting_run_job():
+    """A fake `ingest.run_job` that hands out a distinct `run_id` per call —
+    unlike `_fake_run_job` above (fixed `"backtest_fake_run_id"` for every
+    call, fine for the single-run tests), the sweep tests need to tell each
+    of the 18 executions' `run_id`s apart to assert they are distinct.
+    """
+    counter = {"n": 0}
+
+    @contextmanager
+    def _run_job(engine, job, params):
+        counter["n"] += 1
+        report = ingest.IngestReport(job=job, run_id=f"sweep_run_{counter['n']}")
+        yield report
+
+    return _run_job
+
+
+def test_sweep_dispatches_all_18_configs_in_deterministic_order(monkeypatch):
+    monkeypatch.setattr(cli, "_prior_clean_default_run_exists", lambda engine, chash: True)
+    monkeypatch.setattr(cli, "_sweep_config_already_done", lambda engine, chash: False)
+    monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL"])
+    monkeypatch.setattr(cli, "_load_bars_by_ticker", lambda engine, tickers, config: {})
+    monkeypatch.setattr(ingest, "run_job", _counting_run_job())
+
+    calls = []
+
+    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+        calls.append((config, run_id, tuple(tickers), max_workers, full_universe))
+        return BacktestReport(run_id=run_id, rows_written=1, tickers=list(tickers), failed_tickers={})
+
+    monkeypatch.setattr(backtest_mod, "run_backtest", _fake_run_backtest)
+
+    _call(sweep=True, workers=3)
+
+    expected_configs = backtest_mod.sweep_configs(DEFAULT_CONFIG)
+    expected_hashes = [config_hash(c) for c in expected_configs]
+
+    assert len(calls) == 18
+    assert [config_hash(c) for c, _rid, _t, _w, _fu in calls] == expected_hashes
+    # Every call gets its own run_id (one `runs` row per execution).
+    assert len({rid for _c, rid, _t, _w, _fu in calls}) == 18
+    # Ticker list, worker count and full_universe are threaded through unchanged.
+    assert all(t == ("AAPL",) for _c, _rid, t, _w, _fu in calls)
+    assert all(w == 3 for _c, _rid, _t, w, _fu in calls)
+
+
+def test_sweep_failure_at_config_n_does_not_discard_earlier_configs(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_prior_clean_default_run_exists", lambda engine, chash: True)
+    monkeypatch.setattr(cli, "_sweep_config_already_done", lambda engine, chash: False)
+    monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL"])
+    monkeypatch.setattr(ingest, "run_job", _counting_run_job())
+
+    calls = []
+
+    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+        calls.append(config)
+        if len(calls) == 5:
+            raise BacktestRunFailed({"AAPL": "ValueError: boom"})
+        return BacktestReport(run_id=run_id, rows_written=1, tickers=list(tickers), failed_tickers={})
+
+    monkeypatch.setattr(backtest_mod, "run_backtest", _fake_run_backtest)
 
     with pytest.raises(typer.Exit) as exc_info:
         _call(sweep=True)
 
     assert exc_info.value.exit_code == 1
-    assert not run_backtest_called
-    out = " ".join(capsys.readouterr().out.split())
-    assert "Task 12" in out
+    # Stopped at the failing config — configs 6-18 were never dispatched,
+    # and nothing here rolls back or re-executes 1-4.
+    assert len(calls) == 5
+    out = capsys.readouterr().out
+    assert "5" in out and "18" in out
+
+
+def test_sweep_resume_skips_already_completed_configs(monkeypatch):
+    """A rerun after an interrupt must resume, not redo or duplicate: a
+    config whose `runs` row already shows a clean completion is skipped
+    entirely — `run_backtest` (and therefore the `events` upsert) is never
+    called for it a second time.
+    """
+    monkeypatch.setattr(cli, "_prior_clean_default_run_exists", lambda engine, chash: True)
+    monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL"])
+    monkeypatch.setattr(ingest, "run_job", _counting_run_job())
+
+    expected_configs = backtest_mod.sweep_configs(DEFAULT_CONFIG)
+    expected_hashes = [config_hash(c) for c in expected_configs]
+    done_hashes = set(expected_hashes[:14])  # first 14 already ran
+
+    monkeypatch.setattr(
+        cli, "_sweep_config_already_done", lambda engine, chash: chash in done_hashes
+    )
+
+    calls = []
+
+    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+        calls.append(config_hash(config))
+        return BacktestReport(run_id=run_id, rows_written=1, tickers=list(tickers), failed_tickers={})
+
+    monkeypatch.setattr(backtest_mod, "run_backtest", _fake_run_backtest)
+
+    _call(sweep=True)
+
+    assert len(calls) == 4
+    assert set(calls) == set(expected_hashes[14:])
+    assert not (set(calls) & done_hashes)
+
+
+def test_sweep_config_already_done_queries_expected_filters(monkeypatch):
+    """Mirrors `test_prior_clean_default_run_exists_queries_expected_filters`
+    for the sweep's own per-config resume check: scoped to
+    `job = 'backtest_sweep'`, distinct from `job = 'backtest'` so a
+    completed default run and a completed sweep member are never confused.
+    """
+    captured = {}
+
+    class _FakeResult:
+        def __init__(self, row):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _FakeConn:
+        def __init__(self, row):
+            self._row = row
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, stmt, params):
+            captured["sql"] = str(stmt)
+            captured["params"] = params
+            return _FakeResult(self._row)
+
+    class _FakeEngine:
+        def __init__(self, row):
+            self._row = row
+
+        def connect(self):
+            return _FakeConn(self._row)
+
+    assert cli._sweep_config_already_done(_FakeEngine(("1",)), "abc123") is True
+    assert captured["params"] == {"chash": "abc123"}
+    assert "job = 'backtest_sweep'" in captured["sql"]
+    assert "status = 'ok'" in captured["sql"]
+    assert "notes IS NULL" in captured["sql"]
+    assert "full_universe" in captured["sql"]
+
+    assert cli._sweep_config_already_done(_FakeEngine(None), "abc123") is False
 
 
 def test_prior_clean_default_run_exists_queries_expected_filters(monkeypatch):
