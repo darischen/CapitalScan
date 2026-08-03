@@ -1001,6 +1001,31 @@ def schema() -> None:
     db_ops.schema()
 
 
+path_app = typer.Typer(help="Forward path store (Session 10)")
+
+
+@path_app.command("backfill")
+def path_backfill_cmd(
+    quiet: bool = typer.Option(False, "--quiet", help="JSON-lines progress instead of a live bar"),
+) -> None:
+    """Populate `path` and `events.fwd_window_days` for every filled entry."""
+    from capitalscan.core.config import DEFAULT_CONFIG
+    from capitalscan.jobs import db_io, ingest
+    from capitalscan.research.path_backfill import run_path_backfill
+
+    engine = db_io.get_engine()
+    with ingest.run_job(engine, "path_backfill", {}) as job_report:
+        report = run_path_backfill(engine, DEFAULT_CONFIG, quiet=quiet)
+        job_report.rows_written = report.rows_written
+    console.print(
+        f"path backfill: events_processed={report.events_processed} "
+        f"skipped_unfilled={report.events_skipped_unfilled} rows_written={report.rows_written}"
+    )
+
+
+app.add_typer(path_app, name="path")
+
+
 positions_app = typer.Typer(help="Personal trade log (ADR 073)")
 app.add_typer(positions_app, name="positions")
 
