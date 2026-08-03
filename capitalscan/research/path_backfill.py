@@ -18,6 +18,7 @@ return series from (invariant 4, no fabricated value).
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -107,10 +108,89 @@ def window_days_for_config(config: Config) -> int:
     return max(config.stats.fwd_ret_horizons) + max_entry_offset
 
 
-def run_path_backfill(engine: Engine, config: Config, quiet: bool = False) -> PathBackfillReport:
+def _compute_ticker_path(
+    ticker: str, window_days: int, database_url: str | None
+) -> tuple[str, pd.DataFrame, list[dict], int, int]:
+    """One ticker's path rows and `fwd_window_days` updates, computed with
+    no side effects on shared state — runs in a worker process under
+    `ProcessPoolExecutor(spawn)` when `max_workers > 1`, and identically
+    in-process (one call per ticker) when running serially. Opens its own
+    connection via `use_null_pool=True` (CLAUDE.md platform note:
+    connections aren't picklable across a spawned process, and a pooled
+    connection held by a short-lived worker exhausts `max_connections` on
+    the server — same reasoning as `jobs.compute._compute_one_ticker`).
+
+    Returns `(ticker, path_rows, window_updates, events_processed,
+    events_skipped_unfilled)` — the caller does the actual writes and
+    report bookkeeping, so this function stays a pure "read one ticker,
+    compute its rows" step regardless of how many workers are dispatching
+    it.
+    """
+    engine = db_io.get_engine(database_url, use_null_pool=True)
+    with engine.connect() as conn:
+        bars = pd.read_sql(
+            text("SELECT * FROM bars WHERE ticker = :ticker AND interval = '1d' ORDER BY ts"),
+            conn,
+            params={"ticker": ticker},
+        )
+        events = pd.read_sql(
+            text(
+                "SELECT id, entry_price, side, signal_date FROM events "
+                "WHERE ticker = :ticker AND entry_price IS NOT NULL ORDER BY id"
+            ),
+            conn,
+            params={"ticker": ticker},
+        )
+    empty_rows = pd.DataFrame(columns=["event_id", "day_offset", "favorable", "adverse", "terminal"])
+    if bars.empty or events.empty:
+        return ticker, empty_rows, [], 0, 0
+
+    bars["ts"] = pd.to_datetime(bars["ts"]).dt.tz_localize(None)
+    ticker_bars = bars.sort_values("ts").set_index("ts", drop=False)
+
+    all_rows: list[pd.DataFrame] = []
+    window_updates: list[dict] = []
+    events_processed = 0
+    events_skipped_unfilled = 0
+    for _, ev in events.iterrows():
+        signal_date = ev["signal_date"]
+        if isinstance(signal_date, pd.Timestamp):
+            signal_date = signal_date.date()
+        rows, n = rows_for_event(
+            event_id=int(ev["id"]),
+            entry_price=float(ev["entry_price"]),
+            side=Side(ev["side"]),
+            signal_date=signal_date,
+            ticker_bars=ticker_bars,
+            window_days=window_days,
+        )
+        events_processed += 1
+        if n is None:
+            events_skipped_unfilled += 1
+            continue
+        if not rows.empty:
+            all_rows.append(rows)
+        window_updates.append({"id": int(ev["id"]), "n": n})
+
+    combined = pd.concat(all_rows, ignore_index=True) if all_rows else empty_rows
+    return ticker, combined, window_updates, events_processed, events_skipped_unfilled
+
+
+def run_path_backfill(
+    engine: Engine, config: Config, quiet: bool = False, max_workers: int = 1
+) -> PathBackfillReport:
     """Backfills `path` and `events.fwd_window_days` for every event with a
     filled entry, one ticker at a time (each ticker's `bars` loaded once
     and reused across all of that ticker's events).
+
+    `max_workers > 1` dispatches `_compute_ticker_path` across a spawn-mode
+    `ProcessPoolExecutor` — the same parallelization shape
+    `jobs.compute.run_indicators` already uses for the same reason (one
+    ticker's data is independent of every other's, and the read+compute
+    step is what's expensive, not the write). Writes are done here, in the
+    controlling process, as each ticker's future completes
+    (`as_completed`) — never inside a worker — so `db_io.upsert` batching
+    and the progress bar both stay single-threaded and race-free.
 
     Idempotent: `path` rows are written through `db_io.upsert` with
     `conflict_cols=["event_id", "day_offset"]` — a rerun overwrites the
@@ -123,6 +203,7 @@ def run_path_backfill(engine: Engine, config: Config, quiet: bool = False) -> Pa
     """
     window_days = window_days_for_config(config)
     report = PathBackfillReport()
+    database_url = engine.url.render_as_string(hide_password=False)
 
     with engine.connect() as conn:
         tickers = [
@@ -132,52 +213,18 @@ def run_path_backfill(engine: Engine, config: Config, quiet: bool = False) -> Pa
             )
         ]
 
-    for ticker in track(tickers, description="path backfill", quiet=quiet, label="ticker"):
-        with engine.connect() as conn:
-            bars = pd.read_sql(
-                text("SELECT * FROM bars WHERE ticker = :ticker AND interval = '1d' ORDER BY ts"),
-                conn,
-                params={"ticker": ticker},
-            )
-            events = pd.read_sql(
-                text(
-                    "SELECT id, entry_price, side, signal_date FROM events "
-                    "WHERE ticker = :ticker AND entry_price IS NOT NULL ORDER BY id"
-                ),
-                conn,
-                params={"ticker": ticker},
-            )
-        if bars.empty or events.empty:
-            continue
-        bars["ts"] = pd.to_datetime(bars["ts"]).dt.tz_localize(None)
-        ticker_bars = bars.sort_values("ts").set_index("ts", drop=False)
-
-        all_rows: list[pd.DataFrame] = []
-        window_updates: list[dict] = []
-        for _, ev in events.iterrows():
-            signal_date = ev["signal_date"]
-            if isinstance(signal_date, pd.Timestamp):
-                signal_date = signal_date.date()
-            rows, n = rows_for_event(
-                event_id=int(ev["id"]),
-                entry_price=float(ev["entry_price"]),
-                side=Side(ev["side"]),
-                signal_date=signal_date,
-                ticker_bars=ticker_bars,
-                window_days=window_days,
-            )
-            report.events_processed += 1
-            if n is None:
-                report.events_skipped_unfilled += 1
-                continue
-            if not rows.empty:
-                all_rows.append(rows)
-            window_updates.append({"id": int(ev["id"]), "n": n})
-
-        if all_rows:
-            combined = pd.concat(all_rows, ignore_index=True)
-            db_io.upsert(engine, "path", combined, conflict_cols=["event_id", "day_offset"])
-            report.rows_written += len(combined)
+    def _write_result(
+        ticker: str,
+        rows: pd.DataFrame,
+        window_updates: list[dict],
+        events_processed: int,
+        events_skipped_unfilled: int,
+    ) -> None:
+        report.events_processed += events_processed
+        report.events_skipped_unfilled += events_skipped_unfilled
+        if not rows.empty:
+            db_io.upsert(engine, "path", rows, conflict_cols=["event_id", "day_offset"])
+            report.rows_written += len(rows)
         if window_updates:
             with engine.begin() as conn:
                 conn.execute(
@@ -185,5 +232,19 @@ def run_path_backfill(engine: Engine, config: Config, quiet: bool = False) -> Pa
                     window_updates,
                 )
         report.tickers.append(ticker)
+
+    if max_workers > 1:
+        with ProcessPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(_compute_ticker_path, ticker, window_days, database_url): ticker
+                for ticker in tickers
+            }
+            for future in track(
+                as_completed(futures), description="path backfill", total=len(futures), quiet=quiet, label="ticker"
+            ):
+                _write_result(*future.result())
+    else:
+        for ticker in track(tickers, description="path backfill", quiet=quiet, label="ticker"):
+            _write_result(*_compute_ticker_path(ticker, window_days, database_url))
 
     return report

@@ -46,6 +46,26 @@ def forward_returns(close: pd.Series, horizons: list[int]) -> pd.DataFrame:
     return pd.DataFrame(out, index=close.index)
 
 
+def _favorable_adverse_series(
+    entry_price: float, side: Side, bars: pd.DataFrame
+) -> tuple[pd.Series, pd.Series]:
+    """Vectorized, direction-neutral per-bar excursion from `entry_price`.
+
+    The one implementation of the excursion formula (invariant 2). `mfe_mae`
+    reduces this to a max/min over the window it's given; `path_for_event`
+    (Session 10) uses it directly, one value per forward day — neither
+    writes a second `(high - entry) / entry`-shaped formula of its own.
+    """
+    entry = float(entry_price)
+    if side is Side.LONG:
+        favorable = (bars["high"] - entry) / entry
+        adverse = (bars["low"] - entry) / entry
+    else:
+        favorable = (entry - bars["low"]) / entry
+        adverse = (entry - bars["high"]) / entry
+    return favorable, adverse
+
+
 def mfe_mae(entry_price: float, side: Side, fwd_bars: pd.DataFrame) -> tuple[float, float, int]:
     """Max favorable excursion, max adverse excursion, and time-to-MFE.
 
@@ -59,14 +79,7 @@ def mfe_mae(entry_price: float, side: Side, fwd_bars: pd.DataFrame) -> tuple[flo
     """
     if len(fwd_bars) == 0:
         raise ValueError("mfe_mae requires at least one forward bar")
-    entry = float(entry_price)
-    if side is Side.LONG:
-        favorable = (fwd_bars["high"] - entry) / entry
-        adverse = (fwd_bars["low"] - entry) / entry
-    else:
-        favorable = (entry - fwd_bars["low"]) / entry
-        adverse = (entry - fwd_bars["high"]) / entry
-
+    favorable, adverse = _favorable_adverse_series(entry_price, side, fwd_bars)
     mfe = float(favorable.max())
     mae = float(adverse.min())
     time_to_mfe = int(np.argmax(favorable.to_numpy())) + 1
@@ -98,11 +111,16 @@ def path_for_event(entry_price: float, side: Side, fwd_bars: pd.DataFrame) -> pd
     mark, all anchored to `entry_price` and expressed as a return
     fraction.
 
-    Reuses `mfe_mae` one bar at a time (rather than a second hand-rolled
-    `(high - entry) / entry` here) and `realized_return` for the terminal
-    mark — invariant 2, one implementation. `mfe_mae` on a single-row
-    window degenerates to exactly the per-bar formula: max/min over one
-    element is that element.
+    Vectorized over the whole `fwd_bars` frame at once (perf follow-up:
+    the original per-bar Python loop cost ~3.5ms/event, which at the real
+    event count — ~2M filled entries — priced out to ~1.9 hours of pure
+    compute before a single row was written). Reuses
+    `_favorable_adverse_series` for `favorable`/`adverse` (invariant 2, the
+    same formula `mfe_mae` reduces to a max/min) and mirrors
+    `realized_return`'s exact one-line formula (`raw = (exit - entry) /
+    entry`, sign-flipped for a short) for `terminal`, applied to the whole
+    `close` column at once rather than called once per bar — the formula
+    is unchanged, only the call shape is.
 
     Split-adjusted OHLC only (`high`, `low`, `close`) — never `adj_close`.
     This intentionally does not match `forward_returns`' total-return
@@ -117,20 +135,20 @@ def path_for_event(entry_price: float, side: Side, fwd_bars: pd.DataFrame) -> pd
     if len(fwd_bars) == 0:
         return pd.DataFrame(columns=columns)
 
-    rows: list[dict] = []
-    for i in range(len(fwd_bars)):
-        one_bar = fwd_bars.iloc[i : i + 1]
-        favorable, adverse, _ = mfe_mae(entry_price, side, one_bar)
-        terminal = realized_return(entry_price, float(one_bar.iloc[0]["close"]), side)
-        rows.append(
-            {
-                "day_offset": i + 1,
-                "favorable": favorable,
-                "adverse": adverse,
-                "terminal": terminal,
-            }
-        )
-    return pd.DataFrame(rows, columns=columns)
+    favorable, adverse = _favorable_adverse_series(entry_price, side, fwd_bars)
+    entry = float(entry_price)
+    raw_terminal = (fwd_bars["close"] - entry) / entry
+    terminal = raw_terminal if side is Side.LONG else -raw_terminal
+
+    return pd.DataFrame(
+        {
+            "day_offset": range(1, len(fwd_bars) + 1),
+            "favorable": favorable.to_numpy(),
+            "adverse": adverse.to_numpy(),
+            "terminal": terminal.to_numpy(),
+        },
+        columns=columns,
+    )
 
 
 def _first_hourly_touch(hourly: pd.DataFrame, touch_level: float, side: Side) -> pd.Series | None:

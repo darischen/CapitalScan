@@ -1186,18 +1186,18 @@ CREATE TABLE path (
 CREATE INDEX path_event_id ON path (event_id);
 ```
 
-**Grain:** one row per event per forward day. The window spans ten trading days (the maximum `StatsParams.fwd_ret_horizons`), though events near the end of available price history may have partial windows.
+**Grain:** one row per event per forward day. The window spans eleven trading days — the maximum `StatsParams.fwd_ret_horizons` (10) plus the largest entry-to-signal offset across `EntryKind` (`entry_offset_for`, 1 day for `NEXT_OPEN`), so that even a `NEXT_OPEN` entry (which fills one trading day after the signal) still has a full `fwd_ret_10d`-equivalent horizon available from its own entry date, not just from the signal date. `day_offset` counts from `signal_date`, not from the entry date — see `core.returns.entry_offset_for` for the translation any entry-anchored consumer (Session 9's own MFE/MAE, reachability, and forward-return windows) must apply. Events near the end of available price history may have partial windows.
 
 **Fields:**
 - `event_id`: foreign key to events(id), cascade delete ensures orphans never exist.
-- `day_offset`: trading day offset from signal date (1-10 for complete windows, 1-N for partial). Null windows have no rows.
+- `day_offset`: trading day offset from signal date (1-11 for complete windows, 1-N for partial). Null windows have no rows.
 - `favorable`: the best (highest for long, lowest for short) intraday extreme over that day, expressed as return pct from entry price. Direction-neutral.
 - `adverse`: the worst intraday extreme, also direction-neutral.
 - `terminal`: the closing price on that day, expressed as return pct from entry price.
 
 The path table replaces label materialization. Rather than adding columns for every (threshold, horizon) pair (which would explode to ~80+ columns as thresholds and horizons expand), labels are derived as queries against the path table. Session 9's existing `touched_*pct`, `day_touched_*pct`, and `fwd_ret_*d` columns on `events` remain as a precomputed cache for frequently accessed labels and for the serving views; new thresholds and new horizons are computed on demand.
 
-**Events table extension:** the `fwd_window_days` column (nullable int, 1-10) tracks how many trading days of the forward window exist for each event. Null means no forward data; 10 means the full window is available; 1-9 means a partial window near the end of price history.
+**Events table extension:** the `fwd_window_days` column (nullable int, 1-11) tracks how many trading days of the forward window exist for each event. Null means no forward data; 11 means the full window is available; 1-10 means a partial window near the end of price history.
 
 ### 5.8 Parallelism and determinism
 

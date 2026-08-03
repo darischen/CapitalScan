@@ -9,7 +9,11 @@ completeness tracking to the event table.
 
 Per session10.md §0:
 - Path table stores per-day forward outcomes across the full evaluation
-  window (ten trading days, max(StatsParams.fwd_ret_horizons)).
+  window (max(StatsParams.fwd_ret_horizons) plus the largest entry-to-signal
+  offset across EntryKind — eleven trading days with the default config, not
+  ten; see `research.path_backfill.window_days_for_config` and
+  `core.returns.entry_offset_for`, added after this migration to close a
+  NEXT_OPEN coverage gap).
 - One row per event per forward day, with direction-neutral extremes
   (favorable and adverse) and terminal mark from close.
 - Events near the end of price history have partial windows and must be
@@ -18,7 +22,7 @@ Per session10.md §0:
 Schema design:
 - `path` table: one row per (event_id, day_offset), foreignkey to events(id)
   with cascade delete, composite PK on (event_id, day_offset).
-- `events.fwd_window_days`: nullable int, 1-10 when window exists (partial or
+- `events.fwd_window_days`: nullable int, 1-11 when window exists (partial or
   complete), NULL when no forward data available.
 - Favorable and adverse extremes use intraday extremes; terminal uses close.
 - Day offsets count trading days from price history calendar, never

@@ -47,17 +47,37 @@ def test_path_backfill_cmd_routes_through_resolve_config_or_exit(monkeypatch):
         seen["called"] = True
         return sentinel_config
 
-    def fake_run_path_backfill(engine, config, quiet=False):
+    def fake_run_path_backfill(engine, config, quiet=False, max_workers=1):
         seen["config"] = config
+        seen["max_workers"] = max_workers
         return PathBackfillReport(events_processed=1, events_skipped_unfilled=0, rows_written=1)
 
     monkeypatch.setattr(cli, "_resolve_config_or_exit", fake_resolve)
     monkeypatch.setattr(path_backfill_mod, "run_path_backfill", fake_run_path_backfill)
 
-    cli.path_backfill_cmd(quiet=False)
+    cli.path_backfill_cmd(quiet=False, workers=1)
 
     assert seen["called"] is True
     assert seen["config"] is sentinel_config
+    assert seen["max_workers"] == 1
+
+
+def test_path_backfill_cmd_passes_workers_through(monkeypatch):
+    # `--workers` must reach `run_path_backfill`'s `max_workers`, matching
+    # the same `ProcessPoolExecutor workers; 1 runs serially` convention
+    # `cscan backtest --workers` and `cscan indicators --workers` use.
+    seen: dict = {}
+
+    def fake_run_path_backfill(engine, config, quiet=False, max_workers=1):
+        seen["max_workers"] = max_workers
+        return PathBackfillReport()
+
+    monkeypatch.setattr(cli, "_resolve_config_or_exit", lambda cli_overrides=None: Config())
+    monkeypatch.setattr(path_backfill_mod, "run_path_backfill", fake_run_path_backfill)
+
+    cli.path_backfill_cmd(quiet=False, workers=8)
+
+    assert seen["max_workers"] == 8
 
 
 def test_path_reconcile_cmd_routes_through_resolve_config_or_exit(monkeypatch):

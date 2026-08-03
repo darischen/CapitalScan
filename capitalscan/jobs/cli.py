@@ -1007,6 +1007,7 @@ path_app = typer.Typer(help="Forward path store (Session 10)")
 @path_app.command("backfill")
 def path_backfill_cmd(
     quiet: bool = typer.Option(False, "--quiet", help="JSON-lines progress instead of a live bar"),
+    workers: int = typer.Option(1, help="ProcessPoolExecutor workers; 1 runs serially"),
 ) -> None:
     """Populate `path` and `events.fwd_window_days` for every filled entry."""
     from capitalscan.jobs import db_io, ingest
@@ -1014,8 +1015,8 @@ def path_backfill_cmd(
 
     config = _resolve_config_or_exit()
     engine = db_io.get_engine()
-    with ingest.run_job(engine, "path_backfill", {}) as job_report:
-        report = run_path_backfill(engine, config, quiet=quiet)
+    with ingest.run_job(engine, "path_backfill", {"workers": workers}) as job_report:
+        report = run_path_backfill(engine, config, quiet=quiet, max_workers=workers)
         job_report.rows_written = report.rows_written
     console.print(
         f"path backfill: events_processed={report.events_processed} "
