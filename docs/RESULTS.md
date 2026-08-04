@@ -572,6 +572,163 @@ Session 9 has no outstanding BUILD §9 items.
 
 ---
 
+## Session 10 — Path store and reconciliation
+
+### Task 10.2 — Path backfill
+
+**2026-08-03.** `cscan path backfill --workers 8`, branch
+`session-10-forward-path`.
+
+1,997,190 events processed (every event with a non-null `entry_price`),
+21,872,808 `path` rows written, 18 events skipped
+(`events_skipped_no_signal_bar`) — live poller-created events whose
+`signal_date` had no `1d` bar yet at run time (see the crash fix below).
+1h08m09s wall clock at 8 workers, after vectorizing `path_for_event`
+(removing a per-bar Python loop) and parallelizing per-ticker across a
+`ProcessPoolExecutor`, mirroring `jobs.compute.run_indicators`'s pattern.
+
+**Bug found and fixed during the run:** the first attempt crashed at
+ticker 12/575 (`ValueError: fwd_window_for_signal: no bar for
+signal_date=2026-08-03`) — a live event created by the poller that day had
+no `1d` bar yet. Fixed by pre-checking for the signal bar's existence per
+event inside `_compute_ticker_path` and counting the skip separately
+rather than letting the whole parallel run die on one event. See
+`capitalscan/research/path_backfill.py` commit `091978f`.
+
+### Task 10.3 — Derived label layer
+
+No separate run recorded here — `derive_session9_labels` is read-only and
+its correctness is exercised entirely through the Task 10.4 reconciliation
+below, which is the actual test of whether it reproduces Session 9's
+labels.
+
+### Task 10.4 — Reconciliation
+
+**2026-08-03.** `cscan path reconcile --config-hash 3e598c59e7d71eae`
+(the Phase 3 gate's default config), branch `session-10-forward-path`,
+246,134 events (18 more than the 246,116 recorded at the Aug 2 gate — the
+nightly pipeline keeps writing new events under this `config_hash` as new
+signals fire; this is expected, not a discrepancy).
+
+**Reconciling by `config_hash`, not `run_id` — a real finding, not a
+tooling detail.** `events`'s natural key is `(config_hash, ticker,
+signal_date, signal_type, entry_kind)`; it does not include `run_id`, and
+`db_io.upsert`'s default behavior overwrites every non-key column on
+conflict, `run_id` included. The first reconciliation attempt, run against
+the documented `run_id=backtest_20260802T183304_6b1c5b52`, returned
+`total_events=0` and printed `PASS` — a **false pass**: the `runs` table
+still has an `ok` record for that run, but every `events` row it wrote has
+since had its `run_id` silently relabeled by a later `backtest_sweep` run
+(`backtest_sweep_20260803T021428_10b5860b`) that included the same default
+config as one of its 18 sweep cells (ADR 059's own note that the default
+run is sweep config #1). `config_hash` is the durable identifier for a
+config's row set; `run_id` is provenance about which run last touched a
+row, not a stable selector once any later run reuses the same config.
+`reconcile()` now filters by `config_hash` throughout and raises rather
+than returning a vacuous pass on zero matched events
+(`capitalscan/research/path_reconcile.py` commit `750f926`).
+
+**First real (non-vacuous) run** flagged `mfe`/`mae` mismatching on
+34,851/35,159 of 246,134 events (~14%), `capture_ratio` on 15,679, and
+`touched_2/3/5/10pct` on 104/75/61/9 events. Investigated in full,
+resolving to three independent, unrelated causes plus one genuine bug —
+each confirmed by hand against `bars`/`path`/`events`, not assumed:
+
+1. **`_FLOAT_TOL=1e-9` miscalibrated for `numeric(12,6)`-sourced data**
+   (the majority of the `mfe`/`mae` mismatches). Both sides derive
+   `favorable`/`adverse`/`mfe`/`mae` from the identical formula
+   (`core.returns._favorable_adverse_series`) but each independently
+   rounds to `numeric(12,6)` — two values that agree on the true float can
+   still land one quantum (`1e-6`) apart after independent rounding.
+   Verified by hand on event 2896328 (ORCL, 2010-01-05): derived
+   `mfe=0.027566` vs stored `mfe=0.027565`. Also checked and ruled out: the
+   large *raw count* of 2010-dated mismatches (19,320 of 34,851) is not a
+   2010-specific defect — `bars` for that date range carry a single
+   pre-original-backtest `run_id` (`bars_daily_20260802T121443_f8d6ed24`,
+   confirmed not re-ingested since), and the mismatch *rate* is uniform
+   across years; 2010 simply has more total resolved events. Widened to
+   `2e-6`, then to `3e-5` after excluding cause (3) below revealed a longer
+   historical-only tail than a single quantum predicts (`mfe` is a `max()`
+   over several noisy per-day values, so near-tied candidate days can
+   compound beyond one quantum; 99th percentile of the historical-only
+   residual was `2.8e-5`).
+
+2. **A real bug: `touched_*pct`/`day_touched_*pct` routed the reachability
+   comparison through `core.signals._breach`**, which rounds both operands
+   to 4 *decimal places* (DESIGN §3.2) — a rule sized for comparing dollar
+   prices, not return ratios. Event 2824409 (HD, 2014-07-01):
+   `favorable=0.019978`, 0.000022 below the 2% target, rounds to `0.0200`
+   at 4 decimals and spuriously registers as touched, disagreeing with
+   Session 9's own price-level comparison. Fixed: plain `>=` at the stored
+   `numeric(12,6)` precision, no `_breach` rounding
+   (`capitalscan/research/path_labels.py` commit `a3d3f10`). This dropped
+   the `touched_*pct` family from 615 combined mismatches to 14.
+
+3. **A genuine data-freshness artifact, not a defect: bars for very
+   recent events get revised after the path backfill runs.** 42 events (all
+   `signal_date` in the trailing month, uniform `mfe` diff around `3e-4` —
+   not a settling gradient, consistent with one bars-refresh job
+   re-ingesting a rolling window of recent daily data in one pass).
+   Root-caused directly for event 2862277 (LRCX, `signal_date=2026-07-29`):
+   `bars` for that ticker carried `run_id=bars_daily_20260803T211515_...`,
+   ingested hours *after* the path backfill ran, revising the OHLC the
+   backfill had already used. `events.mfe` and `path.favorable` were
+   computed against two different snapshots of the same ticker's bars.
+   `reconcile()` now excludes `mfe`/`mae`/`capture_ratio` comparisons for
+   events within `RECENT_BARS_REVISION_DAYS` (45) of today, tracked (not
+   silently dropped) via `ReconciliationReport.recent_events_excluded` and
+   printed by the CLI.
+
+4. **`capture_ratio`'s relative tolerance needed to scale with `1/mfe`, not
+   be fixed.** After fixes (1)-(3), `capture_ratio` mismatches barely moved
+   (15,679 → 2,128 → 2,090) despite `mfe`/`mae` being nearly clean (69/67
+   residual events) — because a fixed `5e-4` relative tolerance is wrong
+   at every `mfe` scale simultaneously: too tight near
+   `CAPTURE_RATIO_MFE_FLOOR` (`0.005`, where `mfe`'s own `3e-5` noise is a
+   `0.2%`+ relative swing) and unnecessarily loose an order of magnitude
+   higher. `_capture_ratio_tolerance()` now scales as
+   `CAPTURE_RATIO_TOLERANCE_MARGIN * _FLOAT_TOL / |mfe|`, calibrated
+   against the real run's measured `mfe`/`reldiff` distribution at the
+   residual population's median (`mfe=0.016`). Dropped `capture_ratio`
+   from 2,090 to 206.
+
+**Final state, this run:** `report.passes` is `False`. Residual:
+`mfe` 69, `mae` 67, `capture_ratio` 206, `touched_2pct` 1,
+`day_touched_2pct` 5, `touched_3pct` 2, `day_touched_3pct` 4,
+`touched_5pct` 1, `day_touched_5pct` 1 — 356 events total (0.14% of
+246,134), down from an initial combined total (excluding the separately
+explained `fwd_ret_*d` family) of roughly 85,900. `fwd_ret_1d`..`fwd_ret_10d`
+mismatch on effectively every event (244,829-245,841) and are fully
+explained: `path.terminal` is entry-price-anchored, split-adjusted-close
+return; Session 9's `fwd_ret_*d` is total-return (`adj_close`),
+self-referential to the entry bar's own close (DESIGN §2.2). Both are
+intentional, different price-series conventions, not a defect — this is
+the "different entry price convention" mismatch cause `docs/session10.md`
+§3 names explicitly, and it does not block the gate
+(`EXPLAINED_COLUMNS`).
+
+**Not investigated further, stopped by diminishing returns rather than a
+decision that the residual is fully understood:** the remaining 356
+events across `mfe`/`mae`/`capture_ratio`/`touched_*pct` were not traced
+individually. Given the pattern across every prior round (each fix
+resolved 80-99% of the count it targeted, never 100%), the most likely
+remaining causes are further instances of the same four mechanisms at
+smaller scale — additional near-tied-day `max()` compounding, additional
+bars-revision cases outside the 45-day window this run used, or a handful
+of genuinely un-diagnosed events. None of the residual samples inspected
+before stopping showed a magnitude or pattern inconsistent with the four
+causes above. **Session 10's gate item 2 ("reconciliation... passes with
+zero unexplained differences") is not met by strict `report.passes`.**
+Whether the 0.14% residual is acceptable to proceed past, or needs a
+further investigation pass, is a decision for whoever picks this up next
+— see `docs/session10.md` §3's own list of mismatch causes for where to
+look first (a fifth possible cause not yet checked here: whether any of
+the residual events fall in the `touch_5m`/`touch_30m` entry kinds, where
+the hourly-coverage boundary interacts with `entry_offset_for`
+differently than assumed).
+
+---
+
 ## Phase 4 — Statistics
 
 ### Statistical self-validation
