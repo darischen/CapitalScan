@@ -130,19 +130,32 @@ def derive_labels_from_path(
     return out
 
 
-def derive_session9_labels(engine: Engine, config: Config, run_id: str) -> pd.DataFrame:
-    """Read-only: one row per `event_id` in `run_id`, columns matching the
-    Session 9 label family on `events`. See the module docstring — this
-    performs no writes.
+def derive_session9_labels(engine: Engine, config: Config, config_hash: str) -> pd.DataFrame:
+    """Read-only: one row per `event_id` for `config_hash`, columns matching
+    the Session 9 label family on `events`. See the module docstring —
+    this performs no writes.
+
+    Filters by `config_hash`, not `run_id`. `events`'s natural key is
+    `(config_hash, ticker, signal_date, signal_type, entry_kind)` — it does
+    not include `run_id` — and `db_io.upsert`'s default behavior overwrites
+    every non-key column on conflict, `run_id` included. So any later run
+    that reuses the same `config_hash` (a sweep cell matching the default
+    config, a live `events`/poll job, a rerun) silently relabels the
+    `run_id` on rows a prior run wrote, while `config_hash` keeps
+    identifying the same durable row set regardless of which run last
+    touched it. Discovered when reconciling against the Phase 3 gate's
+    documented `run_id` returned zero rows — the rows were still there,
+    just relabeled under a later run's `run_id` after a same-config sweep
+    cell ran.
     """
     with engine.connect() as conn:
         events = pd.read_sql(
             text(
                 "SELECT id AS event_id, entry_kind, holding_days, entry_price, "
-                "exit_price, side FROM events WHERE run_id = :run_id"
+                "exit_price, side FROM events WHERE config_hash = :config_hash"
             ),
             conn,
-            params={"run_id": run_id},
+            params={"config_hash": config_hash},
         )
         if events.empty:
             return events.assign(**{})

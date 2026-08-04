@@ -88,14 +88,14 @@ def test_path_reconcile_cmd_routes_through_resolve_config_or_exit(monkeypatch):
         seen["called"] = True
         return sentinel_config
 
-    def fake_reconcile(engine, config, run_id):
+    def fake_reconcile(engine, config, config_hash):
         seen["config"] = config
-        return ReconciliationReport(run_id=run_id, total_events=5, mismatches={}, explained={})
+        return ReconciliationReport(config_hash=config_hash, total_events=5, mismatches={}, explained={})
 
     monkeypatch.setattr(cli, "_resolve_config_or_exit", fake_resolve)
     monkeypatch.setattr(path_reconcile_mod, "reconcile", fake_reconcile)
 
-    cli.path_reconcile_cmd(run_id="r1")
+    cli.path_reconcile_cmd(config_hash="c1")
 
     assert seen["called"] is True
     assert seen["config"] is sentinel_config
@@ -106,11 +106,11 @@ def test_path_reconcile_cmd_exits_zero_on_pass(monkeypatch):
     monkeypatch.setattr(
         path_reconcile_mod,
         "reconcile",
-        lambda engine, config, run_id: ReconciliationReport(
-            run_id=run_id, total_events=3, mismatches={}, explained={}
+        lambda engine, config, config_hash: ReconciliationReport(
+            config_hash=config_hash, total_events=3, mismatches={}, explained={}
         ),
     )
-    cli.path_reconcile_cmd(run_id="r1")  # must not raise
+    cli.path_reconcile_cmd(config_hash="c1")  # must not raise
 
 
 def test_path_reconcile_cmd_raises_typer_exit_1_on_fail(monkeypatch):
@@ -122,12 +122,12 @@ def test_path_reconcile_cmd_raises_typer_exit_1_on_fail(monkeypatch):
     monkeypatch.setattr(
         path_reconcile_mod,
         "reconcile",
-        lambda engine, config, run_id: ReconciliationReport(
-            run_id=run_id, total_events=3, mismatches={"mfe": mismatch_frame}, explained={}
+        lambda engine, config, config_hash: ReconciliationReport(
+            config_hash=config_hash, total_events=3, mismatches={"mfe": mismatch_frame}, explained={}
         ),
     )
     with pytest.raises(typer.Exit) as exc_info:
-        cli.path_reconcile_cmd(run_id="r1")
+        cli.path_reconcile_cmd(config_hash="c1")
     assert exc_info.value.exit_code == 1
 
 
@@ -141,11 +141,11 @@ def test_path_reconcile_cmd_prints_sample_event_ids(monkeypatch, capsys):
     monkeypatch.setattr(
         path_reconcile_mod,
         "reconcile",
-        lambda engine, config, run_id: ReconciliationReport(
-            run_id=run_id, total_events=3, mismatches={"mfe": mismatch_frame}, explained={}
+        lambda engine, config, config_hash: ReconciliationReport(
+            config_hash=config_hash, total_events=3, mismatches={"mfe": mismatch_frame}, explained={}
         ),
     )
     with pytest.raises(typer.Exit):
-        cli.path_reconcile_cmd(run_id="r1")
+        cli.path_reconcile_cmd(config_hash="c1")
     out = capsys.readouterr().out
     assert "101" in out and "102" in out and "103" in out

@@ -1034,7 +1034,9 @@ def path_backfill_cmd(
 
 @path_app.command("reconcile")
 def path_reconcile_cmd(
-    run_id: str = typer.Option(..., "--run-id", help="events.run_id to reconcile against"),
+    config_hash: str = typer.Option(
+        ..., "--config-hash", help="events.config_hash to reconcile against (not run_id: see reconcile()'s docstring)"
+    ),
 ) -> None:
     """Task 10.4: diff path-derived labels against Session 9's stored labels."""
     from capitalscan.jobs import db_io
@@ -1042,8 +1044,8 @@ def path_reconcile_cmd(
 
     config = _resolve_config_or_exit()
     engine = db_io.get_engine()
-    report = reconcile(engine, config, run_id)
-    console.print(f"reconcile: run_id={run_id} total_events={report.total_events}")
+    report = reconcile(engine, config, config_hash)
+    console.print(f"reconcile: config_hash={config_hash} total_events={report.total_events}")
     for col, frame in report.mismatches.items():
         tag = "[yellow]explained[/yellow]" if col in report.explained else "[red]UNEXPLAINED[/red]"
         sample_ids = list(frame["event_id"].head(5))

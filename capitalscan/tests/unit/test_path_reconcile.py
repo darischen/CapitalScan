@@ -3,10 +3,13 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from capitalscan.core.config import DEFAULT_CONFIG
+from capitalscan.research import path_reconcile as path_reconcile_mod
 from capitalscan.research.path_reconcile import (
     _unbackfilled_resolved_event_ids,
     assert_event_ids_match,
     diff_labels,
+    reconcile,
 )
 
 
@@ -91,6 +94,44 @@ def test_assert_event_ids_match_raises_when_derived_missing_an_event_id():
     actual = pd.DataFrame({"event_id": [1, 2], "mfe": [0.01, 0.02]})
     with pytest.raises(ValueError, match="event_id"):
         assert_event_ids_match(derived, actual)
+
+
+class _EmptyResultConn:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, stmt, params=None):
+        return []
+
+
+class _EmptyResultEngine:
+    """Just enough of `Engine` for `reconcile()`'s `actual` query to come
+    back with zero rows — no real database involved.
+    """
+
+    def connect(self):
+        return _EmptyResultConn()
+
+
+def test_reconcile_raises_on_zero_events_instead_of_a_vacuous_pass(monkeypatch):
+    # Reproduces the real false-positive PASS: `run_id`-based lookup
+    # matched zero events (a later run reusing the same config_hash had
+    # silently relabeled every row's run_id — see derive_session9_labels'
+    # docstring). A 0-event comparison must never read as a real pass.
+    monkeypatch.setattr(
+        path_reconcile_mod, "derive_session9_labels", lambda engine, config, config_hash: pd.DataFrame()
+    )
+
+    def fake_read_sql(stmt, conn, params=None):
+        return pd.DataFrame(columns=["event_id"])
+
+    monkeypatch.setattr(path_reconcile_mod.pd, "read_sql", fake_read_sql)
+
+    with pytest.raises(ValueError, match="zero events"):
+        reconcile(_EmptyResultEngine(), DEFAULT_CONFIG, "nonexistent_config_hash")
 
 
 def test_unbackfilled_resolved_event_ids_flags_holding_days_without_path():

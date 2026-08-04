@@ -123,7 +123,7 @@ def diff_labels(derived: pd.DataFrame, actual: pd.DataFrame, columns: list[str])
 
 @dataclass
 class ReconciliationReport:
-    run_id: str
+    config_hash: str
     total_events: int
     mismatches: dict[str, pd.DataFrame] = field(default_factory=dict)
     explained: dict[str, str] = field(default_factory=dict)
@@ -180,8 +180,8 @@ def _unbackfilled_resolved_event_ids(rows: pd.DataFrame) -> pd.Series:
     return rows.loc[rows["holding_days"].notna() & rows["fwd_window_days"].isna(), "event_id"]
 
 
-def assert_backfill_covers_resolved_events(engine: Engine, run_id: str) -> None:
-    """Raises if any event in `run_id` with a resolved position
+def assert_backfill_covers_resolved_events(engine: Engine, config_hash: str) -> None:
+    """Raises if any event under `config_hash` with a resolved position
     (`holding_days IS NOT NULL`) has no path backfill
     (`fwd_window_days IS NULL`). See `_unbackfilled_resolved_event_ids`.
     """
@@ -189,41 +189,55 @@ def assert_backfill_covers_resolved_events(engine: Engine, run_id: str) -> None:
         rows = pd.read_sql(
             text(
                 "SELECT id AS event_id, holding_days, fwd_window_days FROM events "
-                "WHERE run_id = :run_id"
+                "WHERE config_hash = :config_hash"
             ),
             conn,
-            params={"run_id": run_id},
+            params={"config_hash": config_hash},
         )
     gap = _unbackfilled_resolved_event_ids(rows)
     if len(gap) > 0:
         sample = list(gap.head(10))
         raise ValueError(
-            f"reconcile: {len(gap)} event(s) in run_id={run_id} have a resolved "
-            "position (holding_days IS NOT NULL) but no path backfill "
+            f"reconcile: {len(gap)} event(s) under config_hash={config_hash} have a "
+            "resolved position (holding_days IS NOT NULL) but no path backfill "
             f"(fwd_window_days IS NULL). Run `cscan path backfill` before "
             f"reconciling. Sample event_ids: {sample}"
         )
 
 
-def reconcile(engine: Engine, config: Config, run_id: str) -> ReconciliationReport:
-    derived = derive_session9_labels(engine, config, run_id)
+def reconcile(engine: Engine, config: Config, config_hash: str) -> ReconciliationReport:
+    """Filters by `config_hash`, not `run_id` — see `derive_session9_labels`'s
+    docstring for why `run_id` cannot reliably select a durable row set
+    once any later run reuses the same config.
+    """
+    derived = derive_session9_labels(engine, config, config_hash)
     with engine.connect() as conn:
         actual = pd.read_sql(
             text(
                 f"SELECT id AS event_id, {', '.join(LABEL_COLUMNS)} FROM events "
-                "WHERE run_id = :run_id"
+                "WHERE config_hash = :config_hash"
             ),
             conn,
-            params={"run_id": run_id},
+            params={"config_hash": config_hash},
+        )
+
+    if actual.empty:
+        raise ValueError(
+            f"reconcile: config_hash={config_hash} matches zero events — nothing to "
+            "reconcile against. A PASS on an empty comparison is not a real "
+            "verification; check the config_hash is correct and that events for it "
+            "still exist (see derive_session9_labels' docstring: a later run reusing "
+            "the same config_hash does not delete rows, but run_id-based lookups can "
+            "miss them)."
         )
 
     assert_event_ids_match(derived, actual)
-    assert_backfill_covers_resolved_events(engine, run_id)
+    assert_backfill_covers_resolved_events(engine, config_hash)
 
     mismatches = diff_labels(derived, actual, LABEL_COLUMNS) if not derived.empty else {}
     explained = {col: reason for col, reason in EXPLAINED_COLUMNS.items() if col in mismatches}
     return ReconciliationReport(
-        run_id=run_id,
+        config_hash=config_hash,
         total_events=len(actual),
         mismatches=mismatches,
         explained=explained,
