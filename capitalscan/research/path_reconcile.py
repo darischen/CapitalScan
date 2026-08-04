@@ -123,14 +123,29 @@ RECENT_BARS_REVISION_DAYS = 45
 # final review). Columns listed here compare with *relative* tolerance
 # instead; everything else keeps the absolute `_FLOAT_TOL` above.
 #
-# `5e-4` (not `1e-4`): the real reconciliation run's *median* relative
-# diff on flagged `capture_ratio` mismatches was `2.37e-4` — comfortably
-# explained by `mfe`'s own `1e-6` rounding noise once `mfe` is not tiny
-# (`1e-6 / 0.02` MFE ≈ `5e-5`, times a small multiple for compounding
-# through the ratio), but above the original `1e-4`. See
-# `CAPTURE_RATIO_MFE_FLOOR` below for the separate, unrelated failure mode
-# this tolerance alone cannot fix: `mfe` near zero.
+# `5e-4` is a *fallback* only, used when `mfe` isn't available alongside
+# `capture_ratio` in the frame being diffed (e.g. an isolated unit test
+# constructing only a `capture_ratio` column). The real comparison uses
+# `_capture_ratio_tolerance` below, which scales with `1/|mfe|` — a real
+# reconciliation run showed a *fixed* relative tolerance cannot work here
+# at all: mismatches clustered at `mfe` just above `CAPTURE_RATIO_MFE_FLOOR`
+# (median mfe=0.016 among 2,090 residual mismatches after mfe/mae's own
+# tolerance was fixed), where `_FLOAT_TOL/mfe` noise is `~0.2%` — several
+# times a `5e-4` (`0.05%`) tolerance — while at `mfe` an order of magnitude
+# larger the same absolute noise is negligible. A single fixed relative
+# tolerance is either too tight near the floor or too loose far from it;
+# nothing in between is correct for every `mfe` scale.
 RELATIVE_TOLERANCE_COLUMNS = {"capture_ratio": 5e-4}
+
+# Safety margin over the theoretical `_FLOAT_TOL/|mfe|` noise floor for
+# `capture_ratio`'s adaptive tolerance — see `_capture_ratio_tolerance`.
+# `3` was chosen against real data: at the real run's median residual
+# `mfe=0.016`, `3 * _FLOAT_TOL / 0.016 ≈ 0.56%`, comfortably above the
+# observed median relative diff there (`0.097%`) with room for the
+# distribution's own spread, while at `mfe=CAPTURE_RATIO_MFE_FLOOR`
+# (`0.005`) it caps at `~1.8%` — wide but still 50x+ tighter than the
+# near-zero-`mfe` outliers `CAPTURE_RATIO_MFE_FLOOR` excludes entirely.
+CAPTURE_RATIO_TOLERANCE_MARGIN = 3
 
 # Below this |mfe|, `capture_ratio = r_exit / mfe` is dividing by a value
 # close enough to zero that ordinary `numeric(12,6)` rounding noise on
@@ -145,6 +160,23 @@ RELATIVE_TOLERANCE_COLUMNS = {"capture_ratio": 5e-4}
 # floor from the report entirely (not "explained" — genuinely not
 # comparable), the same way `diff_labels` already drops both-null pairs.
 CAPTURE_RATIO_MFE_FLOOR = 0.005
+
+
+def _capture_ratio_tolerance(merged: pd.DataFrame) -> float | pd.Series:
+    """Relative tolerance for `capture_ratio`, adaptive to `mfe`'s own
+    magnitude where possible. `capture_ratio = r_exit / mfe`'s noise is
+    driven entirely by `mfe`'s absolute tolerance (`_FLOAT_TOL`)
+    propagated through division: `~_FLOAT_TOL/|mfe|`, times
+    `CAPTURE_RATIO_TOLERANCE_MARGIN` for safety margin — see that
+    constant's comment for the real-data calibration. Falls back to the
+    fixed `RELATIVE_TOLERANCE_COLUMNS["capture_ratio"]` when `mfe_actual`
+    isn't present in `merged` (e.g. an isolated unit test diffing only
+    `capture_ratio`, with no `mfe` column to scale against).
+    """
+    if "mfe_actual" not in merged.columns:
+        return RELATIVE_TOLERANCE_COLUMNS["capture_ratio"]
+    mfe = merged["mfe_actual"].astype(float).abs()
+    return CAPTURE_RATIO_TOLERANCE_MARGIN * _FLOAT_TOL / mfe.where(mfe > 0, np.nan)
 
 
 def diff_labels(derived: pd.DataFrame, actual: pd.DataFrame, columns: list[str]) -> dict[str, pd.DataFrame]:
@@ -172,7 +204,7 @@ def diff_labels(derived: pd.DataFrame, actual: pd.DataFrame, columns: list[str])
             d_float, a_float = d_vals.astype(float), a_vals.astype(float)
             diff = (d_float - a_float).abs()
             if col in RELATIVE_TOLERANCE_COLUMNS:
-                rel_tol = RELATIVE_TOLERANCE_COLUMNS[col]
+                rel_tol = _capture_ratio_tolerance(merged) if col == "capture_ratio" else RELATIVE_TOLERANCE_COLUMNS[col]
                 # Relative to the actual (Session 9's stored) value — the
                 # reference the derived value is being checked against.
                 # Denominator zeros are guarded explicitly (rather than

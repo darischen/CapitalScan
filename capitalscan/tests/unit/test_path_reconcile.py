@@ -145,6 +145,36 @@ def test_drop_unstable_capture_ratio_rows_no_op_when_column_absent():
     assert out == mismatches
 
 
+def test_diff_labels_capture_ratio_adaptive_tolerance_scales_with_mfe():
+    # Real reconciliation-run pattern: mfe=0.016 (well above
+    # CAPTURE_RATIO_MFE_FLOOR but small enough that a fixed 5e-4 relative
+    # tolerance is too tight for mfe's own 3e-5 noise). With mfe present
+    # alongside capture_ratio, the tolerance must widen adaptively — a
+    # capture_ratio difference driven purely by mfe-scale noise at this
+    # mfe must NOT flag, even though it clears the old fixed 5e-4.
+    derived = pd.DataFrame({"event_id": [1], "mfe": [0.016], "capture_ratio": [0.301]})
+    actual = pd.DataFrame({"event_id": [1], "mfe": [0.016], "capture_ratio": [0.300]})
+    mismatches = diff_labels(derived, actual, columns=["mfe", "capture_ratio"])
+    assert "capture_ratio" not in mismatches
+
+
+def test_diff_labels_capture_ratio_adaptive_tolerance_still_flags_real_difference():
+    derived = pd.DataFrame({"event_id": [1], "mfe": [0.016], "capture_ratio": [0.5]})
+    actual = pd.DataFrame({"event_id": [1], "mfe": [0.016], "capture_ratio": [0.3]})
+    mismatches = diff_labels(derived, actual, columns=["mfe", "capture_ratio"])
+    assert list(mismatches["capture_ratio"]["event_id"]) == [1]
+
+
+def test_diff_labels_capture_ratio_falls_back_to_fixed_tolerance_without_mfe():
+    # No `mfe` column in the frame diffed — _capture_ratio_tolerance can't
+    # adapt, so it must fall back to the fixed RELATIVE_TOLERANCE_COLUMNS
+    # value rather than raising or silently comparing at 0 tolerance.
+    derived = pd.DataFrame({"event_id": [1], "capture_ratio": [0.5000005]})
+    actual = pd.DataFrame({"event_id": [1], "capture_ratio": [0.5]})
+    mismatches = diff_labels(derived, actual, columns=["capture_ratio"])
+    assert mismatches == {}
+
+
 def test_drop_recent_events_excludes_rows_within_the_window():
     # Real reconciliation run: 42 events, all within RECENT_BARS_REVISION_DAYS
     # of "today", showing a uniform ~3e-4 mfe diff traced to a bars-refresh
