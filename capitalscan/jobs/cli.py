@@ -1049,8 +1049,11 @@ def path_reconcile_cmd(
     for col, frame in report.mismatches.items():
         tag = "[yellow]explained[/yellow]" if col in report.explained else "[red]UNEXPLAINED[/red]"
         sample_ids = list(frame["event_id"].head(5))
+        excluded_note = ""
+        if col in report.recent_events_excluded:
+            excluded_note = f" ({report.recent_events_excluded[col]} more excluded: recent, bars still settling)"
         console.print(
-            f"  {col}: {len(frame)} mismatches {tag} (sample event_ids: {sample_ids})"
+            f"  {col}: {len(frame)} mismatches {tag} (sample event_ids: {sample_ids}){excluded_note}"
         )
     console.print("[green]PASS[/green]" if report.passes else "[red]FAIL[/red]")
     if not report.passes:

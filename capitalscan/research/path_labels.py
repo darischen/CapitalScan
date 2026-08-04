@@ -23,8 +23,7 @@ from sqlalchemy import Engine, text
 
 from capitalscan.core.config import Config
 from capitalscan.core.returns import entry_offset_for, realized_return
-from capitalscan.core.signals import _breach
-from capitalscan.core.types import Bound, EntryKind, Side
+from capitalscan.core.types import EntryKind, Side
 from capitalscan.research.enrich import _pct_suffix
 
 
@@ -100,17 +99,23 @@ def derive_labels_from_path(
         reach = by_offset.loc[by_offset.index.isin(reach_offsets)].sort_index()
         for target in targets:
             suffix = _pct_suffix(target)
-            # Routed through `_breach`, the one band comparison in the repo
-            # (invariant 2), matching `research.enrich.path_metrics`'s own
-            # reachability check. `favorable` is already direction-neutral
-            # (always "distance moved in the favorable direction for this
-            # side," as a return fraction), so the comparison is always
-            # `Bound.UPPER` ("at or above target") regardless of `side` —
-            # `side` already got baked into `favorable`'s sign upstream in
-            # `core.returns.mfe_mae`/`path_for_event`.
-            touched_mask = reach["favorable"].apply(
-                lambda v: _breach(float(v), target, Bound.UPPER)
-            )
+            # NOT routed through `_breach`: that function rounds its two
+            # operands to 4 decimal PLACES before comparing (DESIGN §3.2,
+            # "a float artifact below a hundredth of a cent never decides
+            # an event") — a rule sized for comparing dollar prices, not
+            # return ratios. Applying it here (as an earlier revision of
+            # this function did, per a since-corrected final-review fix)
+            # rounds `favorable` to the nearest 0.0001 of return — coarse
+            # enough that a value 0.000022 below a round-number target
+            # (0.019978 vs 0.02, a real reconciliation-run case) rounds
+            # UP to exactly the target and is spuriously reported as
+            # touched. `favorable` is already quantized once, correctly,
+            # at `numeric(12,6)` by the `path` table itself — a second,
+            # coarser rounding here is not reproducing Session 9's
+            # `_breach(bar["high"], entry*(1+target), ...)` price-level
+            # comparison, it is silently changing what gets compared.
+            # Plain `>=` at the stored precision is the faithful match.
+            touched_mask = reach["favorable"] >= target
             touched_rows = reach.loc[touched_mask]
             if touched_rows.empty:
                 out[f"touched_{suffix}"] = False

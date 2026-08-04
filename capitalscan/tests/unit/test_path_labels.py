@@ -144,13 +144,18 @@ def test_capture_ratio_null_when_mfe_non_positive():
     assert out["capture_ratio"] is None
 
 
-def test_reachability_uses_breach_rounding_at_the_boundary():
-    # favorable is 0.05 minus a sub-hundredth-of-a-cent float artifact
-    # (below _breach's 4-decimal rounding threshold): a raw `>=` comparison
-    # would call this "not touched," but `_breach` rounds both operands to
-    # 4 decimals first (DESIGN §3.2), so 0.0499999996 rounds to 0.05 and
-    # matches the target exactly — this must register as touched.
-    path = _path([(1, 0.0499999996, -0.01, 0.05)])
+def test_reachability_does_not_use_breach_price_rounding_on_a_ratio():
+    # Real reconciliation-run case (event 2824409/HD): favorable=0.019978
+    # is 0.000022 below the 2% target. An earlier revision of this
+    # function routed the comparison through `core.signals._breach`,
+    # which rounds both operands to 4 DECIMAL PLACES (DESIGN §3.2) — a
+    # rule sized for comparing dollar prices, not return ratios.
+    # round(0.019978, 4) == 0.02, so _breach spuriously reported this as
+    # touched, disagreeing with Session 9's own price-level comparison
+    # (which never rounds the *ratio* at all). Plain `>=` at the stored
+    # numeric(12,6) precision is the correct, faithful comparison — must
+    # NOT flag as touched.
+    path = _path([(1, 0.019978, -0.01, 0.01)])
     out = derive_labels_from_path(
         path=path,
         entry_offset=0,
@@ -159,11 +164,11 @@ def test_reachability_uses_breach_rounding_at_the_boundary():
         exit_price=105.0,
         side=Side.LONG,
         max_hold_days=5,
-        targets=(0.05,),
+        targets=(0.02,),
         horizons=(1,),
     )
-    assert out["touched_5pct"] is True
-    assert out["day_touched_5pct"] == 1
+    assert out["touched_2pct"] is False
+    assert out["day_touched_2pct"] is None
 
 
 def test_reachability_exact_target_match_counts_as_touched():

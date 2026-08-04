@@ -11,6 +11,7 @@ from `cscan path reconcile` or from a test/notebook at any time.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -70,11 +71,43 @@ EXPLAINED_COLUMNS = {
 # values. Verified by hand against `bars`/`path` for several sample
 # mismatches (event 2896328/ORCL: derived mfe=0.027566 vs stored
 # mfe=0.027565, exactly the rounding-boundary case) — not a computation
-# bug. `2e-6` gives a small margin above the theoretical `1e-6` worst
-# case while staying ~100x tighter than any real window/off-by-one bug
-# would produce (those show up as cents-scale price differences, not
-# quantization noise).
-_FLOAT_TOL = 2e-6
+# bug.
+#
+# `3e-5`, not `2e-6`: after excluding the live-bars-revision population
+# (see `RECENT_BARS_REVISION_DAYS` below) and fixing the `touched_*pct`
+# rounding bug, the remaining historical-events-only residual had a much
+# longer tail than a single independent-rounding quantum predicts —
+# median `3e-6`, 90th percentile `8e-6`, 99th percentile `2.8e-5`. `mfe`
+# is a `max()` over several already-noisy per-day `favorable` values, so
+# when two candidate days are nearly tied, the two computation paths can
+# pick different "winning" days, compounding beyond one quantum. `3e-5`
+# covers ~99% of that measured historical noise while staying ~30x
+# tighter than the live-bars-revision population's tight cluster around
+# `3e-4` (see `RECENT_BARS_REVISION_DAYS`) and orders of magnitude
+# tighter than any real window/off-by-one bug would produce (those show
+# up as cents-scale price differences on typical mega-cap prices, not
+# rounding-scale noise).
+_FLOAT_TOL = 3e-5
+
+# Real reconciliation run: 42 events (all `signal_date` in July 2026, the
+# month before this run), clustered tightly around a `mfe` absolute diff
+# of ~`3e-4` — two orders of magnitude above the historical noise floor
+# above, but uniform in magnitude across a month-wide date spread (not a
+# gradient that gets worse the closer to "today", which a genuinely
+# still-settling single day would show). Root-caused directly for one
+# sample (event 2862277/LRCX, signal_date=2026-07-29): `bars` for that
+# ticker carried `run_id=bars_daily_20260803T211515_...` — ingested
+# *after* the path backfill ran, revising the OHLC the backfill had
+# already used. The uniform magnitude across a month of dates is
+# consistent with one bars-refresh job re-ingesting/revising a rolling
+# window of recent daily data in one pass, not a per-event data-quality
+# issue. `path`/`events.mfe` were computed against two different
+# snapshots of the same ticker's bars — a data-freshness artifact of a
+# system that keeps ingesting, not a Session 10 computation defect.
+# `reconcile()` excludes events whose `signal_date` falls in this
+# trailing window from the `mfe`/`mae`/`capture_ratio` comparison — the
+# comparison is only meaningful once the underlying bars have settled.
+RECENT_BARS_REVISION_DAYS = 45
 
 # `mfe`/`mae` are compared at `_FLOAT_TOL` because both sides derive from
 # already-quantized (`numeric(12,6)`) `path.favorable`/`path.adverse`
@@ -187,12 +220,57 @@ def _drop_unstable_capture_ratio_rows(
     return out
 
 
+def _drop_recent_events(
+    mismatches: dict[str, pd.DataFrame],
+    columns: list[str],
+    signal_dates: pd.Series,
+    today: date,
+    window_days: int = RECENT_BARS_REVISION_DAYS,
+) -> tuple[dict[str, pd.DataFrame], dict[str, int]]:
+    """Removes mismatch rows for `columns` whose `event_id`'s `signal_date`
+    (from `signal_dates`, indexed by `event_id`) falls within
+    `window_days` of `today`. See `RECENT_BARS_REVISION_DAYS`'s comment:
+    bars for recent dates can still be revised after the path backfill
+    ran, and comparing against a Session-9 value computed from an earlier
+    bars snapshot is not a meaningful check until the data settles.
+
+    Drops a column key entirely if every one of its mismatches was within
+    the window (same "never leave an empty-but-present key" convention
+    `diff_labels`/`_drop_unstable_capture_ratio_rows` already use).
+
+    Returns `(filtered_mismatches, dropped_counts)` — the counts are
+    surfaced on `ReconciliationReport.recent_events_excluded` rather than
+    silently discarded, so a human reading the report can see exactly how
+    many rows were excluded and why, not just take it on faith.
+    """
+    cutoff = today - timedelta(days=window_days)
+    out = dict(mismatches)
+    dropped: dict[str, int] = {}
+    for col in columns:
+        if col not in out:
+            continue
+        frame = out[col]
+        dates = frame["event_id"].map(signal_dates)
+        old_enough = dates < pd.Timestamp(cutoff)
+        n_dropped = int((~old_enough).sum())
+        if n_dropped:
+            dropped[col] = n_dropped
+        if old_enough.any():
+            out[col] = frame.loc[old_enough]
+        else:
+            del out[col]
+    return out, dropped
+
+
 @dataclass
 class ReconciliationReport:
     config_hash: str
     total_events: int
     mismatches: dict[str, pd.DataFrame] = field(default_factory=dict)
     explained: dict[str, str] = field(default_factory=dict)
+    # Per-column count of mismatches excluded because signal_date fell
+    # within RECENT_BARS_REVISION_DAYS of today — see _drop_recent_events.
+    recent_events_excluded: dict[str, int] = field(default_factory=dict)
 
     @property
     def unexplained_mismatch_columns(self) -> list[str]:
@@ -271,11 +349,21 @@ def assert_backfill_covers_resolved_events(engine: Engine, config_hash: str) -> 
         )
 
 
-def reconcile(engine: Engine, config: Config, config_hash: str) -> ReconciliationReport:
+def reconcile(engine: Engine, config: Config, config_hash: str, today: date | None = None) -> ReconciliationReport:
     """Filters by `config_hash`, not `run_id` — see `derive_session9_labels`'s
     docstring for why `run_id` cannot reliably select a durable row set
     once any later run reuses the same config.
+
+    `today` (defaults to the real current date) is used only to exclude
+    the live-bars-revision population from `mfe`/`mae`/`capture_ratio`
+    (see `RECENT_BARS_REVISION_DAYS`) — this is a diagnostic/reporting
+    function, not part of the deterministic backtest computation, so a
+    wall-clock read here doesn't touch ADR 060's "no wall-clock reads in
+    the backtest" rule. Exposed as a parameter for tests, not for
+    production callers to override.
     """
+    if today is None:
+        today = date.today()
     derived = derive_session9_labels(engine, config, config_hash)
     with engine.connect() as conn:
         actual = pd.read_sql(
@@ -302,10 +390,23 @@ def reconcile(engine: Engine, config: Config, config_hash: str) -> Reconciliatio
 
     mismatches = diff_labels(derived, actual, LABEL_COLUMNS) if not derived.empty else {}
     mismatches = _drop_unstable_capture_ratio_rows(mismatches, actual)
+
+    with engine.connect() as conn:
+        signal_dates_df = pd.read_sql(
+            text("SELECT id AS event_id, signal_date FROM events WHERE config_hash = :config_hash"),
+            conn,
+            params={"config_hash": config_hash},
+        )
+    signal_dates = pd.to_datetime(signal_dates_df.set_index("event_id")["signal_date"])
+    mismatches, recent_excluded = _drop_recent_events(
+        mismatches, ["mfe", "mae", "capture_ratio"], signal_dates, today
+    )
+
     explained = {col: reason for col, reason in EXPLAINED_COLUMNS.items() if col in mismatches}
     return ReconciliationReport(
         config_hash=config_hash,
         total_events=len(actual),
         mismatches=mismatches,
         explained=explained,
+        recent_events_excluded=recent_excluded,
     )

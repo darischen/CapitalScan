@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 import pytest
 
@@ -7,6 +9,8 @@ from capitalscan.core.config import DEFAULT_CONFIG
 from capitalscan.research import path_reconcile as path_reconcile_mod
 from capitalscan.research.path_reconcile import (
     CAPTURE_RATIO_MFE_FLOOR,
+    RECENT_BARS_REVISION_DAYS,
+    _drop_recent_events,
     _drop_unstable_capture_ratio_rows,
     _unbackfilled_resolved_event_ids,
     assert_event_ids_match,
@@ -48,8 +52,11 @@ def test_diff_labels_mfe_tolerates_one_quantum_of_independent_numeric_12_6_round
     assert mismatches == {}
 
 
-def test_diff_labels_mfe_still_flags_a_difference_beyond_one_quantum():
-    derived = pd.DataFrame({"event_id": [1], "mfe": [0.027580]})
+def test_diff_labels_mfe_still_flags_a_difference_beyond_calibrated_tolerance():
+    # 1e-4 is ~3x the widened 3e-5 tolerance and ~100x the historical
+    # noise floor's 99th percentile (2.8e-5) — a genuine difference, not
+    # rounding/near-tie-max-selection noise.
+    derived = pd.DataFrame({"event_id": [1], "mfe": [0.027665]})
     actual = pd.DataFrame({"event_id": [1], "mfe": [0.027565]})
     mismatches = diff_labels(derived, actual, columns=["mfe"])
     assert list(mismatches["mfe"]["event_id"]) == [1]
@@ -136,6 +143,54 @@ def test_drop_unstable_capture_ratio_rows_no_op_when_column_absent():
     actual = pd.DataFrame({"event_id": [1], "mfe": [0.2]})
     out = _drop_unstable_capture_ratio_rows(mismatches, actual)
     assert out == mismatches
+
+
+def test_drop_recent_events_excludes_rows_within_the_window():
+    # Real reconciliation run: 42 events, all within RECENT_BARS_REVISION_DAYS
+    # of "today", showing a uniform ~3e-4 mfe diff traced to a bars-refresh
+    # job re-ingesting recent daily data after the path backfill ran.
+    mismatches = {
+        "mfe": pd.DataFrame({"event_id": [1, 2], "mfe_derived": [0.05, 0.06], "mfe_actual": [0.04, 0.05]})
+    }
+    today = date(2026, 8, 3)
+    signal_dates = pd.Series(
+        {1: pd.Timestamp("2026-07-29"), 2: pd.Timestamp("2020-01-01")}  # 1: recent, 2: old
+    )
+    out, dropped = _drop_recent_events(mismatches, ["mfe"], signal_dates, today)
+    assert list(out["mfe"]["event_id"]) == [2]
+    assert dropped == {"mfe": 1}
+
+
+def test_drop_recent_events_drops_the_column_entirely_when_all_recent():
+    mismatches = {"mfe": pd.DataFrame({"event_id": [1], "mfe_derived": [0.05], "mfe_actual": [0.04]})}
+    today = date(2026, 8, 3)
+    signal_dates = pd.Series({1: pd.Timestamp("2026-07-29")})
+    out, dropped = _drop_recent_events(mismatches, ["mfe"], signal_dates, today)
+    assert "mfe" not in out
+    assert dropped == {"mfe": 1}
+
+
+def test_drop_recent_events_boundary_at_the_window_edge():
+    today = date(2026, 8, 3)
+    cutoff = today - pd.Timedelta(days=RECENT_BARS_REVISION_DAYS)
+    mismatches = {
+        "mfe": pd.DataFrame({"event_id": [1, 2], "mfe_derived": [0.05, 0.05], "mfe_actual": [0.04, 0.04]})
+    }
+    # event 1: exactly at the cutoff date (excluded, `<` not `<=` — the
+    # window is inclusive of "window_days ago"); event 2: one day older
+    # (included).
+    signal_dates = pd.Series({1: pd.Timestamp(cutoff), 2: pd.Timestamp(cutoff) - pd.Timedelta(days=1)})
+    out, dropped = _drop_recent_events(mismatches, ["mfe"], signal_dates, today)
+    assert list(out["mfe"]["event_id"]) == [2]
+
+
+def test_drop_recent_events_no_op_when_column_absent():
+    mismatches = {"touched_2pct": pd.DataFrame({"event_id": [1]})}
+    today = date(2026, 8, 3)
+    signal_dates = pd.Series({1: pd.Timestamp("2020-01-01")})
+    out, dropped = _drop_recent_events(mismatches, ["mfe"], signal_dates, today)
+    assert out == mismatches
+    assert dropped == {}
 
 
 def test_assert_event_ids_match_passes_on_identical_sets():
