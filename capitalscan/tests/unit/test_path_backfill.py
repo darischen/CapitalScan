@@ -11,6 +11,7 @@ from capitalscan.core.types import EntryKind, Side
 from capitalscan.jobs import db_io
 from capitalscan.research import path_backfill as path_backfill_mod
 from capitalscan.research.path_backfill import (
+    _compute_rows_for_ticker,
     fwd_window_for_signal,
     rows_for_event,
     run_path_backfill,
@@ -90,6 +91,51 @@ def test_rows_for_event_full_window_sets_fwd_window_days():
     assert list(rows["day_offset"]) == list(range(1, 11))
 
 
+def test_compute_rows_for_ticker_skips_event_whose_signal_bar_is_not_yet_ingested():
+    # Reproduces the real crash from the first live `cscan path backfill`
+    # run: a poller-created live event with signal_date=today, filed
+    # before that day's `1d` bar has landed. Must be skipped, not raise.
+    dates = [date(2024, 1, i) for i in range(1, 15)]
+    bars = _ticker_bars(dates)
+    events = pd.DataFrame(
+        {
+            "id": [1, 2],
+            "entry_price": [100.0, 105.0],
+            "side": [Side.LONG.value, Side.LONG.value],
+            "signal_date": [date(2024, 1, 3), date(2024, 6, 1)],  # 2nd date has no bar
+        }
+    )
+    combined, window_updates, processed, skipped_unfilled, skipped_no_bar = _compute_rows_for_ticker(
+        events, bars, window_days=10
+    )
+    assert processed == 2
+    assert skipped_unfilled == 0
+    assert skipped_no_bar == 1
+    assert list(combined["event_id"].unique()) == [1]
+    assert [u["id"] for u in window_updates] == [1]
+
+
+def test_compute_rows_for_ticker_still_skips_nan_entry_price_as_unfilled():
+    dates = [date(2024, 1, i) for i in range(1, 15)]
+    bars = _ticker_bars(dates)
+    events = pd.DataFrame(
+        {
+            "id": [1],
+            "entry_price": [float("nan")],
+            "side": [Side.LONG.value],
+            "signal_date": [date(2024, 1, 3)],
+        }
+    )
+    combined, window_updates, processed, skipped_unfilled, skipped_no_bar = _compute_rows_for_ticker(
+        events, bars, window_days=10
+    )
+    assert processed == 1
+    assert skipped_unfilled == 1
+    assert skipped_no_bar == 0
+    assert combined.empty
+    assert window_updates == []
+
+
 class _FakeConn:
     def __init__(self, ticker_rows, update_calls, engine_url):
         self._ticker_rows = ticker_rows
@@ -140,7 +186,7 @@ def test_run_path_backfill_serial_aggregates_across_tickers(monkeypatch):
     # opens a connection to `bars`/`events`) is monkeypatched to return
     # canned per-ticker results, matching this test file's established
     # no-real-IO convention.
-    fake_engine = _FakeEngine(ticker_rows=["AAA", "BBB"])
+    fake_engine = _FakeEngine(ticker_rows=["AAA", "BBB", "CCC"])
     canned = {
         "AAA": (
             "AAA",
@@ -156,12 +202,25 @@ def test_run_path_backfill_serial_aggregates_across_tickers(monkeypatch):
             [{"id": 1, "n": 2}],
             1,
             0,
+            0,
         ),
         "BBB": (
             "BBB",
             pd.DataFrame(columns=["event_id", "day_offset", "favorable", "adverse", "terminal"]),
             [],
             1,
+            1,
+            0,
+        ),
+        "CCC": (
+            # A live event whose signal_date has no `1d` bar yet — must be
+            # counted separately, not conflated with "unfilled" (findings
+            # from the first real `cscan path backfill` run).
+            "CCC",
+            pd.DataFrame(columns=["event_id", "day_offset", "favorable", "adverse", "terminal"]),
+            [],
+            1,
+            0,
             1,
         ),
     }
@@ -180,9 +239,10 @@ def test_run_path_backfill_serial_aggregates_across_tickers(monkeypatch):
 
     report = run_path_backfill(fake_engine, DEFAULT_CONFIG, quiet=True, max_workers=1)
 
-    assert report.events_processed == 2
+    assert report.events_processed == 3
     assert report.events_skipped_unfilled == 1
+    assert report.events_skipped_no_signal_bar == 1
     assert report.rows_written == 2
-    assert sorted(report.tickers) == ["AAA", "BBB"]
+    assert sorted(report.tickers) == ["AAA", "BBB", "CCC"]
     assert upsert_calls == [("path", 2, ["event_id", "day_offset"])]
     assert fake_engine.update_calls == [[{"id": 1, "n": 2}]]

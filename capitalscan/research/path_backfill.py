@@ -81,6 +81,7 @@ def rows_for_event(
 class PathBackfillReport:
     events_processed: int = 0
     events_skipped_unfilled: int = 0
+    events_skipped_no_signal_bar: int = 0
     rows_written: int = 0
     tickers: list[str] = field(default_factory=list)
 
@@ -108,9 +109,69 @@ def window_days_for_config(config: Config) -> int:
     return max(config.stats.fwd_ret_horizons) + max_entry_offset
 
 
+def _compute_rows_for_ticker(
+    events: pd.DataFrame, ticker_bars: pd.DataFrame, window_days: int
+) -> tuple[pd.DataFrame, list[dict], int, int, int]:
+    """The per-ticker compute loop, pulled out of `_compute_ticker_path` so
+    it is testable against in-memory frames with no database involved.
+
+    Guards against a signal bar that doesn't exist yet in `ticker_bars`
+    before calling `rows_for_event` — `events` can include live-poller-
+    created rows whose `signal_date` is today, ingested before that day's
+    `1d` bar has landed (the EOD bars job runs later, or the market is
+    still open). That is a legitimate, temporary "not computable yet"
+    state, not a caller-side mismatch: `fwd_window_for_signal`'s own
+    `ValueError` is correct for a backtest-generated event (whose
+    `signal_date` bar is always present by construction) but wrong to let
+    propagate here, where one bad row would otherwise crash an entire
+    multi-hour parallel run over a condition that resolves itself the next
+    time this job runs. Skipped events are counted separately
+    (`events_skipped_no_signal_bar`) from a permanently-unfilled entry
+    (`events_skipped_unfilled`), since the two causes and their remedies
+    differ — this one is "rerun the job later," not "no action needed."
+
+    Returns `(path_rows, window_updates, events_processed,
+    events_skipped_unfilled, events_skipped_no_signal_bar)`.
+    """
+    empty_rows = pd.DataFrame(columns=["event_id", "day_offset", "favorable", "adverse", "terminal"])
+    all_rows: list[pd.DataFrame] = []
+    window_updates: list[dict] = []
+    events_processed = 0
+    events_skipped_unfilled = 0
+    events_skipped_no_signal_bar = 0
+    for _, ev in events.iterrows():
+        signal_date = ev["signal_date"]
+        if isinstance(signal_date, pd.Timestamp):
+            signal_date = signal_date.date()
+        events_processed += 1
+
+        entry_price = float(ev["entry_price"])
+        if not pd.isna(entry_price) and pd.Timestamp(signal_date) not in ticker_bars.index:
+            events_skipped_no_signal_bar += 1
+            continue
+
+        rows, n = rows_for_event(
+            event_id=int(ev["id"]),
+            entry_price=entry_price,
+            side=Side(ev["side"]),
+            signal_date=signal_date,
+            ticker_bars=ticker_bars,
+            window_days=window_days,
+        )
+        if n is None:
+            events_skipped_unfilled += 1
+            continue
+        if not rows.empty:
+            all_rows.append(rows)
+        window_updates.append({"id": int(ev["id"]), "n": n})
+
+    combined = pd.concat(all_rows, ignore_index=True) if all_rows else empty_rows
+    return combined, window_updates, events_processed, events_skipped_unfilled, events_skipped_no_signal_bar
+
+
 def _compute_ticker_path(
     ticker: str, window_days: int, database_url: str | None
-) -> tuple[str, pd.DataFrame, list[dict], int, int]:
+) -> tuple[str, pd.DataFrame, list[dict], int, int, int]:
     """One ticker's path rows and `fwd_window_days` updates, computed with
     no side effects on shared state — runs in a worker process under
     `ProcessPoolExecutor(spawn)` when `max_workers > 1`, and identically
@@ -121,10 +182,10 @@ def _compute_ticker_path(
     the server — same reasoning as `jobs.compute._compute_one_ticker`).
 
     Returns `(ticker, path_rows, window_updates, events_processed,
-    events_skipped_unfilled)` — the caller does the actual writes and
-    report bookkeeping, so this function stays a pure "read one ticker,
-    compute its rows" step regardless of how many workers are dispatching
-    it.
+    events_skipped_unfilled, events_skipped_no_signal_bar)` — the caller
+    does the actual writes and report bookkeeping, so this function stays
+    a pure "read one ticker, compute its rows" step regardless of how many
+    workers are dispatching it.
     """
     engine = db_io.get_engine(database_url, use_null_pool=True)
     with engine.connect() as conn:
@@ -143,37 +204,15 @@ def _compute_ticker_path(
         )
     empty_rows = pd.DataFrame(columns=["event_id", "day_offset", "favorable", "adverse", "terminal"])
     if bars.empty or events.empty:
-        return ticker, empty_rows, [], 0, 0
+        return ticker, empty_rows, [], 0, 0, 0
 
     bars["ts"] = pd.to_datetime(bars["ts"]).dt.tz_localize(None)
     ticker_bars = bars.sort_values("ts").set_index("ts", drop=False)
 
-    all_rows: list[pd.DataFrame] = []
-    window_updates: list[dict] = []
-    events_processed = 0
-    events_skipped_unfilled = 0
-    for _, ev in events.iterrows():
-        signal_date = ev["signal_date"]
-        if isinstance(signal_date, pd.Timestamp):
-            signal_date = signal_date.date()
-        rows, n = rows_for_event(
-            event_id=int(ev["id"]),
-            entry_price=float(ev["entry_price"]),
-            side=Side(ev["side"]),
-            signal_date=signal_date,
-            ticker_bars=ticker_bars,
-            window_days=window_days,
-        )
-        events_processed += 1
-        if n is None:
-            events_skipped_unfilled += 1
-            continue
-        if not rows.empty:
-            all_rows.append(rows)
-        window_updates.append({"id": int(ev["id"]), "n": n})
-
-    combined = pd.concat(all_rows, ignore_index=True) if all_rows else empty_rows
-    return ticker, combined, window_updates, events_processed, events_skipped_unfilled
+    combined, window_updates, events_processed, events_skipped_unfilled, events_skipped_no_signal_bar = (
+        _compute_rows_for_ticker(events, ticker_bars, window_days)
+    )
+    return ticker, combined, window_updates, events_processed, events_skipped_unfilled, events_skipped_no_signal_bar
 
 
 def run_path_backfill(
@@ -219,9 +258,11 @@ def run_path_backfill(
         window_updates: list[dict],
         events_processed: int,
         events_skipped_unfilled: int,
+        events_skipped_no_signal_bar: int,
     ) -> None:
         report.events_processed += events_processed
         report.events_skipped_unfilled += events_skipped_unfilled
+        report.events_skipped_no_signal_bar += events_skipped_no_signal_bar
         if not rows.empty:
             db_io.upsert(engine, "path", rows, conflict_cols=["event_id", "day_offset"])
             report.rows_written += len(rows)

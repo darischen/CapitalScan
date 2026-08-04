@@ -1020,8 +1020,16 @@ def path_backfill_cmd(
         job_report.rows_written = report.rows_written
     console.print(
         f"path backfill: events_processed={report.events_processed} "
-        f"skipped_unfilled={report.events_skipped_unfilled} rows_written={report.rows_written}"
+        f"skipped_unfilled={report.events_skipped_unfilled} "
+        f"skipped_no_signal_bar={report.events_skipped_no_signal_bar} "
+        f"rows_written={report.rows_written}"
     )
+    if report.events_skipped_no_signal_bar:
+        console.print(
+            f"[yellow]{report.events_skipped_no_signal_bar} event(s) skipped: no `1d` bar yet for their "
+            "signal_date (likely today's live events, before the EOD bars job has run). Rerun this "
+            "command after bars catch up.[/yellow]"
+        )
 
 
 @path_app.command("reconcile")
