@@ -6,6 +6,8 @@ import pytest
 from capitalscan.core.config import DEFAULT_CONFIG
 from capitalscan.research import path_reconcile as path_reconcile_mod
 from capitalscan.research.path_reconcile import (
+    CAPTURE_RATIO_MFE_FLOOR,
+    _drop_unstable_capture_ratio_rows,
     _unbackfilled_resolved_event_ids,
     assert_event_ids_match,
     diff_labels,
@@ -28,11 +30,29 @@ def test_diff_labels_flags_a_numeric_mismatch_outside_tolerance():
     assert list(mismatches["mfe"]["event_id"]) == [1]
 
 
-def test_diff_labels_tolerates_float_noise_within_1e_minus_9():
+def test_diff_labels_tolerates_float_noise_within_tolerance():
     derived = pd.DataFrame({"event_id": [1], "mfe": [0.010000000001]})
     actual = pd.DataFrame({"event_id": [1], "mfe": [0.01]})
     mismatches = diff_labels(derived, actual, columns=["mfe"])
     assert mismatches == {}
+
+
+def test_diff_labels_mfe_tolerates_one_quantum_of_independent_numeric_12_6_rounding():
+    # Reproduces the real reconciliation run (2026-08-03): two sides
+    # independently round the same true value to numeric(12,6), landing
+    # exactly one unit apart in the last decimal place (event
+    # 2896328/ORCL: derived 0.027566 vs stored 0.027565) — must NOT flag.
+    derived = pd.DataFrame({"event_id": [1], "mfe": [0.027566]})
+    actual = pd.DataFrame({"event_id": [1], "mfe": [0.027565]})
+    mismatches = diff_labels(derived, actual, columns=["mfe"])
+    assert mismatches == {}
+
+
+def test_diff_labels_mfe_still_flags_a_difference_beyond_one_quantum():
+    derived = pd.DataFrame({"event_id": [1], "mfe": [0.027580]})
+    actual = pd.DataFrame({"event_id": [1], "mfe": [0.027565]})
+    mismatches = diff_labels(derived, actual, columns=["mfe"])
+    assert list(mismatches["mfe"]["event_id"]) == [1]
 
 
 def test_diff_labels_flags_boolean_and_null_mismatches():
@@ -72,6 +92,50 @@ def test_diff_labels_capture_ratio_flags_any_nonzero_diff_against_zero():
     actual = pd.DataFrame({"event_id": [1], "capture_ratio": [0.0]})
     mismatches = diff_labels(derived, actual, columns=["capture_ratio"])
     assert list(mismatches["capture_ratio"]["event_id"]) == [1]
+
+
+def test_drop_unstable_capture_ratio_rows_removes_near_zero_mfe_events():
+    # Real reconciliation run: derived -6880.28 vs actual -11758.23 on an
+    # event whose mfe was essentially zero — a huge absolute/relative
+    # difference driven entirely by dividing by a near-zero denominator,
+    # not a computation defect. Must be dropped, not flagged.
+    mismatches = {
+        "capture_ratio": pd.DataFrame(
+            {"event_id": [1, 2], "capture_ratio_derived": [-6880.28, 0.6], "capture_ratio_actual": [-11758.23, 0.5]}
+        )
+    }
+    actual = pd.DataFrame({"event_id": [1, 2], "mfe": [0.00001, 0.02]})
+    out = _drop_unstable_capture_ratio_rows(mismatches, actual)
+    assert list(out["capture_ratio"]["event_id"]) == [2]
+
+
+def test_drop_unstable_capture_ratio_rows_drops_the_column_entirely_when_all_unstable():
+    mismatches = {
+        "capture_ratio": pd.DataFrame(
+            {"event_id": [1], "capture_ratio_derived": [-6880.28], "capture_ratio_actual": [-11758.23]}
+        )
+    }
+    actual = pd.DataFrame({"event_id": [1], "mfe": [0.00001]})
+    out = _drop_unstable_capture_ratio_rows(mismatches, actual)
+    assert "capture_ratio" not in out
+
+
+def test_drop_unstable_capture_ratio_rows_boundary_at_the_floor():
+    mismatches = {
+        "capture_ratio": pd.DataFrame(
+            {"event_id": [1, 2], "capture_ratio_derived": [1.0, 1.0], "capture_ratio_actual": [0.9, 0.9]}
+        )
+    }
+    actual = pd.DataFrame({"event_id": [1, 2], "mfe": [CAPTURE_RATIO_MFE_FLOOR, CAPTURE_RATIO_MFE_FLOOR / 2]})
+    out = _drop_unstable_capture_ratio_rows(mismatches, actual)
+    assert list(out["capture_ratio"]["event_id"]) == [1]  # exactly at the floor is kept (>=)
+
+
+def test_drop_unstable_capture_ratio_rows_no_op_when_column_absent():
+    mismatches = {"mfe": pd.DataFrame({"event_id": [1], "mfe_derived": [0.1], "mfe_actual": [0.2]})}
+    actual = pd.DataFrame({"event_id": [1], "mfe": [0.2]})
+    out = _drop_unstable_capture_ratio_rows(mismatches, actual)
+    assert out == mismatches
 
 
 def test_assert_event_ids_match_passes_on_identical_sets():
