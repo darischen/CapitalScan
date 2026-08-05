@@ -26,7 +26,7 @@ Sessions 0-7 deliver v1 (Phase 1). Sessions 8-9 deliver Phases 2-3. Session 10 i
 | 7 | Full backfill | Run it, inspect, fix | 750 tickers ingested, validation clean |
 | 8 | Poller & notify | `poll`, Notifier, positions, call overlay | **Phase 2 gate** |
 | 9 | Backtest engine | `research/backtest.py`, exit sweep | **Phase 3 gate — complete, passed** |
-| 10 | Forward path store and derived label layer | Path table, reconciled label layer, new label families | Reconciliation against Session 9 labels passes with zero unexplained differences |
+| 10 | Forward path store and derived label layer | Path table, reconciled label layer, new label families | Reconciliation against Session 9 labels passes with zero unexplained differences; tests and documentation complete |
 
 Sessions 0-2 can run back to back in one sitting. Session 7 is mostly waiting.
 
@@ -37,11 +37,17 @@ and `.superpowers/sdd/2026-08-01-session-9-backtest/phase3-gate-measurement.md`
 for the full measurement detail. The 18-config sweep and the entry-reuse
 refactor decision remain open, tracked outside this document.
 
-The Phase 4 boundary now sits after Session 10, not after Session 9. Session
-10 builds the forward-path store and derived label layer that Phase 4's
-statistics layer reads from; it changes no behavior and adds no new
-statistic on its own (see `docs/session10.md` §0). Phase 4 does not start
-until Session 10's gate (`docs/session10.md` §4) passes.
+**Session 10 is complete.** Session 10 built the forward-path store and
+derived label layer (tasks 10.1–10.6) and passes its gate with reconciliation
+clean against Session 9 labels. ADR 094 records the design (path table as
+source of truth, labels derived on demand). Tests and documentation are
+complete (task 10.7). See `docs/session10.md` §4 for gate criteria and
+`docs/RESULTS.md` (Session 10 tasks) for run details.
+
+**Phase 4 boundary is after Session 10.** The statistics layer now reads from
+the path table and derived labels rather than Session 9's directly-computed
+event labels. No change to signal detection, event creation, or entry/exit
+logic. Phase 4 does not start until Session 10 passes, which it now has.
 
 ---
 

@@ -334,6 +334,8 @@ Role. The 200-day SMA and its slope are a health filter, not a signal component.
 
 Note, 2026-08-02. The market-cap criterion's threshold moved from $200B nominal to $100B nominal (`core.config.UniverseParams.min_mcap_usd`, Session 9 config-thresholds task, user's decision). CPI deflation was considered and rejected as the mechanism: deflation factors across the ingest window span only 0.677 (2010) to 1.000 (2025), a 47% move, far short of the 2x change made here. The actual motivation is candidate-pool size: in 2010, 23 tickers already cleared $100B nominal and 6 cleared $200B, yet `in_trade` was zero for the entire universe that year regardless, because `is_tradeable` requires all four criteria in `required_criteria` and the SMA-200 / slope / relative-return conditions were the binding ones, not market cap. Widening the threshold widens the candidate pool; it does not, by itself, fix the historical emptiness this note describes. This changes `config_hash` for every `Config` (ADR 060) since `UniverseParams` is a field of it.
 
+Note, 2026-08-03. The threshold moved again, $100B nominal to $30B nominal (`core.config.UniverseParams.min_mcap_usd`, Session 10, user's decision). Same motivation as the 2026-08-02 note: wider candidate-pool coverage, admitting large-cap names below the mega-cap band rather than fixing any specific historical emptiness. Also changes `config_hash` for every `Config` (ADR 060).
+
 ---
 
 ## 015. Drawdown from 52-week high is a first-class dimension
@@ -1465,6 +1467,26 @@ Why a new `ExitParams` field rather than threading `SignalParams` into `resolve_
 Enforcement. A source assertion that no bare numeric literal appears in the exit threshold comparison, plus boundary tests on each side of the configured value.
 
 Found during the session 1-3 audit. The audit also verified independently that every DESIGN §3.5 formula matches a from-scratch reimplementation, that `ddof=0` genuinely differs from `ddof=1` so the population-std choice is real rather than incidental, that `realized_vol` provably reads `adj_close` (the §2.2 exception) by giving `adj_close` an independent path from `close` and confirming the output followed it, and that all 19 output columns declare warmups at or above their actual first-valid index with `max_warmup() = 272` matching §2.7.
+
+---
+
+## 094. Path table is source of truth; labels are derived views
+
+Status: Pinned (Session 10, task 10.3)
+
+Decision. The `path` table stores the atomic forward price data for every event — per-day favorable extreme, adverse extreme, and terminal close — over a fixed ten-trading-day window. All event-table label columns (MFE, MAE, time-to-MFE, touched_Xpct, day_touched_Xpct, fwd_ret_Xd, capture_ratio, giveback, etc.) are derived from the path rows, not independently computed and cached. Labels are recomputed on demand as queries against the path table, except for a small materialized cache on the event table for hot serving columns.
+
+Rationale. Session 9 computed labels once at backtest time and stored them on the event table. That coupling meant adding a new label family required a code change and a full re-derivation from price history — a high friction loop that discouraged exploration and prevented labels from tracking config changes (new thresholds, new horizons) without re-running the entire backtest. The path table decouples label definition from the event computation: price windows are fixed once at ingestion (DESIGN §7.4), and label families are config-parametrized queries on that immutable path data.
+
+Two windows, different meanings. The path table's window is ten trading days, matching the longest forward-return horizon in `StatsParams.fwd_ret_horizons` (currently 10 days). This is a measurement span independent of exit policy — if `ExitParams.max_hold_days` changes from 5 to 3, the path data remains valid because the path table measures what happened, not what any particular exit rule chose to capture. Materialized labels like MFE/MAE cover only the first five days (the exit window), but the underlying path data persists for any future label that needs it.
+
+Enforcement. The path table has a foreign key constraint to events with ON DELETE CASCADE, ensuring consistency. Reconciliation tests (DESIGN §5.10, expanded in TESTS §5.a) verify that labels derived from the path table match labels Session 9 produced directly from price history, with tolerance only for numeric rounding as specified in ADR 089 (MFE computation) and ADR 090 (capture_ratio near-zero handling). Any mismatch is investigated before proceeding, not adjusted away.
+
+Cost. Materialized redundancy: the event table carries precomputed labels for serving and Phase 4 statistics, duplicating what the path table can supply. This is deliberate. The labels are the *precompute*, and the path table is the *source of truth*. Phase 4 statistics read the materialized columns for performance; any future label family that needs efficiency can add a materialized column in a separate migration. The redundancy is not removed until Phase 4 has executed against the new layer and confirmed identical results.
+
+Label families in scope today. Session 9 labels (MFE, MAE, time-to-MFE, reachability across all configured thresholds and the five existing horizons, capture_ratio, giveback). Session 10 adds first-touch-day flags for each threshold and horizon combination. Terminal-return distributions across horizons (ADR 093's multi-horizon quantile model) are derived from the path table but materialized as new columns only once Phase 6 determines the exact surface — until then, the five existing horizons (fwd_ret_1d through fwd_ret_10d) are the only terminal-return columns, and any new horizon would be added as a config parameter that feeds Phase 6's retraining.
+
+What this changes from Session 9. Session 9 computed and stored all labels at event creation. Session 10 separates concerns: the `path` table is written at event creation (Tasks 10.2, 10.6) and remains immutable thereafter; labels are recomputed from it whenever the label definition changes (Task 10.3). The event table's label columns stay in place through Session 10 to support reconciliation and Phase 4 execution. Cleanup (dropping the old columns) happens only after Phase 4 has run once against the new layer and published its results (deferred to post-Phase 4).
 
 ---
 

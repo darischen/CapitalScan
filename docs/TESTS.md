@@ -238,6 +238,86 @@ def test_indicator_read_window_expands():
     assert (write_start - read_start).days >= ceil(max_warmup() * 1.6)
 ```
 
+### 5.a Session 10 path store and derived labels
+
+Forward path extraction and label derivation tests (Session 10, tasks 10.2-10.6). Path rows are immutable once written, and labels are deterministically recomputed from the path table rather than cached at event creation time (ADR 093).
+
+**Unit tests: Path extraction (10.2)** — 12 tests covering window boundaries, truncation at history end, entry offset padding, and idempotency.
+
+```python
+def test_fwd_window_for_signal_truncates_near_end_of_history_never_pads():
+    """No padding. A signal 3 days before end of data yields 3-day window, not 10."""
+    dates = [date(2024, 1, i) for i in range(1, 5)]
+    bars = _ticker_bars(dates)
+    window = fwd_window_for_signal(bars, date(2024, 1, 1), window_days=10)
+    assert len(window) == 3
+```
+
+**Unit tests: Label derivation (10.3)** — 15 tests covering MFE/MAE window separation, reachability across exit timing, entry offset shifts, and null semantics.
+
+```python
+def test_mfe_mae_bounded_by_holding_days_not_full_window():
+    """Exit on day 2; day 4's bigger move does not count toward MFE."""
+    path = pd.DataFrame([
+        (1, 0.01, -0.005, 0.01),
+        (2, 0.02, -0.01, 0.02),
+        (3, 0.03, -0.01, 0.03),
+        (4, 0.09, -0.01, 0.09),  # bigger but past exit
+    ], columns=["day_offset", "favorable", "adverse", "terminal"])
+    # holding_days=2 means MFE is max over days 1-2 only
+    out = derive_labels_from_path(path, ..., holding_days=2, ...)
+    assert out["mfe"] == pytest.approx(0.02)
+```
+
+The critical traps this covers: (a) MFE/MAE window is `[entry_offset+1, entry_offset+holding_days]`, (b) reachability window is `[entry_offset+1, entry_offset+max_hold_days]` independent of exit timing (different windows, DESIGN §5.6), and (c) entry_offset shifts both windows (NEXT_OPEN entry at day_offset=1 means first reachable day is 2, not 1).
+
+**Unit tests: Reconciliation (10.4)** — 17 tests covering tolerance calibration, float quantization noise, boolean and null handling, and capture_ratio edge cases.
+
+```python
+def test_diff_labels_mfe_tolerates_one_quantum_of_numeric_12_6_rounding():
+    """Two independent numeric(12,6) columns rounded separately can differ by 1 ULP."""
+    # mfe computed from favorable extremes, realized_return from terminal;
+    # path table precision 6 decimals, independent rounding paths
+    # => Reconciliation must tolerate sqrt(2) ULPs, ~1.4e-6
+```
+
+**Unit tests: Live capture (10.6)** — 3 tests covering query scoping to incomplete windows, incremental accumulation matching one-shot backfill, and idempotency after completion.
+
+```python
+def test_incremental_capture_matches_one_shot_backfill_once_window_is_complete():
+    """Run path_capture daily as events age. Once fwd_window_days reaches 10,
+    the accumulated rows must be byte-identical to what run_path_backfill
+    would produce on the full history."""
+```
+
+**Property-based tests (invariants)** — 6 property tests in `tests/property/test_path_invariants.py` covering:
+
+```python
+def test_path_frame_has_no_day_offset_gaps(path_frame):
+    """Day offsets must form a complete sequence [1..n] with no gaps."""
+    offsets = sorted(path_frame["day_offset"].values)
+    for i in range(len(offsets) - 1):
+        assert offsets[i + 1] - offsets[i] == 1
+
+def test_thresholds_monotonic_increasing(path_frame, entry_offset, holding_days):
+    """Tighter threshold touched on day D => looser threshold touched on day <= D."""
+    # If reached 2% by day 4, must reach 5% by day <= 4, or not at all
+
+def test_giveback_non_negative(path_frame, ...):
+    """giveback = mfe - realized_return >= 0 by construction (ADR 089)."""
+
+def test_null_path_yields_null_labels(path_frame):
+    """Empty path => all labels null, never fallback values."""
+
+def test_unfilled_entry_yields_null_labels(path_frame):
+    """Unfilled entry (entry_price = NaN) => all metrics null (ADR 035)."""
+
+def test_holding_days_bounds_mfe_window(path_frame, ...):
+    """MFE/MAE window is [entry_offset+1, entry_offset+holding_days], period."""
+```
+
+Each hypothesis test generates 200 cases in `dev` profile, 250 in CI fast tier, and are not marked for the slow tier. Total inventory: 59 unit tests + 6 property tests.
+
 ---
 
 ## 6. Statistical verification
