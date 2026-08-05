@@ -14,6 +14,15 @@ A new table holding the forward price path of every event, and a derived label l
 
 The path store keeps, for each event, the per-day forward outcome across the full evaluation window: the extreme favorable move, the extreme adverse move, and the terminal mark. Direction-neutral, so both tails exist for every event regardless of signal type.
 
+> **Correction (2026-08-05, after implementation).** The window shipped as
+> **eleven** trading days, not ten: `max(StatsParams.fwd_ret_horizons)` plus
+> the largest entry-to-signal offset across `EntryKind` (1, for `NEXT_OPEN`).
+> `path.day_offset` counts from `signal_date` while every label is
+> entry-anchored, so a `NEXT_OPEN` event's `fwd_ret_10d` sits at
+> `day_offset=11`; a ten-day window leaves it permanently absent. See
+> `research.path_backfill.window_days_for_config` and ADR 094. The paragraph
+> below is the original spec text, kept for the record.
+
 The full evaluation window is **ten trading days**, `max(StatsParams.fwd_ret_horizons)` — the longest horizon any label family in this session needs, not a new number. This is deliberately not `ExitParams.max_hold_days` (5). The exit window is a policy parameter the 18-config sweep varies; the path window is a measurement span that must stay fixed regardless of exit policy, or the path table's shape would depend on which exit config happened to run, which is exactly the coupling DESIGN §7.4 rejects when it says the model describes the underlying path and exit policy is a separate layer on top. Every later reference in this document to "the full evaluation window" or "the window" means these ten trading days unless a task says otherwise.
 
 The derived layer recomputes the labels session 9 already produces, then adds three new families:

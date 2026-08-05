@@ -383,6 +383,7 @@ def path_metrics(
     targets: tuple,
     adj_close_fwd: pd.Series | None,
     horizons: tuple,
+    capture_ratio_cap: float,
 ) -> dict:
     """DESIGN §5.6, step 9. Two different windows over the same forward
     bars, and conflating them is the whole difficulty here:
@@ -426,6 +427,12 @@ def path_metrics(
     calculation and this module's job is only to route the right prices
     into it. Null (not a division by a negative or by zero) when `MFE <=
     0` — a zero MFE is a division by zero, not merely an odd ratio.
+    Otherwise clamped to `[-capture_ratio_cap, capture_ratio_cap]`
+    (`ExitParams.capture_ratio_cap`, invariant 9): MFE is never clamped
+    (`core.returns.mfe_mae`'s own docstring), so it can sit arbitrarily
+    close to zero, and `r_exit / mfe` is unbounded there — a real run
+    (2026-08-05) hit a ratio exceeding `events.capture_ratio`'s
+    `numeric(12,6)` column limit and aborted that ticker's insert batch.
 
     `adj_close_fwd`, when given, must start at the entry bar itself (its
     `iloc[0]` is the entry's own close) and extend forward at least
@@ -463,7 +470,11 @@ def path_metrics(
         r_exit = realized_return(entry_price, exit_price, side)
         # Boundary is <=, not <: MFE == 0 is a division by zero, not merely
         # an odd ratio (DESIGN §5.6, ADR 089).
-        out["capture_ratio"] = None if _isnan(mfe) or mfe <= 0 else float(r_exit / mfe)
+        if _isnan(mfe) or mfe <= 0:
+            out["capture_ratio"] = None
+        else:
+            ratio = float(r_exit / mfe)
+            out["capture_ratio"] = max(-capture_ratio_cap, min(capture_ratio_cap, ratio))
 
         # Reachability: the level a limit order would need to fill, in the
         # favorable direction for `side` — the same direction `mfe_mae`

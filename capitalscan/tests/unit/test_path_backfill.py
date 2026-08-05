@@ -136,11 +136,50 @@ def test_compute_rows_for_ticker_still_skips_nan_entry_price_as_unfilled():
     assert window_updates == []
 
 
+def test_incremental_capture_matches_one_shot_backfill_once_window_is_complete():
+    # Task 10.6 acceptance criterion #2, made an actual assertion rather
+    # than a docstring claim: an event captured incrementally, night after
+    # night, across several partial-window calls must land on the exact
+    # same rows a single one-shot backfill call would produce once bars
+    # cover the full window. Both `run_path_backfill` and `run_path_capture`
+    # funnel through `_compute_rows_for_ticker` — this exercises that
+    # shared function directly, holding the underlying bars fixed (a
+    # `bars`-revision between calls is a separate, already-documented
+    # class of drift; see `path_reconcile.RECENT_BARS_REVISION_DAYS`).
+    dates = [date(2024, 1, i) for i in range(1, 20)]
+    full_bars = _ticker_bars(dates)
+    events = pd.DataFrame(
+        {
+            "id": [1],
+            "entry_price": [100.0],
+            "side": [Side.LONG.value],
+            "signal_date": [date(2024, 1, 1)],
+        }
+    )
+    window_days = 11
+
+    # "Capture" simulated as successive nightly calls, each seeing more of
+    # the bars history than the last, exactly like the real job re-reading
+    # `bars` after another trading day lands. Only the final (window-complete)
+    # call's output matters for this comparison.
+    incremental_result = None
+    for n_days_available in (5, 8, 11, 19):
+        partial_bars = full_bars.iloc[:n_days_available]
+        incremental_result, _, _, _, _ = _compute_rows_for_ticker(events, partial_bars, window_days)
+
+    backfill_result, _, _, _, _ = _compute_rows_for_ticker(events, full_bars, window_days)
+
+    pd.testing.assert_frame_equal(
+        incremental_result.reset_index(drop=True), backfill_result.reset_index(drop=True)
+    )
+
+
 class _FakeConn:
-    def __init__(self, ticker_rows, update_calls, engine_url):
+    def __init__(self, ticker_rows, update_calls, engine_url, ticker_query_calls=None):
         self._ticker_rows = ticker_rows
         self._update_calls = update_calls
         self._engine_url = engine_url
+        self._ticker_query_calls = ticker_query_calls
 
     def __enter__(self):
         return self
@@ -151,6 +190,8 @@ class _FakeConn:
     def execute(self, stmt, params=None):
         text_ = str(stmt)
         if "SELECT DISTINCT ticker FROM events" in text_:
+            if self._ticker_query_calls is not None:
+                self._ticker_query_calls.append((text_, params))
             return [(t,) for t in self._ticker_rows]
         if "UPDATE events SET fwd_window_days" in text_:
             self._update_calls.append(params)
@@ -172,13 +213,14 @@ class _FakeEngine:
     def __init__(self, ticker_rows):
         self._ticker_rows = ticker_rows
         self.update_calls: list = []
+        self.ticker_query_calls: list = []
         self.url = _FakeURL()
 
     def connect(self):
-        return _FakeConn(self._ticker_rows, self.update_calls, self.url)
+        return _FakeConn(self._ticker_rows, self.update_calls, self.url, self.ticker_query_calls)
 
     def begin(self):
-        return _FakeConn(self._ticker_rows, self.update_calls, self.url)
+        return _FakeConn(self._ticker_rows, self.update_calls, self.url, self.ticker_query_calls)
 
 
 def test_run_path_backfill_serial_aggregates_across_tickers(monkeypatch):
@@ -225,7 +267,7 @@ def test_run_path_backfill_serial_aggregates_across_tickers(monkeypatch):
         ),
     }
 
-    def fake_compute_ticker_path(ticker, window_days, database_url):
+    def fake_compute_ticker_path(ticker, window_days, database_url, incomplete_only=False):
         return canned[ticker]
 
     upsert_calls: list = []
@@ -246,3 +288,42 @@ def test_run_path_backfill_serial_aggregates_across_tickers(monkeypatch):
     assert sorted(report.tickers) == ["AAA", "BBB", "CCC"]
     assert upsert_calls == [("path", 2, ["event_id", "day_offset"])]
     assert fake_engine.update_calls == [[{"id": 1, "n": 2}]]
+    assert "fwd_window_days" not in fake_engine.ticker_query_calls[0][0]
+
+
+def test_run_path_capture_scopes_ticker_query_to_incomplete_windows(monkeypatch):
+    # Task 10.6: `run_path_capture` must select only tickers with at least
+    # one event whose forward window is still incomplete — the SQL text
+    # itself is the contract here, since a real database is what actually
+    # enforces the filter.
+    fake_engine = _FakeEngine(ticker_rows=["AAA"])
+
+    def fake_compute_ticker_path(ticker, window_days, database_url, incomplete_only=False):
+        assert incomplete_only is True
+        return ticker, pd.DataFrame(columns=["event_id", "day_offset", "favorable", "adverse", "terminal"]), [], 0, 0, 0
+
+    monkeypatch.setattr(path_backfill_mod, "_compute_ticker_path", fake_compute_ticker_path)
+
+    report = path_backfill_mod.run_path_capture(fake_engine, DEFAULT_CONFIG, quiet=True, max_workers=1)
+
+    assert report.tickers == ["AAA"]
+    query_text, params = fake_engine.ticker_query_calls[0]
+    assert "fwd_window_days IS NULL OR fwd_window_days < :window_days" in query_text
+    assert params == {"window_days": window_days_for_config(DEFAULT_CONFIG)}
+
+
+def test_events_query_for_ticker_adds_incompleteness_filter_only_when_requested():
+    # `_compute_ticker_path`'s events read must add the same incompleteness
+    # filter regardless of which caller (backfill vs. capture) invoked
+    # it — this is what makes a capture run touch only accumulating events
+    # rather than every event on the ticker, and leaves backfill's own
+    # full-recompute query untouched.
+    from capitalscan.research.path_backfill import _events_query_for_ticker
+
+    full_query, full_params = _events_query_for_ticker("AAA", window_days=11, incomplete_only=False)
+    assert "fwd_window_days" not in full_query
+    assert full_params == {"ticker": "AAA"}
+
+    scoped_query, scoped_params = _events_query_for_ticker("AAA", window_days=11, incomplete_only=True)
+    assert "fwd_window_days IS NULL OR fwd_window_days < :window_days" in scoped_query
+    assert scoped_params == {"ticker": "AAA", "window_days": 11}

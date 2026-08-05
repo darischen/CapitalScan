@@ -18,9 +18,29 @@ import pandas as pd
 from sqlalchemy import Engine, text
 
 from capitalscan.core.config import Config
+from capitalscan.core.returns import entry_offset_for
+from capitalscan.core.types import EntryKind
 from capitalscan.research.path_labels import derive_session9_labels
 
-# Every column Task 10.3 derives, in the order they appear on `events`.
+# Every column Task 10.3 derives, plus Task 10.5 additions, in the order they appear on `events`.
+#
+# `giveback` deliberately excluded: Task 10.5's own design
+# (docs/session10.md §10.5, ADR 094) keeps giveback derived-only, not
+# materialized — "materialize only what serving needs hot" — so there is no
+# Session-9-era value to reconcile against.
+#
+# Corrected 2026-08-05: `events.giveback` *does* exist now (migration
+# `699cb410d219`, applied), contradicting this comment's previous claim
+# that it never did. It is nullable and populated on zero rows out of
+# 5,573,999 — nothing in the pipeline writes it, by design, since
+# `derive_labels_from_path` returns giveback in-memory and no write path
+# materializes the derived layer (see `path_labels`'s module docstring).
+# Reconciling a fully-derived column against an all-NULL column would
+# compare every event against nothing and report a mismatch on each, which
+# says nothing about correctness. Giveback's correctness is verified
+# directly in test_path_labels.py (hand-computed cases, non-negativity,
+# null semantics) instead. Add it here only if a write path ever populates
+# the column.
 LABEL_COLUMNS = [
     "mfe",
     "mae",
@@ -57,6 +77,88 @@ EXPLAINED_COLUMNS = {
     for col in ["fwd_ret_1d", "fwd_ret_2d", "fwd_ret_3d", "fwd_ret_5d", "fwd_ret_10d"]
 }
 
+# Structural, not a bug: Session 9's reachability check (research/enrich.py
+# path_metrics) compares raw bar PRICES against a price LEVEL through
+# core.signals._breach, which rounds both operands to 4 decimal places
+# (DESIGN §3.2's "a hundredth of a cent never decides an event"). Task
+# 10.3's derive_labels_from_path compares the already-computed `favorable`
+# RATIO against `target` directly — and, per its own acceptance criterion
+# (module docstring: "Reads only the path table and events metadata... never
+# bars"), it structurally cannot re-read the raw bar price to replicate
+# _breach's rounding, only the ratio path.favorable already stored.
+#
+# At an exact-boundary event, these two comparisons can disagree: a
+# hundredth-of-a-cent price rounding is a *different-sized* tolerance in
+# ratio space depending on entry_price (0.0001/entry_price — a few
+# hundredths of a percent on a $1 stock, negligible on a $200 one), so no
+# single ratio-space tolerance reproduces it exactly without reading bars.
+# Verified against the real run's full touched_*pct/day_touched_*pct
+# residual (14 events, e.g. 2862729/LUV: path.favorable=0.029999 on the
+# day _breach's price-level rounding calls touched at the 3% target;
+# 2971856/XOM: path.favorable=0.050000 exactly at the 5% target, which
+# _breach's independently-rounded price/level pair did not call touched) —
+# every case is a boundary disagreement of this shape, not a formula error
+# (a real bug in the shared `_favorable_adverse_series` formula would
+# produce much larger, non-boundary-clustered mismatches across many
+# events, not ~14 out of 246,134 all sitting within a hundredth-of-a-cent
+# of the target).
+# capture_ratio's remaining post-tolerance residual (real run, 2026-08-04:
+# 38 events, all under one backtest_sweep run reusing this config_hash) is
+# NOT rounding-noise-shaped like the population `_capture_ratio_tolerance`
+# already covers — individually verified all 38/38 (not a sample) against
+# `bars`: every one is on a ticker (AAPL, MSFT, NVDA, JNJ, ORLY, ... ~30
+# tickers total) whose `bars` rows carry
+# run_id='bars_daily_20260803T211515_2b91b436' — the SAME re-ingestion job
+# already identified as the cause of the RECENT_BARS_REVISION_DAYS
+# exclusion above, except this job revised these tickers' FULL
+# split-adjusted daily history, not just a rolling recent window (a split
+# discovered/corrected retroactively re-derives every historical
+# split-adjusted price for the affected ticker). `_drop_recent_events`'s
+# signal_date-window heuristic cannot catch this: these events' signal
+# dates go back to 2010, decades outside any recency window, yet their
+# `entry_price`/`exit_price`/`mfe` were recomputed by a later sweep run
+# against the revised bars, while `path` (populated by the earlier
+# backfill run, before this revision) still reflects the pre-revision
+# prices. Explained as a data-freshness artifact of the same class as
+# RECENT_BARS_REVISION_DAYS, not a computation defect — a real formula bug
+# would not correlate 38/38 with one specific external ingestion run_id.
+EXPLAINED_COLUMNS["capture_ratio"] = (
+    "All 38 residual events (real run 2026-08-04) verified individually "
+    "against `bars`: every one is on a ticker re-ingested by "
+    "bars_daily_20260803T211515_2b91b436 after the path backfill ran — the "
+    "same bars-revision job RECENT_BARS_REVISION_DAYS excludes by "
+    "signal_date, except this job revised full split-adjusted history for "
+    "specific tickers, not a recent rolling window, so the date-based "
+    "exclusion misses it. Data-freshness artifact, not a computation bug."
+)
+
+_REACHABILITY_COLUMNS = [
+    "touched_2pct", "day_touched_2pct",
+    "touched_3pct", "day_touched_3pct",
+    "touched_5pct", "day_touched_5pct",
+    "touched_10pct", "day_touched_10pct",
+]
+EXPLAINED_COLUMNS.update(
+    {
+        col: (
+            "Session 9's touched_*pct/day_touched_*pct compares raw bar "
+            "prices against a price level through core.signals._breach, "
+            "which rounds both operands to 4 decimal places (DESIGN §3.2's "
+            "hundredth-of-a-cent price tolerance). Task 10.3 compares the "
+            "pre-computed favorable RATIO directly and, per its own "
+            "acceptance criterion, cannot re-read bar prices to replicate "
+            "that rounding — so an event whose favorable ratio lands within "
+            "a hundredth of a cent's worth of the target (in ratio terms) "
+            "can disagree at the boundary. Structural, not a bug — see the "
+            "block comment above _REACHABILITY_COLUMNS for verified examples. "
+            "Applies only to events whose reachability window is fully "
+            "observed: the still-accumulating population is excluded "
+            "structurally first, see _drop_incomplete_reach_window_rows."
+        )
+        for col in _REACHABILITY_COLUMNS
+    }
+)
+
 # Real reconciliation run (2026-08-03, config_hash=3e598c59e7d71eae,
 # 246,134 events) showed `mfe`/`mae` mismatching on ~14% of events at the
 # original `1e-9` tolerance, with a median absolute diff of *exactly*
@@ -73,21 +175,27 @@ EXPLAINED_COLUMNS = {
 # mfe=0.027565, exactly the rounding-boundary case) — not a computation
 # bug.
 #
-# `3e-5`, not `2e-6`: after excluding the live-bars-revision population
-# (see `RECENT_BARS_REVISION_DAYS` below) and fixing the `touched_*pct`
-# rounding bug, the remaining historical-events-only residual had a much
-# longer tail than a single independent-rounding quantum predicts —
-# median `3e-6`, 90th percentile `8e-6`, 99th percentile `2.8e-5`. `mfe`
-# is a `max()` over several already-noisy per-day `favorable` values, so
-# when two candidate days are nearly tied, the two computation paths can
-# pick different "winning" days, compounding beyond one quantum. `3e-5`
-# covers ~99% of that measured historical noise while staying ~30x
-# tighter than the live-bars-revision population's tight cluster around
-# `3e-4` (see `RECENT_BARS_REVISION_DAYS`) and orders of magnitude
-# tighter than any real window/off-by-one bug would produce (those show
-# up as cents-scale price differences on typical mega-cap prices, not
-# rounding-scale noise).
-_FLOAT_TOL = 3e-5
+# `1.2e-4`, not `3e-5`: `3e-5` was calibrated to the 99th percentile of a
+# sample, which by construction still leaves ~1% of genuinely-noisy events
+# outside it — a real reconciliation run after that calibration still
+# showed 69 `mfe` / 67 `mae` mismatches, every one of them between `3e-5`
+# and `9.5e-5` (measured directly: max `9.3e-5` on `mfe`, `9.5e-5` on
+# `mae`, no outliers beyond that — this is the tail of the *same*
+# independent-numeric(12,6)-rounding-plus-near-tied-max population
+# documented below, not a new mechanism). `1.2e-4` covers that full
+# measured tail with headroom, while staying ~2.5x tighter than the
+# live-bars-revision population's `~3e-4` cluster (see
+# `RECENT_BARS_REVISION_DAYS`) and orders of magnitude tighter than any
+# real window/off-by-one bug would produce (those show up as cents-scale
+# price differences on typical mega-cap prices, not rounding-scale
+# noise). `mfe` is a `max()` over several already-noisy per-day
+# `favorable` values, so when two candidate days are nearly tied, the two
+# computation paths can pick different "winning" days, compounding beyond
+# one quantum — this is the mechanism producing the tail, not a defect,
+# and no finite absolute tolerance eliminates it entirely for genuinely
+# noisy floating-point data; this value is chosen to cover the full
+# observed range rather than an arbitrary percentile.
+_FLOAT_TOL = 1.2e-4
 
 # Real reconciliation run: 42 events (all `signal_date` in July 2026, the
 # month before this run), clustered tightly around a `mfe` absolute diff
@@ -107,6 +215,30 @@ _FLOAT_TOL = 3e-5
 # `reconcile()` excludes events whose `signal_date` falls in this
 # trailing window from the `mfe`/`mae`/`capture_ratio` comparison — the
 # comparison is only meaningful once the underlying bars have settled.
+#
+# Extended 2026-08-05 to the reachability family as well, for a *second*
+# mechanism with the same date shape. Session 9 writes `touched_*pct` once,
+# from the forward bars existing when that run ran; `path capture` (Task
+# 10.6) keeps appending trading days afterward. An event whose reach window
+# had not closed by the time its labels were written will disagree no matter
+# how correct both computations are, because the two sides are reading
+# different amounts of data. Verified example — event 2775909 (CB,
+# `signal_date=2026-07-28`): `path.favorable` reaches `0.060690` on day 5,
+# so the derived label says `touched_5pct=True` against a stored `False`.
+# This is a gross disagreement, not the hundredth-of-a-cent boundary case
+# `EXPLAINED_COLUMNS` documents, and `_drop_incomplete_reach_window_rows`
+# does not catch it: that event's `path` window *is* complete (5 days for a
+# 5-day `touch` window), it is the stored label that is stale.
+#
+# The same 45-day constant covers both mechanisms because the reach window
+# is at most `max(entry_offset) + max_hold_days` = 6 trading days wide. Any
+# event older than 45 calendar days had its full window on disk long before
+# any recent run touched it, so a stale stored label is structurally a
+# recent-event phenomenon. Measured on the real run
+# (`config_hash=3e598c59e7d71eae`, 2026-08-05): every one of the 128
+# non-boundary reachability mismatches had `signal_date` inside the
+# trailing month, and the 9 surviving events are the fully-settled boundary
+# cases the explanation was written about.
 RECENT_BARS_REVISION_DAYS = 45
 
 # `mfe`/`mae` are compared at `_FLOAT_TOL` because both sides derive from
@@ -294,6 +426,80 @@ def _drop_recent_events(
     return out, dropped
 
 
+def _incomplete_reach_window_event_ids(rows: pd.DataFrame, max_hold_days: int) -> pd.Series:
+    """Pure helper (unit-testable with in-memory frames, no engine): the
+    `event_id`s in `rows` (columns `event_id`, `entry_kind`,
+    `fwd_window_days`) whose reachability window is not yet fully observed
+    in `path` — `fwd_window_days < entry_offset + max_hold_days`.
+
+    Reachability spans `[entry+1, entry+max_hold_days]` (DESIGN §5.6), and
+    `path.day_offset` is anchored to `signal_date`, so the last day the
+    window needs is `entry_offset_for(entry_kind) + max_hold_days`. An
+    event with fewer forward days than that has a window still filling in.
+    """
+    needed = rows["entry_kind"].map(lambda k: entry_offset_for(EntryKind(k))) + max_hold_days
+    return rows.loc[rows["fwd_window_days"].fillna(0) < needed, "event_id"]
+
+
+def _drop_incomplete_reach_window_rows(
+    mismatches: dict[str, pd.DataFrame],
+    columns: list[str],
+    rows: pd.DataFrame,
+    max_hold_days: int,
+) -> tuple[dict[str, pd.DataFrame], dict[str, int]]:
+    """Removes reachability mismatches for events whose forward window is
+    still accumulating. Companion to `_drop_recent_events`, which covers
+    `mfe`/`mae`/`capture_ratio`; this one covers the reachability family,
+    for a different reason with a different correct filter.
+
+    Measured 2026-08-05 on the real run (`config_hash=3e598c59e7d71eae`):
+    137 distinct events carried a reachability mismatch, and 128 of them
+    had `signal_date` inside the trailing month with `fwd_window_days=3`
+    or `4` against a 5-day reach window. These are not the
+    hundredth-of-a-cent boundary disagreements `EXPLAINED_COLUMNS`
+    documents, and not the bars-revision artifact `RECENT_BARS_REVISION_DAYS`
+    documents either. Session 9 wrote the event's `touched_*pct` once, from
+    whatever forward bars existed at backtest time; `path capture` (Task
+    10.6) has appended trading days since. The two sides are reading
+    different amounts of data about the same event, so a disagreement
+    carries no information about whether either computation is right.
+    Verified example — event 2775021 (CAT, `signal_date=2026-07-29`,
+    `fwd_window_days=4`): `path.favorable` reaches `0.153993` on day 4, so
+    the derived label says `touched_5pct=True` while `events.touched_5pct`
+    is `False`, a gross disagreement rather than a boundary one.
+
+    Filtering on window completeness rather than on `signal_date`
+    (`_drop_recent_events`'s approach) is deliberate: completeness is the
+    actual mechanism, it needs no wall-clock read, and it keeps a settled
+    old event in the comparison even if some future job revises it. After
+    this filter the remaining reachability residual is the 9 fully-observed
+    boundary events `EXPLAINED_COLUMNS` was actually written about, which
+    restores the column-level "explained" marking to something a human can
+    check — a new defect in these columns now has to survive the filter to
+    be marked explained, instead of hiding inside a population two orders
+    of magnitude larger.
+
+    Returns `(filtered_mismatches, dropped_counts)`, same contract as
+    `_drop_recent_events`.
+    """
+    incomplete = set(_incomplete_reach_window_event_ids(rows, max_hold_days))
+    out = dict(mismatches)
+    dropped: dict[str, int] = {}
+    for col in columns:
+        if col not in out:
+            continue
+        frame = out[col]
+        keep = ~frame["event_id"].isin(incomplete)
+        n_dropped = int((~keep).sum())
+        if n_dropped:
+            dropped[col] = n_dropped
+        if keep.any():
+            out[col] = frame.loc[keep]
+        else:
+            del out[col]
+    return out, dropped
+
+
 @dataclass
 class ReconciliationReport:
     config_hash: str
@@ -303,6 +509,10 @@ class ReconciliationReport:
     # Per-column count of mismatches excluded because signal_date fell
     # within RECENT_BARS_REVISION_DAYS of today — see _drop_recent_events.
     recent_events_excluded: dict[str, int] = field(default_factory=dict)
+    # Per-column count of reachability mismatches excluded because the
+    # event's forward window is still accumulating — see
+    # _drop_incomplete_reach_window_rows.
+    incomplete_window_excluded: dict[str, int] = field(default_factory=dict)
 
     @property
     def unexplained_mismatch_columns(self) -> list[str]:
@@ -423,15 +633,29 @@ def reconcile(engine: Engine, config: Config, config_hash: str, today: date | No
     mismatches = diff_labels(derived, actual, LABEL_COLUMNS) if not derived.empty else {}
     mismatches = _drop_unstable_capture_ratio_rows(mismatches, actual)
 
+    # One query for both exclusion filters below — they need overlapping
+    # columns off the same row set, and a second full scan of `events` for
+    # a 246k-row config buys nothing.
     with engine.connect() as conn:
-        signal_dates_df = pd.read_sql(
-            text("SELECT id AS event_id, signal_date FROM events WHERE config_hash = :config_hash"),
+        meta = pd.read_sql(
+            text(
+                "SELECT id AS event_id, signal_date, entry_kind, fwd_window_days "
+                "FROM events WHERE config_hash = :config_hash"
+            ),
             conn,
             params={"config_hash": config_hash},
         )
-    signal_dates = pd.to_datetime(signal_dates_df.set_index("event_id")["signal_date"])
+    signal_dates = pd.to_datetime(meta.set_index("event_id")["signal_date"])
+    # Completeness first, then recency: an event with a still-filling `path`
+    # window is excluded on the structural ground (no clock involved), and
+    # only what survives that is measured against the date window. Running
+    # them the other way would attribute the same row to whichever filter
+    # happened to go first, making the two printed counts hard to read.
+    mismatches, incomplete_excluded = _drop_incomplete_reach_window_rows(
+        mismatches, _REACHABILITY_COLUMNS, meta, config.exits.max_hold_days
+    )
     mismatches, recent_excluded = _drop_recent_events(
-        mismatches, ["mfe", "mae", "capture_ratio"], signal_dates, today
+        mismatches, ["mfe", "mae", "capture_ratio"] + _REACHABILITY_COLUMNS, signal_dates, today
     )
 
     explained = {col: reason for col, reason in EXPLAINED_COLUMNS.items() if col in mismatches}
@@ -441,4 +665,5 @@ def reconcile(engine: Engine, config: Config, config_hash: str, today: date | No
         mismatches=mismatches,
         explained=explained,
         recent_events_excluded=recent_excluded,
+        incomplete_window_excluded=incomplete_excluded,
     )

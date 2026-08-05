@@ -42,6 +42,23 @@ class SignalParams:
     require_fast_agreement: bool = False  # ADR 044
     fast_agreement_tol: float = 5.0
     price_tolerance: float = 0.0  # 0.0 == "at or beyond", exact
+    # Which %K column decides oversold/overbought (2026-08-05, user's
+    # decision — an A/B test, not a permanent swap). `k_full` (the
+    # `stoch_smooth_k`-period-smoothed %K) is the value every existing ADR
+    # and golden-reference fixture assumes; `k_fast` (raw, unsmoothed) is
+    # more sensitive but untested. Kept as a named, sweepable field rather
+    # than hardcoded in `core.signals._types_fired` so a k_fast run and a
+    # k_full run are two comparable configs (different `config_hash`,
+    # ADR 060) instead of one silently replacing the other with no way to
+    # tell which produced which events.
+    #
+    # To run a comparison backtest with k_fast (PowerShell, this session
+    # only — `jobs.config.resolve_config`'s env-var layer, ADR 091):
+    #   $env:CAPSCAN_SIGNALS = '{"stoch_source": "k_fast"}'
+    #   uv run cscan backtest --workers 8
+    # No `config.toml` needed/created — the env var is read directly and
+    # leaves no repo state behind once the shell session ends.
+    stoch_source: str = "k_full"  # "k_full" | "k_fast"
 
 
 @dataclass(frozen=True)
@@ -66,6 +83,18 @@ class ExitParams:
     exit_stoch_threshold: float = 80.0
     exit_stoch_threshold_short: float = 20.0
     exit_on_mid_band: bool = False  # ADR 046
+    # `capture_ratio = r_exit / mfe` (DESIGN §5.6) is unbounded as mfe -> 0+:
+    # a signal whose favorable excursion barely cleared zero before exit
+    # divides a normal-sized r_exit by a near-zero denominator. A real run
+    # (2026-08-05) produced a ratio in the tens of thousands and a second
+    # event exceeded events.capture_ratio's numeric(12,6) column limit
+    # (10^6), aborting that ticker's whole insert batch. Clamped to
+    # [-capture_ratio_cap, capture_ratio_cap] rather than nulled below some
+    # mfe floor (the `mfe <= 0` case already nulls it) — a huge ratio still
+    # means "the exit gave almost everything back," which a null would
+    # discard; 100 keeps that signal readable while staying far inside the
+    # column's range.
+    capture_ratio_cap: float = 100.0
 
 
 @dataclass(frozen=True)
@@ -81,26 +110,14 @@ class UniverseParams:
     # ADR 014 pins $200B nominal as the mega-cap threshold. Session 9
     # config-thresholds task (user's decision, 2026-08-02) lowers this to
     # $100B nominal — see the dated note appended to ADR 014 in
-    # `docs/DECISIONS.md`. This is a genuine change to the pinned decision,
-    # not an interpretation of it, and is recorded there rather than left
-    # implicit here.
-    #
-    # CPI deflation of the original $200B was considered and rejected as
-    # the mechanism: deflation factors across the ingest window span only
-    # 0.677 (2010) to 1.000 (2025), a 47% move, nowhere near enough to
-    # explain widening from $200B to $100B. The real motivation is
-    # candidate-pool size: in 2010, 23 tickers already cleared $100B
-    # nominal and 6 cleared $200B, yet `in_trade` was still zero for the
-    # whole universe that year, because `is_tradeable` requires all four
-    # ADR 014 criteria in `required_criteria` below, and the SMA-200 /
-    # slope / relative-return conditions were the binding ones, not market
-    # cap. Widening this threshold widens the candidate pool; it is not
-    # claimed to fix that historical emptiness by itself.
+    # `docs/DECISIONS.md`. Session 10 (user's decision, 2026-08-03)
+    # further lowers to $30B nominal to expand candidate pool beyond
+    # mega-cap constraint, allowing large-cap inclusion.
     #
     # This value changes `config_hash` for every `Config` (ADR 060: a
     # different universe threshold is genuinely a different config). Report
     # the new hash prominently — a Postgres GUC is set from it.
-    min_mcap_usd: float = 100e9
+    min_mcap_usd: float = 30e9
     min_price: float = 1.0
     rel_return_lookback_days: int = 756  # 3 years
     rebalance_freq: str = "Q"

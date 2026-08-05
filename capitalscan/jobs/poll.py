@@ -20,7 +20,7 @@ never train or validate data.
 from __future__ import annotations
 
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from datetime import time as dtime
 from typing import Callable
 
@@ -44,9 +44,24 @@ MAX_CONSECUTIVE_FAILURES = 3  # DESIGN §4.9: 3 consecutive tick failures alerts
 
 
 def _now_et() -> datetime:
-    # ADR 081: the poller runs natively on the workstation, whose local
-    # clock is already ET — no timezone conversion needed here.
-    return datetime.now()
+    # ADR 081: the poller runs natively on the workstation. Convert local
+    # time to ET to handle workstations in other timezones (e.g., PT).
+    from datetime import timezone as tz
+    import time
+
+    local_now = datetime.now()
+    # Get offset from local time to UTC
+    if time.daylight:
+        utc_offset = -time.altzone
+    else:
+        utc_offset = -time.timezone
+
+    # Convert to UTC then to ET
+    utc_now = local_now - timedelta(seconds=utc_offset)
+    # ET is UTC-5 (EST) or UTC-4 (EDT)
+    et_offset = -4 if time.daylight else -5
+    et_now = utc_now + timedelta(hours=et_offset)
+    return et_now
 
 
 def _none(v):

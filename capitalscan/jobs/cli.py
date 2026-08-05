@@ -1032,6 +1032,38 @@ def path_backfill_cmd(
         )
 
 
+@path_app.command("capture")
+def path_capture_cmd(
+    quiet: bool = typer.Option(False, "--quiet", help="JSON-lines progress instead of a live bar"),
+    workers: int = typer.Option(1, help="ProcessPoolExecutor workers; 1 runs serially"),
+) -> None:
+    """Task 10.6: append path rows for events with an incomplete forward
+    window. Intended to run nightly, after `events` — cheap because it
+    only touches tickers with at least one incomplete-window event, unlike
+    `path backfill`'s full recompute.
+    """
+    from capitalscan.jobs import db_io, ingest
+    from capitalscan.research.path_backfill import run_path_capture
+
+    config = _resolve_config_or_exit()
+    engine = db_io.get_engine()
+    with ingest.run_job(engine, "path_capture", {"workers": workers}) as job_report:
+        report = run_path_capture(engine, config, quiet=quiet, max_workers=workers)
+        job_report.rows_written = report.rows_written
+    console.print(
+        f"path capture: events_processed={report.events_processed} "
+        f"skipped_unfilled={report.events_skipped_unfilled} "
+        f"skipped_no_signal_bar={report.events_skipped_no_signal_bar} "
+        f"rows_written={report.rows_written}"
+    )
+    if report.events_skipped_no_signal_bar:
+        console.print(
+            f"[yellow]{report.events_skipped_no_signal_bar} event(s) skipped: no `1d` bar yet for their "
+            "signal_date (likely today's live events, before the EOD bars job has run). Rerun this "
+            "command after bars catch up.[/yellow]"
+        )
+
+
 @path_app.command("reconcile")
 def path_reconcile_cmd(
     config_hash: str = typer.Option(
@@ -1052,9 +1084,29 @@ def path_reconcile_cmd(
         excluded_note = ""
         if col in report.recent_events_excluded:
             excluded_note = f" ({report.recent_events_excluded[col]} more excluded: recent, bars still settling)"
+        if col in report.incomplete_window_excluded:
+            excluded_note += (
+                f" ({report.incomplete_window_excluded[col]} more excluded: "
+                "forward window still accumulating)"
+            )
         console.print(
             f"  {col}: {len(frame)} mismatches {tag} (sample event_ids: {sample_ids}){excluded_note}"
         )
+    # A column whose mismatches were *entirely* excluded is absent from
+    # `report.mismatches` (the filters never leave an empty-but-present
+    # key), so the loop above prints nothing for it. Printing the orphaned
+    # counts here keeps the exclusions visible instead of letting a fully
+    # excluded column read as a column with no mismatches at all.
+    orphaned: dict[str, list[str]] = {}
+    for label, counts in (
+        ("recent, bars still settling", report.recent_events_excluded),
+        ("forward window still accumulating", report.incomplete_window_excluded),
+    ):
+        for col, n in counts.items():
+            if col not in report.mismatches:
+                orphaned.setdefault(col, []).append(f"{n} excluded: {label}")
+    for col, notes in orphaned.items():
+        console.print(f"  {col}: 0 mismatches ({'; '.join(notes)})")
     console.print("[green]PASS[/green]" if report.passes else "[red]FAIL[/red]")
     if not report.passes:
         raise typer.Exit(code=1)
@@ -1125,10 +1177,11 @@ def positions_list(
 @app.command()
 def nightly() -> None:
     """Orchestrates the nightly chain (DESIGN §4.12): bars, actions, market,
-    shares, earnings-forward, indicators, events. `sync` is Phase 5 scope
-    and stays unimplemented.
+    shares, earnings-forward, indicators, events, path capture. `sync` is
+    Phase 5 scope and stays unimplemented.
     """
     from capitalscan.jobs import compute, db_io, ingest, scheduled_runs
+    from capitalscan.research.path_backfill import run_path_capture
 
     engine = db_io.get_engine()
     # Recorded before config resolution, not after: `scheduled_runs.record`
@@ -1163,6 +1216,10 @@ def nightly() -> None:
     ingest.run_earnings(tickers, historical=False, forward_days=90, engine=engine)
     compute.run_indicators(tickers, start, end, params=config.indicators, max_workers=1, engine=engine)
     compute.run_events(tickers, start, end, config=config, engine=engine)
+    # Task 10.6: must run after run_events — a signal fired tonight needs
+    # its events row to exist before it can be selected as an
+    # incomplete-window event to capture path rows for.
+    run_path_capture(engine, config, quiet=True)
     console.print("nightly: chain complete (sync --to-serving not yet implemented)")
 
 

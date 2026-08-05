@@ -169,8 +169,22 @@ def _compute_rows_for_ticker(
     return combined, window_updates, events_processed, events_skipped_unfilled, events_skipped_no_signal_bar
 
 
+def _events_query_for_ticker(ticker: str, window_days: int, incomplete_only: bool) -> tuple[str, dict]:
+    """Pure query-building for `_compute_ticker_path`'s events read, split
+    out so the incompleteness filter (Task 10.6) is testable without a
+    database or a worker-process round trip.
+    """
+    query = "SELECT id, entry_price, side, signal_date FROM events WHERE ticker = :ticker AND entry_price IS NOT NULL"
+    params: dict = {"ticker": ticker}
+    if incomplete_only:
+        query += " AND (fwd_window_days IS NULL OR fwd_window_days < :window_days)"
+        params["window_days"] = window_days
+    query += " ORDER BY id"
+    return query, params
+
+
 def _compute_ticker_path(
-    ticker: str, window_days: int, database_url: str | None
+    ticker: str, window_days: int, database_url: str | None, incomplete_only: bool = False
 ) -> tuple[str, pd.DataFrame, list[dict], int, int, int]:
     """One ticker's path rows and `fwd_window_days` updates, computed with
     no side effects on shared state — runs in a worker process under
@@ -181,6 +195,13 @@ def _compute_ticker_path(
     connection held by a short-lived worker exhausts `max_connections` on
     the server — same reasoning as `jobs.compute._compute_one_ticker`).
 
+    `incomplete_only` (Task 10.6) restricts the events query to rows whose
+    forward window has not yet reached `window_days` — the live-capture
+    path touches only events still accumulating, rather than recomputing
+    every event's path on every run the way `run_path_backfill` does.
+    `NULL` (never captured) counts as incomplete, same as any partial count
+    below `window_days`.
+
     Returns `(ticker, path_rows, window_updates, events_processed,
     events_skipped_unfilled, events_skipped_no_signal_bar)` — the caller
     does the actual writes and report bookkeeping, so this function stays
@@ -188,20 +209,14 @@ def _compute_ticker_path(
     workers are dispatching it.
     """
     engine = db_io.get_engine(database_url, use_null_pool=True)
+    events_query, params = _events_query_for_ticker(ticker, window_days, incomplete_only)
     with engine.connect() as conn:
         bars = pd.read_sql(
             text("SELECT * FROM bars WHERE ticker = :ticker AND interval = '1d' ORDER BY ts"),
             conn,
             params={"ticker": ticker},
         )
-        events = pd.read_sql(
-            text(
-                "SELECT id, entry_price, side, signal_date FROM events "
-                "WHERE ticker = :ticker AND entry_price IS NOT NULL ORDER BY id"
-            ),
-            conn,
-            params={"ticker": ticker},
-        )
+        events = pd.read_sql(text(events_query), conn, params=params)
     empty_rows = pd.DataFrame(columns=["event_id", "day_offset", "favorable", "adverse", "terminal"])
     if bars.empty or events.empty:
         return ticker, empty_rows, [], 0, 0, 0
@@ -215,42 +230,32 @@ def _compute_ticker_path(
     return ticker, combined, window_updates, events_processed, events_skipped_unfilled, events_skipped_no_signal_bar
 
 
-def run_path_backfill(
-    engine: Engine, config: Config, quiet: bool = False, max_workers: int = 1
+def _run_path_job(
+    engine: Engine,
+    tickers: list[str],
+    window_days: int,
+    quiet: bool,
+    max_workers: int,
+    incomplete_only: bool,
+    description: str,
 ) -> PathBackfillReport:
-    """Backfills `path` and `events.fwd_window_days` for every event with a
-    filled entry, one ticker at a time (each ticker's `bars` loaded once
-    and reused across all of that ticker's events).
+    """Shared dispatch/write loop behind both `run_path_backfill` and
+    `run_path_capture` (Task 10.6). The two differ only in which tickers
+    they're given and whether `_compute_ticker_path` scopes its events
+    query — the read/write mechanics (parallel dispatch, per-ticker
+    `db_io.upsert`, `fwd_window_days` UPDATE) are identical, so a mismatch
+    between the two paths' write behavior can't be introduced by drift.
 
-    `max_workers > 1` dispatches `_compute_ticker_path` across a spawn-mode
-    `ProcessPoolExecutor` — the same parallelization shape
-    `jobs.compute.run_indicators` already uses for the same reason (one
-    ticker's data is independent of every other's, and the read+compute
-    step is what's expensive, not the write). Writes are done here, in the
-    controlling process, as each ticker's future completes
-    (`as_completed`) — never inside a worker — so `db_io.upsert` batching
-    and the progress bar both stay single-threaded and race-free.
-
-    Idempotent: `path` rows are written through `db_io.upsert` with
-    `conflict_cols=["event_id", "day_offset"]` — a rerun overwrites the
-    same rows with the same values rather than duplicating or erroring.
-    `events.fwd_window_days` is written through a plain `UPDATE ... WHERE
-    id = :id`, also idempotent by construction.
-
-    See `window_days_for_config` for why the window is 11 days, not 10,
-    with the default config.
+    Restart safety (10.6 acceptance): every write here is either
+    `db_io.upsert` (`ON CONFLICT ... DO UPDATE`, so a rerun overwrites
+    rather than duplicates) or a plain `UPDATE ... WHERE id = :id`
+    (unconditionally idempotent). Each ticker's writes happen only after
+    that ticker's compute step returns, so interrupting the job leaves
+    every already-written ticker fully correct and every not-yet-reached
+    ticker simply untouched — never a half-written one.
     """
-    window_days = window_days_for_config(config)
     report = PathBackfillReport()
     database_url = engine.url.render_as_string(hide_password=False)
-
-    with engine.connect() as conn:
-        tickers = [
-            r[0]
-            for r in conn.execute(
-                text("SELECT DISTINCT ticker FROM events WHERE entry_price IS NOT NULL ORDER BY ticker")
-            )
-        ]
 
     def _write_result(
         ticker: str,
@@ -277,15 +282,98 @@ def run_path_backfill(
     if max_workers > 1:
         with ProcessPoolExecutor(max_workers=max_workers) as pool:
             futures = {
-                pool.submit(_compute_ticker_path, ticker, window_days, database_url): ticker
+                pool.submit(_compute_ticker_path, ticker, window_days, database_url, incomplete_only): ticker
                 for ticker in tickers
             }
             for future in track(
-                as_completed(futures), description="path backfill", total=len(futures), quiet=quiet, label="ticker"
+                as_completed(futures), description=description, total=len(futures), quiet=quiet, label="ticker"
             ):
                 _write_result(*future.result())
     else:
-        for ticker in track(tickers, description="path backfill", quiet=quiet, label="ticker"):
-            _write_result(*_compute_ticker_path(ticker, window_days, database_url))
+        for ticker in track(tickers, description=description, quiet=quiet, label="ticker"):
+            _write_result(*_compute_ticker_path(ticker, window_days, database_url, incomplete_only))
 
     return report
+
+
+def run_path_backfill(
+    engine: Engine, config: Config, quiet: bool = False, max_workers: int = 1
+) -> PathBackfillReport:
+    """Backfills `path` and `events.fwd_window_days` for every event with a
+    filled entry, one ticker at a time (each ticker's `bars` loaded once
+    and reused across all of that ticker's events).
+
+    `max_workers > 1` dispatches `_compute_ticker_path` across a spawn-mode
+    `ProcessPoolExecutor` — the same parallelization shape
+    `jobs.compute.run_indicators` already uses for the same reason (one
+    ticker's data is independent of every other's, and the read+compute
+    step is what's expensive, not the write). Writes are done here, in the
+    controlling process, as each ticker's future completes
+    (`as_completed`) — never inside a worker — so `db_io.upsert` batching
+    and the progress bar both stay single-threaded and race-free.
+
+    Idempotent: `path` rows are written through `db_io.upsert` with
+    `conflict_cols=["event_id", "day_offset"]` — a rerun overwrites the
+    same rows with the same values rather than duplicating or erroring.
+    `events.fwd_window_days` is written through a plain `UPDATE ... WHERE
+    id = :id`, also idempotent by construction.
+
+    See `window_days_for_config` for why the window is 11 days, not 10,
+    with the default config.
+
+    Recomputes every event's full path on every run — the right tool for a
+    one-off or occasional full rebuild, but not what the nightly schedule
+    should call once the event set is large (see `run_path_capture`).
+    """
+    window_days = window_days_for_config(config)
+    with engine.connect() as conn:
+        tickers = [
+            r[0]
+            for r in conn.execute(
+                text("SELECT DISTINCT ticker FROM events WHERE entry_price IS NOT NULL ORDER BY ticker")
+            )
+        ]
+    return _run_path_job(
+        engine, tickers, window_days, quiet, max_workers, incomplete_only=False, description="path backfill"
+    )
+
+
+def run_path_capture(
+    engine: Engine, config: Config, quiet: bool = False, max_workers: int = 1
+) -> PathBackfillReport:
+    """Task 10.6: live path capture — the nightly-scheduled counterpart to
+    `run_path_backfill` that accumulates each event's forward path as
+    trading days pass, instead of requiring a periodic full backfill.
+
+    Scoped to events whose forward window is still incomplete
+    (`fwd_window_days IS NULL OR fwd_window_days < window_days`) — a
+    newly detected event picks up one more day of path rows each time
+    this runs, until `fwd_window_days` reaches `window_days_for_config`
+    and it drops out of scope. `_compute_ticker_path`'s `incomplete_only`
+    query filter is what does the scoping; everything downstream
+    (`path_for_event`, the `path` upsert, the `fwd_window_days` update) is
+    the exact same code `run_path_backfill` uses, so a fully-captured
+    event's path is byte-identical to what a full backfill would have
+    produced for it (10.6 acceptance).
+
+    Intended to run nightly, after the `events` job, alongside
+    `indicators`/`bars` in the existing schedule (DESIGN §9.4) — each run
+    only touches tickers with at least one incomplete-window event, so
+    cost scales with recent signal volume, not with total event history.
+    """
+    window_days = window_days_for_config(config)
+    with engine.connect() as conn:
+        tickers = [
+            r[0]
+            for r in conn.execute(
+                text(
+                    "SELECT DISTINCT ticker FROM events WHERE entry_price IS NOT NULL "
+                    "AND (fwd_window_days IS NULL OR fwd_window_days < :window_days) "
+                    "ORDER BY ticker"
+                ),
+                {"window_days": window_days},
+            )
+        ]
+    return _run_path_job(
+        engine, tickers, window_days, quiet, max_workers, incomplete_only=True, description="path capture"
+    )

@@ -9,9 +9,13 @@ from capitalscan.core.config import DEFAULT_CONFIG
 from capitalscan.research import path_reconcile as path_reconcile_mod
 from capitalscan.research.path_reconcile import (
     CAPTURE_RATIO_MFE_FLOOR,
+    EXPLAINED_COLUMNS,
     RECENT_BARS_REVISION_DAYS,
+    ReconciliationReport,
+    _drop_incomplete_reach_window_rows,
     _drop_recent_events,
     _drop_unstable_capture_ratio_rows,
+    _incomplete_reach_window_event_ids,
     _unbackfilled_resolved_event_ids,
     assert_event_ids_match,
     diff_labels,
@@ -53,10 +57,11 @@ def test_diff_labels_mfe_tolerates_one_quantum_of_independent_numeric_12_6_round
 
 
 def test_diff_labels_mfe_still_flags_a_difference_beyond_calibrated_tolerance():
-    # 1e-4 is ~3x the widened 3e-5 tolerance and ~100x the historical
-    # noise floor's 99th percentile (2.8e-5) — a genuine difference, not
-    # rounding/near-tie-max-selection noise.
-    derived = pd.DataFrame({"event_id": [1], "mfe": [0.027665]})
+    # 5e-4 is ~4x the widened 1.2e-4 tolerance (itself calibrated to the
+    # real run's full measured tail, max 9.5e-5 — see _FLOAT_TOL's
+    # comment) — a genuine difference, not rounding/near-tie-max-selection
+    # noise.
+    derived = pd.DataFrame({"event_id": [1], "mfe": [0.028065]})
     actual = pd.DataFrame({"event_id": [1], "mfe": [0.027565]})
     mismatches = diff_labels(derived, actual, columns=["mfe"])
     assert list(mismatches["mfe"]["event_id"]) == [1]
@@ -283,6 +288,55 @@ def test_reconcile_raises_on_zero_events_instead_of_a_vacuous_pass(monkeypatch):
         reconcile(_EmptyResultEngine(), DEFAULT_CONFIG, "nonexistent_config_hash")
 
 
+def test_reachability_columns_are_explained_as_a_structural_boundary_difference():
+    # Session 10 residual investigation (2026-08-04): touched_*pct/
+    # day_touched_*pct disagreements at exact-boundary events trace to
+    # Session 9's _breach-based price-level rounding vs Task 10.3's
+    # ratio-only comparison (path_labels.py cannot re-read bar prices,
+    # per its own acceptance criterion) — structural, not fixable within
+    # 10.3's scope, so it's explained like fwd_ret_*d, not silently
+    # dropped.
+    for col in [
+        "touched_2pct", "day_touched_2pct",
+        "touched_3pct", "day_touched_3pct",
+        "touched_5pct", "day_touched_5pct",
+        "touched_10pct", "day_touched_10pct",
+    ]:
+        assert col in EXPLAINED_COLUMNS
+
+
+def test_capture_ratio_is_explained_as_a_bars_revision_artifact():
+    # Session 10 residual investigation (2026-08-04): the post-tolerance
+    # capture_ratio residual (38 events) was verified 38/38 against `bars`
+    # to be on tickers re-ingested by a specific post-backfill bars
+    # revision run, the same mechanism RECENT_BARS_REVISION_DAYS already
+    # excludes by date — this job just touched full ticker history
+    # instead of a recent window, so the date heuristic missed it.
+    assert "capture_ratio" in EXPLAINED_COLUMNS
+
+
+def test_reconciliation_report_passes_when_only_explained_columns_mismatch():
+    report = ReconciliationReport(
+        config_hash="abc",
+        total_events=10,
+        mismatches={"fwd_ret_1d": pd.DataFrame({"event_id": [1]})},
+        explained={"fwd_ret_1d": "known price-series convention difference"},
+    )
+    assert report.passes is True
+    assert report.unexplained_mismatch_columns == []
+
+
+def test_reconciliation_report_fails_on_an_unexplained_mismatch():
+    report = ReconciliationReport(
+        config_hash="abc",
+        total_events=10,
+        mismatches={"mfe": pd.DataFrame({"event_id": [1]})},
+        explained={},
+    )
+    assert report.passes is False
+    assert report.unexplained_mismatch_columns == ["mfe"]
+
+
 def test_unbackfilled_resolved_event_ids_flags_holding_days_without_path():
     # event 1: resolved position, but fwd_window_days never got written —
     # a real backfill gap. event 2: resolved and backfilled — fine.
@@ -296,3 +350,98 @@ def test_unbackfilled_resolved_event_ids_flags_holding_days_without_path():
     )
     gap = _unbackfilled_resolved_event_ids(rows)
     assert list(gap) == [1]
+
+
+def test_incomplete_reach_window_ids_account_for_the_entry_offset():
+    # max_hold_days=5. A `touch` entry (offset 0) needs day_offset 5;
+    # a `next_open` entry (offset 1) needs day_offset 6 for the same
+    # five-day reachability window. Event 2 has exactly the 5 days a
+    # `touch` event needs but one short of what `next_open` needs — the
+    # off-by-one this helper exists to get right.
+    rows = pd.DataFrame(
+        {
+            "event_id": [1, 2, 3, 4],
+            "entry_kind": ["touch", "next_open", "next_open", "touch"],
+            "fwd_window_days": [5, 5, 6, 4],
+        }
+    )
+    incomplete = _incomplete_reach_window_event_ids(rows, max_hold_days=5)
+    assert list(incomplete) == [2, 4]
+
+
+def test_incomplete_reach_window_ids_treat_a_null_window_as_incomplete():
+    rows = pd.DataFrame({"event_id": [1], "entry_kind": ["touch"], "fwd_window_days": [None]})
+    incomplete = _incomplete_reach_window_event_ids(rows, max_hold_days=5)
+    assert list(incomplete) == [1]
+
+
+def test_drop_incomplete_reach_window_rows_keeps_the_settled_boundary_cases():
+    # Reproduces the 2026-08-05 measurement: event 1 is the CAT-shaped
+    # still-accumulating case (4 forward days against a 5-day reach
+    # window, path.favorable already past the target the stored label
+    # says was never touched); event 2 is a settled full-window boundary
+    # disagreement, which must survive so EXPLAINED_COLUMNS still covers
+    # something a human verified.
+    mismatches = {
+        "touched_5pct": pd.DataFrame(
+            {
+                "event_id": [1, 2],
+                "touched_5pct_derived": [True, True],
+                "touched_5pct_actual": [False, False],
+            }
+        )
+    }
+    rows = pd.DataFrame(
+        {
+            "event_id": [1, 2],
+            "entry_kind": ["touch", "next_open"],
+            "fwd_window_days": [4, 11],
+        }
+    )
+    out, dropped = _drop_incomplete_reach_window_rows(
+        mismatches, ["touched_5pct"], rows, max_hold_days=5
+    )
+    assert list(out["touched_5pct"]["event_id"]) == [2]
+    assert dropped == {"touched_5pct": 1}
+
+
+def test_drop_incomplete_reach_window_rows_drops_the_column_when_all_incomplete():
+    mismatches = {
+        "day_touched_2pct": pd.DataFrame(
+            {"event_id": [1], "day_touched_2pct_derived": [4], "day_touched_2pct_actual": [None]}
+        )
+    }
+    rows = pd.DataFrame({"event_id": [1], "entry_kind": ["touch"], "fwd_window_days": [3]})
+    out, dropped = _drop_incomplete_reach_window_rows(
+        mismatches, ["day_touched_2pct"], rows, max_hold_days=5
+    )
+    assert "day_touched_2pct" not in out
+    assert dropped == {"day_touched_2pct": 1}
+
+
+def test_drop_recent_events_covers_the_reachability_family_too():
+    # The stale-stored-label mechanism (event 2775909/CB shape): the path
+    # window is complete, so _drop_incomplete_reach_window_rows keeps the
+    # row; the date filter is what excludes it. Event 2 is the settled
+    # boundary case that must survive both.
+    mismatches = {
+        "touched_5pct": pd.DataFrame(
+            {
+                "event_id": [1, 2],
+                "touched_5pct_derived": [True, True],
+                "touched_5pct_actual": [False, False],
+            }
+        )
+    }
+    today = date(2026, 8, 5)
+    signal_dates = pd.Series({1: pd.Timestamp("2026-07-28"), 2: pd.Timestamp("2024-11-01")})
+    out, dropped = _drop_recent_events(mismatches, ["touched_5pct"], signal_dates, today)
+    assert list(out["touched_5pct"]["event_id"]) == [2]
+    assert dropped == {"touched_5pct": 1}
+
+
+def test_drop_incomplete_reach_window_rows_ignores_columns_with_no_mismatches():
+    rows = pd.DataFrame({"event_id": [1], "entry_kind": ["touch"], "fwd_window_days": [3]})
+    out, dropped = _drop_incomplete_reach_window_rows({}, ["touched_5pct"], rows, max_hold_days=5)
+    assert out == {}
+    assert dropped == {}

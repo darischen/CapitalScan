@@ -74,11 +74,11 @@ def test_criteria_keys_match_the_universe_table_columns():
 
 
 def test_mcap_criterion_uses_the_configured_floor():
-    # Session 9 config-thresholds task, Change 2: UniverseParams.min_mcap_usd
-    # moved 200e9 -> 100e9. These probe values move with it, straddling the
-    # new $100B floor rather than the old $200B one.
-    assert _healthy(mcap=101e9)["crit_mcap"] is True
-    assert _healthy(mcap=99e9)["crit_mcap"] is False
+    # Session 10 (2026-08-03): UniverseParams.min_mcap_usd moved
+    # 100e9 -> 30e9. These probe values move with it, straddling the
+    # current $30B floor rather than the earlier $100B one.
+    assert _healthy(mcap=31e9)["crit_mcap"] is True
+    assert _healthy(mcap=29e9)["crit_mcap"] is False
 
 
 def test_above_sma200_compares_close_to_the_200_day_sma():
@@ -133,8 +133,8 @@ def test_is_tradeable_true_when_every_criterion_passes():
 
 
 def test_is_tradeable_false_when_any_criterion_fails():
-    # Below the new $100B floor (Change 2: min_mcap_usd 200e9 -> 100e9).
-    assert uni.is_tradeable(_healthy(mcap=50e9)) is False
+    # Below the current $30B floor (Session 10: min_mcap_usd 100e9 -> 30e9).
+    assert uni.is_tradeable(_healthy(mcap=20e9)) is False
 
 
 def test_is_tradeable_treats_null_as_failing():
@@ -149,8 +149,8 @@ def test_is_tradeable_ignores_criteria_outside_the_required_subset():
 
 
 def test_is_tradeable_with_a_single_required_criterion():
-    # Below the new $100B floor (Change 2: min_mcap_usd 200e9 -> 100e9).
-    criteria = _healthy(mcap=50e9)
+    # Below the current $30B floor (Session 10: min_mcap_usd 100e9 -> 30e9).
+    criteria = _healthy(mcap=20e9)
     assert uni.is_tradeable(criteria, required={"crit_above_sma200"}) is True
     assert uni.is_tradeable(criteria, required={"crit_mcap"}) is False
 

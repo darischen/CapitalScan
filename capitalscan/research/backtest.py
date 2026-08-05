@@ -606,6 +606,7 @@ def _backtest_one_ticker(
                 targets=config.stats.reach_targets,
                 adj_close_fwd=adj_close_fwd,
                 horizons=config.stats.fwd_ret_horizons,
+                capture_ratio_cap=config.exits.capture_ratio_cap,
             )
             # Review Finding 5: `StatsParams.reach_targets`/`fwd_ret_horizons`
             # are sweepable (invariant 9's config values, not literals), but

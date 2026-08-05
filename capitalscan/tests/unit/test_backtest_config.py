@@ -39,12 +39,12 @@ class TestConfigHashReexport:
 
 
 class TestUniverseMinMcapThreshold:
-    def test_default_min_mcap_usd_is_100_billion(self):
-        """Session 9 config-thresholds task, Change 2 (user's decision):
-        ADR 014's mega-cap threshold moves from a fixed $200B nominal to
-        $100B nominal, widening the candidate pool. See `UniverseParams`'s
-        docstring and `docs/DECISIONS.md` ADR 014's dated note for why."""
-        assert UniverseParams().min_mcap_usd == 100e9
+    def test_default_min_mcap_usd_is_30_billion(self):
+        """Session 10 (user's decision, 2026-08-03): ADR 014's mega-cap
+        threshold moves from $100B nominal to $30B nominal, widening the
+        candidate pool further. See `UniverseParams`'s docstring and
+        `docs/DECISIONS.md` ADR 014's 2026-08-03 dated note for why."""
+        assert UniverseParams().min_mcap_usd == 30e9
 
 
 class TestSplitKeyFor:

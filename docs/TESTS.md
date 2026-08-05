@@ -240,7 +240,7 @@ def test_indicator_read_window_expands():
 
 ### 5.a Session 10 path store and derived labels
 
-Forward path extraction and label derivation tests (Session 10, tasks 10.2-10.6). Path rows are immutable once written, and labels are deterministically recomputed from the path table rather than cached at event creation time (ADR 093).
+Forward path extraction and label derivation tests (Session 10, tasks 10.2-10.6). Labels are deterministically recomputed from the path table rather than cached at event creation time (ADR 094). Path rows are append-mostly, not immutable: `run_path_capture` writes through `ON CONFLICT DO UPDATE`, so a re-ingested bar rewrites its day (corrected 2026-08-05, along with the ADR number — the design ADR is 094, not 093).
 
 **Unit tests: Path extraction (10.2)** — 12 tests covering window boundaries, truncation at history end, entry offset padding, and idempotency.
 
@@ -290,33 +290,51 @@ def test_incremental_capture_matches_one_shot_backfill_once_window_is_complete()
     would produce on the full history."""
 ```
 
-**Property-based tests (invariants)** — 6 property tests in `tests/property/test_path_invariants.py` covering:
+**Unit tests: Label grid queries (10.5)** — 17 tests in `tests/unit/test_path_queries.py` covering the threshold x horizon x direction grid derived on demand from `path`, including the adverse tail (which Session 9 never materialized), three-valued `touched`, `_pct_suffix` column naming, and the config-widening gate criterion.
 
 ```python
-def test_path_frame_has_no_day_offset_gaps(path_frame):
-    """Day offsets must form a complete sequence [1..n] with no gaps."""
-    offsets = sorted(path_frame["day_offset"].values)
-    for i in range(len(offsets) - 1):
-        assert offsets[i + 1] - offsets[i] == 1
+def test_partial_window_returns_none_not_false():
+    """Three observed days, asked about a 5-day horizon, no touch inside
+    what exists: the honest answer is unknown, never False."""
+    short = _path([(1, 0.005, -0.002, 0.004), (2, 0.006, -0.003, 0.005),
+                   (3, 0.007, -0.004, 0.006)])
+    assert touched_by(short, 0.02, 5, Direction.FAVORABLE, entry_offset=0) is None
 
-def test_thresholds_monotonic_increasing(path_frame, entry_offset, holding_days):
-    """Tighter threshold touched on day D => looser threshold touched on day <= D."""
-    # If reached 2% by day 4, must reach 5% by day <= 4, or not at all
-
-def test_giveback_non_negative(path_frame, ...):
-    """giveback = mfe - realized_return >= 0 by construction (ADR 089)."""
-
-def test_null_path_yields_null_labels(path_frame):
-    """Empty path => all labels null, never fallback values."""
-
-def test_unfilled_entry_yields_null_labels(path_frame):
-    """Unfilled entry (entry_price = NaN) => all metrics null (ADR 035)."""
-
-def test_holding_days_bounds_mfe_window(path_frame, ...):
-    """MFE/MAE window is [entry_offset+1, entry_offset+holding_days], period."""
+def test_adding_a_threshold_widens_the_grid_with_no_code_change():
+    """Gate item 4: a config edit and a re-run, nothing else."""
+    stats = dataclasses.replace(base.stats, reach_targets=base.stats.reach_targets + (0.07,))
+    added = set(reach_grid(HAND_PATH, 0, dataclasses.replace(base, stats=stats))) - set(before)
+    assert added == {...}  # 2 directions x 2 label kinds x 5 horizons
 ```
 
-Each hypothesis test generates 200 cases in `dev` profile, 250 in CI fast tier, and are not marked for the slow tier. Total inventory: 59 unit tests + 6 property tests.
+**Property-based tests (invariants)** — 9 property tests in `tests/property/test_path_invariants.py`.
+
+Rewritten 2026-08-05. The previous six generated pre-shaped path frames and asserted the generator's own constraints back (contiguous offsets, `favorable >= 0`, `adverse <= terminal <= favorable`), so they passed against any implementation; one asserted nothing at all, its loop body being comments. The sign constraint also contradicted ADR 089, which requires negative MFE to stay representable. These generate raw OHLC bars and run them through `core.returns.path_for_event`, the code that actually builds a path:
+
+```python
+@given(ohlc_bars(), _PRICE, st.sampled_from(Side))
+def test_extracted_path_has_contiguous_one_based_offsets(bars, entry_price, side):
+    """A gap would silently shift every entry-anchored label reading
+    day_offset = entry_offset + horizon."""
+    path = path_for_event(entry_price, side, bars)
+    assert list(path["day_offset"]) == list(range(1, len(bars) + 1))
+
+def test_first_touch_is_monotonic_across_thresholds(bars, entry_price, side):
+    """A tighter threshold is touched no later than a looser one, on both
+    tails, and can never be untouched while a looser one is touched."""
+
+def test_touched_is_monotonic_across_horizons(bars, entry_price, side):
+    """Touched by day 3 implies touched by day 5. None may become True or
+    False as the window grows; True never becomes False."""
+
+def test_giveback_is_never_negative(bars, entry_price, side, data):
+    """exit_price is drawn from the exit bar's own range, because that is
+    what production does. Drawn independently it generates an impossible
+    event (exit at a price the window never traded) which the code
+    correctly raises on."""
+```
+
+Each hypothesis test generates 200 cases in `dev` profile, 250 in CI fast tier, and are not marked for the slow tier. Total inventory: 76 unit tests + 9 property tests.
 
 ---
 

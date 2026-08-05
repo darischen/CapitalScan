@@ -122,12 +122,16 @@ def _types_fired(
     """
     bb_lower = _get(ind, "bb_lower")
     bb_upper = _get(ind, "bb_upper")
-    k_full = _get(ind, "k_full")
+    # `sp.stoch_source` (2026-08-05, user's decision): which %K column
+    # decides oversold/overbought — "k_full" (smoothed, every existing
+    # ADR/fixture's assumption) by default, "k_fast" (raw) as an opt-in
+    # comparison. See `SignalParams.stoch_source`'s own docstring.
+    k = _get(ind, sp.stoch_source)
 
     lower_touch = _breach(low, bb_lower, Bound.LOWER, sp.price_tolerance)
     upper_touch = _breach(high, bb_upper, Bound.UPPER, sp.price_tolerance)
-    oversold = not _isnan(k_full) and k_full <= sp.stoch_oversold
-    overbought = not _isnan(k_full) and k_full >= sp.stoch_overbought
+    oversold = not _isnan(k) and k <= sp.stoch_oversold
+    overbought = not _isnan(k) and k >= sp.stoch_overbought
     agrees = _fast_agrees(ind, sp)
 
     fired: dict[Side, list[SignalType]] = {Side.LONG: [], Side.SHORT: []}

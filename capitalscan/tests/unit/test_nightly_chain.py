@@ -14,6 +14,7 @@ from datetime import date, timedelta
 import pytest
 
 from capitalscan.jobs import cli, compute, db_io, ingest, scheduled_runs
+from capitalscan.research import path_backfill as path_backfill_mod
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +28,7 @@ def _no_real_nightly_io(monkeypatch):
     monkeypatch.setattr(db_io, "get_engine", lambda: "fake-engine")
     monkeypatch.setattr(cli, "_resolve_tickers", lambda tickers: ["AAPL", "MSFT"])
     monkeypatch.setattr(scheduled_runs, "record", lambda engine, job: None)
+    monkeypatch.setattr(path_backfill_mod, "run_path_capture", lambda *args, **kwargs: None)
 
 
 def _record_call(calls: list, name: str):
@@ -70,3 +72,24 @@ def test_nightly_calls_run_bars_hourly_with_daily_window(monkeypatch):
     end = date.today()
     assert daily_start == end - timedelta(days=5)
     assert daily_end == end
+
+
+def test_nightly_calls_run_path_capture_after_run_events(monkeypatch):
+    # Task 10.6: `cscan nightly` is what Task Scheduler actually runs
+    # (scripts/nightly.bat -> `cscan nightly`) — a path-capture job that
+    # only exists as a standalone CLI command never runs on a schedule.
+    # Must fire after run_events: a signal fired tonight needs its events
+    # row to exist before it's selectable as an incomplete-window event.
+    calls: list = []
+
+    for name in ["run_bars_daily", "run_bars_hourly", "run_actions", "run_market", "run_shares", "run_earnings"]:
+        monkeypatch.setattr(ingest, name, _record_call(calls, name))
+    for name in ["run_indicators", "run_events"]:
+        monkeypatch.setattr(compute, name, _record_call(calls, name))
+    monkeypatch.setattr(path_backfill_mod, "run_path_capture", _record_call(calls, "run_path_capture"))
+
+    cli.nightly()
+
+    names = [c["name"] for c in calls]
+    assert "run_path_capture" in names, "nightly() never called run_path_capture"
+    assert names.index("run_path_capture") > names.index("run_events")

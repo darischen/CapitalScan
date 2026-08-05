@@ -1147,6 +1147,21 @@ def _implausible_shares_reason(shares: int, bounds: SharesPlausibility) -> str |
     return None
 
 
+# Tickers that are ETFs/trusts rather than operating companies (user's
+# decision, 2026-08-05): SEC's `company_tickers.json` assigns them a real
+# CIK, so `fetch_cik_lookup` finds one and `run_shares`/`run_earnings`
+# proceed to call the XBRL companyfacts/submissions endpoints — which 404
+# (`NotFoundError`), because an ETF files none of the 10-K/10-Q/8-K forms
+# those endpoints serve. Not a data gap to retry or investigate; expected
+# and permanent for this class of ticker. Named explicitly rather than
+# caught as a blanket `except NotFoundError` around every SEC call, so a
+# 404 on an actual operating company (a real data problem) still surfaces
+# instead of being silently swallowed alongside this. Kept here, not in
+# `jobs/fetch/sec.py`, because which tickers to skip is ingest policy, not
+# a fact about how to talk to SEC.
+SEC_NON_FILER_TICKERS = frozenset({"QQQ"})
+
+
 def run_shares(
     tickers: list[str],
     engine: Engine | None = None,
@@ -1195,6 +1210,9 @@ def run_shares(
         # market-cap numbers, which is how this got missed the first time.
         skipped: list[tuple[str, str]] = []
         for ticker in tickers:
+            if ticker in SEC_NON_FILER_TICKERS:
+                skipped.append((ticker, "ETF/trust, not an SEC filer"))
+                continue
             cik = cik_lookup.get(ticker)
             if cik is None:
                 skipped.append((ticker, "no CIK in SEC ticker lookup"))
@@ -1406,6 +1424,8 @@ def run_earnings(
         if historical:
             cik_lookup = sec.fetch_cik_lookup().set_index("ticker")["cik"]
             for ticker in tickers:
+                if ticker in SEC_NON_FILER_TICKERS:
+                    continue
                 cik = cik_lookup.get(ticker)
                 if cik is None:
                     continue

@@ -97,7 +97,7 @@ def _compute_one_ticker(
     its own connection (CLAUDE.md platform note: connections aren't
     picklable) and is importable with no top-level side effects.
     """
-    engine = db_io.get_engine(database_url)
+    engine = db_io.get_engine(database_url, use_null_pool=True)
     with engine.connect() as conn:
         bars = pd.read_sql(
             text(

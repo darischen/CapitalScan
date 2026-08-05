@@ -44,10 +44,26 @@ source of truth, labels derived on demand). Tests and documentation are
 complete (task 10.7). See `docs/session10.md` §4 for gate criteria and
 `docs/RESULTS.md` (Session 10 tasks) for run details.
 
-**Phase 4 boundary is after Session 10.** The statistics layer now reads from
-the path table and derived labels rather than Session 9's directly-computed
-event labels. No change to signal detection, event creation, or entry/exit
-logic. Phase 4 does not start until Session 10 passes, which it now has.
+**Phase 4 boundary is after Session 10.** No change to signal detection, event
+creation, or entry/exit logic. Phase 4 does not start until Session 10 passes,
+which it now has.
+
+**Label source contract for Phase 4** (pinned 2026-08-05, correcting an
+earlier blanket statement here that the statistics layer "reads from the path
+table" for everything — for forward returns, doing so would swap the price
+series):
+
+| Label family | Phase 4 reads | Why |
+|---|---|---|
+| `fwd_ret_1d/2d/3d/5d/10d` | `events.fwd_ret_*d` | Return measurement takes **total-return `adj_close`** (`core/returns.forward_returns`). `path.terminal` is split-adjusted close anchored to `entry_price` — a different quantity by design, which is why reconciliation marks the whole `fwd_ret_*d` family explained rather than matching it |
+| MFE, MAE, time-to-MFE, capture_ratio | path-derived layer (`research/path_labels.py`) | Both sides use split-adjusted OHLC; reconciliation matches to zero |
+| Reachability (`touched_*pct`, `day_touched_*pct`) at the configured targets | path-derived layer | Same series; residual is 9 verified boundary events |
+| Any threshold or horizon beyond the materialized set | `research/path_queries.py` against `path` | Config-parametrized, no migration |
+
+The rule underneath: **`path` is the source of truth for anything measured off
+the traded price series, and never for return measurement across a horizon.**
+DESIGN §2.2 and `core/returns.py`'s module docstring own that split; the path
+table does not override it.
 
 ---
 

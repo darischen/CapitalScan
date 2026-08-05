@@ -72,11 +72,14 @@ def test_default_config_hash_is_pinned():
     """This value is tracked by the human partner to set a Postgres GUC.
     Wiring the resolver in must not move it.
 
-    Updated in the Session 9 config-thresholds task: `UniverseParams.
-    min_mcap_usd` moved 200e9 -> 100e9 (Change 2, user's decision), which
-    is a field of `Config` and therefore genuinely moves `config_hash`
-    (ADR 060). Old value: `22df3117b890793b`. New value: `3e598c59e7d71eae`."""
-    assert config_hash(Config()) == "3e598c59e7d71eae"
+    Updated 2026-08-05 for two Session 10 changes, both genuine fields of
+    `Config` and therefore both real `config_hash` moves (ADR 060):
+    `UniverseParams.min_mcap_usd` 100e9 -> 30e9 (user's decision,
+    2026-08-03), and the new `SignalParams.stoch_source` field (defaults
+    to `"k_full"`, same detection behavior as before the field existed,
+    but the field's presence still changes the hashed shape). Old value:
+    `3e598c59e7d71eae`. New value: `1835688bf7d760ba`."""
+    assert config_hash(Config()) == "1835688bf7d760ba"
 
 
 # ---------------------------------------------------------------------------
@@ -304,10 +307,12 @@ def _patch_nightly_io(monkeypatch):
     """Stubs every IO call `nightly` makes except the two `compute.*` calls
     under test, so this stays a unit test (CONSTRAINTS.md: no real IO)."""
     from capitalscan.jobs import db_io, ingest, scheduled_runs
+    from capitalscan.research import path_backfill as path_backfill_mod
 
     monkeypatch.setattr(db_io, "get_engine", lambda: "fake-engine")
     monkeypatch.setattr(scheduled_runs, "record", lambda engine, job: None)
     monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL"])
+    monkeypatch.setattr(path_backfill_mod, "run_path_capture", lambda *a, **k: None)
     for name in (
         "run_bars_daily",
         "run_bars_hourly",

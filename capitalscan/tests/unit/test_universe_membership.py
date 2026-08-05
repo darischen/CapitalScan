@@ -83,7 +83,7 @@ class TestEvaluateUniverseRow:
             ticker="XYZ",
             as_of=date(2026, 6, 30),
             ind_row=_healthy_ind_row(),
-            mcap=50e9,  # below the $200B floor
+            mcap=20e9,  # below the current $30B floor
             rel_return=0.60,
             sector_median=0.10,
             rev_growth=None,

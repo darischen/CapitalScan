@@ -80,6 +80,46 @@ def test_path_backfill_cmd_passes_workers_through(monkeypatch):
     assert seen["max_workers"] == 8
 
 
+def test_path_capture_cmd_routes_through_resolve_config_or_exit(monkeypatch):
+    # Task 10.6: same wiring contract as `path_backfill_cmd` — must call
+    # `_resolve_config_or_exit`, not import `DEFAULT_CONFIG` directly.
+    sentinel_config = Config()
+    seen: dict = {}
+
+    def fake_resolve(cli_overrides=None):
+        seen["called"] = True
+        return sentinel_config
+
+    def fake_run_path_capture(engine, config, quiet=False, max_workers=1):
+        seen["config"] = config
+        seen["max_workers"] = max_workers
+        return PathBackfillReport(events_processed=1, events_skipped_unfilled=0, rows_written=1)
+
+    monkeypatch.setattr(cli, "_resolve_config_or_exit", fake_resolve)
+    monkeypatch.setattr(path_backfill_mod, "run_path_capture", fake_run_path_capture)
+
+    cli.path_capture_cmd(quiet=False, workers=1)
+
+    assert seen["called"] is True
+    assert seen["config"] is sentinel_config
+    assert seen["max_workers"] == 1
+
+
+def test_path_capture_cmd_passes_workers_through(monkeypatch):
+    seen: dict = {}
+
+    def fake_run_path_capture(engine, config, quiet=False, max_workers=1):
+        seen["max_workers"] = max_workers
+        return PathBackfillReport()
+
+    monkeypatch.setattr(cli, "_resolve_config_or_exit", lambda cli_overrides=None: Config())
+    monkeypatch.setattr(path_backfill_mod, "run_path_capture", fake_run_path_capture)
+
+    cli.path_capture_cmd(quiet=False, workers=8)
+
+    assert seen["max_workers"] == 8
+
+
 def test_path_reconcile_cmd_routes_through_resolve_config_or_exit(monkeypatch):
     sentinel_config = Config()
     seen: dict = {}

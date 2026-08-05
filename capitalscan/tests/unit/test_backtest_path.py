@@ -34,12 +34,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from capitalscan.core.config import StatsParams
+from capitalscan.core.config import ExitParams, StatsParams
 from capitalscan.core.types import Side
 from capitalscan.research.enrich import path_metrics
 
 _TARGETS = StatsParams().reach_targets
 _HORIZONS = StatsParams().fwd_ret_horizons
+_CAPTURE_RATIO_CAP = ExitParams().capture_ratio_cap
 
 
 def _fwd_bars(highs, lows, opens=None, closes=None, start="2026-07-30"):
@@ -78,6 +79,7 @@ def test_mfe_is_not_clamped_at_zero():
         targets=_TARGETS,
         adj_close_fwd=None,
         horizons=_HORIZONS,
+        capture_ratio_cap=_CAPTURE_RATIO_CAP,
     )
     assert result["mfe"] == pytest.approx(-0.04)
     assert result["mfe"] < 0
@@ -94,6 +96,7 @@ def test_capture_ratio_is_null_when_mfe_is_negative():
         targets=_TARGETS,
         adj_close_fwd=None,
         horizons=_HORIZONS,
+        capture_ratio_cap=_CAPTURE_RATIO_CAP,
     )
     assert result["capture_ratio"] is None
 
@@ -111,6 +114,7 @@ def test_capture_ratio_is_null_when_mfe_is_exactly_zero():
         targets=_TARGETS,
         adj_close_fwd=None,
         horizons=_HORIZONS,
+        capture_ratio_cap=_CAPTURE_RATIO_CAP,
     )
     assert result["mfe"] == pytest.approx(0.0)
     assert result["capture_ratio"] is None
@@ -127,6 +131,7 @@ def test_capture_ratio_is_realized_return_over_mfe_when_mfe_is_positive():
         targets=_TARGETS,
         adj_close_fwd=None,
         horizons=_HORIZONS,
+        capture_ratio_cap=_CAPTURE_RATIO_CAP,
     )
     # MFE over [t+1, exit_idx] = bars 0-1 -> max high 106 -> MFE = 0.06.
     # R_exit = (103 - 100) / 100 = 0.03. capture_ratio = 0.03 / 0.06 = 0.5.
@@ -158,6 +163,7 @@ def test_reachability_uses_full_window_past_an_early_exit():
         targets=_TARGETS,
         adj_close_fwd=None,
         horizons=_HORIZONS,
+        capture_ratio_cap=_CAPTURE_RATIO_CAP,
     )
     assert result["touched_5pct"] is True
     assert result["day_touched_5pct"] == 4
@@ -177,6 +183,7 @@ def test_reachability_target_never_touched_is_false_with_null_day():
         targets=_TARGETS,
         adj_close_fwd=None,
         horizons=_HORIZONS,
+        capture_ratio_cap=_CAPTURE_RATIO_CAP,
     )
     assert result["touched_2pct"] is False
     # None, not NaN: `events.day_touched_2pct` is `integer` in the schema,
@@ -202,6 +209,7 @@ def test_reachability_first_touching_bar_wins_not_the_deepest():
         targets=_TARGETS,
         adj_close_fwd=None,
         horizons=_HORIZONS,
+        capture_ratio_cap=_CAPTURE_RATIO_CAP,
     )
     assert result["touched_3pct"] is True
     assert result["day_touched_3pct"] == 2
@@ -223,6 +231,7 @@ def test_reachability_short_uses_lows_against_a_level_below_entry():
         targets=_TARGETS,
         adj_close_fwd=None,
         horizons=_HORIZONS,
+        capture_ratio_cap=_CAPTURE_RATIO_CAP,
     )
     assert result["touched_5pct"] is True
     assert result["day_touched_5pct"] == 2
@@ -245,6 +254,7 @@ def test_reach_target_column_names_match_the_events_schema():
         targets=StatsParams().reach_targets,
         adj_close_fwd=None,
         horizons=_HORIZONS,
+        capture_ratio_cap=_CAPTURE_RATIO_CAP,
     )
     for name in (
         "touched_2pct",
@@ -279,6 +289,7 @@ def test_fwd_ret_columns_present_for_every_configured_horizon():
         targets=_TARGETS,
         adj_close_fwd=adj_close,
         horizons=_HORIZONS,
+        capture_ratio_cap=_CAPTURE_RATIO_CAP,
     )
     for h in _HORIZONS:
         assert f"fwd_ret_{h}d" in result
@@ -302,6 +313,7 @@ def test_fwd_ret_is_null_at_the_tail_never_filled():
         targets=_TARGETS,
         adj_close_fwd=adj_close,
         horizons=_HORIZONS,
+        capture_ratio_cap=_CAPTURE_RATIO_CAP,
     )
     assert math.isnan(result["fwd_ret_10d"])
 
@@ -320,6 +332,7 @@ def test_fwd_ret_is_computed_even_when_the_position_never_resolved():
         targets=_TARGETS,
         adj_close_fwd=adj_close,
         horizons=[1, 2],
+        capture_ratio_cap=_CAPTURE_RATIO_CAP,
     )
     assert result["fwd_ret_1d"] == pytest.approx(0.01)
 
@@ -340,6 +353,7 @@ def test_unresolved_exit_nulls_mfe_and_reachability_without_raising():
         targets=_TARGETS,
         adj_close_fwd=None,
         horizons=_HORIZONS,
+        capture_ratio_cap=_CAPTURE_RATIO_CAP,
     )
     assert np.isnan(result["mfe"])
     assert np.isnan(result["mae"])

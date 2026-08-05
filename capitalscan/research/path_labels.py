@@ -26,6 +26,13 @@ from capitalscan.core.returns import entry_offset_for, realized_return
 from capitalscan.core.types import EntryKind, Side
 from capitalscan.research.enrich import _pct_suffix
 
+# Kept equal to `path_reconcile._FLOAT_TOL` by convention, not by import —
+# `path_reconcile` already imports from this module, so importing back
+# would cycle. See `derive_labels_from_path`'s giveback block for why this
+# value, specifically, is the right one to share rather than duplicate
+# with a different number.
+_GIVEBACK_ROUNDING_TOL = 1.2e-4
+
 
 def derive_labels_from_path(
     path: pd.DataFrame,
@@ -37,6 +44,7 @@ def derive_labels_from_path(
     max_hold_days: int,
     targets: tuple,
     horizons: tuple,
+    capture_ratio_cap: float,
 ) -> dict:
     """One event's Session-9-shaped label dict, derived from its `path`
     rows (columns: `day_offset`, `favorable`, `adverse`, `terminal`).
@@ -62,6 +70,11 @@ def derive_labels_from_path(
     self-referential-to-entry-bar-close convention. It is still computed
     here, unconditionally, so Task 10.4 has something to diff against and
     document as an explained (not silently ignored) difference.
+
+    Task 10.5 additions:
+    - `giveback`: peak favorable return minus terminal return at exit.
+      Derivable from existing `mfe` and the exit's terminal mark,
+      non-negative by construction for favorable peaks.
     """
     by_offset = path.set_index("day_offset")
     out: dict = {}
@@ -71,6 +84,7 @@ def derive_labels_from_path(
         out["mae"] = float("nan")
         out["time_to_mfe"] = None
         out["capture_ratio"] = None
+        out["giveback"] = None
         for target in targets:
             suffix = _pct_suffix(target)
             out[f"touched_{suffix}"] = None
@@ -84,6 +98,7 @@ def derive_labels_from_path(
             out["mae"] = float("nan")
             out["time_to_mfe"] = None
             out["capture_ratio"] = None
+            out["giveback"] = float("nan")
         else:
             out["mfe"] = float(held["favorable"].max())
             out["mae"] = float(held["adverse"].min())
@@ -91,9 +106,44 @@ def derive_labels_from_path(
             out["time_to_mfe"] = int(peak_offset - entry_offset)
 
             r_exit = realized_return(entry_price, exit_price, side)
-            out["capture_ratio"] = (
-                None if out["mfe"] != out["mfe"] or out["mfe"] <= 0 else float(r_exit / out["mfe"])
-            )
+            # Matches `research.enrich.path_metrics`'s clamp (both must
+            # produce the same number for this module's own reconciliation
+            # purpose — see module docstring).
+            if out["mfe"] != out["mfe"] or out["mfe"] <= 0:
+                out["capture_ratio"] = None
+            else:
+                ratio = float(r_exit / out["mfe"])
+                out["capture_ratio"] = max(-capture_ratio_cap, min(capture_ratio_cap, ratio))
+
+            # Giveback: peak favorable minus terminal return at exit.
+            # Non-negative by construction: the peak is always >= the exit value.
+            # Null when mfe is NaN.
+            #
+            # `mfe` is read back from `path`'s `numeric(12,6)` storage while
+            # `r_exit` is computed fresh from `entry_price`/`exit_price` at
+            # full float64 precision — the same independent-rounding source
+            # `path_reconcile._FLOAT_TOL` exists to absorb for `mfe`/`mae`
+            # comparisons (see that module's derivation). A `mfe` that
+            # rounded down by up to half a `numeric(12,6)` quantum can land
+            # fractionally below the unrounded `r_exit`, producing a
+            # `giveback` of a few `1e-7` with no real violation behind it
+            # (observed live: event with mfe=0.062834, r_exit=0.062834406...,
+            # giveback=-4.07e-7). `_GIVEBACK_ROUNDING_TOL` mirrors that same
+            # `1.2e-4` value — reused rather than duplicated with a
+            # different number so the two tolerances can't drift apart —
+            # and clamps the noise to exactly zero rather than writing a
+            # spurious negative. Anything past that tolerance still raises:
+            # a true negative giveback would mean the peak wasn't actually
+            # the peak, a real formula bug worth crashing on.
+            if out["mfe"] == out["mfe"]:  # mfe is not NaN
+                giveback = out["mfe"] - r_exit
+                if giveback < -_GIVEBACK_ROUNDING_TOL:
+                    raise AssertionError(
+                        f"giveback must be non-negative; got {giveback} (mfe={out['mfe']}, r_exit={r_exit})"
+                    )
+                out["giveback"] = float(max(giveback, 0.0))
+            else:
+                out["giveback"] = float("nan")
 
         reach_offsets = range(entry_offset + 1, entry_offset + max_hold_days + 1)
         reach = by_offset.loc[by_offset.index.isin(reach_offsets)].sort_index()
@@ -200,6 +250,7 @@ def derive_session9_labels(engine: Engine, config: Config, config_hash: str) -> 
             max_hold_days=max_hold_days,
             targets=targets,
             horizons=horizons,
+            capture_ratio_cap=config.exits.capture_ratio_cap,
         )
         labels["event_id"] = ev["event_id"]
         rows.append(labels)

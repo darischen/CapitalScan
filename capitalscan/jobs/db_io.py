@@ -17,26 +17,41 @@ import math
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import Engine, MetaData, Table, create_engine
+from sqlalchemy import Engine, MetaData, Table, create_engine, event
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.pool import NullPool, QueuePool
 
 from capitalscan.jobs.db import _load_env, _psycopg3_url
 
 _metadata_by_engine: dict[int, MetaData] = {}
 
 
-def get_engine(url: str | None = None) -> Engine:
+def get_engine(url: str | None = None, use_null_pool: bool = False) -> Engine:
     """A SQLAlchemy engine against `DATABASE_URL_RESEARCH`.
 
     Ingest always targets the research database — the serving database is
     populated by `sync`, never by a fetcher (ADR 053).
+
+    `use_null_pool=True` disables connection pooling (NullPool), needed for
+    worker processes where each connection is short-lived. Without it,
+    ProcessPoolExecutor workers hold onto pooled connections across tasks,
+    exhausting max_connections on the server.
     """
     _load_env()
     if url is None:
         import os
 
         url = os.environ["DATABASE_URL_RESEARCH"]
-    return create_engine(_psycopg3_url(url))
+
+    engine_kwargs = {}
+    if use_null_pool:
+        engine_kwargs['poolclass'] = NullPool
+    else:
+        engine_kwargs['poolclass'] = QueuePool
+        engine_kwargs['pool_size'] = 10
+        engine_kwargs['max_overflow'] = 20
+
+    return create_engine(_psycopg3_url(url), **engine_kwargs)
 
 
 def _table(engine: Engine, name: str) -> Table:

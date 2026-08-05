@@ -237,12 +237,13 @@ class TestRunEventsThreadsFullConfig:
 class TestRunEventsBackwardCompatibility:
     def test_documented_default_hash_is_unchanged(self):
         """Guard rail named in the task: `config_hash(Config())` used to be
-        pinned at `22df3117b890793b`. Session 9 config-thresholds task
-        (Change 2, user's decision) moved `UniverseParams.min_mcap_usd`
-        200e9 -> 100e9, a field of `Config`, so this hash genuinely moves
-        (ADR 060) to `3e598c59e7d71eae` — a Postgres GUC is set from this
+        pinned at `3e598c59e7d71eae`. Two Session 10 changes (2026-08-05),
+        both genuine fields of `Config`, move it again (ADR 060):
+        `UniverseParams.min_mcap_usd` 100e9 -> 30e9 (user's decision,
+        2026-08-03) and the new `SignalParams.stoch_source` field. New
+        value: `1835688bf7d760ba` — a Postgres GUC is set from this
         literal value."""
-        assert jobs_config_hash(Config()) == "3e598c59e7d71eae"
+        assert jobs_config_hash(Config()) == "1835688bf7d760ba"
 
     def test_sp_only_caller_still_works_and_matches_config_signals_default(
         self, stub_events_reads, captured_events_upsert
@@ -262,7 +263,7 @@ class TestRunEventsBackwardCompatibility:
 
         events_calls = [c for c in captured_events_upsert if c["table_name"] == "events"]
         row = events_calls[0]["data"][0]
-        assert row["config_hash"] == "3e598c59e7d71eae"  # see Change 2, min_mcap_usd 200e9->100e9
+        assert row["config_hash"] == "1835688bf7d760ba"  # Session 10: min_mcap_usd 100e9->30e9, new stoch_source field
         assert row["split_key"] == "holdout"  # 2026-07-30 is past the default validate_end
 
     def test_sp_and_config_disagreeing_raises_rather_than_silently_picking_one(
