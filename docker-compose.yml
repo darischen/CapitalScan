@@ -14,6 +14,7 @@ services:
         -c maintenance_work_mem=512MB
         -c effective_cache_size=4GB
         -c max_parallel_workers=8
+        -c max_connections=200
     ports:
       - "5432:5432"
     volumes:

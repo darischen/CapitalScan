@@ -71,7 +71,7 @@ while ($true) {
             # Query for new events since last check
             $query = "SELECT s.event_id, s.fired_at, e.ticker, e.signal_type, e.entry_price::text, e.side, e.k_full::text, e.d_full::text, e.k_fast::text, e.atr_14::text, e.vix_close::text, e.spx_ret_1d::text, s.channels_sent FROM events e JOIN signal_reports s ON e.id = s.event_id WHERE DATE(e.signal_date) = CURRENT_DATE AND e.id > $lastEventId ORDER BY s.fired_at ASC;"
 
-            $newEvents = & "/c/Program Files/PostgreSQL/18/bin/psql" -h localhost -U capscan -d capitalscan -t -c $query
+            $newEvents = & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -h localhost -U capscan -d capitalscan -t -c $query
 
             if ($newEvents) {
                 $newEvents | ForEach-Object {
@@ -112,7 +112,7 @@ while ($true) {
                 }
             }
         } catch {
-            # Silently continue on DB errors (poller might still be starting)
+            Write-Host "[QUERY ERROR] $(Get-Date -Format 'HH:mm:ss') - $($_.Exception.Message)" -ForegroundColor Red
         }
     }
 
