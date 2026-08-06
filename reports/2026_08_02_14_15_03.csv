@@ -1,0 +1,5 @@
+Ticker,Date,Signal Type,All Signals,Signal Strength,Direction,Upper Bound,20-day MA (Split-Adjusted),Lower Bound,bb_pctb,Full Stochastic Value,Fast Stochastic Value,K Crossed Up,K Crossed Down,52-Week Drawdown Range,Price vs 200-day MA
+BMY,2026-07-31,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,64.722609,60.0845,55.446391,1.014811,84.155632,92.027335,False,False,0-10,above_sma200
+BUD,2026-07-31,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,84.86031,81.0925,77.32469,1.169819,94.167245,99.585062,False,False,0-10,above_sma200
+TT,2026-07-31,Confluence Low,Confluence Low; Bollinger Band Lower Bound; Stochastic Oversold,3,Long,495.775704,473.3265,450.877296,-0.236028,13.124485,0.903023,False,False,10-20,above_sma200
+VRT,2026-07-31,Confluence Low,Confluence Low; Bollinger Band Lower Bound; Stochastic Oversold,3,Long,346.261145,294.1145,241.967855,-0.138723,7.30301,6.835653,False,False,35+,below_sma200
