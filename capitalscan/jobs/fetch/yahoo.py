@@ -12,12 +12,25 @@ from typing import cast
 
 import pandas as pd
 import yfinance as yf
+from yfinance.data import YfData
 
 from capitalscan.jobs.fetch.base import cached, rate_limited, with_retry
 
 RATE_LIMIT_PER_SEC = 0.5
 DAILY_BATCH_SIZE = 50
 HOURLY_WINDOW_DAYS = 60
+# Symbols per `/v7/finance/quote` request. Yahoo accepts more, but the URL
+# is a GET query string and oversized batches start failing at the proxy
+# rather than returning a parseable error, so this stays well inside it.
+QUOTE_BATCH_SIZE = 100
+# How old a quote may be and still count as live. Yahoo's free feed is
+# documented as delayed up to 15 minutes on some venues, so anything
+# inside that is a legitimately-delayed live quote; anything beyond it is
+# a stale feed reporting its last known price, which `fetch_quotes` must
+# not hand to the poller as current (see that function's docstring).
+QUOTE_MAX_AGE_SECONDS = 900
+
+_QUOTE_URL = "https://query2.finance.yahoo.com/v7/finance/quote"
 
 _BARS_COLUMNS = [
     "ticker",
@@ -32,6 +45,7 @@ _BARS_COLUMNS = [
 ]
 _HOURLY_COLUMNS = ["ticker", "ts", "open", "high", "low", "close", "volume"]
 _ACTIONS_COLUMNS = ["ticker", "ts", "action_type", "value"]
+_QUOTE_COLUMNS = ["ticker", "ts", "price"]
 
 
 def _empty_bars_frame() -> pd.DataFrame:
@@ -280,30 +294,66 @@ def fetch_actions(ticker: str) -> pd.DataFrame:
     return pd.DataFrame(records, columns=_ACTIONS_COLUMNS)
 
 
+def _download_quotes(symbols: list[str]) -> dict:
+    """One HTTP GET against Yahoo's batch quote endpoint.
+
+    Its own function so `fetch_quotes` has a seam the request-count test
+    can patch — the count is the whole point of this path, and asserting
+    on rows returned (the only prior coverage) never sees it.
+
+    Routed through `yfinance`'s `YfData` rather than a bare HTTP client
+    because Yahoo rejects requests that do not carry a browser TLS
+    fingerprint plus a valid cookie/crumb pair, and `YfData` already
+    maintains that handshake. That is internal yfinance API, so it is
+    confined to this one function: if it moves, only this breaks.
+    """
+    raw = YfData().get_raw_json(_QUOTE_URL, params={"symbols": ",".join(symbols)})
+    return cast(dict, raw)
+
+
 @rate_limited(per_sec=RATE_LIMIT_PER_SEC)
 @with_retry
-def fetch_quotes(tickers: list[str]) -> pd.DataFrame:
+def fetch_quotes(tickers: list[str], *, now: pd.Timestamp | None = None) -> pd.DataFrame:
     """Batch live quote for the poller (DESIGN §4.8: 1-2 requests total).
 
     Never cached — a stale quote is a wrong signal, not a saved network
-    call.
+    call. That rule is enforced here, not merely asserted: a quote whose
+    `regularMarketTime` is older than `QUOTE_MAX_AGE_SECONDS`, or that
+    carries no timestamp at all, is dropped rather than returned. The
+    chart endpoint this replaced expressed a stale feed as an empty
+    frame; the quote endpoint expresses it as the last known price with
+    an old timestamp, which would otherwise reach `breach_live` looking
+    exactly like a current one.
+
+    One request per `QUOTE_BATCH_SIZE` symbols. The previous
+    implementation called `yf.download(tickers, ...)`, which accepts a
+    list and so reads as batched, but fans out to one request per symbol
+    internally: 140 per tick against this universe, ~10,900 per session,
+    against a design budget of 1-2. `@rate_limited` sits on this function
+    and throttles calls to it, never the requests inside one call, so the
+    fan-out was entirely unthrottled.
+
+    `now` is injectable for tests; it defaults to the current UTC time.
+    Reading the clock is allowed here because this is `jobs/`, never
+    `core/` (invariant 1).
     """
-    raw = yf.download(
-        tickers,
-        period="1d",
-        interval="1m",
-        group_by="ticker",
-        threads=False,
-        progress=False,
-    )
+    now = now if now is not None else pd.Timestamp.now(tz="UTC")
     rows = []
-    for ticker in tickers:
-        sub = _extract_ticker_frame(raw, ticker)
-        if _has_no_data(sub):
-            continue
-        last = sub.dropna(subset=["Close"]).iloc[-1]
-        rows.append({"ticker": ticker, "ts": sub.index[-1], "price": float(last["Close"])})
-    return pd.DataFrame(rows, columns=["ticker", "ts", "price"])
+    for batch in _split_batches(tickers, QUOTE_BATCH_SIZE):
+        payload = _download_quotes(batch)
+        for quote in (payload.get("quoteResponse") or {}).get("result") or []:
+            price = quote.get("regularMarketPrice")
+            quoted_at = quote.get("regularMarketTime")
+            # Invariant 4: a quote missing either half is dropped, never
+            # defaulted to zero and never carried forward from the last
+            # tick. An undateable price cannot be shown to be current.
+            if price is None or quoted_at is None:
+                continue
+            ts = pd.to_datetime(quoted_at, unit="s", utc=True)
+            if (now - ts).total_seconds() > QUOTE_MAX_AGE_SECONDS:
+                continue
+            rows.append({"ticker": quote.get("symbol"), "ts": ts, "price": float(price)})
+    return pd.DataFrame(rows, columns=_QUOTE_COLUMNS)
 
 
 _SHARES_FULL_COLUMNS = ["ticker", "filed_on", "shares"]
