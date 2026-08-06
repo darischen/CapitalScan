@@ -188,6 +188,9 @@ class TestBacktestOneTicker:
         monkeypatch.setattr(backtest, "_read_indicators", lambda *a, **k: pd.DataFrame())
         monkeypatch.setattr(backtest, "_read_market_days", lambda *a, **k: _empty_market())
         monkeypatch.setattr(backtest, "_read_universe_flags", lambda *a, **k: _empty_universe())
+        # Stubs its own reads rather than taking `stub_reads`, so it needs the
+        # same placeholder engine for the same reason.
+        monkeypatch.setattr(backtest.db_io, "get_engine", lambda *a, **k: _FakeEngine())
         out = backtest._backtest_one_ticker(TICKER, Config(), "run-1", None)
         assert out.empty
         assert list(out.columns) == backtest._EVENT_COLUMNS
