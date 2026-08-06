@@ -94,6 +94,12 @@ def stub_reads(monkeypatch):
     monkeypatch.setattr(backtest, "_read_indicators", lambda engine, ticker, start: _indicators())
     monkeypatch.setattr(backtest, "_read_market_days", lambda engine: _empty_market())
     monkeypatch.setattr(backtest, "_read_universe_flags", lambda engine, ticker: _empty_universe())
+    # The tests below call `_backtest_one_ticker(..., database_url=None)`,
+    # and `None` means "resolve from `DATABASE_URL_RESEARCH`". Without this
+    # stub they pass only on a machine holding a local `.env.local` and fail
+    # in CI. Nothing ever connects — every `_read_*` above is stubbed — so a
+    # placeholder engine is enough.
+    monkeypatch.setattr(backtest.db_io, "get_engine", lambda *a, **k: _FakeEngine())
 
 
 def _drop_run_id(df: pd.DataFrame) -> pd.DataFrame:
