@@ -25,7 +25,8 @@ output.
 from __future__ import annotations
 
 import pandas as pd
-from hypothesis import given, settings, strategies as st
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from capitalscan.core.config import DEFAULT_CONFIG, ExitParams
 from capitalscan.core.returns import path_for_event, realized_return
@@ -118,9 +119,7 @@ def test_touched_is_monotonic_across_horizons(bars, entry_price, side):
     horizons = sorted(DEFAULT_CONFIG.stats.fwd_ret_horizons)
     for direction in Direction:
         for target in DEFAULT_CONFIG.stats.reach_targets:
-            flags = [
-                touched_by(path, target, h, direction, entry_offset=0) for h in horizons
-            ]
+            flags = [touched_by(path, target, h, direction, entry_offset=0) for h in horizons]
             for earlier, later in zip(flags, flags[1:]):
                 if earlier is True:
                     assert later is True

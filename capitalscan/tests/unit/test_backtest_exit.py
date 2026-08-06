@@ -269,9 +269,7 @@ def test_short_side_uses_its_own_stoch_threshold_not_a_mirror_of_the_long():
         }
     )
     ep = ExitParams(stop_mode="none", exit_stoch_threshold_short=18.0, max_hold_days=1)
-    result = resolve_exit_for_entry(
-        _entry(price=100.0), 0, Side.SHORT, bars, indicators, ep
-    )
+    result = resolve_exit_for_entry(_entry(price=100.0), 0, Side.SHORT, bars, indicators, ep)
     assert result["exit_reason"] == ExitReason.STOCH_80.value
 
 
@@ -313,7 +311,12 @@ def test_next_open_shaped_entry_idx_one_bar_after_the_signal_does_not_raise():
     # forward window from position 2 onward resolves to) isn't this test's
     # concern — only that a legitimately later-filling entry is accepted.
     assert set(result.keys()) == {
-        "exit_idx", "exit_date", "exit_price", "exit_reason", "holding_days", "ambiguous",
+        "exit_idx",
+        "exit_date",
+        "exit_price",
+        "exit_reason",
+        "holding_days",
+        "ambiguous",
     }
 
 

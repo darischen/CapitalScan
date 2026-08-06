@@ -42,6 +42,7 @@ length, since a later missing day cannot un-touch it.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
 
 import pandas as pd
 from sqlalchemy import Engine, text
@@ -208,13 +209,14 @@ def reach_grid_for_config(engine: Engine, config: Config, config_hash: str) -> p
         )
         if events.empty:
             return events
+        path_params: dict[str, Any] = {"ids": events["event_id"].tolist()}
         path = pd.read_sql(
             text(
                 "SELECT event_id, day_offset, favorable, adverse, terminal "
                 "FROM path WHERE event_id = ANY(:ids)"
             ),
             conn,
-            params={"ids": events["event_id"].tolist()},
+            params=path_params,
         )
 
     # Grouped once outside the loop, not filtered per event: the per-event

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import date
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -61,8 +62,10 @@ def _splits(rows: list[dict]) -> pd.DataFrame:
 
 
 @pytest.fixture()
-def written(monkeypatch) -> dict[str, pd.DataFrame]:
-    """Captures every frame `db_io.upsert` receives for `bars`, keyed by call order."""
+def written(monkeypatch) -> dict[str, Any]:
+    """Captures every frame `db_io.upsert` receives for `bars`, keyed by call
+    order. Values are lists, not frames — callers index them (`written["bars"][0]`).
+    """
     calls: list[pd.DataFrame] = []
 
     def fake_upsert(engine, table_name, data, conflict_cols):  # noqa: ANN001, ANN202
@@ -78,9 +81,11 @@ def written(monkeypatch) -> dict[str, pd.DataFrame]:
 
     monkeypatch.setattr(ingest.db_io, "append", fake_append)
     monkeypatch.setattr(ingest.db_io, "upsert", fake_upsert)
-    monkeypatch.setattr(ingest, "_read_daily_range", lambda engine, tickers: pd.DataFrame(
-        columns=["ticker", "d", "high", "low"]
-    ))
+    monkeypatch.setattr(
+        ingest,
+        "_read_daily_range",
+        lambda engine, tickers: pd.DataFrame(columns=["ticker", "d", "high", "low"]),
+    )
     return {"bars": calls, "rejects": rejects}
 
 
@@ -175,9 +180,7 @@ def test_a_ticker_with_no_splits_is_untouched(monkeypatch, written):
     ts = pd.to_datetime(["2024-01-02 09:30", "2024-01-05 09:30"])
     raw = _hourly_frame("AAPL", ts)
     monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly", lambda t, s, e: raw)
-    monkeypatch.setattr(
-        ingest, "_read_corporate_actions", lambda engine, tickers: _splits([])
-    )
+    monkeypatch.setattr(ingest, "_read_corporate_actions", lambda engine, tickers: _splits([]))
 
     ingest.run_bars_hourly(["AAPL"], START, END, engine=_FakeEngine())
 

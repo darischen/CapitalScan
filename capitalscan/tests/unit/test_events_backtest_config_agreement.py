@@ -156,7 +156,9 @@ def _empty_hourly() -> pd.DataFrame:
 @pytest.fixture()
 def stub_events_reads(monkeypatch):
     monkeypatch.setattr(db_io, "append", lambda *a, **k: None)
-    monkeypatch.setattr(compute, "_read_bars_range", lambda engine, tickers, start, end: _events_bars())
+    monkeypatch.setattr(
+        compute, "_read_bars_range", lambda engine, tickers, start, end: _events_bars()
+    )
     monkeypatch.setattr(
         compute, "_read_indicators_range", lambda engine, tickers, start, end: _events_indicators()
     )
@@ -263,7 +265,9 @@ class TestRunEventsBackwardCompatibility:
 
         events_calls = [c for c in captured_events_upsert if c["table_name"] == "events"]
         row = events_calls[0]["data"][0]
-        assert row["config_hash"] == "1835688bf7d760ba"  # Session 10: min_mcap_usd 100e9->30e9, new stoch_source field
+        assert (
+            row["config_hash"] == "1835688bf7d760ba"
+        )  # Session 10: min_mcap_usd 100e9->30e9, new stoch_source field
         assert row["split_key"] == "holdout"  # 2026-07-30 is past the default validate_end
 
     def test_sp_and_config_disagreeing_raises_rather_than_silently_picking_one(
@@ -297,7 +301,9 @@ class TestRunEventsAndRunBacktestAgreeOnTheSameConfig:
         backtest.run_backtest([TICKER], _OVERRIDE_CONFIG, "run-1", engine=_FakeEngine())
 
         events_calls = [
-            c for c in captured_events_upsert if c["table_name"] == "events" and isinstance(c["data"], list)
+            c
+            for c in captured_events_upsert
+            if c["table_name"] == "events" and isinstance(c["data"], list)
         ]
         backtest_calls = [
             c

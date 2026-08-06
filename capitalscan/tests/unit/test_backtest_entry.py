@@ -64,8 +64,15 @@ def _by_kind(rows: list[dict]) -> dict:
 def test_produces_one_row_per_entry_kind():
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-30", "open": 96.0, "high": 97.0,
-             "low": 94.0, "close": 95.5, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-30",
+                "open": 96.0,
+                "high": 97.0,
+                "low": 94.0,
+                "close": 95.5,
+                "volume": 1,
+            },
         ]
     )
     rows = resolve_entries(_candidate(), bars, None, CP)
@@ -82,8 +89,15 @@ def test_produces_one_row_per_entry_kind():
 def test_touch_long_fills_at_band_and_is_not_gapped_when_open_is_above_band():
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-30", "open": 100.0, "high": 101.0,
-             "low": 94.0, "close": 95.5, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-30",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 94.0,
+                "close": 95.5,
+                "volume": 1,
+            },
         ]
     )
     rows = _by_kind(resolve_entries(_candidate(touch_level=95.0), bars, None, ZERO_SLIP))
@@ -97,8 +111,15 @@ def test_touch_long_fills_at_open_and_is_gapped_when_open_is_below_band():
     # Opened at 92, below the 95 band — never traded at 95.
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-30", "open": 92.0, "high": 93.0,
-             "low": 90.0, "close": 91.0, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-30",
+                "open": 92.0,
+                "high": 93.0,
+                "low": 90.0,
+                "close": 91.0,
+                "volume": 1,
+            },
         ]
     )
     rows = _by_kind(resolve_entries(_candidate(touch_level=95.0), bars, None, ZERO_SLIP))
@@ -115,8 +136,15 @@ def test_touch_long_fills_at_open_and_is_gapped_when_open_is_below_band():
 def test_touch_short_fills_at_band_and_is_not_gapped_when_open_is_below_band():
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-30", "open": 100.0, "high": 106.0,
-             "low": 99.0, "close": 104.0, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-30",
+                "open": 100.0,
+                "high": 106.0,
+                "low": 99.0,
+                "close": 104.0,
+                "volume": 1,
+            },
         ]
     )
     candidate = _candidate(side="short", touch_level=105.0, signal_type="bb_upper_touch")
@@ -129,8 +157,15 @@ def test_touch_short_fills_at_band_and_is_not_gapped_when_open_is_below_band():
 def test_touch_short_fills_at_open_and_is_gapped_when_open_is_above_band():
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-30", "open": 108.0, "high": 110.0,
-             "low": 107.0, "close": 109.0, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-30",
+                "open": 108.0,
+                "high": 110.0,
+                "low": 107.0,
+                "close": 109.0,
+                "volume": 1,
+            },
         ]
     )
     candidate = _candidate(side="short", touch_level=105.0, signal_type="bb_upper_touch")
@@ -148,10 +183,24 @@ def test_touch_short_fills_at_open_and_is_gapped_when_open_is_above_band():
 def test_next_open_uses_the_following_session_open():
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-30", "open": 96.0, "high": 97.0,
-             "low": 94.0, "close": 95.5, "volume": 1},
-            {"ticker": "TSM", "ts": "2026-07-31", "open": 96.5, "high": 98.0,
-             "low": 96.0, "close": 97.5, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-30",
+                "open": 96.0,
+                "high": 97.0,
+                "low": 94.0,
+                "close": 95.5,
+                "volume": 1,
+            },
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-31",
+                "open": 96.5,
+                "high": 98.0,
+                "low": 96.0,
+                "close": 97.5,
+                "volume": 1,
+            },
         ]
     )
     rows = _by_kind(resolve_entries(_candidate(), bars, None, ZERO_SLIP))
@@ -163,8 +212,15 @@ def test_next_open_uses_the_following_session_open():
 def test_next_open_is_null_on_a_terminal_bar_not_the_current_close():
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-30", "open": 96.0, "high": 97.0,
-             "low": 94.0, "close": 95.5, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-30",
+                "open": 96.0,
+                "high": 97.0,
+                "low": 94.0,
+                "close": 95.5,
+                "volume": 1,
+            },
         ]
     )
     rows = _by_kind(resolve_entries(_candidate(), bars, None, ZERO_SLIP))
@@ -178,10 +234,24 @@ def test_next_open_entry_gapped_is_not_applicable():
     # the band" has no referent — None, not a defaulted False.
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-30", "open": 96.0, "high": 97.0,
-             "low": 94.0, "close": 95.5, "volume": 1},
-            {"ticker": "TSM", "ts": "2026-07-31", "open": 96.5, "high": 98.0,
-             "low": 96.0, "close": 97.5, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-30",
+                "open": 96.0,
+                "high": 97.0,
+                "low": 94.0,
+                "close": 95.5,
+                "volume": 1,
+            },
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-31",
+                "open": 96.5,
+                "high": 98.0,
+                "low": 96.0,
+                "close": 97.5,
+                "volume": 1,
+            },
         ]
     )
     rows = _by_kind(resolve_entries(_candidate(), bars, None, ZERO_SLIP))
@@ -196,8 +266,15 @@ def test_next_open_entry_gapped_is_not_applicable():
 def test_touch_5m_and_30m_are_null_but_still_produced_when_hourly_is_none():
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-30", "open": 96.0, "high": 97.0,
-             "low": 94.0, "close": 95.5, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-30",
+                "open": 96.0,
+                "high": 97.0,
+                "low": 94.0,
+                "close": 95.5,
+                "volume": 1,
+            },
         ]
     )
     rows = _by_kind(resolve_entries(_candidate(), bars, None, ZERO_SLIP))
@@ -211,16 +288,21 @@ def test_touch_5m_and_30m_are_null_but_still_produced_when_hourly_is_none():
 def test_touch_30m_uses_the_close_of_the_first_breaching_hourly_bar_on_the_signal_day():
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-30", "open": 96.0, "high": 97.0,
-             "low": 94.0, "close": 95.5, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-30",
+                "open": 96.0,
+                "high": 97.0,
+                "low": 94.0,
+                "close": 95.5,
+                "volume": 1,
+            },
         ]
     )
     hourly = pd.DataFrame(
         {
             "ticker": ["TSM", "TSM", "TSM"],
-            "ts": pd.to_datetime(
-                ["2026-07-30 09:30", "2026-07-30 10:30", "2026-07-30 11:30"]
-            ),
+            "ts": pd.to_datetime(["2026-07-30 09:30", "2026-07-30 10:30", "2026-07-30 11:30"]),
             "open": [99.0, 96.0, 97.0],
             "high": [99.5, 96.5, 98.0],
             "low": [97.0, 94.0, 96.5],
@@ -237,8 +319,15 @@ def test_hourly_slice_is_scoped_to_the_signal_day_not_the_whole_ticker_history()
     # session entirely.
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-30", "open": 96.0, "high": 97.0,
-             "low": 94.0, "close": 95.5, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-30",
+                "open": 96.0,
+                "high": 97.0,
+                "low": 94.0,
+                "close": 95.5,
+                "volume": 1,
+            },
         ]
     )
     hourly = pd.DataFrame(
@@ -265,8 +354,15 @@ def test_hourly_slice_is_scoped_to_the_signal_day_not_the_whole_ticker_history()
 def test_slippage_raises_the_fill_price_for_a_long():
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-30", "open": 100.0, "high": 101.0,
-             "low": 94.0, "close": 95.5, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-30",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 94.0,
+                "close": 95.5,
+                "volume": 1,
+            },
         ]
     )
     plain = _by_kind(resolve_entries(_candidate(touch_level=95.0), bars, None, ZERO_SLIP))
@@ -280,8 +376,15 @@ def test_slippage_raises_the_fill_price_for_a_long():
 def test_slippage_lowers_the_fill_price_for_a_short():
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-30", "open": 100.0, "high": 106.0,
-             "low": 99.0, "close": 104.0, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-30",
+                "open": 100.0,
+                "high": 106.0,
+                "low": 99.0,
+                "close": 104.0,
+                "volume": 1,
+            },
         ]
     )
     candidate = _candidate(side="short", touch_level=105.0, signal_type="bb_upper_touch")
@@ -296,10 +399,24 @@ def test_slippage_lowers_the_fill_price_for_a_short():
 def test_slippage_applies_to_next_open_too():
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-30", "open": 96.0, "high": 97.0,
-             "low": 94.0, "close": 95.5, "volume": 1},
-            {"ticker": "TSM", "ts": "2026-07-31", "open": 96.5, "high": 98.0,
-             "low": 96.0, "close": 97.5, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-30",
+                "open": 96.0,
+                "high": 97.0,
+                "low": 94.0,
+                "close": 95.5,
+                "volume": 1,
+            },
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-31",
+                "open": 96.5,
+                "high": 98.0,
+                "low": 96.0,
+                "close": 97.5,
+                "volume": 1,
+            },
         ]
     )
     plain = _by_kind(resolve_entries(_candidate(), bars, None, ZERO_SLIP))
@@ -319,12 +436,21 @@ def test_stochastic_only_signal_with_none_touch_level_produces_nan_touch_price()
     # stochastic-only hit — this must not raise or silently coerce.
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-30", "open": 96.0, "high": 97.0,
-             "low": 94.0, "close": 95.5, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-30",
+                "open": 96.0,
+                "high": 97.0,
+                "low": 94.0,
+                "close": 95.5,
+                "volume": 1,
+            },
         ]
     )
     rows = _by_kind(
-        resolve_entries(_candidate(touch_level=None, signal_type="stoch_oversold"), bars, None, ZERO_SLIP)
+        resolve_entries(
+            _candidate(touch_level=None, signal_type="stoch_oversold"), bars, None, ZERO_SLIP
+        )
     )
     assert np.isnan(rows[EntryKind.TOUCH.value]["entry_price"])
     assert rows[EntryKind.TOUCH.value]["entry_gapped"] is None
@@ -341,8 +467,15 @@ def test_stochastic_only_signal_with_none_touch_level_produces_nan_touch_price()
 def test_raises_when_the_signal_bar_itself_is_missing():
     bars = _bars(
         [
-            {"ticker": "TSM", "ts": "2026-07-29", "open": 96.0, "high": 97.0,
-             "low": 94.0, "close": 95.5, "volume": 1},
+            {
+                "ticker": "TSM",
+                "ts": "2026-07-29",
+                "open": 96.0,
+                "high": 97.0,
+                "low": 94.0,
+                "close": 95.5,
+                "volume": 1,
+            },
         ]
     )
     with pytest.raises(ValueError):

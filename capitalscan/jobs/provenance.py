@@ -22,9 +22,7 @@ _cached_sha: str | None = None
 def _is_sha(candidate: str) -> bool:
     """A full 40-char hex commit id. Guards against a truncated read or a
     stray line in a ref file being mistaken for a SHA."""
-    return len(candidate) == 40 and all(
-        c in "0123456789abcdefABCDEF" for c in candidate
-    )
+    return len(candidate) == 40 and all(c in "0123456789abcdefABCDEF" for c in candidate)
 
 
 def _resolve_gitdir(repo_root: Path) -> Path | None:

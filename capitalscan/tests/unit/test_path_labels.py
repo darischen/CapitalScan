@@ -99,7 +99,7 @@ def test_next_open_entry_offset_shifts_the_reachability_window():
     # in [2, 3], NOT [1, 2].
     path = _path(
         [
-            (1, 0.09, -0.01, 0.0),   # entry day itself — must be excluded
+            (1, 0.09, -0.01, 0.0),  # entry day itself — must be excluded
             (2, 0.01, -0.01, 0.01),
             (3, 0.02, -0.01, 0.02),
         ]
@@ -201,9 +201,16 @@ def test_reachability_exact_target_match_counts_as_touched():
 def test_derive_labels_from_path_is_deterministic():
     path = _path([(1, 0.01, -0.005, 0.01), (2, 0.03, -0.01, 0.02)])
     kwargs = dict(
-        path=path, entry_offset=0, holding_days=2, entry_price=100.0,
-        exit_price=102.0, side=Side.LONG, max_hold_days=5,
-        targets=(0.02,), horizons=(1, 2), capture_ratio_cap=_CAPTURE_RATIO_CAP,
+        path=path,
+        entry_offset=0,
+        holding_days=2,
+        entry_price=100.0,
+        exit_price=102.0,
+        side=Side.LONG,
+        max_hold_days=5,
+        targets=(0.02,),
+        horizons=(1, 2),
+        capture_ratio_cap=_CAPTURE_RATIO_CAP,
     )
     first = derive_labels_from_path(**kwargs)
     second = derive_labels_from_path(**kwargs)
@@ -362,11 +369,13 @@ def test_giveback_verifiable_by_hand_from_path():
     # from the path rows of a sampled event, verified on at least ten events
     # covering touched, untouched, and partial-window cases."
     # Multi-day path with peak on day 2, exit on day 3.
-    path = _path([
-        (1, 0.005, -0.01, 0.002),
-        (2, 0.035, -0.02, 0.030),  # peak reaches 3.5%
-        (3, 0.028, -0.015, 0.025),  # exit day, terminal at 2.5%
-    ])
+    path = _path(
+        [
+            (1, 0.005, -0.01, 0.002),
+            (2, 0.035, -0.02, 0.030),  # peak reaches 3.5%
+            (3, 0.028, -0.015, 0.025),  # exit day, terminal at 2.5%
+        ]
+    )
     out = derive_labels_from_path(
         path=path,
         entry_offset=0,

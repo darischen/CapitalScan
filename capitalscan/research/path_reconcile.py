@@ -133,10 +133,14 @@ EXPLAINED_COLUMNS["capture_ratio"] = (
 )
 
 _REACHABILITY_COLUMNS = [
-    "touched_2pct", "day_touched_2pct",
-    "touched_3pct", "day_touched_3pct",
-    "touched_5pct", "day_touched_5pct",
-    "touched_10pct", "day_touched_10pct",
+    "touched_2pct",
+    "day_touched_2pct",
+    "touched_3pct",
+    "day_touched_3pct",
+    "touched_5pct",
+    "day_touched_5pct",
+    "touched_10pct",
+    "day_touched_10pct",
 ]
 EXPLAINED_COLUMNS.update(
     {
@@ -311,7 +315,9 @@ def _capture_ratio_tolerance(merged: pd.DataFrame) -> float | pd.Series:
     return CAPTURE_RATIO_TOLERANCE_MARGIN * _FLOAT_TOL / mfe.where(mfe > 0, np.nan)
 
 
-def diff_labels(derived: pd.DataFrame, actual: pd.DataFrame, columns: list[str]) -> dict[str, pd.DataFrame]:
+def diff_labels(
+    derived: pd.DataFrame, actual: pd.DataFrame, columns: list[str]
+) -> dict[str, pd.DataFrame]:
     """Per-column mismatch frames, keyed by column name. A column with no
     mismatches is absent from the result (never an empty-but-present key,
     so `bool(mismatches)` reads as "any differences at all").
@@ -336,7 +342,11 @@ def diff_labels(derived: pd.DataFrame, actual: pd.DataFrame, columns: list[str])
             d_float, a_float = d_vals.astype(float), a_vals.astype(float)
             diff = (d_float - a_float).abs()
             if col in RELATIVE_TOLERANCE_COLUMNS:
-                rel_tol = _capture_ratio_tolerance(merged) if col == "capture_ratio" else RELATIVE_TOLERANCE_COLUMNS[col]
+                rel_tol = (
+                    _capture_ratio_tolerance(merged)
+                    if col == "capture_ratio"
+                    else RELATIVE_TOLERANCE_COLUMNS[col]
+                )
                 # Relative to the actual (Session 9's stored) value — the
                 # reference the derived value is being checked against.
                 # Denominator zeros are guarded explicitly (rather than
@@ -591,7 +601,9 @@ def assert_backfill_covers_resolved_events(engine: Engine, config_hash: str) -> 
         )
 
 
-def reconcile(engine: Engine, config: Config, config_hash: str, today: date | None = None) -> ReconciliationReport:
+def reconcile(
+    engine: Engine, config: Config, config_hash: str, today: date | None = None
+) -> ReconciliationReport:
     """Filters by `config_hash`, not `run_id` — see `derive_session9_labels`'s
     docstring for why `run_id` cannot reliably select a durable row set
     once any later run reuses the same config.

@@ -18,6 +18,8 @@ criterion.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
 from sqlalchemy import Engine, text
 
@@ -102,7 +104,9 @@ def derive_labels_from_path(
         else:
             out["mfe"] = float(held["favorable"].max())
             out["mae"] = float(held["adverse"].min())
-            peak_offset = held["favorable"].idxmax()
+            # `by_offset` is indexed by integer day offset, so `idxmax`
+            # returns one of those offsets.
+            peak_offset = int(held["favorable"].idxmax())
             out["time_to_mfe"] = int(peak_offset - entry_offset)
 
             r_exit = realized_return(entry_price, exit_price, side)
@@ -139,7 +143,8 @@ def derive_labels_from_path(
                 giveback = out["mfe"] - r_exit
                 if giveback < -_GIVEBACK_ROUNDING_TOL:
                     raise AssertionError(
-                        f"giveback must be non-negative; got {giveback} (mfe={out['mfe']}, r_exit={r_exit})"
+                        f"giveback must be non-negative; got {giveback} "
+                        f"(mfe={out['mfe']}, r_exit={r_exit})"
                     )
                 out["giveback"] = float(max(giveback, 0.0))
             else:
@@ -214,14 +219,14 @@ def derive_session9_labels(engine: Engine, config: Config, config_hash: str) -> 
         )
         if events.empty:
             return events.assign(**{})
-        event_ids = events["event_id"].tolist()
+        path_params: dict[str, Any] = {"ids": events["event_id"].tolist()}
         path = pd.read_sql(
             text(
                 "SELECT event_id, day_offset, favorable, adverse, terminal "
                 "FROM path WHERE event_id = ANY(:ids)"
             ),
             conn,
-            params={"ids": event_ids},
+            params=path_params,
         )
 
     max_hold_days = config.exits.max_hold_days

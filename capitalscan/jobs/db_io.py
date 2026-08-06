@@ -17,7 +17,7 @@ import math
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import Engine, MetaData, Table, create_engine, event
+from sqlalchemy import Engine, MetaData, Table, create_engine
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.pool import NullPool, QueuePool
 
@@ -43,13 +43,13 @@ def get_engine(url: str | None = None, use_null_pool: bool = False) -> Engine:
 
         url = os.environ["DATABASE_URL_RESEARCH"]
 
-    engine_kwargs = {}
+    engine_kwargs: dict[str, Any] = {}
     if use_null_pool:
-        engine_kwargs['poolclass'] = NullPool
+        engine_kwargs["poolclass"] = NullPool
     else:
-        engine_kwargs['poolclass'] = QueuePool
-        engine_kwargs['pool_size'] = 10
-        engine_kwargs['max_overflow'] = 20
+        engine_kwargs["poolclass"] = QueuePool
+        engine_kwargs["pool_size"] = 10
+        engine_kwargs["max_overflow"] = 20
 
     return create_engine(_psycopg3_url(url), **engine_kwargs)
 

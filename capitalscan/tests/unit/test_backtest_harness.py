@@ -228,9 +228,7 @@ class TestEntrySanityHourlyReferenceFrame:
         }
 
     def _pgr_daily(self) -> dict[str, pd.DataFrame]:
-        return {
-            "PGR": _daily_bars("PGR", {date(2025, 2, 25): (277.64, 279.93, 274.39, 278.52)})
-        }
+        return {"PGR": _daily_bars("PGR", {date(2025, 2, 25): (277.64, 279.93, 274.39, 278.52)})}
 
     def _pgr_event(self, **overrides) -> pd.DataFrame:
         row = _event_row(
@@ -443,9 +441,7 @@ class TestReturnIdentity:
         the position even resolved is exactly the case a naive NaN-tolerant
         comparison would hide."""
         bars = {"TSM": _daily_bars("TSM", {date(2026, 1, 8): (96.0, 97.0, 94.0, 96.5)})}
-        events = _events(
-            [_event_row(entry_price=float("nan"), entry_date=None, gross_ret=0.04)]
-        )
+        events = _events([_event_row(entry_price=float("nan"), entry_date=None, gross_ret=0.04)])
 
         report = run_harness(events, bars, CONFIG)
 
@@ -464,7 +460,6 @@ class TestReturnIdentity:
         unsatisfiable here even though nothing is wrong with the data —
         this is real rounding noise from the schema's own storage
         precision, not an engine defect."""
-        from capitalscan.core.returns import realized_return
 
         entry_price, exit_price = 6.8817, 7.1569
         events = _events(
@@ -515,9 +510,7 @@ class TestReturnIdentity:
 
 class TestNonOverlap:
     def test_passes_when_cluster_heads_are_further_apart_than_max_hold_days(self):
-        trading_days = {
-            date(2026, 1, d): (100.0, 101.0, 99.0, 100.5) for d in range(5, 26)
-        }
+        trading_days = {date(2026, 1, d): (100.0, 101.0, 99.0, 100.5) for d in range(5, 26)}
         bars = {"TSM": _daily_bars("TSM", trading_days)}
         events = _events(
             [
@@ -536,9 +529,7 @@ class TestNonOverlap:
         `ExitParams().max_hold_days == 5` — a tagger bug (or a caller that
         marked both heads by hand) that `tag_clusters` itself would never
         produce."""
-        trading_days = {
-            date(2026, 1, d): (100.0, 101.0, 99.0, 100.5) for d in range(5, 12)
-        }
+        trading_days = {date(2026, 1, d): (100.0, 101.0, 99.0, 100.5) for d in range(5, 12)}
         bars = {"TSM": _daily_bars("TSM", trading_days)}
         events = _events(
             [
@@ -557,9 +548,7 @@ class TestNonOverlap:
     def test_non_head_rows_are_ignored(self):
         """A cluster's non-head member overlapping the head is expected
         (that is what a cluster *is*) and must not be flagged."""
-        trading_days = {
-            date(2026, 1, d): (100.0, 101.0, 99.0, 100.5) for d in range(5, 12)
-        }
+        trading_days = {date(2026, 1, d): (100.0, 101.0, 99.0, 100.5) for d in range(5, 12)}
         bars = {"TSM": _daily_bars("TSM", trading_days)}
         events = _events(
             [
@@ -586,9 +575,7 @@ class TestNonOverlap:
         that is normal mega-cap behavior the tagger itself produces, not a
         defect, and grouping this check by ticker alone (the pre-fix
         version) incorrectly flagged it."""
-        trading_days = {
-            date(2026, 1, d): (100.0, 101.0, 99.0, 100.5) for d in range(5, 12)
-        }
+        trading_days = {date(2026, 1, d): (100.0, 101.0, 99.0, 100.5) for d in range(5, 12)}
         bars = {"TSM": _daily_bars("TSM", trading_days)}
         events = _events(
             [
@@ -617,9 +604,7 @@ class TestNonOverlap:
         `test_catches_two_cluster_heads_whose_windows_overlap` already
         covers — restated here explicitly on `side="long"` to make the fix
         direction unambiguous."""
-        trading_days = {
-            date(2026, 1, d): (100.0, 101.0, 99.0, 100.5) for d in range(5, 12)
-        }
+        trading_days = {date(2026, 1, d): (100.0, 101.0, 99.0, 100.5) for d in range(5, 12)}
         bars = {"TSM": _daily_bars("TSM", trading_days)}
         events = _events(
             [
@@ -661,9 +646,7 @@ class TestNonOverlap:
         bars later — well inside `max_hold_days=5` — must still be caught,
         proving the dedupe does not also swallow real cross-cluster
         overlaps."""
-        trading_days = {
-            date(2026, 1, d): (100.0, 101.0, 99.0, 100.5) for d in range(5, 12)
-        }
+        trading_days = {date(2026, 1, d): (100.0, 101.0, 99.0, 100.5) for d in range(5, 12)}
         bars = {"TSM": _daily_bars("TSM", trading_days)}
         head_one_kinds = [
             _event_row(
@@ -766,11 +749,11 @@ def _synthetic_bars_with_bands(
     for i in range(n_tickers):
         ticker = f"SYN{i}"
         price = 100.0
-        closes = []
+        closes_list: list[float] = []
         for _ in range(n_days):
             price = price + theta * (100.0 - price) + sigma * rng.normal()
-            closes.append(price)
-        closes = np.array(closes)
+            closes_list.append(price)
+        closes = np.array(closes_list)
         opens = closes + rng.normal(0, sigma * 0.3, n_days)
         extra = np.abs(rng.normal(0, intraday_vol, n_days)) * closes
         highs = np.maximum(opens, closes) + extra

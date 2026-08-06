@@ -130,7 +130,9 @@ def test_path_reconcile_cmd_routes_through_resolve_config_or_exit(monkeypatch):
 
     def fake_reconcile(engine, config, config_hash):
         seen["config"] = config
-        return ReconciliationReport(config_hash=config_hash, total_events=5, mismatches={}, explained={})
+        return ReconciliationReport(
+            config_hash=config_hash, total_events=5, mismatches={}, explained={}
+        )
 
     monkeypatch.setattr(cli, "_resolve_config_or_exit", fake_resolve)
     monkeypatch.setattr(path_reconcile_mod, "reconcile", fake_reconcile)
@@ -157,13 +159,18 @@ def test_path_reconcile_cmd_raises_typer_exit_1_on_fail(monkeypatch):
     # Finding #6: every other failure path in cli.py raises
     # `typer.Exit(code=1)` — a FAIL print with exit code 0 would look
     # clean to any script/CI that only checks the return code.
-    mismatch_frame = pd.DataFrame({"event_id": [1, 2], "mfe_derived": [0.1, 0.2], "mfe_actual": [0.9, 0.9]})
+    mismatch_frame = pd.DataFrame(
+        {"event_id": [1, 2], "mfe_derived": [0.1, 0.2], "mfe_actual": [0.9, 0.9]}
+    )
     monkeypatch.setattr(cli, "_resolve_config_or_exit", lambda cli_overrides=None: Config())
     monkeypatch.setattr(
         path_reconcile_mod,
         "reconcile",
         lambda engine, config, config_hash: ReconciliationReport(
-            config_hash=config_hash, total_events=3, mismatches={"mfe": mismatch_frame}, explained={}
+            config_hash=config_hash,
+            total_events=3,
+            mismatches={"mfe": mismatch_frame},
+            explained={},
         ),
     )
     with pytest.raises(typer.Exit) as exc_info:
@@ -182,7 +189,10 @@ def test_path_reconcile_cmd_prints_sample_event_ids(monkeypatch, capsys):
         path_reconcile_mod,
         "reconcile",
         lambda engine, config, config_hash: ReconciliationReport(
-            config_hash=config_hash, total_events=3, mismatches={"mfe": mismatch_frame}, explained={}
+            config_hash=config_hash,
+            total_events=3,
+            mismatches={"mfe": mismatch_frame},
+            explained={},
         ),
     )
     with pytest.raises(typer.Exit):

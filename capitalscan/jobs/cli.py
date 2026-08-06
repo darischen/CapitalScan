@@ -2,7 +2,7 @@
 
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 from rich.console import Console
@@ -398,15 +398,15 @@ def _load_bars_by_ticker(engine, tickers: list[str], config) -> dict:
     than included with an empty frame — `research.harness._indexed_bars`
     already drops empty frames, so this just avoids the pointless read.
     """
-    from sqlalchemy import text
-
     import pandas as pd
+    from sqlalchemy import text
 
     start = date.fromisoformat(config.splits.ingest_start)
     indicator_cols_sql = ", ".join(_BACKTEST_INDICATOR_COLUMNS)
     out: dict = {}
     with engine.connect() as conn:
         for ticker in tickers:
+            read_params: dict[str, Any] = {"ticker": ticker, "start": start}
             bars = pd.read_sql(
                 text(
                     "SELECT ticker, ts, open, high, low, close, adj_close, volume "
@@ -414,7 +414,7 @@ def _load_bars_by_ticker(engine, tickers: list[str], config) -> dict:
                     "ORDER BY ts"
                 ),
                 conn,
-                params={"ticker": ticker, "start": start},
+                params=read_params,
             )
             if bars.empty:
                 continue
@@ -426,7 +426,7 @@ def _load_bars_by_ticker(engine, tickers: list[str], config) -> dict:
                     "WHERE ticker = :ticker AND interval = '1d' AND ts >= :start ORDER BY ts"
                 ),
                 conn,
-                params={"ticker": ticker, "start": start},
+                params=read_params,
             )
             if indicators.empty:
                 out[ticker] = bars
@@ -458,14 +458,14 @@ def _load_hourly_by_ticker(engine, tickers: list[str], config) -> dict:
     ticker in `hourly_by_ticker` as "cannot validate this row," not a
     silent pass.
     """
-    from sqlalchemy import text
-
     import pandas as pd
+    from sqlalchemy import text
 
     start = date.fromisoformat(config.splits.ingest_start)
     out: dict = {}
     with engine.connect() as conn:
         for ticker in tickers:
+            read_params: dict[str, Any] = {"ticker": ticker, "start": start}
             hourly = pd.read_sql(
                 text(
                     "SELECT ticker, ts, open, high, low, close, adj_close, volume "
@@ -473,7 +473,7 @@ def _load_hourly_by_ticker(engine, tickers: list[str], config) -> dict:
                     "ORDER BY ts"
                 ),
                 conn,
-                params={"ticker": ticker, "start": start},
+                params=read_params,
             )
             if hourly.empty:
                 continue
@@ -490,9 +490,8 @@ def _load_events_for_run(engine, run_id: str):
     signal_date, signal_type, entry_kind)` keys, but only the most recent
     write carries this run's `run_id`).
     """
-    from sqlalchemy import text
-
     import pandas as pd
+    from sqlalchemy import text
 
     with engine.connect() as conn:
         return pd.read_sql(
@@ -652,8 +651,7 @@ def backtest(
                             sample = ", ".join(failed[:10])
                             more = "" if len(failed) <= 10 else f", +{len(failed) - 10} more"
                             report.notes = (
-                                f"{len(failed)}/{len(resolved)} ticker(s) failed: "
-                                f"{sample}{more}"
+                                f"{len(failed)}/{len(resolved)} ticker(s) failed: {sample}{more}"
                             )
                 except BacktestRunFailed as exc:
                     console.print(
@@ -707,9 +705,7 @@ def backtest(
                 failed = sorted(bt_report.failed_tickers)
                 sample = ", ".join(failed[:10])
                 more = "" if len(failed) <= 10 else f", +{len(failed) - 10} more"
-                report.notes = (
-                    f"{len(failed)}/{len(resolved)} ticker(s) failed: {sample}{more}"
-                )
+                report.notes = f"{len(failed)}/{len(resolved)} ticker(s) failed: {sample}{more}"
     except BacktestRunFailed as exc:
         console.print(
             "[red]error[/red]: backtest run failed — every dispatched ticker's "
@@ -727,7 +723,9 @@ def backtest(
     exit_code = 0
     if bt_report.failed_tickers:
         exit_code = 1
-        console.print(f"[red]{len(bt_report.failed_tickers)} ticker(s) failed[/red]: {report.notes}")
+        console.print(
+            f"[red]{len(bt_report.failed_tickers)} ticker(s) failed[/red]: {report.notes}"
+        )
 
     if bt_report.tickers:
         bars_by_ticker = _load_bars_by_ticker(engine, bt_report.tickers, config)
@@ -807,7 +805,9 @@ def scan(
     start: Optional[str] = typer.Option(None, help="Start date (YYYY-MM-DD)"),
     end: Optional[str] = typer.Option(None, help="End date (YYYY-MM-DD)"),
     date_: Optional[str] = typer.Option(None, "--date", help="Specific date (YYYY-MM-DD)"),
-    confluence_only: bool = typer.Option(False, help="Show only confluence signals (both Bollinger and stochastic agree)"),
+    confluence_only: bool = typer.Option(
+        False, help="Show only confluence signals (both Bollinger and stochastic agree)"
+    ),
 ) -> None:
     """Query detected events (ADR 049)."""
     from datetime import date as date_cls
@@ -1026,9 +1026,9 @@ def path_backfill_cmd(
     )
     if report.events_skipped_no_signal_bar:
         console.print(
-            f"[yellow]{report.events_skipped_no_signal_bar} event(s) skipped: no `1d` bar yet for their "
-            "signal_date (likely today's live events, before the EOD bars job has run). Rerun this "
-            "command after bars catch up.[/yellow]"
+            f"[yellow]{report.events_skipped_no_signal_bar} event(s) skipped: no `1d` bar "
+            "yet for their signal_date (likely today's live events, before the EOD bars "
+            "job has run). Rerun this command after bars catch up.[/yellow]"
         )
 
 
@@ -1058,16 +1058,18 @@ def path_capture_cmd(
     )
     if report.events_skipped_no_signal_bar:
         console.print(
-            f"[yellow]{report.events_skipped_no_signal_bar} event(s) skipped: no `1d` bar yet for their "
-            "signal_date (likely today's live events, before the EOD bars job has run). Rerun this "
-            "command after bars catch up.[/yellow]"
+            f"[yellow]{report.events_skipped_no_signal_bar} event(s) skipped: no `1d` bar "
+            "yet for their signal_date (likely today's live events, before the EOD bars "
+            "job has run). Rerun this command after bars catch up.[/yellow]"
         )
 
 
 @path_app.command("reconcile")
 def path_reconcile_cmd(
     config_hash: str = typer.Option(
-        ..., "--config-hash", help="events.config_hash to reconcile against (not run_id: see reconcile()'s docstring)"
+        ...,
+        "--config-hash",
+        help="events.config_hash to reconcile against (not run_id: see reconcile()'s docstring)",
     ),
 ) -> None:
     """Task 10.4: diff path-derived labels against Session 9's stored labels."""
@@ -1083,14 +1085,18 @@ def path_reconcile_cmd(
         sample_ids = list(frame["event_id"].head(5))
         excluded_note = ""
         if col in report.recent_events_excluded:
-            excluded_note = f" ({report.recent_events_excluded[col]} more excluded: recent, bars still settling)"
+            excluded_note = (
+                f" ({report.recent_events_excluded[col]} more excluded: "
+                "recent, bars still settling)"
+            )
         if col in report.incomplete_window_excluded:
             excluded_note += (
                 f" ({report.incomplete_window_excluded[col]} more excluded: "
                 "forward window still accumulating)"
             )
         console.print(
-            f"  {col}: {len(frame)} mismatches {tag} (sample event_ids: {sample_ids}){excluded_note}"
+            f"  {col}: {len(frame)} mismatches {tag} "
+            f"(sample event_ids: {sample_ids}){excluded_note}"
         )
     # A column whose mismatches were *entirely* excluded is absent from
     # `report.mismatches` (the filters never leave an empty-but-present
@@ -1214,7 +1220,9 @@ def nightly() -> None:
     ingest.run_market(lookback_days=5, engine=engine)
     ingest.run_shares(tickers, engine=engine)
     ingest.run_earnings(tickers, historical=False, forward_days=90, engine=engine)
-    compute.run_indicators(tickers, start, end, params=config.indicators, max_workers=1, engine=engine)
+    compute.run_indicators(
+        tickers, start, end, params=config.indicators, max_workers=1, engine=engine
+    )
     compute.run_events(tickers, start, end, config=config, engine=engine)
     # Task 10.6: must run after run_events — a signal fired tonight needs
     # its events row to exist before it can be selected as an

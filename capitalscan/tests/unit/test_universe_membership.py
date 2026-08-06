@@ -326,9 +326,7 @@ class TestRelReturnMemoization:
         """Omitting `as_of` from the key would serve a stale historical
         answer to a different quarter -- the exact bug the task warns about.
         """
-        rows = {
-            "AAPL": [(date(2026, 6, 30) - timedelta(days=i), 100.0 + i) for i in range(760)]
-        }
+        rows = {"AAPL": [(date(2026, 6, 30) - timedelta(days=i), 100.0 + i) for i in range(760)]}
         engine, calls = self._engine_with_counter(rows)
         cache: dict = {}
 

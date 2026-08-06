@@ -347,7 +347,9 @@ from capitalscan.jobs import db_io
 from capitalscan.jobs.progress import track
 
 
-def fwd_window_for_signal(ticker_bars: pd.DataFrame, signal_date: date, window_days: int) -> pd.DataFrame:
+def fwd_window_for_signal(
+    ticker_bars: pd.DataFrame, signal_date: date, window_days: int
+) -> pd.DataFrame:
     """The up-to-`window_days` trading-day slice strictly after `signal_date`.
 
     `ticker_bars` must be indexed by `pd.Timestamp` (one row per trading
@@ -382,7 +384,9 @@ def rows_for_event(
     count (1-`window_days`) as the completeness flag.
     """
     if pd.isna(entry_price):
-        return pd.DataFrame(columns=["event_id", "day_offset", "favorable", "adverse", "terminal"]), None
+        return pd.DataFrame(
+            columns=["event_id", "day_offset", "favorable", "adverse", "terminal"]
+        ), None
 
     fwd_bars = fwd_window_for_signal(ticker_bars, signal_date, window_days)
     path = path_for_event(entry_price=entry_price, side=side, fwd_bars=fwd_bars)
@@ -418,7 +422,9 @@ def run_path_backfill(engine: Engine, config: Config, quiet: bool = False) -> Pa
         tickers = [
             r[0]
             for r in conn.execute(
-                text("SELECT DISTINCT ticker FROM events WHERE entry_price IS NOT NULL ORDER BY ticker")
+                text(
+                    "SELECT DISTINCT ticker FROM events WHERE entry_price IS NOT NULL ORDER BY ticker"
+                )
             )
         ]
 
@@ -671,7 +677,7 @@ def test_next_open_entry_offset_shifts_the_reachability_window():
     # in [2, 3], NOT [1, 2].
     path = _path(
         [
-            (1, 0.09, -0.01, 0.0),   # entry day itself — must be excluded
+            (1, 0.09, -0.01, 0.0),  # entry day itself — must be excluded
             (2, 0.01, -0.01, 0.01),
             (3, 0.02, -0.01, 0.02),
         ]
@@ -912,9 +918,15 @@ Expected: PASS, all 6 tests.
 def test_derive_labels_from_path_is_deterministic():
     path = _path([(1, 0.01, -0.005, 0.01), (2, 0.03, -0.01, 0.02)])
     kwargs = dict(
-        path=path, entry_offset=0, holding_days=2, entry_price=100.0,
-        exit_price=102.0, side=Side.LONG, max_hold_days=5,
-        targets=(0.02,), horizons=(1, 2),
+        path=path,
+        entry_offset=0,
+        holding_days=2,
+        entry_price=100.0,
+        exit_price=102.0,
+        side=Side.LONG,
+        max_hold_days=5,
+        targets=(0.02,),
+        horizons=(1, 2),
     )
     first = derive_labels_from_path(**kwargs)
     second = derive_labels_from_path(**kwargs)
@@ -1068,7 +1080,9 @@ EXPLAINED_COLUMNS = {
 _FLOAT_TOL = 1e-9
 
 
-def diff_labels(derived: pd.DataFrame, actual: pd.DataFrame, columns: list[str]) -> dict[str, pd.DataFrame]:
+def diff_labels(
+    derived: pd.DataFrame, actual: pd.DataFrame, columns: list[str]
+) -> dict[str, pd.DataFrame]:
     """Per-column mismatch frames, keyed by column name. A column with no
     mismatches is absent from the result (never an empty-but-present key,
     so `bool(mismatches)` reads as "any differences at all").

@@ -260,8 +260,12 @@ def test_touch_5m_long_fill_stays_inside_the_hourly_bar_on_a_gap():
         {"open": [90.0], "high": [93.0], "low": [88.0], "close": [92.0]}, index=idx
     )
     price = ret.entry_price_for(
-        EntryKind.TOUCH_5M, bar=_bar(low=88.0), next_bar=None, touch_level=95.0,
-        side=Side.LONG, hourly=hourly,
+        EntryKind.TOUCH_5M,
+        bar=_bar(low=88.0),
+        next_bar=None,
+        touch_level=95.0,
+        side=Side.LONG,
+        hourly=hourly,
     )
     assert 88.0 <= price <= 93.0
     assert price == pytest.approx(90.0 + (92.0 - 90.0) * 5 / 60)
@@ -276,8 +280,12 @@ def test_touch_5m_short_fill_stays_inside_the_hourly_bar_on_a_gap():
         {"open": [110.0], "high": [112.0], "low": [108.0], "close": [109.0]}, index=idx
     )
     price = ret.entry_price_for(
-        EntryKind.TOUCH_5M, bar=_bar(high=112.0), next_bar=None, touch_level=105.0,
-        side=Side.SHORT, hourly=hourly,
+        EntryKind.TOUCH_5M,
+        bar=_bar(high=112.0),
+        next_bar=None,
+        touch_level=105.0,
+        side=Side.SHORT,
+        hourly=hourly,
     )
     assert 108.0 <= price <= 112.0
     assert price == pytest.approx(110.0 + (109.0 - 110.0) * 5 / 60)
@@ -292,8 +300,12 @@ def test_touch_5m_short_still_interpolates_from_the_band_on_a_genuine_straddle()
         {"open": [100.0], "high": [103.0], "low": [99.0], "close": [101.0]}, index=idx
     )
     price = ret.entry_price_for(
-        EntryKind.TOUCH_5M, bar=_bar(high=103.0), next_bar=None, touch_level=102.0,
-        side=Side.SHORT, hourly=hourly,
+        EntryKind.TOUCH_5M,
+        bar=_bar(high=103.0),
+        next_bar=None,
+        touch_level=102.0,
+        side=Side.SHORT,
+        hourly=hourly,
     )
     assert price == pytest.approx(102.0 + (101.0 - 102.0) * 5 / 60)
 

@@ -113,7 +113,11 @@ def test_drop_unstable_capture_ratio_rows_removes_near_zero_mfe_events():
     # not a computation defect. Must be dropped, not flagged.
     mismatches = {
         "capture_ratio": pd.DataFrame(
-            {"event_id": [1, 2], "capture_ratio_derived": [-6880.28, 0.6], "capture_ratio_actual": [-11758.23, 0.5]}
+            {
+                "event_id": [1, 2],
+                "capture_ratio_derived": [-6880.28, 0.6],
+                "capture_ratio_actual": [-11758.23, 0.5],
+            }
         )
     }
     actual = pd.DataFrame({"event_id": [1, 2], "mfe": [0.00001, 0.02]})
@@ -124,7 +128,11 @@ def test_drop_unstable_capture_ratio_rows_removes_near_zero_mfe_events():
 def test_drop_unstable_capture_ratio_rows_drops_the_column_entirely_when_all_unstable():
     mismatches = {
         "capture_ratio": pd.DataFrame(
-            {"event_id": [1], "capture_ratio_derived": [-6880.28], "capture_ratio_actual": [-11758.23]}
+            {
+                "event_id": [1],
+                "capture_ratio_derived": [-6880.28],
+                "capture_ratio_actual": [-11758.23],
+            }
         )
     }
     actual = pd.DataFrame({"event_id": [1], "mfe": [0.00001]})
@@ -135,10 +143,16 @@ def test_drop_unstable_capture_ratio_rows_drops_the_column_entirely_when_all_uns
 def test_drop_unstable_capture_ratio_rows_boundary_at_the_floor():
     mismatches = {
         "capture_ratio": pd.DataFrame(
-            {"event_id": [1, 2], "capture_ratio_derived": [1.0, 1.0], "capture_ratio_actual": [0.9, 0.9]}
+            {
+                "event_id": [1, 2],
+                "capture_ratio_derived": [1.0, 1.0],
+                "capture_ratio_actual": [0.9, 0.9],
+            }
         )
     }
-    actual = pd.DataFrame({"event_id": [1, 2], "mfe": [CAPTURE_RATIO_MFE_FLOOR, CAPTURE_RATIO_MFE_FLOOR / 2]})
+    actual = pd.DataFrame(
+        {"event_id": [1, 2], "mfe": [CAPTURE_RATIO_MFE_FLOOR, CAPTURE_RATIO_MFE_FLOOR / 2]}
+    )
     out = _drop_unstable_capture_ratio_rows(mismatches, actual)
     assert list(out["capture_ratio"]["event_id"]) == [1]  # exactly at the floor is kept (>=)
 
@@ -185,7 +199,9 @@ def test_drop_recent_events_excludes_rows_within_the_window():
     # of "today", showing a uniform ~3e-4 mfe diff traced to a bars-refresh
     # job re-ingesting recent daily data after the path backfill ran.
     mismatches = {
-        "mfe": pd.DataFrame({"event_id": [1, 2], "mfe_derived": [0.05, 0.06], "mfe_actual": [0.04, 0.05]})
+        "mfe": pd.DataFrame(
+            {"event_id": [1, 2], "mfe_derived": [0.05, 0.06], "mfe_actual": [0.04, 0.05]}
+        )
     }
     today = date(2026, 8, 3)
     signal_dates = pd.Series(
@@ -197,7 +213,9 @@ def test_drop_recent_events_excludes_rows_within_the_window():
 
 
 def test_drop_recent_events_drops_the_column_entirely_when_all_recent():
-    mismatches = {"mfe": pd.DataFrame({"event_id": [1], "mfe_derived": [0.05], "mfe_actual": [0.04]})}
+    mismatches = {
+        "mfe": pd.DataFrame({"event_id": [1], "mfe_derived": [0.05], "mfe_actual": [0.04]})
+    }
     today = date(2026, 8, 3)
     signal_dates = pd.Series({1: pd.Timestamp("2026-07-29")})
     out, dropped = _drop_recent_events(mismatches, ["mfe"], signal_dates, today)
@@ -209,12 +227,16 @@ def test_drop_recent_events_boundary_at_the_window_edge():
     today = date(2026, 8, 3)
     cutoff = today - pd.Timedelta(days=RECENT_BARS_REVISION_DAYS)
     mismatches = {
-        "mfe": pd.DataFrame({"event_id": [1, 2], "mfe_derived": [0.05, 0.05], "mfe_actual": [0.04, 0.04]})
+        "mfe": pd.DataFrame(
+            {"event_id": [1, 2], "mfe_derived": [0.05, 0.05], "mfe_actual": [0.04, 0.04]}
+        )
     }
     # event 1: exactly at the cutoff date (excluded, `<` not `<=` — the
     # window is inclusive of "window_days ago"); event 2: one day older
     # (included).
-    signal_dates = pd.Series({1: pd.Timestamp(cutoff), 2: pd.Timestamp(cutoff) - pd.Timedelta(days=1)})
+    signal_dates = pd.Series(
+        {1: pd.Timestamp(cutoff), 2: pd.Timestamp(cutoff) - pd.Timedelta(days=1)}
+    )
     out, dropped = _drop_recent_events(mismatches, ["mfe"], signal_dates, today)
     assert list(out["mfe"]["event_id"]) == [2]
 
@@ -276,7 +298,9 @@ def test_reconcile_raises_on_zero_events_instead_of_a_vacuous_pass(monkeypatch):
     # silently relabeled every row's run_id — see derive_session9_labels'
     # docstring). A 0-event comparison must never read as a real pass.
     monkeypatch.setattr(
-        path_reconcile_mod, "derive_session9_labels", lambda engine, config, config_hash: pd.DataFrame()
+        path_reconcile_mod,
+        "derive_session9_labels",
+        lambda engine, config, config_hash: pd.DataFrame(),
     )
 
     def fake_read_sql(stmt, conn, params=None):
@@ -297,10 +321,14 @@ def test_reachability_columns_are_explained_as_a_structural_boundary_difference(
     # 10.3's scope, so it's explained like fwd_ret_*d, not silently
     # dropped.
     for col in [
-        "touched_2pct", "day_touched_2pct",
-        "touched_3pct", "day_touched_3pct",
-        "touched_5pct", "day_touched_5pct",
-        "touched_10pct", "day_touched_10pct",
+        "touched_2pct",
+        "day_touched_2pct",
+        "touched_3pct",
+        "day_touched_3pct",
+        "touched_5pct",
+        "day_touched_5pct",
+        "touched_10pct",
+        "day_touched_10pct",
     ]:
         assert col in EXPLAINED_COLUMNS
 

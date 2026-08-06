@@ -168,10 +168,17 @@ class TestTagClusters:
         )
 
     def test_empty_candidates_returns_empty_frame_with_new_columns(self):
-        candidates = pd.DataFrame(columns=[
-            "ticker", "signal_date", "signal_type", "signal_types_all",
-            "signal_strength", "side", "touch_level",
-        ])
+        candidates = pd.DataFrame(
+            columns=[
+                "ticker",
+                "signal_date",
+                "signal_type",
+                "signal_types_all",
+                "signal_strength",
+                "side",
+                "touch_level",
+            ]
+        )
 
         out = tag_clusters(candidates, max_hold_days=5, trading_dates={})
 
@@ -182,9 +189,7 @@ class TestTagClusters:
         assert "days_since_head" in out.columns
 
     def test_does_not_mutate_the_input_frame(self):
-        candidates = pd.DataFrame(
-            [_candidate_row(signal_date=date(2026, 7, 27))]
-        )
+        candidates = pd.DataFrame([_candidate_row(signal_date=date(2026, 7, 27))])
         trading_dates = {"TSM": [date(2026, 7, 27)]}
         original_columns = list(candidates.columns)
 
@@ -216,9 +221,7 @@ class TestTagClustersRaisesOnInputMismatch:
             tag_clusters(candidates, max_hold_days=5, trading_dates=trading_dates)
 
     def test_a_ticker_with_an_empty_trading_dates_list_raises(self):
-        candidates = pd.DataFrame(
-            [_candidate_row(ticker="TSM", signal_date=date(2026, 7, 1))]
-        )
+        candidates = pd.DataFrame([_candidate_row(ticker="TSM", signal_date=date(2026, 7, 1))])
         trading_dates = {"TSM": []}
 
         with pytest.raises(ValueError, match="TSM"):
@@ -228,9 +231,7 @@ class TestTagClustersRaisesOnInputMismatch:
         """The ticker has an entry, but it does not cover the candidate's
         own signal_date — a partial mismatch, same failure class as a
         wholly missing ticker."""
-        candidates = pd.DataFrame(
-            [_candidate_row(ticker="TSM", signal_date=date(2026, 7, 4))]
-        )
+        candidates = pd.DataFrame([_candidate_row(ticker="TSM", signal_date=date(2026, 7, 4))])
         # TSM traded on the 1st and the 8th in this fixture, never the 4th.
         trading_dates = {"TSM": [date(2026, 7, 1), date(2026, 7, 8)]}
 

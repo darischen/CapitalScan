@@ -30,7 +30,6 @@ dropped from the row dict again — a `None` fixture value can't distinguish
 
 from __future__ import annotations
 
-import warnings
 from datetime import date
 
 import pandas as pd
@@ -251,7 +250,9 @@ class TestBacktestOneTickerStateAtSignal:
             left, right = touch[col], next_open[col]
             if pd.isna(left) and pd.isna(right):
                 continue
-            assert left == right, f"{col} differs between touch and next_open: {left!r} vs {right!r}"
+            assert left == right, (
+                f"{col} differs between touch and next_open: {left!r} vs {right!r}"
+            )
 
     def test_touch_5m_and_touch_30m_also_carry_the_state_despite_a_null_entry_price(
         self, stub_reads
@@ -410,7 +411,11 @@ class TestRunBacktestDispatchAndWrite:
 
         written = captured["data"]
         assert list(written["ticker"]) == ["AAA", "AAA", "ZZZ"]
-        assert list(written["signal_date"]) == [date(2026, 1, 5), date(2026, 1, 7), date(2026, 1, 6)]
+        assert list(written["signal_date"]) == [
+            date(2026, 1, 5),
+            date(2026, 1, 7),
+            date(2026, 1, 6),
+        ]
 
     def test_sort_key_includes_signal_type_so_same_day_long_and_short_signals_are_deterministic(
         self, monkeypatch
@@ -460,7 +465,9 @@ class TestRunBacktestDispatchAndWrite:
         written = captured["data"]
         assert list(written["signal_type"]) == ["bb_lower_touch", "stoch_overbought"]
 
-    def test_entry_kind_is_sorted_alphabetically_not_declaration_order(self, stub_reads, monkeypatch):
+    def test_entry_kind_is_sorted_alphabetically_not_declaration_order(
+        self, stub_reads, monkeypatch
+    ):
         """The real worker emits entry kinds in `EntryKind` declaration
         order (touch, touch_5m, touch_30m, next_open — `test_produces_one_
         row_per_entry_kind` proves this). `run_backtest` must reorder them
@@ -516,10 +523,9 @@ class TestRunBacktestFullUniverseCofire:
         monkeypatch.setattr(
             backtest.db_io,
             "upsert",
-            lambda engine, table_name, data, conflict_cols, update_columns=None: captured.update(
-                update_columns=update_columns
-            )
-            or len(data),
+            lambda engine, table_name, data, conflict_cols, update_columns=None: (
+                captured.update(update_columns=update_columns) or len(data)
+            ),
         )
 
         backtest.run_backtest(["AAA"], Config(), "run-1", engine=_FakeEngine())
@@ -538,10 +544,9 @@ class TestRunBacktestFullUniverseCofire:
         monkeypatch.setattr(
             backtest.db_io,
             "upsert",
-            lambda engine, table_name, data, conflict_cols, update_columns=None: captured.update(
-                update_columns=update_columns, data=data
-            )
-            or len(data),
+            lambda engine, table_name, data, conflict_cols, update_columns=None: (
+                captured.update(update_columns=update_columns, data=data) or len(data)
+            ),
         )
 
         with pytest.warns(UserWarning, match="full_universe"):
@@ -572,7 +577,9 @@ class TestRunBacktestPerTickerFailureIsolation:
     def test_a_failing_ticker_does_not_block_the_others(self, monkeypatch):
         def fake_worker(ticker, config, run_id, database_url, today=None):
             if ticker == "BAD":
-                raise ValueError("tag_clusters: ticker 'BAD' has candidate events but no trading_dates")
+                raise ValueError(
+                    "tag_clusters: ticker 'BAD' has candidate events but no trading_dates"
+                )
             return pd.DataFrame(
                 [_minimal_row(ticker=ticker, signal_date=date(2026, 1, 5), entry_kind="touch")]
             )
@@ -582,13 +589,14 @@ class TestRunBacktestPerTickerFailureIsolation:
         monkeypatch.setattr(
             backtest.db_io,
             "upsert",
-            lambda engine, table_name, data, conflict_cols, update_columns=None: captured.update(
-                data=data
-            )
-            or len(data),
+            lambda engine, table_name, data, conflict_cols, update_columns=None: (
+                captured.update(data=data) or len(data)
+            ),
         )
 
-        report = backtest.run_backtest(["AAA", "BAD", "ZZZ"], Config(), "run-1", engine=_FakeEngine())
+        report = backtest.run_backtest(
+            ["AAA", "BAD", "ZZZ"], Config(), "run-1", engine=_FakeEngine()
+        )
 
         assert list(captured["data"]["ticker"]) == ["AAA", "ZZZ"]
         assert report.rows_written == 2
@@ -635,10 +643,9 @@ class TestRunBacktestPerTickerFailureIsolation:
         monkeypatch.setattr(
             backtest.db_io,
             "upsert",
-            lambda engine, table_name, data, conflict_cols, update_columns=None: captured.update(
-                data=data
-            )
-            or len(data),
+            lambda engine, table_name, data, conflict_cols, update_columns=None: (
+                captured.update(data=data) or len(data)
+            ),
         )
 
         report = backtest.run_backtest(["BAD", "OK"], Config(), "run-1", engine=_FakeEngine())

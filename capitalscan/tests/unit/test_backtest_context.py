@@ -33,9 +33,8 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from capitalscan.core.config import CostParams, ExitParams, StatsParams, SplitParams
-from capitalscan.core.types import Side
-from capitalscan.jobs.compute import DD_BUCKETS, _dd_bucket
+from capitalscan.core.config import CostParams, ExitParams, SplitParams, StatsParams
+from capitalscan.jobs.compute import _dd_bucket
 from capitalscan.research.backtest import split_key_for
 from capitalscan.research.enrich import enrich_context
 
@@ -181,7 +180,13 @@ class TestDdBucketMatchesCompute:
 class TestSplitKeyMatchesTask2:
     @pytest.mark.parametrize(
         "signal_date",
-        [date(2010, 1, 1), date(2021, 12, 31), date(2022, 1, 1), date(2023, 12, 31), date(2024, 1, 1)],
+        [
+            date(2010, 1, 1),
+            date(2021, 12, 31),
+            date(2022, 1, 1),
+            date(2023, 12, 31),
+            date(2024, 1, 1),
+        ],
     )
     def test_split_key_matches_split_key_for(self, signal_date):
         event = _event(signal_date=signal_date)

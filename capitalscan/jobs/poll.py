@@ -46,7 +46,6 @@ MAX_CONSECUTIVE_FAILURES = 3  # DESIGN §4.9: 3 consecutive tick failures alerts
 def _now_et() -> datetime:
     # ADR 081: the poller runs natively on the workstation. Convert local
     # time to ET to handle workstations in other timezones (e.g., PT).
-    from datetime import timezone as tz
     import time
 
     local_now = datetime.now()

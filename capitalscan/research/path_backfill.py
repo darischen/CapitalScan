@@ -21,6 +21,7 @@ from __future__ import annotations
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date
+from typing import cast
 
 import pandas as pd
 from sqlalchemy import Engine, text
@@ -32,7 +33,9 @@ from capitalscan.jobs import db_io
 from capitalscan.jobs.progress import track
 
 
-def fwd_window_for_signal(ticker_bars: pd.DataFrame, signal_date: date, window_days: int) -> pd.DataFrame:
+def fwd_window_for_signal(
+    ticker_bars: pd.DataFrame, signal_date: date, window_days: int
+) -> pd.DataFrame:
     """The up-to-`window_days` trading-day slice strictly after `signal_date`.
 
     `ticker_bars` must be indexed by `pd.Timestamp` (one row per trading
@@ -47,7 +50,10 @@ def fwd_window_for_signal(ticker_bars: pd.DataFrame, signal_date: date, window_d
     signal_ts = pd.Timestamp(signal_date)
     if signal_ts not in ticker_bars.index:
         raise ValueError(f"fwd_window_for_signal: no bar for signal_date={signal_date}")
-    pos = ticker_bars.index.get_loc(signal_ts)
+    # The `not in index` guard above plus a unique bar index make this the
+    # scalar branch of `get_loc`'s signature; the slice arithmetic below
+    # already depends on it.
+    pos = cast("int", ticker_bars.index.get_loc(signal_ts))
     return ticker_bars.iloc[pos + 1 : pos + 1 + window_days]
 
 
@@ -67,7 +73,9 @@ def rows_for_event(
     count (1-`window_days`) as the completeness flag.
     """
     if pd.isna(entry_price):
-        return pd.DataFrame(columns=["event_id", "day_offset", "favorable", "adverse", "terminal"]), None
+        return pd.DataFrame(
+            columns=["event_id", "day_offset", "favorable", "adverse", "terminal"]
+        ), None
 
     fwd_bars = fwd_window_for_signal(ticker_bars, signal_date, window_days)
     path = path_for_event(entry_price=entry_price, side=side, fwd_bars=fwd_bars)
@@ -106,7 +114,7 @@ def window_days_for_config(config: Config) -> int:
     if not config.stats.fwd_ret_horizons:
         return 0
     max_entry_offset = max(entry_offset_for(kind) for kind in EntryKind)
-    return max(config.stats.fwd_ret_horizons) + max_entry_offset
+    return int(max(config.stats.fwd_ret_horizons)) + max_entry_offset
 
 
 def _compute_rows_for_ticker(
@@ -133,7 +141,9 @@ def _compute_rows_for_ticker(
     Returns `(path_rows, window_updates, events_processed,
     events_skipped_unfilled, events_skipped_no_signal_bar)`.
     """
-    empty_rows = pd.DataFrame(columns=["event_id", "day_offset", "favorable", "adverse", "terminal"])
+    empty_rows = pd.DataFrame(
+        columns=["event_id", "day_offset", "favorable", "adverse", "terminal"]
+    )
     all_rows: list[pd.DataFrame] = []
     window_updates: list[dict] = []
     events_processed = 0
@@ -166,15 +176,26 @@ def _compute_rows_for_ticker(
         window_updates.append({"id": int(ev["id"]), "n": n})
 
     combined = pd.concat(all_rows, ignore_index=True) if all_rows else empty_rows
-    return combined, window_updates, events_processed, events_skipped_unfilled, events_skipped_no_signal_bar
+    return (
+        combined,
+        window_updates,
+        events_processed,
+        events_skipped_unfilled,
+        events_skipped_no_signal_bar,
+    )
 
 
-def _events_query_for_ticker(ticker: str, window_days: int, incomplete_only: bool) -> tuple[str, dict]:
+def _events_query_for_ticker(
+    ticker: str, window_days: int, incomplete_only: bool
+) -> tuple[str, dict]:
     """Pure query-building for `_compute_ticker_path`'s events read, split
     out so the incompleteness filter (Task 10.6) is testable without a
     database or a worker-process round trip.
     """
-    query = "SELECT id, entry_price, side, signal_date FROM events WHERE ticker = :ticker AND entry_price IS NOT NULL"
+    query = (
+        "SELECT id, entry_price, side, signal_date FROM events "
+        "WHERE ticker = :ticker AND entry_price IS NOT NULL"
+    )
     params: dict = {"ticker": ticker}
     if incomplete_only:
         query += " AND (fwd_window_days IS NULL OR fwd_window_days < :window_days)"
@@ -217,17 +238,30 @@ def _compute_ticker_path(
             params={"ticker": ticker},
         )
         events = pd.read_sql(text(events_query), conn, params=params)
-    empty_rows = pd.DataFrame(columns=["event_id", "day_offset", "favorable", "adverse", "terminal"])
+    empty_rows = pd.DataFrame(
+        columns=["event_id", "day_offset", "favorable", "adverse", "terminal"]
+    )
     if bars.empty or events.empty:
         return ticker, empty_rows, [], 0, 0, 0
 
     bars["ts"] = pd.to_datetime(bars["ts"]).dt.tz_localize(None)
     ticker_bars = bars.sort_values("ts").set_index("ts", drop=False)
 
-    combined, window_updates, events_processed, events_skipped_unfilled, events_skipped_no_signal_bar = (
-        _compute_rows_for_ticker(events, ticker_bars, window_days)
+    (
+        combined,
+        window_updates,
+        events_processed,
+        events_skipped_unfilled,
+        events_skipped_no_signal_bar,
+    ) = _compute_rows_for_ticker(events, ticker_bars, window_days)
+    return (
+        ticker,
+        combined,
+        window_updates,
+        events_processed,
+        events_skipped_unfilled,
+        events_skipped_no_signal_bar,
     )
-    return ticker, combined, window_updates, events_processed, events_skipped_unfilled, events_skipped_no_signal_bar
 
 
 def _run_path_job(
@@ -282,11 +316,17 @@ def _run_path_job(
     if max_workers > 1:
         with ProcessPoolExecutor(max_workers=max_workers) as pool:
             futures = {
-                pool.submit(_compute_ticker_path, ticker, window_days, database_url, incomplete_only): ticker
+                pool.submit(
+                    _compute_ticker_path, ticker, window_days, database_url, incomplete_only
+                ): ticker
                 for ticker in tickers
             }
             for future in track(
-                as_completed(futures), description=description, total=len(futures), quiet=quiet, label="ticker"
+                as_completed(futures),
+                description=description,
+                total=len(futures),
+                quiet=quiet,
+                label="ticker",
             ):
                 _write_result(*future.result())
     else:
@@ -330,11 +370,20 @@ def run_path_backfill(
         tickers = [
             r[0]
             for r in conn.execute(
-                text("SELECT DISTINCT ticker FROM events WHERE entry_price IS NOT NULL ORDER BY ticker")
+                text(
+                    "SELECT DISTINCT ticker FROM events "
+                    "WHERE entry_price IS NOT NULL ORDER BY ticker"
+                )
             )
         ]
     return _run_path_job(
-        engine, tickers, window_days, quiet, max_workers, incomplete_only=False, description="path backfill"
+        engine,
+        tickers,
+        window_days,
+        quiet,
+        max_workers,
+        incomplete_only=False,
+        description="path backfill",
     )
 
 
@@ -375,5 +424,11 @@ def run_path_capture(
             )
         ]
     return _run_path_job(
-        engine, tickers, window_days, quiet, max_workers, incomplete_only=True, description="path capture"
+        engine,
+        tickers,
+        window_days,
+        quiet,
+        max_workers,
+        incomplete_only=True,
+        description="path capture",
     )

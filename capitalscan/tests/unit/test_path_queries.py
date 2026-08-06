@@ -170,4 +170,6 @@ def test_adding_a_threshold_widens_the_grid_with_no_code_change():
     assert after["touched_7pct_by_10d"] is False
     assert after["first_touch_7pct_by_10d"] is None
     # Every pre-existing cell is untouched by the widening.
-    assert all(after[col] == before[col] or (after[col] is None and before[col] is None) for col in before)
+    assert all(
+        after[col] == before[col] or (after[col] is None and before[col] is None) for col in before
+    )

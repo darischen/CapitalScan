@@ -50,16 +50,33 @@ class TestScanCandidatesReadsTMinus1:
         """
         bars = _bars(
             [
-                {"ticker": "TSM", "ts": "2026-07-30", "open": 96.0, "high": 96.0,
-                 "low": 94.0, "close": 95.0, "volume": 1_000_000},
+                {
+                    "ticker": "TSM",
+                    "ts": "2026-07-30",
+                    "open": 96.0,
+                    "high": 96.0,
+                    "low": 94.0,
+                    "close": 95.0,
+                    "volume": 1_000_000,
+                },
             ]
         )
         indicators = _indicators(
             [
-                {"ticker": "TSM", "ts": "2026-07-29", "bb_lower": 95.0, "bb_upper": 999.0,
-                 "k_full": 15.0},
-                {"ticker": "TSM", "ts": "2026-07-30", "bb_lower": 50.0, "bb_upper": 999.0,
-                 "k_full": 90.0},
+                {
+                    "ticker": "TSM",
+                    "ts": "2026-07-29",
+                    "bb_lower": 95.0,
+                    "bb_upper": 999.0,
+                    "k_full": 15.0,
+                },
+                {
+                    "ticker": "TSM",
+                    "ts": "2026-07-30",
+                    "bb_lower": 50.0,
+                    "bb_upper": 999.0,
+                    "k_full": 90.0,
+                },
             ]
         )
 
@@ -80,14 +97,26 @@ class TestScanCandidatesReadsTMinus1:
         skip, don't fabricate a pairing)."""
         bars = _bars(
             [
-                {"ticker": "TSM", "ts": "2026-07-29", "open": 96.0, "high": 96.0,
-                 "low": 94.0, "close": 95.0, "volume": 1_000_000},
+                {
+                    "ticker": "TSM",
+                    "ts": "2026-07-29",
+                    "open": 96.0,
+                    "high": 96.0,
+                    "low": 94.0,
+                    "close": 95.0,
+                    "volume": 1_000_000,
+                },
             ]
         )
         indicators = _indicators(
             [
-                {"ticker": "TSM", "ts": "2026-07-29", "bb_lower": 95.0, "bb_upper": 999.0,
-                 "k_full": 15.0},
+                {
+                    "ticker": "TSM",
+                    "ts": "2026-07-29",
+                    "bb_lower": 95.0,
+                    "bb_upper": 999.0,
+                    "k_full": 15.0,
+                },
             ]
         )
 
@@ -109,10 +138,24 @@ class TestScanCandidatesReadsTMinus1:
         """
         bars = _bars(
             [
-                {"ticker": "TSM", "ts": "2026-07-29", "open": 100.0, "high": 100.0,
-                 "low": 100.0, "close": 100.0, "volume": 1_000_000},
-                {"ticker": "TSM", "ts": "2026-08-03", "open": 96.0, "high": 96.0,
-                 "low": 94.0, "close": 95.0, "volume": 1_000_000},
+                {
+                    "ticker": "TSM",
+                    "ts": "2026-07-29",
+                    "open": 100.0,
+                    "high": 100.0,
+                    "low": 100.0,
+                    "close": 100.0,
+                    "volume": 1_000_000,
+                },
+                {
+                    "ticker": "TSM",
+                    "ts": "2026-08-03",
+                    "open": 96.0,
+                    "high": 96.0,
+                    "low": 94.0,
+                    "close": 95.0,
+                    "volume": 1_000_000,
+                },
             ]
         )
         # Only one indicator row exists (the gap), dated before both bars.
@@ -121,8 +164,13 @@ class TestScanCandidatesReadsTMinus1:
         # isolating the pairing question from the stochastic condition.
         indicators = _indicators(
             [
-                {"ticker": "TSM", "ts": "2026-07-28", "bb_lower": 95.0, "bb_upper": 999.0,
-                 "k_full": 50.0},
+                {
+                    "ticker": "TSM",
+                    "ts": "2026-07-28",
+                    "bb_lower": 95.0,
+                    "bb_upper": 999.0,
+                    "k_full": 50.0,
+                },
             ]
         )
 
@@ -144,14 +192,26 @@ class TestScanCandidatesNullIndicators:
         """Invariant 4: never fill a null, drop the row and log why."""
         bars = _bars(
             [
-                {"ticker": "TSM", "ts": "2026-07-30", "open": 96.0, "high": 96.0,
-                 "low": 94.0, "close": 95.0, "volume": 1_000_000},
+                {
+                    "ticker": "TSM",
+                    "ts": "2026-07-30",
+                    "open": 96.0,
+                    "high": 96.0,
+                    "low": 94.0,
+                    "close": 95.0,
+                    "volume": 1_000_000,
+                },
             ]
         )
         indicators = _indicators(
             [
-                {"ticker": "TSM", "ts": "2026-07-29", "bb_lower": np.nan, "bb_upper": 999.0,
-                 "k_full": 15.0},
+                {
+                    "ticker": "TSM",
+                    "ts": "2026-07-29",
+                    "bb_lower": np.nan,
+                    "bb_upper": 999.0,
+                    "k_full": 15.0,
+                },
             ]
         )
 
@@ -172,15 +232,27 @@ class TestScanCandidatesNullIndicators:
         required-field check (compute.py:739-743)."""
         bars = _bars(
             [
-                {"ticker": "TSM", "ts": "2026-07-30", "open": 96.0, "high": 96.0,
-                 "low": 200.0, "close": 200.0, "volume": 1_000_000},
+                {
+                    "ticker": "TSM",
+                    "ts": "2026-07-30",
+                    "open": 96.0,
+                    "high": 96.0,
+                    "low": 200.0,
+                    "close": 200.0,
+                    "volume": 1_000_000,
+                },
             ]
         )
         indicators = _indicators(
             [
                 # k_full alone would fire STOCH_OVERSOLD if it were checked.
-                {"ticker": "TSM", "ts": "2026-07-29", "bb_lower": np.nan, "bb_upper": np.nan,
-                 "k_full": 5.0},
+                {
+                    "ticker": "TSM",
+                    "ts": "2026-07-29",
+                    "bb_lower": np.nan,
+                    "bb_upper": np.nan,
+                    "k_full": 5.0,
+                },
             ]
         )
 
@@ -215,9 +287,7 @@ class TestApplyEligibility:
         universe_flags = pd.DataFrame(columns=["ticker", "as_of", "in_trade"])
         sp = SplitParams(event_start="2010-01-01")
 
-        kept, rejects = apply_eligibility(
-            candidates, universe_flags, sp, today=date(2026, 8, 1)
-        )
+        kept, rejects = apply_eligibility(candidates, universe_flags, sp, today=date(2026, 8, 1))
 
         assert len(kept) == 1
         assert rejects == []
@@ -227,9 +297,7 @@ class TestApplyEligibility:
         universe_flags = pd.DataFrame(columns=["ticker", "as_of", "in_trade"])
         sp = SplitParams(event_start="2010-01-01")
 
-        kept, rejects = apply_eligibility(
-            candidates, universe_flags, sp, today=date(2026, 8, 1)
-        )
+        kept, rejects = apply_eligibility(candidates, universe_flags, sp, today=date(2026, 8, 1))
 
         assert kept.empty
         assert len(rejects) == 1
@@ -240,9 +308,7 @@ class TestApplyEligibility:
         universe_flags = pd.DataFrame(columns=["ticker", "as_of", "in_trade"])
         sp = SplitParams(event_start="2010-01-01")
 
-        kept, rejects = apply_eligibility(
-            candidates, universe_flags, sp, today=date(2026, 8, 1)
-        )
+        kept, rejects = apply_eligibility(candidates, universe_flags, sp, today=date(2026, 8, 1))
 
         assert kept.empty
         assert len(rejects) == 1
@@ -255,9 +321,7 @@ class TestApplyEligibility:
         )
         sp = SplitParams(event_start="2010-01-01")
 
-        kept, rejects = apply_eligibility(
-            candidates, universe_flags, sp, today=date(2026, 8, 1)
-        )
+        kept, rejects = apply_eligibility(candidates, universe_flags, sp, today=date(2026, 8, 1))
 
         assert kept.empty
         assert len(rejects) == 1
@@ -270,24 +334,27 @@ class TestApplyEligibility:
         universe_flags = pd.DataFrame(columns=["ticker", "as_of", "in_trade"])
         sp = SplitParams(event_start="2010-01-01")
 
-        kept, rejects = apply_eligibility(
-            candidates, universe_flags, sp, today=date(2026, 8, 1)
-        )
+        kept, rejects = apply_eligibility(candidates, universe_flags, sp, today=date(2026, 8, 1))
 
         assert len(kept) == 1
         assert rejects == []
 
     def test_empty_candidates_returns_empty_frame_and_no_rejects(self):
-        candidates = pd.DataFrame(columns=[
-            "ticker", "signal_date", "signal_type", "signal_types_all",
-            "signal_strength", "side", "touch_level",
-        ])
+        candidates = pd.DataFrame(
+            columns=[
+                "ticker",
+                "signal_date",
+                "signal_type",
+                "signal_types_all",
+                "signal_strength",
+                "side",
+                "touch_level",
+            ]
+        )
         universe_flags = pd.DataFrame(columns=["ticker", "as_of", "in_trade"])
         sp = SplitParams(event_start="2010-01-01")
 
-        kept, rejects = apply_eligibility(
-            candidates, universe_flags, sp, today=date(2026, 8, 1)
-        )
+        kept, rejects = apply_eligibility(candidates, universe_flags, sp, today=date(2026, 8, 1))
 
         assert kept.empty
         assert rejects == []
@@ -340,10 +407,17 @@ class TestDebounce:
         assert len(out) == 2
 
     def test_empty_frame_returns_empty_frame(self):
-        candidates = pd.DataFrame(columns=[
-            "ticker", "signal_date", "signal_type", "signal_types_all",
-            "signal_strength", "side", "touch_level",
-        ])
+        candidates = pd.DataFrame(
+            columns=[
+                "ticker",
+                "signal_date",
+                "signal_type",
+                "signal_types_all",
+                "signal_strength",
+                "side",
+                "touch_level",
+            ]
+        )
 
         out = debounce(candidates)
 

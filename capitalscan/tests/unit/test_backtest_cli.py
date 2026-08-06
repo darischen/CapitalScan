@@ -16,8 +16,6 @@ that only happens inside Typer's own dispatch machinery.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict
-from datetime import date
 
 import pandas as pd
 import pytest
@@ -142,8 +140,8 @@ def test_tickers_flag_reuses_resolve_tickers(monkeypatch):
     monkeypatch.setattr(
         backtest_mod,
         "run_backtest",
-        lambda tickers, config, run_id, engine=None, max_workers=1, full_universe=True: BacktestReport(
-            run_id=run_id, rows_written=0, tickers=[], failed_tickers={}
+        lambda tickers, config, run_id, engine=None, max_workers=1, full_universe=True: (
+            BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
         ),
     )
 
@@ -290,7 +288,9 @@ def test_sweep_dispatches_all_18_configs_in_deterministic_order(monkeypatch):
 
     def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
         calls.append((config, run_id, tuple(tickers), max_workers, full_universe))
-        return BacktestReport(run_id=run_id, rows_written=1, tickers=list(tickers), failed_tickers={})
+        return BacktestReport(
+            run_id=run_id, rows_written=1, tickers=list(tickers), failed_tickers={}
+        )
 
     monkeypatch.setattr(backtest_mod, "run_backtest", _fake_run_backtest)
 
@@ -320,7 +320,9 @@ def test_sweep_failure_at_config_n_does_not_discard_earlier_configs(monkeypatch,
         calls.append(config)
         if len(calls) == 5:
             raise BacktestRunFailed({"AAPL": "ValueError: boom"})
-        return BacktestReport(run_id=run_id, rows_written=1, tickers=list(tickers), failed_tickers={})
+        return BacktestReport(
+            run_id=run_id, rows_written=1, tickers=list(tickers), failed_tickers={}
+        )
 
     monkeypatch.setattr(backtest_mod, "run_backtest", _fake_run_backtest)
 
@@ -357,7 +359,9 @@ def test_sweep_resume_skips_already_completed_configs(monkeypatch):
 
     def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
         calls.append(config_hash(config))
-        return BacktestReport(run_id=run_id, rows_written=1, tickers=list(tickers), failed_tickers={})
+        return BacktestReport(
+            run_id=run_id, rows_written=1, tickers=list(tickers), failed_tickers={}
+        )
 
     monkeypatch.setattr(backtest_mod, "run_backtest", _fake_run_backtest)
 
@@ -468,9 +472,7 @@ def test_prior_clean_default_run_exists_queries_expected_filters(monkeypatch):
 
 def test_config_name_errors_without_touching_run_backtest(monkeypatch, capsys):
     run_backtest_called = []
-    monkeypatch.setattr(
-        backtest_mod, "run_backtest", lambda *a, **k: run_backtest_called.append(1)
-    )
+    monkeypatch.setattr(backtest_mod, "run_backtest", lambda *a, **k: run_backtest_called.append(1))
 
     with pytest.raises(typer.Exit) as exc_info:
         _call(config_name="alt_config")
@@ -539,7 +541,9 @@ def test_full_success_no_failed_tickers_exits_zero_when_harness_passes(monkeypat
 
     monkeypatch.setattr(backtest_mod, "run_backtest", _fake_run_backtest)
     monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL"])
-    monkeypatch.setattr(cli, "_load_bars_by_ticker", lambda engine, tickers, config: {"AAPL": pd.DataFrame()})
+    monkeypatch.setattr(
+        cli, "_load_bars_by_ticker", lambda engine, tickers, config: {"AAPL": pd.DataFrame()}
+    )
     monkeypatch.setattr(
         harness_mod,
         "run_harness",
@@ -562,8 +566,8 @@ def test_config_hash_is_printed(monkeypatch, capsys):
     monkeypatch.setattr(
         backtest_mod,
         "run_backtest",
-        lambda tickers, config, run_id, engine=None, max_workers=1, full_universe=True: BacktestReport(
-            run_id=run_id, rows_written=0, tickers=[], failed_tickers={}
+        lambda tickers, config, run_id, engine=None, max_workers=1, full_universe=True: (
+            BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
         ),
     )
     monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL"])
@@ -594,7 +598,9 @@ def test_harness_runs_automatically_and_gates_exit_code(monkeypatch, capsys):
     monkeypatch.setattr(backtest_mod, "run_backtest", _fake_run_backtest)
     monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL"])
     monkeypatch.setattr(
-        cli, "_load_bars_by_ticker", lambda engine, tickers, config: {"AAPL": pd.DataFrame({"ts": []})}
+        cli,
+        "_load_bars_by_ticker",
+        lambda engine, tickers, config: {"AAPL": pd.DataFrame({"ts": []})},
     )
     monkeypatch.setattr(harness_mod, "run_harness", _fake_run_harness)
 
@@ -614,9 +620,7 @@ def test_harness_skipped_when_no_events_written(monkeypatch, capsys):
     harness_called = []
     monkeypatch.setattr(backtest_mod, "run_backtest", _fake_run_backtest)
     monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL"])
-    monkeypatch.setattr(
-        harness_mod, "run_harness", lambda *a, **k: harness_called.append(1)
-    )
+    monkeypatch.setattr(harness_mod, "run_harness", lambda *a, **k: harness_called.append(1))
 
     _call(tickers="AAPL")
 
@@ -681,7 +685,9 @@ def test_load_bars_by_ticker_merges_bars_and_indicators(monkeypatch):
 
 
 def test_load_bars_by_ticker_skips_ticker_with_no_bars(monkeypatch):
-    empty = pd.DataFrame(columns=["ticker", "ts", "open", "high", "low", "close", "adj_close", "volume"])
+    empty = pd.DataFrame(
+        columns=["ticker", "ts", "open", "high", "low", "close", "adj_close", "volume"]
+    )
 
     def _fake_read_sql(stmt, conn, params=None):
         return empty

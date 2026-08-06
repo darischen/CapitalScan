@@ -26,7 +26,6 @@ accident.
 
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -188,9 +187,7 @@ def test_universe_command_threads_resolved_params(monkeypatch, tmp_path):
 
 
 def test_events_command_threads_resolved_params(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        cli, "_CONFIG_FILE", _toml(tmp_path, "[signals]\nstoch_oversold = 25.0\n")
-    )
+    monkeypatch.setattr(cli, "_CONFIG_FILE", _toml(tmp_path, "[signals]\nstoch_oversold = 25.0\n"))
     captured = {}
 
     def _fake_run_events(tickers, target_start, target_end, engine=None, sp=None, config=None):
@@ -211,9 +208,7 @@ def test_events_command_threads_resolved_params(monkeypatch, tmp_path):
 
 
 def test_poll_command_threads_resolved_params(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        cli, "_CONFIG_FILE", _toml(tmp_path, "[exits]\nmax_hold_days = 7\n")
-    )
+    monkeypatch.setattr(cli, "_CONFIG_FILE", _toml(tmp_path, "[exits]\nmax_hold_days = 7\n"))
     captured = {}
 
     def _fake_run_poll(interval=300, tickers=None, engine=None, sp=None, ep=None, stats=None):
@@ -271,7 +266,9 @@ def test_backtest_command_uses_resolved_config(monkeypatch, tmp_path):
 
     def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
         captured["config"] = config
-        return backtest_mod.BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
+        return backtest_mod.BacktestReport(
+            run_id=run_id, rows_written=0, tickers=[], failed_tickers={}
+        )
 
     monkeypatch.setattr(backtest_mod, "run_backtest", _fake_run_backtest)
 

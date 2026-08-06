@@ -31,6 +31,7 @@ entries once per event and reuse them across all 18 exit configs (DESIGN
 from __future__ import annotations
 
 from datetime import date
+from typing import cast
 
 import pandas as pd
 
@@ -58,7 +59,7 @@ def _as_date(value: object) -> date:
     """
     if isinstance(value, pd.Timestamp):
         return value.date()
-    return value
+    return cast("date", value)
 
 
 def _ticker_bars(bars: pd.DataFrame, ticker: str) -> pd.DataFrame:
@@ -136,10 +137,10 @@ def resolve_entries(
             f"resolve_entries: no bar for {ticker} on {signal_date} — the "
             "candidate's own signal bar must be present in `bars`."
         )
-    bar = ticker_bars.loc[signal_date]
+    bar = cast("pd.Series", ticker_bars.loc[signal_date])
 
     later_dates = ticker_bars.index[ticker_bars.index > signal_date]
-    next_bar = ticker_bars.loc[later_dates.min()] if len(later_dates) else None
+    next_bar = cast("pd.Series", ticker_bars.loc[later_dates.min()]) if len(later_dates) else None
 
     day_hourly = None
     if hourly is not None and not hourly.empty:
@@ -154,7 +155,8 @@ def resolve_entries(
     # past (a stochastic-only signal), never a defaulted `False` — `False`
     # would misreport "checked, and it didn't gap" for a check that never
     # ran.
-    gapped = None if _isnan(touch_level) else _breach(float(bar["open"]), touch_level, bound)
+    open_px = cast("float", bar["open"])
+    gapped = None if _isnan(touch_level) else _breach(float(open_px), touch_level, bound)
 
     rows: list[dict] = []
     for kind in EntryKind:
@@ -334,7 +336,7 @@ def resolve_exit_for_entry(
     # substituted level, so there is nothing to guard against here beyond
     # not raising on a missing column.
     raw_atr = ind_at_entry.get("atr_14")
-    atr_at_entry = float("nan") if _isnan(raw_atr) else float(raw_atr)
+    atr_at_entry = float("nan") if _isnan(raw_atr) else float(cast("float", raw_atr))
 
     result = resolve_exit(
         entry_price=float(entry_price),
@@ -687,9 +689,7 @@ def enrich_context(
     net_ret = (
         float("nan")
         if _isnan(gross_ret) or holding_days is None
-        else core_costs.apply_costs(
-            gross_ret, side, holding_days, cp, entry_price=entry_price
-        )
+        else core_costs.apply_costs(gross_ret, side, holding_days, cp, entry_price=entry_price)
     )
 
     return {

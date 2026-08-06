@@ -37,6 +37,7 @@ import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import date
+from typing import Any, cast
 
 import pandas as pd
 from sqlalchemy import Engine, text
@@ -328,6 +329,7 @@ def _empty_events_frame() -> pd.DataFrame:
 
 
 def _read_bars(engine: Engine, ticker: str, start: date, interval: str) -> pd.DataFrame:
+    params: dict[str, Any] = {"ticker": ticker, "interval": interval, "start": start}
     with engine.connect() as conn:
         df = pd.read_sql(
             text(
@@ -335,7 +337,7 @@ def _read_bars(engine: Engine, ticker: str, start: date, interval: str) -> pd.Da
                 "AND ts >= :start ORDER BY ts"
             ),
             conn,
-            params={"ticker": ticker, "interval": interval, "start": start},
+            params=params,
         )
     if not df.empty:
         df["ts"] = pd.to_datetime(df["ts"]).dt.tz_localize(None)
@@ -343,6 +345,7 @@ def _read_bars(engine: Engine, ticker: str, start: date, interval: str) -> pd.Da
 
 
 def _read_indicators(engine: Engine, ticker: str, start: date) -> pd.DataFrame:
+    params: dict[str, Any] = {"ticker": ticker, "start": start}
     with engine.connect() as conn:
         df = pd.read_sql(
             text(
@@ -350,7 +353,7 @@ def _read_indicators(engine: Engine, ticker: str, start: date) -> pd.DataFrame:
                 "AND ts >= :start ORDER BY ts"
             ),
             conn,
-            params={"ticker": ticker, "start": start},
+            params=params,
         )
     if not df.empty:
         df["ts"] = pd.to_datetime(df["ts"]).dt.tz_localize(None)
@@ -390,7 +393,7 @@ def _prior_indicator(ind_by_date: pd.DataFrame, signal_date: date) -> pd.Series 
     prior_dates = ind_by_date.index[ind_by_date.index < signal_date]
     if len(prior_dates) == 0:
         return None
-    return ind_by_date.loc[prior_dates.max()]
+    return cast("pd.Series", ind_by_date.loc[prior_dates.max()])
 
 
 def _entry_idx_for(entry: dict, ticker_bars: pd.DataFrame) -> int | None:
@@ -414,7 +417,10 @@ def _entry_idx_for(entry: dict, ticker_bars: pd.DataFrame) -> int | None:
     ts = pd.Timestamp(entry["entry_date"])
     if ts not in ticker_bars.index:
         return None
-    return ticker_bars.index.get_loc(ts)
+    # `ticker_bars` is date-indexed and unique (see the docstring), so this
+    # is `get_loc`'s scalar branch — the declared `int | None` return already
+    # commits to that.
+    return cast("int", ticker_bars.index.get_loc(ts))
 
 
 def _backtest_one_ticker(
@@ -475,7 +481,9 @@ def _backtest_one_ticker(
     market = _read_market_days(engine)
     universe_flags = _read_universe_flags(engine, ticker)
 
-    candidates, _null_rejects = research_candidates.scan_candidates(bars, indicators, config.signals)
+    candidates, _null_rejects = research_candidates.scan_candidates(
+        bars, indicators, config.signals
+    )
     if candidates.empty:
         return _empty_events_frame()
 
@@ -549,7 +557,7 @@ def _backtest_one_ticker(
         above_sma200 = (
             None
             if pd.isna(sma_200) or pd.isna(close_at_signal)
-            else bool(float(close_at_signal) > float(sma_200))
+            else bool(float(cast("float", close_at_signal)) > float(sma_200))
         )
 
         # `bars`, not `ticker_bars`: `resolve_entries` -> `_ticker_bars`

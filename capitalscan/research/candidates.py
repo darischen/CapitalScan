@@ -32,6 +32,7 @@ import bisect
 import hashlib
 from datetime import date
 from types import SimpleNamespace
+from typing import cast
 
 import pandas as pd
 
@@ -39,7 +40,7 @@ from capitalscan.core import signals as core_signals
 from capitalscan.core import universe as core_universe
 from capitalscan.core.config import SignalParams, SplitParams
 from capitalscan.core.signals import debounce_key
-from capitalscan.core.types import Side
+from capitalscan.core.types import Side, SignalHit
 
 # The three fields `detect()` needs to evaluate any condition (compute.py's
 # own required-field list, compute.py:741). A null in any of these means the
@@ -209,11 +210,13 @@ def debounce(candidates: pd.DataFrame) -> pd.DataFrame:
         if isinstance(signal_date, pd.Timestamp):
             signal_date = signal_date.date()
         probe = SimpleNamespace(ticker=row["ticker"], ts=signal_date, side=Side(row["side"]))
-        key = debounce_key(probe)
+        # `debounce_key` reads only `.ticker`/`.ts`/`.side`, so the probe is a
+        # deliberate structural stand-in for a real `SignalHit`.
+        key = debounce_key(cast("SignalHit", probe))
         if key in seen:
             continue
         seen.add(key)
-        keep.loc[idx] = True
+        keep.at[idx] = True
 
     return candidates.loc[keep].reset_index(drop=True)
 
@@ -275,7 +278,7 @@ def _as_date(value: object) -> date:
     """
     if isinstance(value, pd.Timestamp):
         return value.date()
-    return value
+    return cast("date", value)
 
 
 def tag_clusters(
@@ -386,7 +389,7 @@ def tag_clusters(
     # ticker alone, or a long cluster and a short cluster on one ticker
     # would merge into one position.
     for (ticker, side), group in working.groupby(["ticker", "side"], sort=False):
-        dates = sorted_dates[ticker]
+        dates = sorted_dates[cast("str", ticker)]
         ordered = group.sort_values("_signal_date_norm")
 
         head_date: date | None = None
@@ -406,8 +409,13 @@ def tag_clusters(
                     f"{signal_date} that is not in its supplied trading_dates."
                 )
 
-            gap = None if head_date is None else _trading_bars_between(dates, head_date, signal_date)
-            if head_date is None or gap > max_hold_days:
+            gap = (
+                None if head_date is None else _trading_bars_between(dates, head_date, signal_date)
+            )
+            # `gap is None` exactly when `head_date is None` (the assignment
+            # above), so this is the same branch written so the type checker
+            # can see `gap` is an `int` in the `else`.
+            if gap is None or gap > max_hold_days:
                 head_date = signal_date
                 seq = 1
                 days_since_head = 0
@@ -415,7 +423,11 @@ def tag_clusters(
                 seq += 1
                 days_since_head = gap  # same pair `gap` already measured
 
-            pos = working.index.get_loc(idx)
+            # The four `*_col` lists below are indexed by `pos`, so this path
+            # already requires the scalar return — a duplicated index would
+            # hand back a slice/mask and break the assignment regardless of
+            # this cast, which changes no behaviour either way.
+            pos = cast("int", working.index.get_loc(idx))
             cluster_id_col[pos] = _deterministic_cluster_id(ticker, side, head_date)
             seq_col[pos] = seq
             head_col[pos] = seq == 1

@@ -27,7 +27,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 import pandas as pd
-import pytest
 
 from capitalscan.jobs import compute
 
@@ -120,8 +119,7 @@ class TestScanReturnsOneRowPerEvent:
         df = compute.scan(tickers=["AAPL"], engine=engine)
 
         assert len(df) == 1, (
-            f"expected exactly one row for one event, got {len(df)}: "
-            f"{df.to_dict('records')}"
+            f"expected exactly one row for one event, got {len(df)}: {df.to_dict('records')}"
         )
 
     def test_gate_is_the_pinned_config_hash_not_the_first_one_seen(self, monkeypatch):
@@ -140,12 +138,10 @@ class TestScanReturnsOneRowPerEvent:
         current broken behaviour; returning nothing is the safe default --
         the same choice `v_events` already made (its WHERE clause turns into
         `config_hash = NULL`, matching zero rows)."""
-        read_sql = _fake_read_sql_factory()
 
         def fake_read_sql_fails_if_called(stmt, conn, params=None):
             raise AssertionError(
-                "scan() must not query events at all when the default "
-                "config_hash is unset"
+                "scan() must not query events at all when the default config_hash is unset"
             )
 
         monkeypatch.setattr(compute.pd, "read_sql", fake_read_sql_fails_if_called)

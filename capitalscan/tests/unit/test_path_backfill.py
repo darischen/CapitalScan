@@ -105,8 +105,8 @@ def test_compute_rows_for_ticker_skips_event_whose_signal_bar_is_not_yet_ingeste
             "signal_date": [date(2024, 1, 3), date(2024, 6, 1)],  # 2nd date has no bar
         }
     )
-    combined, window_updates, processed, skipped_unfilled, skipped_no_bar = _compute_rows_for_ticker(
-        events, bars, window_days=10
+    combined, window_updates, processed, skipped_unfilled, skipped_no_bar = (
+        _compute_rows_for_ticker(events, bars, window_days=10)
     )
     assert processed == 2
     assert skipped_unfilled == 0
@@ -126,8 +126,8 @@ def test_compute_rows_for_ticker_still_skips_nan_entry_price_as_unfilled():
             "signal_date": [date(2024, 1, 3)],
         }
     )
-    combined, window_updates, processed, skipped_unfilled, skipped_no_bar = _compute_rows_for_ticker(
-        events, bars, window_days=10
+    combined, window_updates, processed, skipped_unfilled, skipped_no_bar = (
+        _compute_rows_for_ticker(events, bars, window_days=10)
     )
     assert processed == 1
     assert skipped_unfilled == 1
@@ -300,11 +300,20 @@ def test_run_path_capture_scopes_ticker_query_to_incomplete_windows(monkeypatch)
 
     def fake_compute_ticker_path(ticker, window_days, database_url, incomplete_only=False):
         assert incomplete_only is True
-        return ticker, pd.DataFrame(columns=["event_id", "day_offset", "favorable", "adverse", "terminal"]), [], 0, 0, 0
+        return (
+            ticker,
+            pd.DataFrame(columns=["event_id", "day_offset", "favorable", "adverse", "terminal"]),
+            [],
+            0,
+            0,
+            0,
+        )
 
     monkeypatch.setattr(path_backfill_mod, "_compute_ticker_path", fake_compute_ticker_path)
 
-    report = path_backfill_mod.run_path_capture(fake_engine, DEFAULT_CONFIG, quiet=True, max_workers=1)
+    report = path_backfill_mod.run_path_capture(
+        fake_engine, DEFAULT_CONFIG, quiet=True, max_workers=1
+    )
 
     assert report.tickers == ["AAA"]
     query_text, params = fake_engine.ticker_query_calls[0]
@@ -324,6 +333,8 @@ def test_events_query_for_ticker_adds_incompleteness_filter_only_when_requested(
     assert "fwd_window_days" not in full_query
     assert full_params == {"ticker": "AAA"}
 
-    scoped_query, scoped_params = _events_query_for_ticker("AAA", window_days=11, incomplete_only=True)
+    scoped_query, scoped_params = _events_query_for_ticker(
+        "AAA", window_days=11, incomplete_only=True
+    )
     assert "fwd_window_days IS NULL OR fwd_window_days < :window_days" in scoped_query
     assert scoped_params == {"ticker": "AAA", "window_days": 11}

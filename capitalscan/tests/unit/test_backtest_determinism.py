@@ -175,7 +175,9 @@ class TestRunBacktestDeterminism:
         assert len(captured) == 2
         pd.testing.assert_frame_equal(_drop_run_id(captured[0]), _drop_run_id(captured[1]))
 
-    def test_two_full_runs_with_multiple_tickers_out_of_order_are_still_identical(self, monkeypatch):
+    def test_two_full_runs_with_multiple_tickers_out_of_order_are_still_identical(
+        self, monkeypatch
+    ):
         """Review Finding 2: the single-ticker version above stays green
         even with `backtest.py`'s `sort_values` call deleted, because one
         ticker's rows arrive in only one possible order. This version uses
@@ -191,20 +193,32 @@ class TestRunBacktestDeterminism:
                 return pd.DataFrame(
                     [
                         _minimal_row(
-                            run_id=run_id, ticker="ZZZ", signal_date=date_(2026, 1, 8), entry_kind="touch"
+                            run_id=run_id,
+                            ticker="ZZZ",
+                            signal_date=date_(2026, 1, 8),
+                            entry_kind="touch",
                         ),
                         _minimal_row(
-                            run_id=run_id, ticker="ZZZ", signal_date=date_(2026, 1, 6), entry_kind="touch"
+                            run_id=run_id,
+                            ticker="ZZZ",
+                            signal_date=date_(2026, 1, 6),
+                            entry_kind="touch",
                         ),
                     ]
                 )
             return pd.DataFrame(
                 [
                     _minimal_row(
-                        run_id=run_id, ticker="AAA", signal_date=date_(2026, 1, 7), entry_kind="touch"
+                        run_id=run_id,
+                        ticker="AAA",
+                        signal_date=date_(2026, 1, 7),
+                        entry_kind="touch",
                     ),
                     _minimal_row(
-                        run_id=run_id, ticker="AAA", signal_date=date_(2026, 1, 5), entry_kind="touch"
+                        run_id=run_id,
+                        ticker="AAA",
+                        signal_date=date_(2026, 1, 5),
+                        entry_kind="touch",
                     ),
                 ]
             )

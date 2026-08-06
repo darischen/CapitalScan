@@ -396,7 +396,7 @@ def _sector_median_return(
     if cache is not None:
         median_key = ("sector_median", sector, as_of, lookback_days)
         if median_key in cache:
-            return cache[median_key]
+            return cast("tuple[float | None, bool]", cache[median_key])
 
     tickers: list[str] = []
     if sector is not None:
@@ -422,6 +422,7 @@ def _sector_median_return(
         return _rel_return_756d(engine, t, as_of, lookback_days)
 
     returns = [r for t in tickers if (r := _peer_return(t)) is not None]
+    result: tuple[float | None, bool]
     if not returns:
         result = (None, fallback)
     else:

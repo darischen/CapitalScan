@@ -68,9 +68,7 @@ def test_loose_ref(tmp_path, monkeypatch):
     git_dir = tmp_path / ".git"
     (git_dir / "refs" / "heads").mkdir(parents=True)
     (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
-    (git_dir / "refs" / "heads" / "main").write_text(
-        LOOSE_SHA + "\n", encoding="utf-8"
-    )
+    (git_dir / "refs" / "heads" / "main").write_text(LOOSE_SHA + "\n", encoding="utf-8")
 
     monkeypatch.setattr(provenance, "REPO_ROOT", tmp_path)
     _no_subprocess(monkeypatch)
@@ -113,14 +111,10 @@ def test_worktree_dot_git_file(tmp_path, monkeypatch):
     # common (main) .git dir, reached via the "commondir" file.
     (wt_gitdir / "HEAD").write_text("ref: refs/heads/feature\n", encoding="utf-8")
     (wt_gitdir / "commondir").write_text("../..\n", encoding="utf-8")
-    (main_git_dir / "refs" / "heads" / "feature").write_text(
-        COMMON_SHA + "\n", encoding="utf-8"
-    )
+    (main_git_dir / "refs" / "heads" / "feature").write_text(COMMON_SHA + "\n", encoding="utf-8")
 
     worktree_root.mkdir(parents=True)
-    (worktree_root / ".git").write_text(
-        f"gitdir: {wt_gitdir}\n", encoding="utf-8"
-    )
+    (worktree_root / ".git").write_text(f"gitdir: {wt_gitdir}\n", encoding="utf-8")
 
     monkeypatch.setattr(provenance, "REPO_ROOT", worktree_root)
     _no_subprocess(monkeypatch)

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from typing import cast
 
 import pandas as pd
 
@@ -147,7 +148,7 @@ def _as_date(value: object) -> date:
     type."""
     if isinstance(value, pd.Timestamp):
         return value.date()
-    return value
+    return cast("date", value)
 
 
 def _indexed_bars(bars_by_ticker: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
@@ -179,7 +180,7 @@ def _hourly_bar_for_entry(
     hourly_by_ticker: dict[str, pd.DataFrame] | None,
     ticker: str,
     day: date,
-    touch_level: float,
+    touch_level: float | None,
     side: Side,
 ) -> pd.Series | None:
     """The hourly bar a `TOUCH_5M`/`TOUCH_30M` fill was actually priced
@@ -200,7 +201,7 @@ def _hourly_bar_for_entry(
     row" and reports a violation rather than skipping it (task brief: a
     row this check cannot check must not silently count as passing).
     """
-    if pd.isna(touch_level):
+    if touch_level is None or pd.isna(touch_level):
         return None
     frame = hourly_by_ticker.get(ticker) if hourly_by_ticker else None
     if frame is None or frame.empty:
@@ -581,7 +582,7 @@ def _check_non_overlap(
     n_pairs_checked = 0
     n_groups_no_bars = 0
     for (ticker, side), group in heads.groupby(["ticker", "side"]):
-        frame = indexed_bars.get(ticker)
+        frame = indexed_bars.get(cast("str", ticker))
         if frame is None:
             n_groups_no_bars += 1
             violations.append(

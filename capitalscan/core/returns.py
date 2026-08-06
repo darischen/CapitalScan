@@ -27,8 +27,17 @@ _MINUTES_PER_HOURLY_BAR = 60.0
 _TOUCH_5M_MINUTES = 5.0
 
 
-def realized_return(entry_price: float, exit_price: float, side: Side) -> float:
-    """Return actually realized between the two fills, gross of costs."""
+def realized_return(entry_price: float | None, exit_price: float | None, side: Side) -> float:
+    """Return actually realized between the two fills, gross of costs.
+
+    Both prices accept `None`. An unresolved position carries a null price,
+    and `research.enrich.enrich_context` documents this path as yielding
+    `NaN` rather than raising — the explicit `None` check below is what
+    `_isnan`'s `None` tolerance already did, made visible to the type
+    checker.
+    """
+    if entry_price is None or exit_price is None:
+        return float("nan")
     if _isnan(entry_price) or _isnan(exit_price) or float(entry_price) == 0.0:
         return float("nan")
     raw = (float(exit_price) - float(entry_price)) / float(entry_price)

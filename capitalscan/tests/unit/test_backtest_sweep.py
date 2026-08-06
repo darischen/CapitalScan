@@ -52,9 +52,7 @@ class TestSweepConfigsCount:
 class TestSweepConfigsGrid:
     def test_atr_stop_mode_covers_all_four_k_values(self):
         configs = sweep_configs(Config())
-        atr_ks = sorted(
-            {c.exits.stop_atr_k for c in configs if c.exits.stop_mode == "atr"}
-        )
+        atr_ks = sorted({c.exits.stop_atr_k for c in configs if c.exits.stop_mode == "atr"})
         assert atr_ks == [1.0, 1.5, 2.0, 2.5]
 
     def test_stop_mode_variant_counts_are_4_1_1(self):

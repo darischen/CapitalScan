@@ -296,9 +296,9 @@ def test_incremental_capture_matches_one_shot_backfill_once_window_is_complete()
 def test_partial_window_returns_none_not_false():
     """Three observed days, asked about a 5-day horizon, no touch inside
     what exists: the honest answer is unknown, never False."""
-    short = _path([(1, 0.005, -0.002, 0.004), (2, 0.006, -0.003, 0.005),
-                   (3, 0.007, -0.004, 0.006)])
+    short = _path([(1, 0.005, -0.002, 0.004), (2, 0.006, -0.003, 0.005), (3, 0.007, -0.004, 0.006)])
     assert touched_by(short, 0.02, 5, Direction.FAVORABLE, entry_offset=0) is None
+
 
 def test_adding_a_threshold_widens_the_grid_with_no_code_change():
     """Gate item 4: a config edit and a re-run, nothing else."""
@@ -319,13 +319,16 @@ def test_extracted_path_has_contiguous_one_based_offsets(bars, entry_price, side
     path = path_for_event(entry_price, side, bars)
     assert list(path["day_offset"]) == list(range(1, len(bars) + 1))
 
+
 def test_first_touch_is_monotonic_across_thresholds(bars, entry_price, side):
     """A tighter threshold is touched no later than a looser one, on both
     tails, and can never be untouched while a looser one is touched."""
 
+
 def test_touched_is_monotonic_across_horizons(bars, entry_price, side):
     """Touched by day 3 implies touched by day 5. None may become True or
     False as the window grows; True never becomes False."""
+
 
 def test_giveback_is_never_negative(bars, entry_price, side, data):
     """exit_price is drawn from the exit bar's own range, because that is
