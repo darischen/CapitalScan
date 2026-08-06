@@ -69,6 +69,56 @@ jobs:
       - name: Sync dependencies
         run: uv sync --extra dev
 
+      # The service container starts empty — `postgres:16` creates the
+      # database but no schema. The integration tests truncate and rewrite
+      # real tables, so without this every one of them errors on a missing
+      # relation ("bar_rejects", "signal_reports", "positions"). This applies
+      # the same Alembic chain a developer machine runs.
+      #
+      # `--target research` is explicit, not optional: the default targets
+      # both research and serving, and no serving database exists in CI.
+      - name: Apply migrations
+        env:
+          DATABASE_URL_RESEARCH: postgresql://capscan:capscan@localhost:5432/capitalscan
+        run: uv run cscan db migrate --target research
+
+      # `compute.scan()` and the `v_events` view both read this GUC to decide
+      # which config's events to serve. Unset, they return nothing — a
+      # deliberate choice over guessing a config (invariant 5b), but one that
+      # reads as a silently empty result rather than an error. A developer
+      # database carries it via a manual `ALTER DATABASE`, which no migration
+      # records, so CI has to set it too.
+      #
+      # Derived from `Config()` rather than hardcoded, so it cannot drift
+      # from the value `test_default_config_hash_is_pinned` guards.
+      - name: Pin the default config_hash GUC
+        env:
+          DATABASE_URL_RESEARCH: postgresql://capscan:capscan@localhost:5432/capitalscan
+        run: |
+          uv run python - <<'PY'
+          from sqlalchemy import text
+
+          from capitalscan.core.config import Config
+          from capitalscan.jobs import db_io
+          from capitalscan.jobs.config import config_hash
+
+          chash = config_hash(Config())
+          engine = db_io.get_engine()
+          # Database name from the connection, not a literal: a changed
+          # POSTGRES_DB would otherwise leave this ALTER pointed at a
+          # database that no longer exists, or worse, one that does.
+          db_name = engine.url.database
+          with engine.connect() as conn:
+              conn.execute(
+                  text(
+                      f'ALTER DATABASE "{db_name}" '
+                      f"SET capitalscan.default_config_hash = '{chash}'"
+                  )
+              )
+              conn.commit()
+          print(f"{db_name}: default_config_hash = {chash}")
+          PY
+
       # This Postgres service is a throwaway container scoped to this CI job
       # only. It never points at a developer's database. Do not repoint
       # DATABASE_URL_RESEARCH at anything but this service container.
