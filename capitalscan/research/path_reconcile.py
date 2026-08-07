@@ -1,7 +1,7 @@
 """Session 10 Task 10.4: the session gate. Compares Task 10.3's
 path-derived labels against the labels Session 9 actually wrote to
 `events` for one run, and reports every mismatch rather than silently
-accepting or silently "fixing" one — `docs/session10.md`: "Do not adjust
+accepting or silently "fixing" one — `docs/sessions/session10.md`: "Do not adjust
 the new layer to match the old one without understanding the cause."
 
 Committed, re-runnable check (not a one-off script): call `reconcile(...)`
@@ -25,7 +25,7 @@ from capitalscan.research.path_labels import derive_session9_labels
 # Every column Task 10.3 derives, plus Task 10.5 additions, in the order they appear on `events`.
 #
 # `giveback` deliberately excluded: Task 10.5's own design
-# (docs/session10.md §10.5, ADR 094) keeps giveback derived-only, not
+# (docs/sessions/session10.md §10.5, ADR 094) keeps giveback derived-only, not
 # materialized — "materialize only what serving needs hot" — so there is no
 # Session-9-era value to reconcile against.
 #

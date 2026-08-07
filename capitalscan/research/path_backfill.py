@@ -4,7 +4,7 @@ every existing event from price history already in the research store.
 Nothing here recomputes an entry price — `events.entry_price` already
 holds Session 9's resolved fill, slippage included, and reusing it
 (rather than calling `core.returns.entry_price_for` a second time) is
-`docs/session10.md`'s explicit instruction: "The entry price definition
+`docs/sessions/session10.md`'s explicit instruction: "The entry price definition
 must match whatever session 9 uses. Read the existing code and reuse it
 rather than reimplementing." Reading the stored value is the only way to
 guarantee that, since a fresh call could drift from whatever config
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import cast
 
 import pandas as pd
@@ -41,7 +41,7 @@ def fwd_window_for_signal(
     `ticker_bars` must be indexed by `pd.Timestamp` (one row per trading
     day, sorted) — the same shape `research/backtest.py`'s `ticker_bars`
     already is, and the same "price history defines the calendar" rule
-    `docs/session10.md` §3 requires: no independent calendar computation.
+    `docs/sessions/session10.md` §3 requires: no independent calendar computation.
 
     Raises `ValueError` if `signal_date` itself has no bar — the signal
     fired on that bar, so its absence is a caller-side input mismatch
@@ -272,6 +272,7 @@ def _run_path_job(
     max_workers: int,
     incomplete_only: bool,
     description: str,
+    run_id: str,
 ) -> PathBackfillReport:
     """Shared dispatch/write loop behind both `run_path_backfill` and
     `run_path_capture` (Task 10.6). The two differ only in which tickers
@@ -303,6 +304,22 @@ def _run_path_job(
         report.events_skipped_unfilled += events_skipped_unfilled
         report.events_skipped_no_signal_bar += events_skipped_no_signal_bar
         if not rows.empty:
+            # ADR 034 provenance, added 2026-08-06 (migration a1f4c7d2e903).
+            # Stamped here, in the controlling process, rather than inside
+            # `_compute_ticker_path`: the worker is spawned and would need
+            # `run_id` threaded through the pickled arguments for no gain,
+            # and invariant 1 keeps clock access out of `core/` anyway —
+            # `path_for_event` lives there.
+            #
+            # `db_io.upsert`'s default overwrites every non-key column, so
+            # both values are rewritten on conflict. That is intended: they
+            # describe the run that produced the row's *current* numbers,
+            # which is the question reconciliation findings 3 and 7 needed
+            # answered and could not answer from this table.
+            #
+            # One clock read per ticker, not per row, so every row a ticker
+            # wrote in one pass shares a timestamp.
+            rows = rows.assign(run_id=run_id, computed_at=datetime.now(timezone.utc))
             db_io.upsert(engine, "path", rows, conflict_cols=["event_id", "day_offset"])
             report.rows_written += len(rows)
         if window_updates:
@@ -337,7 +354,7 @@ def _run_path_job(
 
 
 def run_path_backfill(
-    engine: Engine, config: Config, quiet: bool = False, max_workers: int = 1
+    engine: Engine, config: Config, run_id: str, quiet: bool = False, max_workers: int = 1
 ) -> PathBackfillReport:
     """Backfills `path` and `events.fwd_window_days` for every event with a
     filled entry, one ticker at a time (each ticker's `bars` loaded once
@@ -384,11 +401,12 @@ def run_path_backfill(
         max_workers,
         incomplete_only=False,
         description="path backfill",
+        run_id=run_id,
     )
 
 
 def run_path_capture(
-    engine: Engine, config: Config, quiet: bool = False, max_workers: int = 1
+    engine: Engine, config: Config, run_id: str, quiet: bool = False, max_workers: int = 1
 ) -> PathBackfillReport:
     """Task 10.6: live path capture — the nightly-scheduled counterpart to
     `run_path_backfill` that accumulates each event's forward path as
@@ -431,4 +449,5 @@ def run_path_capture(
         max_workers,
         incomplete_only=True,
         description="path capture",
+        run_id=run_id,
     )

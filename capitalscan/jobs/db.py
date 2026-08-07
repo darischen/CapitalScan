@@ -11,6 +11,7 @@ reads.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -128,5 +129,25 @@ def schema(only: str = "research", out: Path | None = None) -> None:
         console.print(f"[red]pg_dump failed:[/red] {result.stderr}")
         raise RuntimeError(result.stderr)
 
-    out.write_text(result.stdout, encoding="utf-8")
-    console.print(f"wrote {out} ({len(result.stdout)} bytes)")
+    dump = _strip_restrict_tokens(result.stdout)
+    out.write_text(dump, encoding="utf-8")
+    console.print(f"wrote {out} ({len(dump)} bytes)")
+
+
+# pg_dump 18 wraps its output in `\restrict <token>` / `\unrestrict <token>`
+# psql meta-commands, and regenerates that token on every invocation. Left in,
+# every `cscan db schema` produces a two-line diff whether or not the schema
+# changed, which is the fastest way to teach yourself to stop reading schema
+# diffs. Stripping them makes a non-empty `git diff db/schema.sql` mean a real
+# DDL change. They are a psql-session guard against the dump being replayed
+# into a session with unexpected search_path settings, not DDL, so removing
+# them does not change what the file describes.
+_RESTRICT_TOKEN = re.compile(r"^\\(?:un)?restrict\s+\S+\s*$")
+
+
+def _strip_restrict_tokens(dump: str) -> str:
+    return "".join(
+        line
+        for line in dump.splitlines(keepends=True)
+        if not _RESTRICT_TOKEN.match(line.rstrip("\r\n"))
+    )

@@ -60,6 +60,64 @@ This file exists so that a null result is a recorded finding rather than a conve
 
 ## Phase 1 — Data and detection
 
+### Phase 1 gate — 2 of 4 criteria PASS, 1 does not reproduce, 1 not implemented
+
+**Measured 2026-08-06** against the live research database. Written for the
+first time on that date: Phase 1 was asserted passed in `BUILD.md` (Session 6)
+with no gate table behind it, and this table is what that assertion looks like
+when checked. Criteria are `TESTS.md` §10, Phase 1, verbatim.
+
+| Criterion | Result | Evidence |
+|---|---|---|
+| `cscan scan --ticker TSM --start 2026-07-01 --end 2026-07-30` returns the 2026-07-29 event with correct %B and %K | **DOES NOT REPRODUCE** — see below | Command prints `no events found`. The event itself is correct in `events`: `confluence_low`, `bb_pctb = 0.110081`, `k_full = 21.991916` |
+| All golden fixtures pass | PASS | `uv run pytest capitalscan/tests/golden` — 3 passed, 1 skipped (`test_external_reference.py`, awaiting the hand-filled CSV per ADR 086) |
+| Zero nulls in indicators after 2010-01-01 | PASS as qualified by ADR 040 | 929 null-bearing rows past the 272-bar warmup out of 2,380,441; all in AMCR and SW, all frozen-price runs |
+| Random-walk null test passes | **NOT IMPLEMENTED** | No such test exists in `capitalscan/`. DESIGN §6.12 places it in Phase 4 |
+
+**Why the scan gate does not reproduce.** `compute.scan` filters on the
+`capitalscan.default_config_hash` GUC (the same one `v_events` reads —
+invariant 5b forbids a second config-selection mechanism). The GUC is set at
+the database level to `1835688bf7d760ba`, correctly: that is
+`config_hash(Config())` for today's defaults, pinned by
+`test_default_config_hash_is_pinned`.
+
+The gap is history, not wiring. The default config changed on 2026-08-05 —
+`UniverseParams.min_mcap_usd` 100e9 → 30e9 and the new
+`SignalParams.stoch_source` field — which moved the default hash from
+`3e598c59e7d71eae` to `1835688bf7d760ba`. No backtest has run under the new
+hash, so `1835688bf7d760ba` holds only what the live `events` and `poll` jobs
+have written since: **109 events, 2026-07-31 to 2026-08-06**. Everything
+older, including the entire Phase 3 run of record, sits under the previous
+hash and is invisible to `cscan scan`.
+
+So the criterion is unmet for a mundane reason (no backtest since the config
+moved), not a detection defect. Two consequences worth stating:
+
+**`3e598c59e7d71eae` is no longer reachable from any config.** Reverting
+`min_mcap_usd` to 100e9 yields `a6c54c878368cd29`, not the old hash, because
+`stoch_source` is now part of the hashed dataclass shape and cannot be removed
+without deleting the field. Any plan that says "re-run the backtest for
+`config_hash=3e598c59e7d71eae`" cannot be executed as written — a full backtest
+today writes `1835688bf7d760ba`. The Phase 3 run of record is frozen evidence
+from here on, not a target you can append to.
+
+**`cscan scan` recovers as soon as a full backtest runs under the current
+config**, which is also what the Phase 4 statistics need. No code change is
+required for this criterion; a run is.
+
+**Why 929 rows are null and that is correct.** ADR 040's enforcement is "zero
+null values in every indicator column on or after 2010-01-01 *for any ticker
+with continuous coverage*." Splitting the 39,149 null-bearing rows at each
+ticker's own 272nd bar: 38,220 are inside warmup (post-2010 IPOs and re-listed
+tickers, exactly what the qualifier covers) and 929 are past it. All 929 are
+AMCR (509) and SW (420), and all are `bb_pctb` and `k_full` — the two
+indicators with a range in the denominator. Both tickers carry long runs of
+identical OHLC (AMCR: `high = low = close = 45.7500` for all 14 sessions of
+2014-03-10..2014-03-27), which makes Bollinger width and the stochastic range
+exactly zero. A null is the correct output there under invariant 4; a filled
+value would be fabricated. These are the rows already flagged
+`identical_close_run` in `bar_rejects` (9,894 flags).
+
 ### Backfill record
 
 **2026-08-02, measured against the live research database, HEAD `455d64b`.**
@@ -296,6 +354,55 @@ provenance and rewriting the column would fabricate a record. All 18
 sweep runs (`backtest_sweep_*`, 2026-08-03) carry a real `git_sha`
 (`aacee77d827f9953f3193faaabcbd793798028f2`), confirming the fix holds for
 current work.
+
+---
+
+## Phase 2 — Poller and notifications
+
+### Phase 2 gate — 2 of 4 criteria PASS, 1 fails, 1 unverified
+
+**Measured 2026-08-06** against the live research database, covering the four
+polling sessions on record (2026-08-03 through 2026-08-06). Written for the
+first time on that date, for the same reason as the Phase 1 table above:
+`BUILD.md` marks the Session 8 / Phase 2 gate passed and nothing recorded what
+was measured. Criteria are `TESTS.md` §10, Phase 2, verbatim.
+
+| Criterion | Result | Evidence |
+|---|---|---|
+| Poller detects a live breach within one polling interval | PASS on detection, **interval latency unverified** | 195 `events` rows carry a `run_id` belonging to a `poll` job, spanning 2026-08-03..2026-08-06. Nothing in the schema records detection latency against tick time, so the "within one interval" half is not checkable from stored data |
+| Notification delivered on all three configured channels | **FAIL** | All 260 `signal_reports` rows carry `channels_sent = {}`. Zero deliveries on any channel across four sessions |
+| `poller_sessions` records the session with coverage percentage | PASS | 4 rows, all with `started_at`, `ended_at`, `ticks_completed`, `ticks_expected`, `coverage_pct` populated |
+| Restart mid-session does not re-fire an already-sent event | PASS in production, no restart drill on record | 260 `signal_reports` rows over 260 distinct `event_id` values — no event reported twice. The debounce logic itself is covered by `capitalscan/tests/integration/test_poll.py`, which cannot be run against the live database (it truncates `tickers`) |
+
+```sql
+SELECT * FROM poller_sessions ORDER BY session_date;
+```
+
+| `session_date` | ticks completed | ticks expected | coverage |
+|---|---|---|---|
+| 2026-08-03 | 75 | 78 | 96.154% |
+| 2026-08-04 | 74 | 78 | 94.872% |
+| 2026-08-05 | 74 | 78 | 94.872% |
+| 2026-08-06 | 57 | 78 | 73.077% |
+
+Missed ticks are expected and logged rather than treated as failures
+(ADR 084). 2026-08-06's 73.077% comes from a session that started at 11:17 UTC
+instead of the usual 09:30.
+
+**The notification failure is a configuration state, not a code defect.**
+`notify.notify_all` returns the list of channels that succeeded, and
+`jobs/poll.py:361` writes that list straight to `channels_sent`. An empty list
+means no notifier was active, which `test_notify.py`'s
+`test_no_channels_active_with_no_env_vars_set` shows is what happens when the
+Discord webhook, ntfy topic, and the four SMTP variables are all unset. The
+delivery path has unit coverage (7 tests in `test_notify.py`, including
+per-channel activation and failure isolation); what has never happened is a
+delivery in production.
+
+This matters beyond the gate: an advisory system whose entire output surface
+in Phase 2 is a notification has been running four sessions and telling
+nobody. Configure at least one channel before treating the poller as
+operational.
 
 ---
 
@@ -572,7 +679,11 @@ Session 9 has no outstanding BUILD §9 items.
 
 ---
 
-## Session 10 — Path store and reconciliation
+## Session 10 — Forward path store and derived label layer
+
+Tasks 10.2 through 10.7, plus the 2026-08-05 pre-Phase-4 audit. This was two
+separate top-level "Session 10" sections until 2026-08-06; they are merged
+here in task order, with no content dropped.
 
 ### Task 10.2 — Path backfill
 
@@ -757,10 +868,6 @@ computation or its already-written output; every fix was in
 `path_reconcile.py`'s comparison/tolerance logic, which runs at reconcile
 time only.
 
----
-
-## Session 10 — Forward path store and derived label layer
-
 ### 2026-08-04 — Task 10.5: New label families (giveback)
 
 **Session 10 Task 10.5 Implementation Complete**
@@ -777,7 +884,7 @@ Implementation includes:
 
 **Tests**: 15/15 path_labels tests pass (5 new tests for giveback null/non-negative/hand-verification scenarios). All reconciliation tests pass; giveback properly flagged as explained difference in pre-10.5 run comparisons.
 
-**Next**: Session 10 gate (docs/session10.md §4) requires all of 10.1-10.5 passing, with reconciliation against Session 9 labels passing clean before Phase 4 statistics work begins.
+**Next**: Session 10 gate (docs/sessions/session10.md §4) requires all of 10.1-10.5 passing, with reconciliation against Session 9 labels passing clean before Phase 4 statistics work begins.
 
 ### 2026-08-04 — Task 10.6: Live path capture
 
@@ -877,6 +984,56 @@ Still open, deliberately: `events.giveback` exists (migration `699cb410d219`)
 and is NULL on all 5,573,999 rows. Nothing writes it, matching ADR 094's
 "materialize only what serving needs hot". The false comment in
 `path_reconcile.py` claiming the column does not exist is corrected.
+
+**Resolved 2026-08-06:** re-measured at 0 non-null out of 5,574,162 rows (the
+row count moved with nightly event creation; the null count did not). ADR 094
+now records the decision — the column is **dropped**, not populated, in the
+post-Phase-4 cleanup migration. It stays derivable in
+`research/path_labels.py`, which is where it was always computed.
+
+### Task 10.7 — Documentation and schedule wiring
+
+**2026-08-06.** The remaining 10.7 documentation debt, closed:
+`DESIGN.md` §9.4's schedule table now lists path capture on the nightly line
+(10.6 deferred the wiring to 10.7, 10.7 shipped the code, the table was never
+updated); `docs/session10.md` references across `BUILD.md`, `DECISIONS.md`,
+`RESULTS.md`, and four `research/` modules corrected to
+`docs/sessions/session10.md`; ADR 002 marked Superseded by 035 and 040;
+`DECISIONS.md`'s "Phase gates" block rewritten from its stale six-phase
+numbering to the seven-phase plan every other document already used.
+
+Two schema gaps closed in the same pass. `path` gained `run_id` and
+`computed_at` (migration `a1f4c7d2e903`), which ADR 034 required from the
+start — reconciliation findings 3 and 7 had both needed that provenance and
+had to reconstruct it by cross-referencing `bars.run_id`. Both columns are
+nullable; the 27,581,401 rows already written have genuinely unrecoverable
+origins, and a synthetic backfill would be a fabricated provenance column.
+`cell_stats`' primary key became `(cell_id, config_hash)` (migration
+`b2e5d81a4c76`, ADR 096) while the table was still empty, so the 18-config
+sweep can be compared without running Phase 4 once per config.
+
+`run_backtest` is now wired into `cscan weekly`. Event labels are written only
+by that job, so an event whose forward window was open when the backtest last
+ran kept frozen labels permanently — event 2775021 (CAT, 2026-07-29) carried
+`touched_5pct = false` and `mfe = 0.042601` against a `path` that had since
+reached `favorable = 0.153993`. The Phase 3 validation harness is deliberately
+excluded from the weekly job (~2h28m, single-threaded, and it re-validates a
+detection engine a label refresh cannot change).
+
+**Not yet run:** the one-off `run_backtest` that rewrites the existing stale
+labels, and the `cscan path reconcile` that confirms the residual drops to the
+9 documented boundary events. Until that runs, the stale labels described
+above are still in `events`.
+
+**That re-run cannot target `3e598c59e7d71eae`.** The default config moved on
+2026-08-05 and the old hash is unreachable from any current config (see the
+Phase 1 gate table's "Why the scan gate does not reproduce"). A backtest today
+writes `1835688bf7d760ba` — a fresh, full-history config generation, not a
+label refresh of the Phase 3 rows. Reconciling afterward means reconciling
+against the new hash. The Phase 3 run of record keeps its stale labels
+permanently, which is acceptable: it is published evidence, and the events it
+covers ran their windows out long ago except for the tail the 2026-08-05 audit
+already identified.
 
 ---
 

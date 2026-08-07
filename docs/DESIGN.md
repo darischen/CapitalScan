@@ -1370,8 +1370,9 @@ The test family is defined explicitly: all headline-grid cells across all ladder
 
 ```sql
 CREATE TABLE cell_stats (
-  cell_id text PRIMARY KEY,
+  cell_id text NOT NULL,
   run_id text NOT NULL, config_hash text NOT NULL,
+  PRIMARY KEY (cell_id, config_hash),
 
   signal_type text, dd_bucket text, signal_strength int,
   side text, entry_kind text, split_key text, era text,
@@ -1399,6 +1400,14 @@ CREATE TABLE cell_stats (
   computed_at timestamptz, git_sha text
 );
 ```
+
+The primary key is `(cell_id, config_hash)`, amended 2026-08-06 by ADR 096.
+It was `cell_id` alone, which held one statistics snapshot at a time and made
+each Phase 4 run overwrite the previous. Session 9's sweep wrote 18 distinct
+`config_hash` values into `events`, so the composite key is what lets those 18
+be compared without re-running Phase 4 once per config. `cell_key()` takes
+`config_hash` as an input; `cell_id` itself is unchanged and still derived from
+its component columns only.
 
 `exit_mix` (fraction by exit reason) is the diagnostic that separates "a few large winners carrying many small losses" from "consistently positive." A cell where 70% of exits are stops tells a different story from one where 70% are targets, even at identical mean return.
 
@@ -2021,11 +2030,32 @@ Postgres tuning for 32 GB shared with other applications: `shared_buffers=1GB`, 
 Windows Task Scheduler with **"Run task as soon as possible after a scheduled start is missed"** enabled, so a job missed while the machine was off fires at next boot regardless of time (ADR 080).
 
 ```
-16:30 ET  nightly   ingest, indicators, events, outcomes, sync
+16:30 ET  nightly   ingest, indicators, events, path capture, outcomes, sync
 09:15 ET  poller    runs until 16:00
 Sun 02:00 weekly    backtest, cell_stats, sync
 1st 03:00 monthly   retrain, calibrate, promote or hold
 ```
+
+Path capture added to the nightly line 2026-08-06. Task 10.6 deferred the
+wiring to 10.7, 10.7 completed it in `jobs/cli.py::nightly`, and this table
+was not updated to match. It must run **after** `events`: a signal that fired
+tonight needs its `events` row to exist before it can be selected as an
+incomplete-window event to capture path rows for.
+
+Implementation status against this table, as of 2026-08-06. `nightly` runs
+everything on its line except `sync` (Phase 5). `weekly` runs `backtest`;
+`cell_stats` is Phase 4 and `sync` is Phase 5. `monthly` records its slot and
+runs nothing (Phase 6). The weekly `backtest` deliberately does **not** run
+the Phase 3 validation harness — see `jobs/cli.py::weekly` for why a
+2h28m single-threaded harness has no place in a weekly job.
+
+The weekly `backtest` entry is a **label refresh**, not only a research
+re-run, and nothing enforced it until 2026-08-06. Event labels (`mfe`, `mae`,
+`touched_*pct`, `capture_ratio`, `fwd_ret_*d`) are written only by
+`run_backtest`. An event whose forward window was still open when the backtest
+last ran keeps those labels frozen at that moment, permanently, while `path`
+keeps growing underneath it. See ADR 094, "Materialized labels need a refresh
+job, not just an exclusion filter."
 
 Each task runs a `.bat` wrapper in `scripts/` that activates the virtualenv, sets `CAPSCAN_ENV`, and invokes `cscan <job>`. Task definitions are exported to `scripts/tasks/*.xml` and committed, so the schedule is reproducible rather than living only in a GUI.
 

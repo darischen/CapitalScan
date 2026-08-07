@@ -1,6 +1,6 @@
 """Property-based tests for path store invariants (Session 10, task 10.7).
 
-Four invariants, per `docs/session10.md` §10.7:
+Four invariants, per `docs/sessions/session10.md` §10.7:
 - No day-offset gaps in an extracted path.
 - Monotonicity across thresholds and across horizons.
 - Giveback non-negative by construction.

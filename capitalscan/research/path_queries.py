@@ -1,7 +1,7 @@
 """Session 10 Task 10.5: the threshold x horizon x direction label grid,
 derived from `path` on demand.
 
-`docs/session10.md` §10.5 is explicit that these are **queries against the
+`docs/sessions/session10.md` §10.5 is explicit that these are **queries against the
 path table, not materialized columns**: the grid is `4 x 5 x 2 = 40`
 touched flags plus 40 first-touch days with today's config, one new
 threshold adds ~10 cells and one new horizon ~16, and materializing that
@@ -118,6 +118,19 @@ def first_touch_day(
     `None` covers both "never touched inside the window" and "window too
     short to know", per §10.5's "null means untouched, never zero" — day 0
     is not a legal answer, since the window starts at entry+1.
+
+    **Pair this with `touched_by`; never read it alone.** `touched_by` is
+    three-valued and separates those two cases — this function collapses
+    them, by design, because a first-touch *day* has no three-valued
+    encoding that isn't a sentinel. The collapse is safe only if the caller
+    has already established answerable-ness. A consumer that averages
+    `first_touch_day` over a population without filtering on
+    `touched_by(...) is not None` drops every still-accumulating event into
+    the same bucket as every genuinely-untouched one, biasing the
+    time-to-touch distribution toward whatever the recent events look like
+    — and it fails silently, because both inputs are legitimately `None`.
+    BUILD.md's Phase 4 label-source contract states the same rule for
+    statistics consumers.
     """
     window = _window(path, entry_offset, horizon)
     touched = window.loc[_breaches(window, target, direction)]

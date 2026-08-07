@@ -41,7 +41,7 @@ refactor decision remain open, tracked outside this document.
 derived label layer (tasks 10.1–10.6) and passes its gate with reconciliation
 clean against Session 9 labels. ADR 094 records the design (path table as
 source of truth, labels derived on demand). Tests and documentation are
-complete (task 10.7). See `docs/session10.md` §4 for gate criteria and
+complete (task 10.7). See `docs/sessions/session10.md` §4 for gate criteria and
 `docs/RESULTS.md` (Session 10 tasks) for run details.
 
 **Phase 4 boundary is after Session 10.** No change to signal detection, event
@@ -64,6 +64,33 @@ The rule underneath: **`path` is the source of truth for anything measured off
 the traded price series, and never for return measurement across a horizon.**
 DESIGN §2.2 and `core/returns.py`'s module docstring own that split; the path
 table does not override it.
+
+**Two consumer rules Phase 4 must follow** (added 2026-08-06):
+
+**Filter on window completeness, always.** Every statistic reads only events
+satisfying `fwd_window_days >= entry_offset + max_hold_days`. An event whose
+forward window was still open when the backtest last ran carries labels frozen
+at that moment, and `cscan weekly`'s refresh (`jobs/cli.py::weekly`) narrows
+that staleness window without closing it — a signal that fired last night is
+legitimately unlabelable until its window closes. The filter makes the
+statistics correct regardless of when the refresh last ran, rather than
+depending on scheduling. See ADR 094, "Materialized labels need a refresh job,
+not just an exclusion filter."
+
+**Never read `first_touch_day` alone.** `research/path_labels.py` exposes two
+functions with deliberately different null semantics:
+
+| Function | Returns `None` when |
+|---|---|
+| `touched_by` | the window is too short to answer — three-valued, so `True`/`False`/unknown are distinguishable |
+| `first_touch_day` | **either** the target was never touched in a complete window **or** the window was too short |
+
+Both are correct and both match §10.5's "null means untouched, never zero."
+But a caller reading `first_touch_day` on its own cannot tell "did not happen"
+from "cannot know yet," and averaging the two together silently biases the
+time-to-touch distribution toward whatever the recent, still-accumulating
+events look like. Pair the calls: use `touched_by` to establish
+answerable-ness, then read `first_touch_day` for the day.
 
 ---
 

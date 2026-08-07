@@ -1016,7 +1016,9 @@ def path_backfill_cmd(
     config = _resolve_config_or_exit()
     engine = db_io.get_engine()
     with ingest.run_job(engine, "path_backfill", {"workers": workers}) as job_report:
-        report = run_path_backfill(engine, config, quiet=quiet, max_workers=workers)
+        report = run_path_backfill(
+            engine, config, job_report.run_id, quiet=quiet, max_workers=workers
+        )
         job_report.rows_written = report.rows_written
     console.print(
         f"path backfill: events_processed={report.events_processed} "
@@ -1048,7 +1050,9 @@ def path_capture_cmd(
     config = _resolve_config_or_exit()
     engine = db_io.get_engine()
     with ingest.run_job(engine, "path_capture", {"workers": workers}) as job_report:
-        report = run_path_capture(engine, config, quiet=quiet, max_workers=workers)
+        report = run_path_capture(
+            engine, config, job_report.run_id, quiet=quiet, max_workers=workers
+        )
         job_report.rows_written = report.rows_written
     console.print(
         f"path capture: events_processed={report.events_processed} "
@@ -1227,21 +1231,108 @@ def nightly() -> None:
     # Task 10.6: must run after run_events — a signal fired tonight needs
     # its events row to exist before it can be selected as an
     # incomplete-window event to capture path rows for.
-    run_path_capture(engine, config, quiet=True)
+    #
+    # Wrapped in `run_job` as of 2026-08-06: `path` now carries `run_id`
+    # (ADR 034, migration a1f4c7d2e903) and `run_job` is what mints one.
+    # The nightly capture previously wrote path rows outside any `runs`
+    # row at all, so nightly-written rows were the one class of path row
+    # with no recoverable origin even in principle.
+    with ingest.run_job(engine, "path_capture", {"trigger": "nightly"}) as path_job:
+        path_report = run_path_capture(engine, config, path_job.run_id, quiet=True)
+        path_job.rows_written = path_report.rows_written
     console.print("nightly: chain complete (sync --to-serving not yet implemented)")
 
 
 @app.command()
-def weekly() -> None:
-    """Orchestrates the weekly chain (DESIGN §4.12). Backtest/cell_stats/sync
-    are Phase 3/4/5 scope and stay unimplemented — this records the
-    schedule slot now so ADR 080's catch-up tracking is in place before
-    those jobs exist.
-    """
-    from capitalscan.jobs import db_io, scheduled_runs
+def weekly(
+    workers: int = typer.Option(8, help="ProcessPoolExecutor workers for the backtest refresh"),
+) -> None:
+    """Orchestrates the weekly chain (DESIGN §4.12): the backtest label
+    refresh. `cell_stats` is Phase 4 scope and `sync` is Phase 5 scope; both
+    stay unimplemented.
 
-    scheduled_runs.record(db_io.get_engine(), "weekly")
-    console.print("weekly: no jobs wired yet (backtest/cell_stats are Phase 3-4 scope)")
+    Why the backtest belongs on a schedule rather than being run by hand.
+    Event labels (`mfe`, `mae`, `touched_*pct`, `capture_ratio`,
+    `fwd_ret_*d`) are written only by `run_backtest` through
+    `research/enrich.py`. `nightly` runs `run_events` and `run_path_capture`,
+    so new events get rows and `path` keeps growing, but an event whose
+    forward window was still open when the backtest last ran keeps the labels
+    frozen at that moment — permanently, with nothing in the system to
+    correct it. Measured 2026-08-06: event 2775021 (CAT, signal_date
+    2026-07-29) carried `touched_5pct = false` and `mfe = 0.042601` against a
+    `path` whose `favorable` had since reached 0.153993.
+
+    Reconciliation's exclusion filters (`research/path_reconcile.py`) hide
+    this rather than fix it, and they hide it for exactly 45 days:
+    `_drop_recent_events` measures its window from `date.today()`, so a stale
+    event ages out of the exclusion while staying stale and
+    `cscan path reconcile` starts failing on its own with no code change
+    behind it. ADR 094 and DESIGN §9.4's schedule table (Sun 02:00, weekly
+    backtest) both call for this refresh; only the wiring was missing.
+
+    The Phase 3 validation harness is deliberately not run here. It is
+    single-threaded and takes ~2h28m regardless of worker count (CLAUDE.md),
+    it re-validates a detection/entry engine this refresh does not change,
+    and a weekly job that runs for two and a half hours will be turned off.
+    Run `cscan backtest` by hand when the engine itself changes; that path
+    still runs the harness.
+    """
+    from dataclasses import asdict
+
+    from capitalscan.jobs import db_io, ingest, scheduled_runs
+    from capitalscan.jobs.config import config_hash as compute_config_hash
+    from capitalscan.research.backtest import BacktestRunFailed, run_backtest
+
+    engine = db_io.get_engine()
+    # Same ordering rationale as `nightly`: record the slot before config
+    # resolution so a config failure is distinguishable from the scheduler
+    # never firing.
+    scheduled_runs.record(engine, "weekly")
+    config = _resolve_config_or_exit()
+    chash = compute_config_hash(config)
+    resolved = _resolve_tickers(None)
+
+    run_params = {
+        "config_hash": chash,
+        "config": asdict(config),
+        "full_universe": True,
+        "workers": workers,
+        "n_tickers": len(resolved),
+        "trigger": "weekly",
+    }
+
+    try:
+        with ingest.run_job(engine, "backtest", run_params) as report:
+            bt_report = run_backtest(
+                resolved,
+                config,
+                report.run_id,
+                engine=engine,
+                max_workers=workers,
+                full_universe=True,
+            )
+            report.rows_written = bt_report.rows_written
+            if bt_report.failed_tickers:
+                failed = sorted(bt_report.failed_tickers)
+                sample = ", ".join(failed[:10])
+                more = "" if len(failed) <= 10 else f", +{len(failed) - 10} more"
+                report.notes = f"{len(failed)}/{len(resolved)} ticker(s) failed: {sample}{more}"
+    except BacktestRunFailed as exc:
+        console.print(
+            "[red]error[/red]: weekly backtest refresh failed — every dispatched "
+            f"ticker's worker raised, which points at the config, not the data. {exc}"
+        )
+        raise typer.Exit(code=1) from None
+
+    console.print(
+        f"weekly: label refresh complete config_hash={chash} "
+        f"run_id={bt_report.run_id} rows_written={bt_report.rows_written} "
+        f"tickers={len(bt_report.tickers)}/{len(resolved)} "
+        "(cell_stats is Phase 4 scope, sync is Phase 5 scope)"
+    )
+    if bt_report.failed_tickers:
+        console.print(f"[red]{len(bt_report.failed_tickers)} ticker(s) failed[/red]")
+        raise typer.Exit(code=1)
 
 
 @app.command()

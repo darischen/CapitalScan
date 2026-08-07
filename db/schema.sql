@@ -2,7 +2,6 @@
 -- PostgreSQL database dump
 --
 
-\restrict N9KdlAGDFUYc1lf9jdbiHD8tzrSMA5bjgMaH3YnJtrcwQwjECdMnKSZptnY2goc
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg13+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg13+1)
@@ -338,6 +337,7 @@ CREATE TABLE public.events (
     is_terminal boolean,
     split_key text NOT NULL,
     fwd_window_days integer,
+    giveback numeric(12,6),
     CONSTRAINT events_side_check CHECK ((side = ANY (ARRAY['long'::text, 'short'::text]))),
     CONSTRAINT events_split_key_check CHECK ((split_key = ANY (ARRAY['train'::text, 'validate'::text, 'holdout'::text])))
 );
@@ -479,6 +479,23 @@ CREATE TABLE public.outcomes (
 
 
 ALTER TABLE public.outcomes OWNER TO capscan;
+
+--
+-- Name: path; Type: TABLE; Schema: public; Owner: capscan
+--
+
+CREATE TABLE public.path (
+    event_id bigint NOT NULL,
+    day_offset integer NOT NULL,
+    favorable numeric(12,6) NOT NULL,
+    adverse numeric(12,6) NOT NULL,
+    terminal numeric(12,6) NOT NULL,
+    run_id text,
+    computed_at timestamp with time zone
+);
+
+
+ALTER TABLE public.path OWNER TO capscan;
 
 --
 -- Name: poller_sessions; Type: TABLE; Schema: public; Owner: capscan
@@ -1235,7 +1252,7 @@ ALTER TABLE ONLY public.benchmarks
 --
 
 ALTER TABLE ONLY public.cell_stats
-    ADD CONSTRAINT cell_stats_pkey PRIMARY KEY (cell_id);
+    ADD CONSTRAINT cell_stats_pkey PRIMARY KEY (cell_id, config_hash);
 
 
 --
@@ -1308,6 +1325,14 @@ ALTER TABLE ONLY public.order_intents
 
 ALTER TABLE ONLY public.outcomes
     ADD CONSTRAINT outcomes_pkey PRIMARY KEY (prediction_id);
+
+
+--
+-- Name: path path_pkey; Type: CONSTRAINT; Schema: public; Owner: capscan
+--
+
+ALTER TABLE ONLY public.path
+    ADD CONSTRAINT path_pkey PRIMARY KEY (event_id, day_offset);
 
 
 --
@@ -1442,26 +1467,10 @@ CREATE INDEX events_ticker_date ON public.events USING btree (ticker, signal_dat
 
 
 --
--- Name: path; Type: TABLE; Schema: public; Owner: capscan
+-- Name: indicators_ts_idx; Type: INDEX; Schema: public; Owner: capscan
 --
 
-CREATE TABLE public.path (
-    event_id bigint NOT NULL,
-    day_offset integer NOT NULL,
-    favorable numeric(12,6) NOT NULL,
-    adverse numeric(12,6) NOT NULL,
-    terminal numeric(12,6) NOT NULL
-);
-
-
-ALTER TABLE public.path OWNER TO capscan;
-
---
--- Name: path path_pkey; Type: CONSTRAINT; Schema: public; Owner: capscan
---
-
-ALTER TABLE ONLY public.path
-    ADD CONSTRAINT path_pkey PRIMARY KEY (event_id, day_offset);
+CREATE INDEX indicators_ts_idx ON public.indicators USING btree (ts);
 
 
 --
@@ -1469,13 +1478,6 @@ ALTER TABLE ONLY public.path
 --
 
 CREATE INDEX path_event_id ON public.path USING btree (event_id);
-
-
---
--- Name: indicators_ts_idx; Type: INDEX; Schema: public; Owner: capscan
---
-
-CREATE INDEX indicators_ts_idx ON public.indicators USING btree (ts);
 
 
 --
@@ -1503,19 +1505,19 @@ ALTER TABLE ONLY public.events
 
 
 --
--- Name: path path_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: capscan
---
-
-ALTER TABLE ONLY public.path
-    ADD CONSTRAINT path_event_id_fkey FOREIGN KEY (event_id) REFERENCES public.events(id) ON DELETE CASCADE;
-
-
---
 -- Name: outcomes outcomes_prediction_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: capscan
 --
 
 ALTER TABLE ONLY public.outcomes
     ADD CONSTRAINT outcomes_prediction_id_fkey FOREIGN KEY (prediction_id) REFERENCES public.predictions(id);
+
+
+--
+-- Name: path path_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: capscan
+--
+
+ALTER TABLE ONLY public.path
+    ADD CONSTRAINT path_event_id_fkey FOREIGN KEY (event_id) REFERENCES public.events(id) ON DELETE CASCADE;
 
 
 --
@@ -1546,5 +1548,4 @@ ALTER TABLE ONLY public.universe
 -- PostgreSQL database dump complete
 --
 
-\unrestrict N9KdlAGDFUYc1lf9jdbiHD8tzrSMA5bjgMaH3YnJtrcwQwjECdMnKSZptnY2goc
 

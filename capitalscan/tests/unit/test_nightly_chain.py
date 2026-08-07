@@ -9,12 +9,14 @@ This test asserts `nightly()` calls `ingest.run_bars_hourly` with the same
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import date, timedelta
 
 import pytest
 
 from capitalscan.jobs import cli, compute, db_io, ingest, scheduled_runs
 from capitalscan.research import path_backfill as path_backfill_mod
+from capitalscan.research.path_backfill import PathBackfillReport
 
 
 @pytest.fixture(autouse=True)
@@ -28,12 +30,25 @@ def _no_real_nightly_io(monkeypatch):
     monkeypatch.setattr(db_io, "get_engine", lambda: "fake-engine")
     monkeypatch.setattr(cli, "_resolve_tickers", lambda tickers: ["AAPL", "MSFT"])
     monkeypatch.setattr(scheduled_runs, "record", lambda engine, job: None)
-    monkeypatch.setattr(path_backfill_mod, "run_path_capture", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        path_backfill_mod, "run_path_capture", lambda *args, **kwargs: PathBackfillReport()
+    )
+
+    # `nightly` wraps its path capture in `ingest.run_job` (2026-08-06) so
+    # the rows it writes carry a `run_id` — `path.run_id`, ADR 034. The real
+    # `run_job` inserts a `runs` row, which is exactly the database access
+    # this fixture exists to keep out of a unit test.
+    @contextmanager
+    def _fake_run_job(engine, job, params):
+        yield ingest.IngestReport(job=job, run_id="test-run-id")
+
+    monkeypatch.setattr(ingest, "run_job", _fake_run_job)
 
 
-def _record_call(calls: list, name: str):
+def _record_call(calls: list, name: str, result=None):
     def _fake(*args, **kwargs):
         calls.append({"name": name, "args": args, "kwargs": kwargs})
+        return result
 
     return _fake
 
@@ -101,7 +116,9 @@ def test_nightly_calls_run_path_capture_after_run_events(monkeypatch):
     for name in ["run_indicators", "run_events"]:
         monkeypatch.setattr(compute, name, _record_call(calls, name))
     monkeypatch.setattr(
-        path_backfill_mod, "run_path_capture", _record_call(calls, "run_path_capture")
+        path_backfill_mod,
+        "run_path_capture",
+        _record_call(calls, "run_path_capture", result=PathBackfillReport()),
     )
 
     cli.nightly()

@@ -4,7 +4,7 @@ this module must produce the same numbers Session 9's
 `research.enrich.path_metrics` produces for the same event, modulo the
 one documented exception (`fwd_ret_*d`; see the module-level note below).
 
-**Writes nothing.** `docs/session10.md` §6-§7 require the old label
+**Writes nothing.** `docs/sessions/session10.md` §6-§7 require the old label
 columns on `events` to stay untouched until the reconciliation gate
 (Task 10.4) passes — rollback has to be free. `derive_session9_labels`
 returns an in-memory `DataFrame`; nothing in this module executes an
@@ -12,7 +12,7 @@ INSERT or UPDATE.
 
 Reads only the `path` table and `events` metadata columns
 (`entry_kind`, `holding_days`, `entry_price`, `exit_price`, `side`) —
-never `bars`/`indicators` — per `docs/session10.md`'s 10.3 acceptance
+never `bars`/`indicators` — per `docs/sessions/session10.md`'s 10.3 acceptance
 criterion.
 """
 

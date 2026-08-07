@@ -279,7 +279,7 @@ def test_run_path_backfill_serial_aggregates_across_tickers(monkeypatch):
     monkeypatch.setattr(path_backfill_mod, "_compute_ticker_path", fake_compute_ticker_path)
     monkeypatch.setattr(db_io, "upsert", fake_upsert)
 
-    report = run_path_backfill(fake_engine, DEFAULT_CONFIG, quiet=True, max_workers=1)
+    report = run_path_backfill(fake_engine, DEFAULT_CONFIG, "run-test", quiet=True, max_workers=1)
 
     assert report.events_processed == 3
     assert report.events_skipped_unfilled == 1
@@ -312,7 +312,7 @@ def test_run_path_capture_scopes_ticker_query_to_incomplete_windows(monkeypatch)
     monkeypatch.setattr(path_backfill_mod, "_compute_ticker_path", fake_compute_ticker_path)
 
     report = path_backfill_mod.run_path_capture(
-        fake_engine, DEFAULT_CONFIG, quiet=True, max_workers=1
+        fake_engine, DEFAULT_CONFIG, "run-test", quiet=True, max_workers=1
     )
 
     assert report.tickers == ["AAA"]

@@ -4,7 +4,13 @@ Architecture decision record for `CapitalScan`.
 
 Format: each entry states the decision, why, and what it costs. Status is one of Pinned, Provisional, or Superseded. Never delete an entry. Mark it Superseded and add the replacement below it.
 
-Last updated: 2026-08-02
+Last updated: 2026-08-06
+
+Recent structural changes: ADR 094's 2026-08-05 corrections; ADRs 095 and 096
+added 2026-08-06; ADR 002 marked Superseded; the "Phase gates" block rewritten
+to the seven-phase numbering (see the note in that section); body order
+restored to ADR sequence — 035-040 and 093-094 had drifted outside the ordered
+run.
 
 ---
 
@@ -13,7 +19,7 @@ Last updated: 2026-08-02
 | ID | Title | Status |
 |---|---|---|
 | 001 | Two universes: train wide, trade narrow | Pinned |
-| 002 | Ten years of history, 2015 forward | Pinned |
+| 002 | Ten years of history, 2015 forward | Superseded by 035 and 040 |
 | 003 | Compute indicators in-house | Pinned |
 | 004 | Indicator parameters pinned once | Pinned |
 | 005 | Signal fires on intraday touch, not close | Pinned |
@@ -105,6 +111,9 @@ Last updated: 2026-08-02
 | 091 | Config resolution lives in jobs, not core | Pinned |
 | 092 | Exit thresholds are ExitParams fields, never literals | Pinned |
 | 093 | Terminal quantiles expand to five horizons | Provisional. Authorizes a Phase 6 rewrite of DESIGN §7.4 |
+| 094 | Path table is source of truth; labels are derived views | Pinned |
+| 095 | Exit thresholds in SQL are a second exit implementation | Provisional. Authorizes a Phase 5 rebuild of `v_positions` |
+| 096 | `cell_stats` is keyed by config, not by cell alone | Pinned |
 
 ---
 
@@ -124,7 +133,14 @@ Schema. `universe_train` and `universe_trade` as separate flags on the `universe
 
 ## 002. Ten years of history, 2015 forward
 
-Status: Pinned
+Status: Superseded by 035 and 040 (marked 2026-08-06)
+
+**Superseded.** ADR 035 moved the training universe to the union of every S&P
+500 member with a 2010-01-01 event start. ADR 040 then moved bar ingest back
+to 2009-01-01, using the extra year as indicator warmup. Neither date below is
+current: the pipeline ingests from 2009 and detects events from 2010. This
+entry stayed marked Pinned until 2026-08-06, so anything written against it
+before that date may carry the 2015 assumption.
 
 Decision. Ingest daily bars from 2015-01-01. Extend to 2005 if the effective sample falls short after clustering adjustment.
 
@@ -610,6 +626,75 @@ Decision. `run_id` and `git_sha` on every row in `cell_stats`, `predictions`, an
 
 Rationale. When numbers change between runs, you need to know whether the data moved or the code moved. Without provenance that question is unanswerable.
 
+---
+
+## 035. Union universe, 2010 start, ADRs only for non-US
+
+Status: Pinned
+
+Decision. Training universe is the union of every S&P 500 member between 2010 and today, roughly 750 tickers, including names delisted or removed. Start date 2010-01-01 for events. Non-US exposure comes through US-listed ADRs only (TSM, ASML, SAP, NVO and comparable), never foreign primary listings.
+
+Rationale. The union directly removes survivorship bias, which ADR 015 depends on. Cisco after 2007, Intel after 2019, and every removed name stay in the sample. A 2010 start covers the 2011 correction, the 2015 and 2018 selloffs, 2020, and 2022, which is four distinct drawdown regimes. 2008 is excluded because its microstructure differs enough to need separate treatment and its data quality costs more to clean than the added power is worth. ADRs come through the same pipeline with no extra plumbing, trade on US exchanges in USD, and settle on the US calendar.
+
+Cost. Roughly 3M daily bars. Delisted tickers need explicit handling in every join.
+
+---
+
+## 036. SEC EDGAR for historical earnings dates, Finnhub for forward
+
+Status: Pinned
+
+Decision. Historical earnings dates come from SEC EDGAR 8-K filing dates, backfilled once and frozen. Forward earnings dates come from the Finnhub calendar on a 90-day rolling window, refreshed weekly.
+
+Rationale. Finnhub's free tier caps historical earnings depth near 4 years, leaving a 12-year hole against a 2010 start. EDGAR's submissions API is free, unauthenticated, rate limited at 10 requests per second, and reaches past 2009. Earnings releases file as an 8-K carrying an EX-99.1 press release, and the 8-K filing date matches the earnings date closely. The 10-Q or 10-K filing date bounds it where the 8-K is ambiguous.
+
+Storage. Every row carries `source` and `confidence`. Session timing (before or after market) is best-effort and comes from Finnhub where available. A 5-day window containing an earnings report is contaminated regardless of session.
+
+---
+
+## 037. Hourly bar archive starts now
+
+Status: Pinned
+
+Decision. Ingest 730 days of hourly bars immediately and continue accumulating nightly, even though nothing in Phase 1 or 2 reads them.
+
+Rationale. Yahoo caps hourly history at roughly 730 days, so the archive only exists if you start it. ADR 010's intrabar ordering escalation needs hourly data, and the entry-timing sweep in ADR 007 is far more credible with intraday resolution. Waiting until the need is proven means the data no longer exists to fetch.
+
+Cost. Roughly 5M rows. One additional nightly job.
+
+---
+
+## 038. Neon Launch tier
+
+Status: Superseded by 053
+
+Decision. Budget for Neon Launch at $19 monthly rather than the free tier.
+
+Rationale. Daily plus hourly bars total roughly 8M rows, near 1GB with indexes, against a 0.5GB free-tier cap. Launch provides 10GB and supports branching, which ADR 022 depends on for reviewable backtest results.
+
+---
+
+## 039. Development runs on local hardware, cloud only for parallel sweeps
+
+Status: Pinned
+
+Decision. Backfill, indicator computation, backtests, and model training run on the local workstation: Ryzen 7 3700X (8 cores, 16 threads), 32GB DDR4-3600, RTX 3060 Ti 8GB, NVMe storage. Modal is reserved for parallel parameter sweeps and scheduled market-hours polling.
+
+Rationale. The full daily bar set is roughly 3M rows, near 400MB in memory as float64. It fits in RAM with room for the entire backtest state. LightGBM on 3M rows with 20 features trains in minutes on 16 CPU threads and needs no GPU. Renting compute for work a local machine handles in the same wall-clock time adds cost and a deployment step for nothing.
+
+Consequence. Design the backtest to run single-machine with per-ticker parallelism across 14 workers, leaving two of the 16 hardware threads for Postgres and the OS. Do not build for distributed execution. Modal jobs reuse the same code path with a different worker count.
+
+---
+
+## 040. Ingest starts 2009-01-01, events start 2010-01-01
+
+Status: Pinned
+
+Decision. Bar ingest begins 2009-01-01. Event detection begins 2010-01-01. The gap is warmup.
+
+Rationale. The longest indicator chain is `rv_pct_252d`, a 252-day percentile of a 20-day realized volatility, requiring 272 prior bars. `sma200_slope_60` requires 260. Starting event detection on the first ingested bar produces a year of null indicator values, and null features silently drop events rather than failing loudly. One extra year of bars costs nothing and removes the boundary entirely.
+
+Enforcement. A test asserts zero null values in every indicator column on or after 2010-01-01 for any ticker with continuous coverage.
 
 ---
 
@@ -734,7 +819,6 @@ Revised phase order. 1: ingest, indicators, scan, CLI. 2: live poller, notificat
 
 Note. The exit engine is still designed before Phase 1 ships, because the event table schema must accommodate it. Designing it later forces a migration.
 
-
 ---
 
 ## 050. Live call overlay, no historical option backtest
@@ -821,7 +905,6 @@ Status: Pinned
 Decision. The training universe is built once from a Wikipedia scrape of S&P 500 component changes, reviewed manually, and frozen to `data/universe_union.csv` in version control. Roughly 600 to 750 tickers with add and remove dates.
 
 Rationale. The universe must be reproducible and reviewable. Depending on a live scrape means the training set silently changes when the page edits. A committed CSV makes universe composition a reviewable diff. The manual review pass catches the inconsistent formatting in older rows and post-removal ticker changes without smuggling in hand-picked selection, since the scrape defines membership and review only corrects parse errors.
-
 
 ---
 
@@ -942,7 +1025,6 @@ The GPU stays idle through Phase 6. That is the correct outcome, not a waste.
 
 Relationship to the statistics layer. `cell_stats` is the coarse, human-readable answer and gates the model: if no cell shows edge, the model has nothing to find. The model's contribution is resolution, separating cases the cell pools together, plus the terminal quantile fan that no lookup can produce.
 
-
 ---
 
 ## 064. Eleven independent heads, timeout-return targets
@@ -1031,7 +1113,6 @@ Rationale. Gradient boosting splits on the categorical feature wherever the data
 
 Verification. After training, inspect whether `sector` appears in high-importance splits and whether SHAP interaction values between sector and top features are large. Strong interactions plus adequate per-sector volume would justify revisiting.
 
-
 ---
 
 ## 069. Live inference at trigger, nightly batch for screener
@@ -1108,7 +1189,6 @@ Rationale. The trade log is a second forward record measuring user decisions rat
 
 Both land in Phase 2.
 
-
 ---
 
 ## 074. Seven tools, closed enums
@@ -1180,7 +1260,6 @@ Decision. Model inference runs in the polling process, which loads all eleven ar
 Rationale. LightGBM artifacts and their dependency stack would fit inside Vercel's Python bundle limit, so this is a choice rather than a constraint. A second inference path would create a second place where model version, feature construction, and calibration could drift, in exchange for capability the poller already provides.
 
 Revisit only if a "predict for an arbitrary hypothetical state" endpoint becomes wanted, which is the one case a stateless function serves better.
-
 
 ---
 
@@ -1296,7 +1375,6 @@ Decision. The poller runs only while the workstation is on. Gaps are accepted in
 
 Rationale. Phase 2's poller proves the mechanism. The forward log does not become load-bearing until Phase 6, and by then moving the poller to Modal is a small change. Recording gaps explicitly prevents a future analysis from treating missing coverage as an absence of signals.
 
-
 ---
 
 ## 085. Test tiers weighted by failure silence
@@ -1358,7 +1436,6 @@ Recovery test. Feed a series with known drift, and assert the computed parametri
 
 Rationale. If a random walk produces significant cells, the statistics layer has a bug and every real result is suspect. This is the highest-value test in the suite, because it validates the reasoning rather than the code, and no unit test can catch the failure it targets.
 
-
 ---
 
 ## 088. cell_id is derived; serving views pin split to validate
@@ -1376,7 +1453,6 @@ Enforcement. `split_key = 'validate'` is hardcoded in `v_screen` and in any futu
 Consequence for the statistics job. It must write a pooled row per cell with `era IS NULL` alongside the four per-era rows. `v_screen` reads the pooled row; the research page reads the per-era ones.
 
 Provenance. Found by a Claude Code session during migration 004, which correctly identified that `v_screen` referenced a column `events` did not have, and proposed adding it. The proposal was rejected for the two reasons above.
-
 
 ---
 
@@ -1402,7 +1478,6 @@ Resolution: `full` is scoped to the four exit invariants via a pytest marker, wh
 
 **Packaging.** `packages = ["capitalscan"]` under `[tool.setuptools]` lists only the top-level package, excluding `core`, `jobs`, `research`, `handlers`, and `mcp` from a built wheel. Editable installs mask this. Use `[tool.setuptools.packages.find] include = ["capitalscan*"]`. The related mypy ambiguity had the same root cause: `capitalscan/__init__.py` did not exist, so `packages = ["capitalscan"]` resolved against a namespace package.
 
-
 ---
 
 ## 090. Absence is None, never NaN; debounce keys on a tuple
@@ -1424,7 +1499,6 @@ Both fixes are required. Either alone leaves the other failure mode live: fixing
 **CI budget, corrected again.** The marked split saved only 50 seconds because the exit invariants are themselves the expensive part. `test_stop_exits_land_at_or_beyond_the_stop_level` alone measures 193 s, since `assume(r.reason is ExitReason.STOP)` discards roughly two of every three draws. The slow-tier budget is raised to **10 minutes** rather than targeting the generator: a hand-built stop-hitting generator would test the stops someone thought to construct rather than the ones the parameter space produces. If the tier becomes painful, the fix is additive — keep the unfiltered generator at a lower count and add a targeted one alongside — never substitutive.
 
 The ADR 060 determinism sweep is unmarked and runs at `ci_fast`. It is not one of the four §3.4 invariants and 250 cases establish it.
-
 
 ---
 
@@ -1470,6 +1544,30 @@ Found during the session 1-3 audit. The audit also verified independently that e
 
 ---
 
+## 093. Terminal quantiles expand to five horizons
+
+Status: Provisional. Authorizes a Phase 6 rewrite of DESIGN §7.4
+
+Decision. Terminal-return prediction moves from one horizon to five. Where DESIGN §7.4 currently pins a single terminal-quantile head, `Q̂_τ(R_5)` for τ ∈ {0.05, 0.25, 0.50, 0.75, 0.95}, Phase 6 instead fits that quantile fan independently at each of `h ∈ {1, 2, 3, 5, 10}` trading days:
+
+$$\hat{Q}_\tau(R_h), \quad \tau \in \{0.05, 0.25, 0.50, 0.75, 0.95\}, \quad h \in \{1, 2, 3, 5, 10\}$$
+
+Twenty-five terminal-quantile outputs in place of five. Reachability (4 heads) and adverse excursion (2 heads) are unchanged, so the eleven-head count in ADR 064 becomes roughly thirty-one.
+
+Rationale. `touched_Xpct` answers whether a move happens inside the window, not when. A signal whose favorable excursion typically peaks on day 2 and one that typically peaks on day 9 both read as "touched" under a single 5-day reachability flag, and the current single-horizon terminal quantile carries no timing information either — `Q̂_τ(R_5)` is silent on the path between t and t+5. The two signals call for different holding behavior and look identical to every head in the current design. Fitting the quantile fan at each of the five horizons already carried by `events.fwd_ret_1d/2d/3d/5d/10d` (populated by session 9) makes peak timing a first-class model output instead of information the label set discards.
+
+This is not a departure from §7.4's existing position, it is the same argument carried one step further. §7.4 already states the model describes the underlying path and exit policy sits as a separate layer on top, specifically to avoid coupling the model to a config that changes on every stop or target sweep. A per-horizon quantile fan is a more complete description of that same path, not a different kind of target. The horizon set is not a new invented number either: it is exactly the five horizons `events` already carries, so this decision asks the model to predict a distribution at each horizon that already exists as a point value, rather than introducing horizons the pipeline has never computed.
+
+Why now, not at Phase 6. Session 10 builds the forward path store (`docs/sessions/session10.md`). A path table sized to the exit window (`ExitParams.max_hold_days`, 5 days) would make any label past day 5 permanently underivable, including day 10 terminal quantiles. The path table has to be built to the full ten-trading-day window before that decision is foreclosed by schema, even though the model that consumes it is several sessions away. Session 10 already fixes its window at ten trading days for this reason; this ADR is the record of why that window has to reach that far, not a decision Session 10 needed to make on its own.
+
+Cost. Roughly triple the terminal-quantile heads, in line with training time (5 minutes for eleven heads per ADR 064 scales toward, not exactly with, head count, since heads share the walk-forward CV loop and feature construction). More calibration work: DESIGN §7.6 checks quantile-head coverage per τ, and ADR 067's four-check promotion gate evaluates coverage within 5 points of nominal for every τ, so twenty-five coverage checks replace five. Quantile crossing within a horizon is already fixed post-fit by sorting (§7.4); five horizons adds a second, previously nonexistent question of monotonicity *across* horizons for a fixed τ — whether $\hat{Q}_\tau(R_1) \le \hat{Q}_\tau(R_{10})$ should hold in expectation and what to do when a fit violates it. Phase 6 resolves that when it writes the rewritten §7.4, not here.
+
+What this does not change. Reachability and adverse-excursion head definitions are untouched, still `touched_Xpct` and `touched_-Ypct` over the existing horizon and threshold sets. Exit policy remains a separate layer on top of timeout return, per §7.4's existing rule. Nothing about signal detection, entry, or exit resolution moves. `DESIGN §7.4` itself is not rewritten by this ADR — that table is a Phase 6 implementation spec, and pinning its exact head list now would front-run Phase 4's statistics, which ADR 033's kill criteria could still retire the two-indicator hypothesis before Phase 6 opens. This ADR authorizes the rewrite when Phase 6 begins; it does not perform it.
+
+Status rationale. Provisional rather than Pinned: this constrains a schema decision Session 10 makes now (the path table's window), but the model surface itself is not built until Phase 6, and ADR 033's kill criteria sit between here and there. If Phase 4 finds no cell survives FDR correction, there may be no model to expand.
+
+---
+
 ## 094. Path table is source of truth; labels are derived views
 
 Status: Pinned (Session 10, task 10.3)
@@ -1490,6 +1588,159 @@ What this changes from Session 9. Session 9 computed and stored all labels at ev
 
 Path rows are append-mostly, not immutable (corrected 2026-08-05). A day's row, once its bar is final, does not change in practice, but `run_path_capture` writes through `ON CONFLICT (event_id, day_offset) DO UPDATE` and a re-ingested bar therefore rewrites the affected day. Two consequences worth stating rather than discovering: restart safety comes from that upsert rather than from immutability, and a stored Session 9 label frozen before its window closed will disagree with the grown path — which is why reconciliation excludes still-accumulating and recently-signalled events instead of treating the disagreement as a defect (`research/path_reconcile.py`, `RECENT_BARS_REVISION_DAYS`). The event table's label columns stay in place through Session 10 to support reconciliation and Phase 4 execution. Cleanup (dropping the old columns) happens only after Phase 4 has run once against the new layer and published its results (deferred to post-Phase 4).
 
+Materialized labels need a refresh job, not just an exclusion filter (added
+2026-08-06). The paragraph above states that a label frozen before its window
+closed will disagree with the grown path, and points at reconciliation's
+exclusion filters. Those filters make the *gate* pass; they do not make the
+*label* correct. `research/enrich.py` is reachable only through
+`run_backtest`, and `run_backtest` was wired into no schedule, so a frozen
+label stayed frozen forever. Measured 2026-08-06: event 2775021 (CAT,
+signal_date 2026-07-29) carried `touched_5pct = false` and `mfe = 0.042601`
+against a `path` whose `favorable` had since reached 0.153993. Worse, the
+exclusion is time-bounded — `_drop_recent_events` filters on a 45-day
+`signal_date` window measured from `date.today()`, so a stale event ages out
+of the exclusion while staying stale, and `cscan path reconcile` begins
+failing with no code change behind it. The refresh is therefore scheduled:
+`run_backtest` runs in the weekly chain (`jobs/cli.py::weekly`), matching
+DESIGN §9.4's schedule table, which listed it all along. Phase 4 additionally
+filters on `fwd_window_days >= entry_offset + max_hold_days` so an
+unrefreshed event cannot enter a statistic regardless of scheduling.
+
+One limit, found while wiring this and worth stating so nobody plans around a
+refresh that cannot happen. A backtest re-run refreshes labels only for the
+config it runs under, and the default config moved on 2026-08-05
+(`min_mcap_usd` 100e9 → 30e9, plus the new `SignalParams.stoch_source` field),
+taking the default hash from `3e598c59e7d71eae` to `1835688bf7d760ba`. The old
+hash is unreachable: reverting `min_mcap_usd` yields `a6c54c878368cd29`,
+because `stoch_source`'s presence changes the hashed dataclass shape and the
+field cannot be un-added. The Phase 3 run of record therefore keeps its labels
+as they stand, permanently. That is acceptable — it is published evidence
+rather than a live serving surface — but it means the refresh guarantee here
+applies to configs the pipeline still runs, not retroactively to every
+`config_hash` in `events`.
+
+Provenance on `path` (added 2026-08-06). `path` shipped with `event_id`,
+`day_offset`, `favorable`, `adverse`, `terminal` and nothing else, which
+violates ADR 034. Every other generated table carries `run_id`
+(`events`, `indicators`, `bars`, `cell_stats`, `benchmarks`); this was an
+omission in Task 10.1's minimum shape, not a decision. It already cost real
+time: reconciliation findings 3 and 7 both needed to know which `bars`
+snapshot a path row was computed against, could not read it from `path`,
+and were resolved by cross-referencing `bars.run_id` and hardcoding a ticker
+list plus a specific `run_id` into `path_reconcile.py` as evidence. Because
+the capture upserts, a row's origin was otherwise unrecoverable. `path` now
+carries `run_id text` and `computed_at timestamptz`, both rewritten by the
+upsert so they describe the write that produced the row's current values.
+
+`events.giveback` is dropped, not populated (decided 2026-08-06). The column
+exists and is NULL on all 5.57M rows. It stays derivable —
+`research/path_labels.py::derive_labels_from_path` computes it, and
+`test_path_labels.py` verifies that computation against in-memory frames —
+but nothing serves it hot, so materializing it would contradict this ADR's
+own "materialize only what serving needs" rule. The post-Phase-4 cleanup
+migration drops the column alongside the other Session 9 label columns.
+Reversible until that migration runs: if Phase 4 finds it wants giveback in a
+cell statistic, populate it instead and amend this paragraph.
+
+---
+
+## 095. Exit thresholds in SQL are a second exit implementation
+
+Status: Provisional. Authorizes a Phase 5 rebuild of `v_positions`
+
+Decision. ADR 092 is not fully enforced. Its enforcement is a source assertion
+scoped to the Python exit comparison in `core/exits.py`, and it never inspected
+SQL. `v_positions` carries a second exit implementation with the thresholds
+baked in as literals:
+
+```sql
+(s.k_full >= (80)::numeric)          AS exit_signal_stoch,
+((CURRENT_DATE - p.entry_date) >= 5) AS exit_signal_timeout
+```
+
+Those are `ExitParams.exit_stoch_threshold` (80.0) and
+`ExitParams.max_hold_days` (5), written as constants. The view is corrected in
+Phase 5, when the serving layer is built. It is **not** rebuilt now: Phase 4 is
+statistics and does not read `v_positions`, and rebuilding a serving view
+ahead of the session that owns it invites a second rewrite. This ADR exists
+because ADR 092 currently reads as though the problem is solved, and the
+reasoning is cheaper to write down now than to rediscover.
+
+Why it matters. Sweep `exit_stoch_threshold` to 70 and the backtest moves while
+the position page still reports exits at 80. Entry and exit surfaces then
+disagree about what "overbought" means, and every number on both sides looks
+reasonable. That is exactly the silent-bias class ADR 092 and invariant 9
+exist to prevent — ADR 092 removed one instance of it and left another
+standing in a different language.
+
+Two further defects in the same expression, found 2026-08-06.
+
+`exit_signal_stoch` ignores `p.side`. `positions` carries a `side` column and
+the view applies `k_full >= 80` to every row. A short position's stochastic
+exit is `k_full <= exit_stoch_threshold_short` (20.0), the field ADR 092
+introduced specifically so the two sides stay independent. As written, an open
+short reads its exit signal off the long threshold and is wrong in the
+direction that suppresses the exit. Shorts are computed but not surfaced in v1
+(ADR 058), so nothing reads this today; it is a latent defect that activates
+the moment shorts are surfaced.
+
+`exit_signal_mid_band` is exposed unconditionally, though
+`ExitParams.exit_on_mid_band` defaults to `False` per ADR 046. The view
+publishes a signal the policy has switched off, with no indication that it is
+inactive.
+
+Fix options for Phase 5, neither chosen here. Pass the thresholds in through a
+settings table the view joins, which keeps the view a plain view but adds a
+row-existence dependency to every read. Or generate the view DDL from
+`ExitParams` inside the migration, which keeps the numbers single-sourced at
+the cost of making the DDL a build artifact rather than a checked-in file. The
+second is the better fit for this codebase's "one implementation" rule; the
+first is easier to sweep without a migration. Phase 5 decides with the
+serving-layer requirements in hand.
+
+Enforcement, once fixed. Extend ADR 092's source assertion to scan checked-in
+SQL (`db/schema.sql`, `db/migrations/`) for numeric literals in exit
+comparisons, not just Python. The assertion's blind spot is the reason this
+survived.
+
+---
+
+## 096. `cell_stats` is keyed by config, not by cell alone
+
+Status: Pinned
+
+Decision. `cell_stats`' primary key becomes `(cell_id, config_hash)`, and
+`cell_key()` — Phase 4's key derivation, unwritten as of this ADR — takes
+`config_hash` as an input alongside signal type, side, drawdown bucket,
+strength, entry kind, split, era, horizon, and target. This amends the
+`cell_id text PRIMARY KEY` line in DESIGN §6.9.
+
+Rationale. The single-key design assumed one current statistics snapshot
+serving the frontend, and `/api/stats` caching "until `cell_stats.run_id`
+changes" reads naturally under that assumption. The assumption stopped holding
+when Session 9's sweep wrote 18 distinct `config_hash` values into `events`.
+Under the old key, each Phase 4 run overwrites the previous one, so comparing
+18 exit configs statistically means running Phase 4 eighteen times and
+exporting between runs — a manual, error-prone loop whose intermediate state
+lives in files rather than the database. Comparing configs is the entire point
+of having swept them.
+
+Cost. `/api/stats` must now pick a `config_hash` rather than reading whatever
+is present. It selects the run's config by default, so the frontend behavior
+is unchanged; the parameter exists for the research page. Row count multiplies
+by the number of configs held, which at 18 configs is still small against the
+cell grid.
+
+Why now. `cell_stats` is empty (verified 2026-08-06: 0 rows) and `cell_key()`
+does not exist yet, so this costs one migration and nothing else. Retrofitting
+after Phase 4 runs would cost the same migration plus a full Phase 4 re-run.
+
+Not changed. `cell_id` stays derived from its component columns and is still
+never stored on `events` (invariant 5b, ADR 088). Serving views still hardcode
+`split_key = 'validate'`. `config_hash` joining the key does not make it a
+component of `cell_id` itself — the two are separate columns in a composite
+key, so an existing `cell_id` string means the same thing it always did.
+
 ---
 
 ## Open items
@@ -1506,110 +1757,50 @@ Path rows are append-mostly, not immutable (corrected 2026-08-05). A day's row, 
 
 ## Phase gates
 
-Phase 1. Ingest 500 tickers from 2015. Compute indicators. Apply the health filter to build the trade universe. Produce three outputs: the three-arm comparison, the drawdown slice, and the time-to-MFE distribution. Nothing downstream matters if this shows no separation.
+**Corrected 2026-08-06.** This block previously described a six-phase plan
+(Phase 3 quantile model, Phase 4 frontend and chat, Phase 5 synthetic options
+plus MCP, Phase 6 real option chains). That numbering predates ADR 018
+("Options deferred to Phase 7"), which sits in this same file and contradicts
+it, and it was never updated when the plan shifted to seven phases. Every
+other document — BUILD.md §"Later phases", DESIGN.md, RESULTS.md, TESTS.md
+§10 — already used the seven-phase numbering below. `docs/BUILD.md` remains
+the authority on session-level scope; this block states the gate for each
+phase.
 
-Phase 2. Full event table with MFE/MAE and four entry timings. Target-by-stop sweep surface. Headline cell table with FDR correction on the validation split.
+Phase 1 — Data and detection. Ingest the union universe from 2009 (ADR 040),
+compute indicators, apply the health filter to build the trade universe,
+detect events, expose `scan()`. Produce the three-arm comparison, the
+drawdown slice, and the time-to-MFE distribution. Nothing downstream matters
+if this shows no separation. Sessions 0-7.
 
-Phase 3. Quantile model on shares only, long and regime-filtered short. Calibration curves and pinball loss.
+Phase 2 — Poller and notifications. Live intraday breach detection, the
+notifier, the positions surface, and the call overlay, all reading the one
+signal implementation the backtest reads. Session 8.
 
-Phase 4. Frontend and chat layer over shares-only results.
+Phase 3 — Engine validation. Full event table with MFE/MAE and four entry
+timings. Target-by-stop exit sweep surface. Look-ahead, parity, determinism,
+exit-invariant, and split-leakage tests all passing. Session 9. **Passed
+2026-08-02.**
 
-Phase 5. Synthetic options pricing, labeled synthetic. MCP server.
+Phase 4 — Statistics. Baselines, effective sample size, three benchmark arms
+against the 200-replication randomization null, trim-and-redeploy variant,
+DCA comparison, headline cell grid with BH correction on the validation
+split, era breakdown, cluster-sequence comparison, long-vs-short asymmetry,
+pre/post-tax reporting, `cell_stats`. The random-walk null test (DESIGN
+§6.12) runs before any real result is trusted.
 
-Phase 6. One month of real option chains. Publish synthetic pricing error.
+Phase 5 — Frontend, tools, MCP. Screener, ticker page, research page, the
+`handlers/` layer, the seven tools, the response validator, and the MCP
+server (ADR 027), built after Phase 4 results exist.
+
+Phase 6 — Model. Quantile heads on shares only, long and regime-filtered
+short. Purged walk-forward CV, isotonic calibration, the four-check promotion
+gate, forward log, live inference in the poller. Calibration curves and
+pinball loss are the gate. ADR 093 expands the terminal-quantile surface to
+five horizons here.
+
+Phase 7 — Options. Synthetic Black-Scholes pricing, labeled synthetic. Then
+one month of real Polygon chains to measure and publish the synthetic pricing
+error. Deferred to this phase by ADR 018.
 
 Holdout evaluation runs once, at the end, and gets published whatever it says.
-
----
-
-## 035. Union universe, 2010 start, ADRs only for non-US
-
-Status: Pinned
-
-Decision. Training universe is the union of every S&P 500 member between 2010 and today, roughly 750 tickers, including names delisted or removed. Start date 2010-01-01 for events. Non-US exposure comes through US-listed ADRs only (TSM, ASML, SAP, NVO and comparable), never foreign primary listings.
-
-Rationale. The union directly removes survivorship bias, which ADR 015 depends on. Cisco after 2007, Intel after 2019, and every removed name stay in the sample. A 2010 start covers the 2011 correction, the 2015 and 2018 selloffs, 2020, and 2022, which is four distinct drawdown regimes. 2008 is excluded because its microstructure differs enough to need separate treatment and its data quality costs more to clean than the added power is worth. ADRs come through the same pipeline with no extra plumbing, trade on US exchanges in USD, and settle on the US calendar.
-
-Cost. Roughly 3M daily bars. Delisted tickers need explicit handling in every join.
-
----
-
-## 036. SEC EDGAR for historical earnings dates, Finnhub for forward
-
-Status: Pinned
-
-Decision. Historical earnings dates come from SEC EDGAR 8-K filing dates, backfilled once and frozen. Forward earnings dates come from the Finnhub calendar on a 90-day rolling window, refreshed weekly.
-
-Rationale. Finnhub's free tier caps historical earnings depth near 4 years, leaving a 12-year hole against a 2010 start. EDGAR's submissions API is free, unauthenticated, rate limited at 10 requests per second, and reaches past 2009. Earnings releases file as an 8-K carrying an EX-99.1 press release, and the 8-K filing date matches the earnings date closely. The 10-Q or 10-K filing date bounds it where the 8-K is ambiguous.
-
-Storage. Every row carries `source` and `confidence`. Session timing (before or after market) is best-effort and comes from Finnhub where available. A 5-day window containing an earnings report is contaminated regardless of session.
-
----
-
-## 037. Hourly bar archive starts now
-
-Status: Pinned
-
-Decision. Ingest 730 days of hourly bars immediately and continue accumulating nightly, even though nothing in Phase 1 or 2 reads them.
-
-Rationale. Yahoo caps hourly history at roughly 730 days, so the archive only exists if you start it. ADR 010's intrabar ordering escalation needs hourly data, and the entry-timing sweep in ADR 007 is far more credible with intraday resolution. Waiting until the need is proven means the data no longer exists to fetch.
-
-Cost. Roughly 5M rows. One additional nightly job.
-
----
-
-## 038. Neon Launch tier
-
-Status: Superseded by 053
-
-Decision. Budget for Neon Launch at $19 monthly rather than the free tier.
-
-Rationale. Daily plus hourly bars total roughly 8M rows, near 1GB with indexes, against a 0.5GB free-tier cap. Launch provides 10GB and supports branching, which ADR 022 depends on for reviewable backtest results.
-
----
-
-## 039. Development runs on local hardware, cloud only for parallel sweeps
-
-Status: Pinned
-
-Decision. Backfill, indicator computation, backtests, and model training run on the local workstation: Ryzen 7 3700X (8 cores, 16 threads), 32GB DDR4-3600, RTX 3060 Ti 8GB, NVMe storage. Modal is reserved for parallel parameter sweeps and scheduled market-hours polling.
-
-Rationale. The full daily bar set is roughly 3M rows, near 400MB in memory as float64. It fits in RAM with room for the entire backtest state. LightGBM on 3M rows with 20 features trains in minutes on 16 CPU threads and needs no GPU. Renting compute for work a local machine handles in the same wall-clock time adds cost and a deployment step for nothing.
-
-Consequence. Design the backtest to run single-machine with per-ticker parallelism across 14 workers, leaving two of the 16 hardware threads for Postgres and the OS. Do not build for distributed execution. Modal jobs reuse the same code path with a different worker count.
-
----
-
-## 040. Ingest starts 2009-01-01, events start 2010-01-01
-
-Status: Pinned
-
-Decision. Bar ingest begins 2009-01-01. Event detection begins 2010-01-01. The gap is warmup.
-
-Rationale. The longest indicator chain is `rv_pct_252d`, a 252-day percentile of a 20-day realized volatility, requiring 272 prior bars. `sma200_slope_60` requires 260. Starting event detection on the first ingested bar produces a year of null indicator values, and null features silently drop events rather than failing loudly. One extra year of bars costs nothing and removes the boundary entirely.
-
-Enforcement. A test asserts zero null values in every indicator column on or after 2010-01-01 for any ticker with continuous coverage.
-
----
-
-## 093. Terminal quantiles expand to five horizons
-
-Status: Provisional. Authorizes a Phase 6 rewrite of DESIGN §7.4
-
-Decision. Terminal-return prediction moves from one horizon to five. Where DESIGN §7.4 currently pins a single terminal-quantile head, `Q̂_τ(R_5)` for τ ∈ {0.05, 0.25, 0.50, 0.75, 0.95}, Phase 6 instead fits that quantile fan independently at each of `h ∈ {1, 2, 3, 5, 10}` trading days:
-
-$$\hat{Q}_\tau(R_h), \quad \tau \in \{0.05, 0.25, 0.50, 0.75, 0.95\}, \quad h \in \{1, 2, 3, 5, 10\}$$
-
-Twenty-five terminal-quantile outputs in place of five. Reachability (4 heads) and adverse excursion (2 heads) are unchanged, so the eleven-head count in ADR 064 becomes roughly thirty-one.
-
-Rationale. `touched_Xpct` answers whether a move happens inside the window, not when. A signal whose favorable excursion typically peaks on day 2 and one that typically peaks on day 9 both read as "touched" under a single 5-day reachability flag, and the current single-horizon terminal quantile carries no timing information either — `Q̂_τ(R_5)` is silent on the path between t and t+5. The two signals call for different holding behavior and look identical to every head in the current design. Fitting the quantile fan at each of the five horizons already carried by `events.fwd_ret_1d/2d/3d/5d/10d` (populated by session 9) makes peak timing a first-class model output instead of information the label set discards.
-
-This is not a departure from §7.4's existing position, it is the same argument carried one step further. §7.4 already states the model describes the underlying path and exit policy sits as a separate layer on top, specifically to avoid coupling the model to a config that changes on every stop or target sweep. A per-horizon quantile fan is a more complete description of that same path, not a different kind of target. The horizon set is not a new invented number either: it is exactly the five horizons `events` already carries, so this decision asks the model to predict a distribution at each horizon that already exists as a point value, rather than introducing horizons the pipeline has never computed.
-
-Why now, not at Phase 6. Session 10 builds the forward path store (`docs/session10.md`). A path table sized to the exit window (`ExitParams.max_hold_days`, 5 days) would make any label past day 5 permanently underivable, including day 10 terminal quantiles. The path table has to be built to the full ten-trading-day window before that decision is foreclosed by schema, even though the model that consumes it is several sessions away. Session 10 already fixes its window at ten trading days for this reason; this ADR is the record of why that window has to reach that far, not a decision Session 10 needed to make on its own.
-
-Cost. Roughly triple the terminal-quantile heads, in line with training time (5 minutes for eleven heads per ADR 064 scales toward, not exactly with, head count, since heads share the walk-forward CV loop and feature construction). More calibration work: DESIGN §7.6 checks quantile-head coverage per τ, and ADR 067's four-check promotion gate evaluates coverage within 5 points of nominal for every τ, so twenty-five coverage checks replace five. Quantile crossing within a horizon is already fixed post-fit by sorting (§7.4); five horizons adds a second, previously nonexistent question of monotonicity *across* horizons for a fixed τ — whether $\hat{Q}_\tau(R_1) \le \hat{Q}_\tau(R_{10})$ should hold in expectation and what to do when a fit violates it. Phase 6 resolves that when it writes the rewritten §7.4, not here.
-
-What this does not change. Reachability and adverse-excursion head definitions are untouched, still `touched_Xpct` and `touched_-Ypct` over the existing horizon and threshold sets. Exit policy remains a separate layer on top of timeout return, per §7.4's existing rule. Nothing about signal detection, entry, or exit resolution moves. `DESIGN §7.4` itself is not rewritten by this ADR — that table is a Phase 6 implementation spec, and pinning its exact head list now would front-run Phase 4's statistics, which ADR 033's kill criteria could still retire the two-indicator hypothesis before Phase 6 opens. This ADR authorizes the rewrite when Phase 6 begins; it does not perform it.
-
-Status rationale. Provisional rather than Pinned: this constrains a schema decision Session 10 makes now (the path table's window), but the model surface itself is not built until Phase 6, and ADR 033's kill criteria sit between here and there. If Phase 4 finds no cell survives FDR correction, there may be no model to expand.

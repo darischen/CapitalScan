@@ -303,13 +303,24 @@ def test_backtest_command_malformed_config_exits_clean_not_traceback(monkeypatch
 def _patch_nightly_io(monkeypatch):
     """Stubs every IO call `nightly` makes except the two `compute.*` calls
     under test, so this stays a unit test (CONSTRAINTS.md: no real IO)."""
+    from contextlib import contextmanager
+
     from capitalscan.jobs import db_io, ingest, scheduled_runs
     from capitalscan.research import path_backfill as path_backfill_mod
+    from capitalscan.research.path_backfill import PathBackfillReport
 
     monkeypatch.setattr(db_io, "get_engine", lambda: "fake-engine")
     monkeypatch.setattr(scheduled_runs, "record", lambda engine, job: None)
     monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL"])
-    monkeypatch.setattr(path_backfill_mod, "run_path_capture", lambda *a, **k: None)
+    monkeypatch.setattr(path_backfill_mod, "run_path_capture", lambda *a, **k: PathBackfillReport())
+
+    # `nightly`'s path capture runs inside `ingest.run_job` so its `path`
+    # rows carry a `run_id` (ADR 034); the real one writes a `runs` row.
+    @contextmanager
+    def _fake_run_job(engine, job, params):
+        yield ingest.IngestReport(job=job, run_id="test-run-id")
+
+    monkeypatch.setattr(ingest, "run_job", _fake_run_job)
     for name in (
         "run_bars_daily",
         "run_bars_hourly",

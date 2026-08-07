@@ -39,7 +39,7 @@ def test_unresolved_position_returns_not_applicable_shape():
 def test_mfe_mae_bounded_by_holding_days_not_full_window():
     # Exit on day 2 (holding_days=2): day 4's bigger favorable move must
     # NOT count toward MFE — this is the exact "different windows" trap
-    # docs/session10.md warns about.
+    # docs/sessions/session10.md warns about.
     path = _path(
         [
             (1, 0.01, -0.005, 0.01),
