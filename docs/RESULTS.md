@@ -72,7 +72,7 @@ when checked. Criteria are `TESTS.md` §10, Phase 1, verbatim.
 | `cscan scan --ticker TSM --start 2026-07-01 --end 2026-07-30` returns the 2026-07-29 event with correct %B and %K | **DOES NOT REPRODUCE** — see below | Command prints `no events found`. The event itself is correct in `events`: `confluence_low`, `bb_pctb = 0.110081`, `k_full = 21.991916` |
 | All golden fixtures pass | PASS | `uv run pytest capitalscan/tests/golden` — 3 passed, 1 skipped (`test_external_reference.py`, awaiting the hand-filled CSV per ADR 086) |
 | Zero nulls in indicators after 2010-01-01 | PASS as qualified by ADR 040 | 929 null-bearing rows past the 272-bar warmup out of 2,380,441; all in AMCR and SW, all frozen-price runs |
-| Random-walk null test passes | **NOT IMPLEMENTED** | No such test exists in `capitalscan/`. DESIGN §6.12 places it in Phase 4 |
+| Random-walk null test passes | PASS at the label layer; cell layer awaits Phase 4 | `capitalscan/tests/unit/test_random_walk_null.py`, 9 tests, written 2026-08-06. Numbers below |
 
 **Why the scan gate does not reproduce.** `compute.scan` filters on the
 `capitalscan.default_config_hash` GUC (the same one `v_events` reads —
@@ -104,6 +104,37 @@ from here on, not a target you can append to.
 **`cscan scan` recovers as soon as a full backtest runs under the current
 config**, which is also what the Phase 4 statistics need. No code change is
 required for this criterion; a run is.
+
+**Random-walk null and recovery, measured 2026-08-06.** 50 synthetic tickers,
+2,500 days, driftless in log space, σ = 30% annual, run through the real
+`core.returns.path_for_event` and `research.path_queries` code. 6,250
+non-overlapping 10-day windows.
+
+| Check | Analytical | Measured | Verdict |
+|---|---|---|---|
+| Reachability symmetry, log-symmetric barriers (+5% / −4.7619%) | 0 | 0.11pp gap | PASS |
+| Reachability vs continuous-monitoring bound | ≤ 0.4143 | 0.3240 up, 0.3251 down | PASS (one-sided) |
+| P(terminal > 0), no drift | 0.5000 | 0.4986 | PASS, 0.14pp |
+| P(terminal > 0), μ = 30% annual drift injected | 0.5789 | 0.5813 | PASS, 0.23pp (gate is 1pp) |
+
+**The naive version of this test was wrong and would have passed.** The first
+draft asserted `P(+5%) == P(−5%)` and measured a 1.79pp gap, which a 2.5pp
+tolerance swallowed. That gap is real arithmetic, not a defect: a driftless
+walk is symmetric in *log* price, and `log(1.05) = 0.04879` while
+`|log(0.95)| = 0.05129`, so the −5% barrier sits 5% farther away and is
+genuinely touched less often. Comparing log-symmetric barriers instead drops
+the gap from 1.79pp to 0.11pp and lets the tolerance tighten from 2.5pp to
+1.5pp — so the whole budget now covers real bugs rather than a known effect.
+`test_percent_symmetric_barriers_are_biased_by_the_amount_theory_predicts`
+pins the trap so it cannot be reintroduced.
+
+**What is still missing.** DESIGN §6.13 states the null at the *cell* level:
+the fraction of cells at `q < 0.05` must not exceed 5%. That needs
+`cell_stats`, BH correction, and q-values, none of which exist yet. The tests
+above cover the layer those cells will be built from, which is where a
+look-ahead or sign bug would originate. Phase 4 extends the same generator
+(`research/synthetic.py`) to the cell layer. (DESIGN numbers this section
+§6.13; `TESTS.md` and `BUILD.md` cite it as §6.12.)
 
 **Why 929 rows are null and that is correct.** ADR 040's enforcement is "zero
 null values in every indicator column on or after 2010-01-01 *for any ticker
@@ -359,7 +390,7 @@ current work.
 
 ## Phase 2 — Poller and notifications
 
-### Phase 2 gate — 2 of 4 criteria PASS, 1 fails, 1 unverified
+### Phase 2 gate — 2 of 4 criteria PASS, 1 not yet built, 1 unverified
 
 **Measured 2026-08-06** against the live research database, covering the four
 polling sessions on record (2026-08-03 through 2026-08-06). Written for the
@@ -370,7 +401,7 @@ was measured. Criteria are `TESTS.md` §10, Phase 2, verbatim.
 | Criterion | Result | Evidence |
 |---|---|---|
 | Poller detects a live breach within one polling interval | PASS on detection, **interval latency unverified** | 195 `events` rows carry a `run_id` belonging to a `poll` job, spanning 2026-08-03..2026-08-06. Nothing in the schema records detection latency against tick time, so the "within one interval" half is not checkable from stored data |
-| Notification delivered on all three configured channels | **FAIL** | All 260 `signal_reports` rows carry `channels_sent = {}`. Zero deliveries on any channel across four sessions |
+| Notification delivered on all three configured channels | **NOT YET BUILT** — deliberate | All 260 `signal_reports` rows carry `channels_sent = {}`. No channel is configured yet. The operating surface today is `scripts/wait_and_poll.ps1` writing `reports/poller_session_*.csv` |
 | `poller_sessions` records the session with coverage percentage | PASS | 4 rows, all with `started_at`, `ended_at`, `ticks_completed`, `ticks_expected`, `coverage_pct` populated |
 | Restart mid-session does not re-fire an already-sent event | PASS in production, no restart drill on record | 260 `signal_reports` rows over 260 distinct `event_id` values — no event reported twice. The debounce logic itself is covered by `capitalscan/tests/integration/test_poll.py`, which cannot be run against the live database (it truncates `tickers`) |
 
@@ -389,20 +420,38 @@ Missed ticks are expected and logged rather than treated as failures
 (ADR 084). 2026-08-06's 73.077% comes from a session that started at 11:17 UTC
 instead of the usual 09:30.
 
-**The notification failure is a configuration state, not a code defect.**
-`notify.notify_all` returns the list of channels that succeeded, and
-`jobs/poll.py:361` writes that list straight to `channels_sent`. An empty list
-means no notifier was active, which `test_notify.py`'s
-`test_no_channels_active_with_no_env_vars_set` shows is what happens when the
-Discord webhook, ntfy topic, and the four SMTP variables are all unset. The
-delivery path has unit coverage (7 tests in `test_notify.py`, including
-per-channel activation and failure isolation); what has never happened is a
-delivery in production.
+**Notifications are not hooked up yet, on purpose.** `notify.notify_all`
+returns the list of channels that succeeded and `jobs/poll.py:361` writes it
+straight to `channels_sent`, so an empty array means no notifier was active —
+which `test_notify.py`'s `test_no_channels_active_with_no_env_vars_set`
+confirms is the behavior when the Discord webhook, ntfy topic, and the four
+SMTP variables are unset. The delivery path has 7 unit tests covering
+per-channel activation and failure isolation. Nothing is broken; the wiring
+is scheduled work, and this criterion is unmet in the "not built" sense
+rather than the "built and failing" sense.
 
-This matters beyond the gate: an advisory system whose entire output surface
-in Phase 2 is a notification has been running four sessions and telling
-nobody. Configure at least one channel before treating the poller as
-operational.
+**The operating surface today** is `scripts/wait_and_poll.ps1`, which waits
+for the open, launches `cscan poll`, tails new confluence events, and writes
+`reports/poller_session_<date>_<time>.csv`. Four sessions are on record there.
+
+**One defect found in that surface, fixed 2026-08-06.** The CSV header
+declared 15 columns while the query selected and the writer emitted 12, so
+every value after `side` was written three places to the left of its heading.
+Two of the three phantom columns (`bb_lower`, `bb_upper`) are not columns on
+`events` at all. Reading the 2026-08-06 session literally, ANET's `bb_lower`
+was 88.05 — that number is its `k_full`, which is why an overbought
+`confluence_high` appeared to have a low band reading. Corrected by adding
+`touch_level` (a real `events` column, and the band level the signal fired
+against) to the query and dropping `bb_lower`/`bb_upper` from the header;
+joining them from `indicators` would have put a t-dated row next to a t−1
+signal reading, against invariant 3. **The four existing session CSVs still
+carry the shifted headers** and should be read against the corrected column
+list, or regenerated from `events`.
+
+**Signal counts are low by construction, not by fault.** A signal has to
+breach the band *and* clear the four trade-universe health criteria (ADR 014)
+on the same day, so a handful of confluence events per session is the
+expected rate.
 
 ---
 

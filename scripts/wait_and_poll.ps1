@@ -60,7 +60,21 @@ while ($true) {
     $confluenceCount = 0
 
     # CSV header
-    $csvHeader = "fired_at,ticker,signal_type,entry_price,side,bb_lower,bb_upper,touch_level,k_full,d_full,k_fast,atr_14,vix_close,spx_ret_1d,channels_sent"
+    # Header must match the SELECT below field-for-field. It did not until
+    # 2026-08-06: it declared 15 columns (including bb_lower and bb_upper,
+    # which are not columns on `events` at all) while the query selected and
+    # the writer emitted 12. Every value after `side` therefore landed under
+    # the wrong heading, shifted three places left — ANET's "bb_lower" of
+    # 88.05 in the 2026-08-06 session was its k_full, which is why an
+    # overbought confluence_high looked like it had a low band reading.
+    #
+    # bb_lower/bb_upper are dropped rather than joined in from `indicators`:
+    # that table is read at t-1 for signal purposes (invariant 3), so
+    # showing its t-dated row next to an event would put two different
+    # timestamps in one line. `touch_level` is the band level the signal
+    # actually fired against, it lives on `events`, and it is the honest
+    # answer to the question bb_lower/bb_upper were there to ask.
+    $csvHeader = "fired_at,ticker,signal_type,entry_price,side,touch_level,k_full,d_full,k_fast,atr_14,vix_close,spx_ret_1d,channels_sent"
     $csvHeader | Out-File -FilePath $csvPath -Encoding UTF8
 
     # Monitor for new events
@@ -69,7 +83,7 @@ while ($true) {
 
         try {
             # Query for new events since last check
-            $query = "SELECT s.event_id, s.fired_at, e.ticker, e.signal_type, e.entry_price::text, e.side, e.k_full::text, e.d_full::text, e.k_fast::text, e.atr_14::text, e.vix_close::text, e.spx_ret_1d::text, s.channels_sent FROM events e JOIN signal_reports s ON e.id = s.event_id WHERE DATE(e.signal_date) = CURRENT_DATE AND e.id > $lastEventId ORDER BY s.fired_at ASC;"
+            $query = "SELECT s.event_id, s.fired_at, e.ticker, e.signal_type, e.entry_price::text, e.side, e.touch_level::text, e.k_full::text, e.d_full::text, e.k_fast::text, e.atr_14::text, e.vix_close::text, e.spx_ret_1d::text, s.channels_sent FROM events e JOIN signal_reports s ON e.id = s.event_id WHERE DATE(e.signal_date) = CURRENT_DATE AND e.id > $lastEventId ORDER BY s.fired_at ASC;"
 
             $newEvents = & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -h localhost -U capscan -d capitalscan -t -c $query
 
@@ -78,7 +92,7 @@ while ($true) {
                     if ($_ -match '\|') {
                         $parts = $_ -split '\|' | ForEach-Object { $_.Trim() }
 
-                        if ($parts.Count -ge 13) {
+                        if ($parts.Count -ge 14) {
                             $eventId = $parts[0]
                             $firedAt = $parts[1]
                             $ticker = $parts[2]
@@ -91,20 +105,21 @@ while ($true) {
                                     $confluenceCount++
                                     $entryPrice = $parts[4]
                                     $side = $parts[5]
-                                    $kFull = $parts[6]
-                                    $dFull = $parts[7]
-                                    $kFast = $parts[8]
-                                    $atr = $parts[9]
-                                    $vix = $parts[10]
-                                    $spxRet = $parts[11]
-                                    $channels = $parts[12]
+                                    $touchLevel = $parts[6]
+                                    $kFull = $parts[7]
+                                    $dFull = $parts[8]
+                                    $kFast = $parts[9]
+                                    $atr = $parts[10]
+                                    $vix = $parts[11]
+                                    $spxRet = $parts[12]
+                                    $channels = $parts[13]
 
                                     # Print to terminal
                                     Write-Host "[CONFLUENCE #$confluenceCount] $firedAt" -ForegroundColor Green
                                     Write-Host "  $ticker $signalType | Price: $entryPrice | K: $kFull D: $dFull | VIX: $vix" -ForegroundColor Cyan
 
                                     # Write to CSV
-                                    "$firedAt,$ticker,$signalType,$entryPrice,$side,$kFull,$dFull,$kFast,$atr,$vix,$spxRet,$channels" | Out-File -FilePath $csvPath -Encoding UTF8 -Append
+                                    "$firedAt,$ticker,$signalType,$entryPrice,$side,$touchLevel,$kFull,$dFull,$kFast,$atr,$vix,$spxRet,$channels" | Out-File -FilePath $csvPath -Encoding UTF8 -Append
                                 }
                             }
                         }
