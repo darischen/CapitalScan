@@ -28,6 +28,22 @@ If a task appears to require contradicting one, **stop and ask.** Do not work ar
 
 The only safe invocation: `uv run pytest capitalscan/tests/unit capitalscan/tests/property`. Never invoke anything under `capitalscan/tests/integration/` against the real database.
 
+**Run the fast tier exactly as CI runs it, or you will not reproduce it.** All four steps, whole-repo scope, no shortcuts:
+
+```
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy
+uv run pytest capitalscan/tests/unit capitalscan/tests/property -p no:randomly \
+  --hypothesis-profile=ci_fast --cov=capitalscan/core --cov-report=term-missing --cov-fail-under=90
+```
+
+Three traps, all hit for real on 2026-08-09:
+
+- **`ruff check capitalscan/` is not `ruff check .`.** It skips `db/migrations/`, where a long `op.execute(...)` line had been failing E501 on a branch for three days. It reached `main` unnoticed because every local check was scoped to `capitalscan/`.
+- **`ruff format --check` is a separate gate from `ruff check`.** A file can pass lint and still fail formatting, and nothing warns you.
+- **`uv run mypy` bare is wider than any explicit path list.** It reads `pyproject.toml` and covers 137 files including tests; `mypy capitalscan/core capitalscan/jobs` covers 43 and proves much less.
+
 `docker` is not on PATH in agent shells. Reach Postgres directly:
 
 ```

@@ -48,7 +48,9 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Upgrade schema."""
     op.execute("ALTER TABLE cell_stats DROP CONSTRAINT cell_stats_pkey")
-    op.execute("ALTER TABLE cell_stats ADD CONSTRAINT cell_stats_pkey PRIMARY KEY (cell_id, config_hash)")
+    op.execute(
+        "ALTER TABLE cell_stats ADD CONSTRAINT cell_stats_pkey PRIMARY KEY (cell_id, config_hash)"
+    )
 
 
 def downgrade() -> None:

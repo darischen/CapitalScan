@@ -66,8 +66,7 @@ def peak_label_sql(horizons: tuple[int, ...]) -> str:
     # [off+1, off+h] holds exactly h offsets, so a smaller count means the
     # forward window is still filling. NULL, never a partial maximum.
     sets = ",\n        ".join(
-        f"peak_ret_{h}d = CASE WHEN agg.n{h} = {h} THEN agg.pk{h} ELSE NULL END"
-        for h in horizons
+        f"peak_ret_{h}d = CASE WHEN agg.n{h} = {h} THEN agg.pk{h} ELSE NULL END" for h in horizons
     )
     return f"""
     WITH eo AS (
