@@ -4,13 +4,13 @@ Architecture decision record for `CapitalScan`.
 
 Format: each entry states the decision, why, and what it costs. Status is one of Pinned, Provisional, or Superseded. Never delete an entry. Mark it Superseded and add the replacement below it.
 
-Last updated: 2026-08-06
+Last updated: 2026-08-08
 
-Recent structural changes: ADR 094's 2026-08-05 corrections; ADRs 095 and 096
-added 2026-08-06; ADR 002 marked Superseded; the "Phase gates" block rewritten
-to the seven-phase numbering (see the note in that section); body order
-restored to ADR sequence — 035-040 and 093-094 had drifted outside the ordered
-run.
+Recent structural changes: ADR 097 added 2026-08-08 (backtest 2-year window);
+ADR 094's 2026-08-05 corrections; ADRs 095 and 096 added 2026-08-06; ADR 002
+marked Superseded; the "Phase gates" block rewritten to the seven-phase
+numbering (see the note in that section); body order restored to ADR sequence
+— 035-040 and 093-094 had drifted outside the ordered run.
 
 ---
 
@@ -114,6 +114,7 @@ run.
 | 094 | Path table is source of truth; labels are derived views | Pinned |
 | 095 | Exit thresholds in SQL are a second exit implementation | Provisional. Authorizes a Phase 5 rebuild of `v_positions` |
 | 096 | `cell_stats` is keyed by config, not by cell alone | Pinned |
+| 097 | Backtest reads events only within a rolling 2-year window | Pinned |
 
 ---
 
@@ -1740,6 +1741,40 @@ never stored on `events` (invariant 5b, ADR 088). Serving views still hardcode
 `split_key = 'validate'`. `config_hash` joining the key does not make it a
 component of `cell_id` itself — the two are separate columns in a composite
 key, so an existing `cell_id` string means the same thing it always did.
+
+---
+
+## 097. Backtest reads events only within a rolling 2-year window
+
+Status: Pinned
+
+Decision. `SplitParams.max_lookback_days` is set to 756 days (approximately 2 years). The backtest reads indicators and detects events only within this window from today's date, regardless of the `event_start` date in config.
+
+Rationale. Market regimes shift substantially over longer horizons. Growth-to-value rotations, sector leadership changes, and macroeconomic regime changes render 5+ year-old data less relevant for predicting current-market behavior. Testing a dip-buying signal on a 15-year backfill that includes 2024's crash and 2020's pandemic recovery applies the signal across regimes it was never designed for, inflating historical Sharpe ratios without improving forward validity.
+
+A rolling window keeps the backtest trained on recent market conditions. At the `max_lookback_days` boundary, old events age out without cluttering the code with explicit windowing logic. The 756-day default covers roughly 2 years of trading days, sufficient to capture seasonal patterns and one full market cycle while excluding regime shifts older than the last 3-4 market years.
+
+Implementation. `_backtest_one_ticker` resolves one `effective_start = max(event_start, as_of - max_lookback_days)` and applies it to all three of its reads: daily bars, indicators, and hourly bars. The floor is safe because every bar access downstream sits at or forward of the entry — `resolve_exit_for_entry` slices `bars.iloc[entry_idx + 1:]`, `forward_returns` shifts negative, `_first_hourly_touch` is scoped to the entry date. No consumer reads history earlier than the window, so the event set is identical to an unfloored read.
+
+That identity is load-bearing rather than incidental. `max_lookback_days` is a hashed field, so `config_hash` cannot distinguish a floored run from an unfloored one. Had the event sets differed, two outputs would sit under one provenance key, which is the failure ADR 060 exists to prevent.
+
+**`as_of` is data-derived, never `date.today()`.** The first implementation of this ADR (2026-08-08, same day) used the wall clock, which breaks ADR 060 outright: the same config against the same database produces a different event set tomorrow, stamped with an unchanged `config_hash`. `research/backtest.py::_last_bar_date` resolves the anchor from `max(bars.ts)` for the ticker, the same bound `apply_eligibility` already uses, read one query earlier because the floor now bounds the bar read itself. An explicit `today=` passed by the caller still overrides it uniformly. This is recorded rather than quietly fixed because the module's own docstrings already forbade a clock read in two places and the mistake was made anyway.
+
+**The harness is deliberately exempt.** `jobs/cli.py::_load_bars_by_ticker` is a separate read, floored at `ingest_start`, feeding the Phase 3 gate (DESIGN §5.10). It stays on full history. The gate validates the engine's structural properties, and `_check_no_lookahead`'s Jaccard bounds (ADR 089: 1 to 0.59, 2 to 0.37, 5 to 0.14, 20 to 0.06) were measured against full history. A 20-bar shift over a two-year window is a materially different test, so moving that floor requires re-measuring those bounds first. Not done here.
+
+Cost, measured rather than estimated. Indicator rows drop from 2,510,112 to 314,231 and daily bars from 2,909,180 to 314,545. Hourly is unchanged at 2,094,898, since the archive starts 2024 (ADR 037) and already sits entirely inside two years.
+
+The runtime baseline stands at CLAUDE.md's **2h48m** for `cscan backtest`: a 20-38 min write phase (what `runs` records) plus the ~2h28m single-threaded harness, which runs outside `run_job`'s timed block and is recorded nowhere. An earlier draft of this paragraph claimed ~36 min, having read a `runs` duration as a whole-job timing; that was wrong. `cscan weekly` skips the harness by design and genuinely is ~36 min, which is the run that misled the reading.
+
+Since the harness is exempt from this ADR's floor, the saving lands only in the write phase, and no post-ADR-097 run exists yet to measure it.
+
+**The scoping is the reason for this ADR, not the speedup.** A backtest scoped to two years reading fifteen years of bars is incoherent on its own terms. The harness exemption above rests on the Jaccard bounds needing re-measurement, which holds regardless of what the timing turns out to be.
+
+Cost, provenance. This moves the default `config_hash` from `1835688bf7d760ba` to `4630b12a84ff52de`, the third move (see `test_default_config_hash_is_pinned`). The `capitalscan.default_config_hash` GUC, which `v_events` and `compute.scan()` both read, must be re-pinned by hand — no migration records it. Until it is, the serving surface keeps returning the 622,053 rows under the old hash, stale rather than empty.
+
+Note the asymmetry this exposes. `max_lookback_days` is read only by `research/backtest.py`, so `run_events` and the poller write rows byte-identical to their old ones under the new hash. Only the stamp differs. The hash still has to move, because it covers the whole `Config` and cannot express "this field matters to one job and not another." Re-stamping 622k rows with no analytical change behind it is the price ADR 060 charges to keep one hash meaning exactly one config.
+
+What this does not change. The research store continues ingesting from 2009 and computing indicators back to 2010, so the 200-day SMA and 252-day drawdown windows are unaffected. Indicators are precomputed and stored by a separate job with full history behind them (`max_warmup() = 272`, ADR 092); reading a two-year slice reads finished values, never a recomputation from truncated input. The train/validate/holdout splits by date (ADR 019) remain fixed calendar dates.
 
 ---
 

@@ -105,6 +105,51 @@ from here on, not a target you can append to.
 config**, which is also what the Phase 4 statistics need. No code change is
 required for this criterion; a run is.
 
+**Resolved 2026-08-08, then reopened by ADR 097 (measured 2026-08-09).** The
+run this section was waiting for happened: `backtest_20260808T123636_22fdc650`
+wrote **621,976 events under `1835688bf7d760ba`, spanning 2010-01-05 to
+2026-08-07**, across 590 tickers. The "109 events, 2026-07-31 to 2026-08-06"
+figure above is superseded and was already stale when read on 2026-08-09;
+it is left in place per this file's own no-deletion convention.
+
+ADR 097 (2026-08-08) then moved the default hash again, to
+`4630b12a84ff52de`, and the nightly chain picked the change up immediately:
+`events_20260809T173928_c19cc671` wrote 299 rows under the new hash while the
+GUC still pointed at the old one. So the gate is unmet again, for the same
+mundane reason and with a new wrinkle worth stating plainly — **the split is
+live, not hypothetical.** New rows accumulate under a hash nothing serves,
+while `cscan scan` keeps returning the 622k older rows, stale rather than
+empty. Re-pinning the GUC is a manual `ALTER DATABASE`; no migration records
+it.
+
+One consequence of re-pinning that is easy to miss: ADR 097 bounds the
+backtest to a rolling 756-day window, so a backtest under `4630b12a84ff52de`
+never writes events older than that. After the GUC moves, `cscan scan` and
+`v_events` serve roughly two years of history, not sixteen. That is the
+intended scope, not a regression, but it is a visible change to the serving
+surface rather than a silent one.
+
+**What `runs.duration` measures for a backtest, and what it does not
+(2026-08-09).** `runs` rows for `job='backtest'` sit at 20-38 min for a
+full-universe run (`backtest_20260808T123636_22fdc650` 35m52s,
+`backtest_20260807T041712_4e7e5de8` 38m01s, `backtest_20260802T183304_6b1c5b52`
+19m34s). **Those are write-phase durations, not job durations.**
+`cli.py::backtest` closes its `with ingest.run_job(...)` block before calling
+`run_harness`, so the Phase 3 harness runs entirely outside the timed region
+and is recorded nowhere.
+
+This reconciles with CLAUDE.md's 2h48m rather than contradicting it: ~20-38 min
+of write phase plus the ~2h28m single-threaded harness. A session on 2026-08-09
+read these durations as whole-job timings, told the user the backtest takes ~36
+minutes, and edited CLAUDE.md accordingly. Both were wrong and are reverted.
+The lesson is narrow and worth keeping: `runs` bounds the job's *instrumented*
+region, and for `backtest` that region excludes the most expensive step.
+
+`cscan weekly` is the exception that makes the confusion easy — it calls
+`run_backtest` and deliberately skips the harness (`cli.py::weekly`), so its
+~36 min really is the whole job. `backtest_20260808T123636_22fdc650` carries
+`params->>'trigger' = 'weekly'`, which is how to tell the two apart.
+
 **Random-walk null and recovery, measured 2026-08-06.** 50 synthetic tickers,
 2,500 days, driftless in log space, σ = 30% annual, run through the real
 `core.returns.path_for_event` and `research.path_queries` code. 6,250

@@ -119,6 +119,14 @@ def stub_reads(monkeypatch):
     monkeypatch.setattr(backtest, "_read_indicators", lambda engine, ticker, start: _indicators())
     monkeypatch.setattr(backtest, "_read_market_days", lambda engine: _empty_market())
     monkeypatch.setattr(backtest, "_read_universe_flags", lambda engine, ticker: _empty_universe())
+    # ADR 097's lookback floor bounds the bar read, so the worker resolves its
+    # "as of" anchor through this fifth read before `_read_bars` runs. Stubbed
+    # to the same `_bars()` frame the other stubs serve, which is what keeps
+    # it equal to the `max(bars.ts)` bound `apply_eligibility` resolves — a
+    # different value here would silently floor the stub data out of range.
+    monkeypatch.setattr(
+        backtest, "_last_bar_date", lambda engine, ticker, interval: _bars()["ts"].max().date()
+    )
     # The tests below call `_backtest_one_ticker(..., database_url=None)`,
     # and `None` means "resolve from `DATABASE_URL_RESEARCH`". Without this
     # stub they pass only on a machine holding a local `.env.local` and fail
@@ -188,6 +196,11 @@ class TestBacktestOneTicker:
         monkeypatch.setattr(backtest, "_read_indicators", lambda *a, **k: pd.DataFrame())
         monkeypatch.setattr(backtest, "_read_market_days", lambda *a, **k: _empty_market())
         monkeypatch.setattr(backtest, "_read_universe_flags", lambda *a, **k: _empty_universe())
+        # `None` is what `_last_bar_date` returns for a ticker with no bars,
+        # which is this test's whole premise — the worker bails on that before
+        # `_read_bars` is ever reached now, so stubbing it to a date would
+        # test a different path than the name claims.
+        monkeypatch.setattr(backtest, "_last_bar_date", lambda *a, **k: None)
         # Stubs its own reads rather than taking `stub_reads`, so it needs the
         # same placeholder engine for the same reason.
         monkeypatch.setattr(backtest.db_io, "get_engine", lambda *a, **k: _FakeEngine())

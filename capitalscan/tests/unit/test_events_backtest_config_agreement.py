@@ -177,6 +177,14 @@ def stub_backtest_reads(monkeypatch):
     )
     monkeypatch.setattr(backtest, "_read_market_days", lambda engine: _empty_market())
     monkeypatch.setattr(backtest, "_read_universe_flags", lambda engine, ticker: _empty_universe())
+    # ADR 097's lookback floor resolves its "as of" anchor through this fifth
+    # read before `_read_bars` runs. Stubbed off the same `_backtest_bars()`
+    # frame so the floor never cuts the fixture's own SIGNAL_DATE out of range.
+    monkeypatch.setattr(
+        backtest,
+        "_last_bar_date",
+        lambda engine, ticker, interval: _backtest_bars()["ts"].max().date(),
+    )
 
 
 @pytest.fixture()
@@ -242,10 +250,14 @@ class TestRunEventsBackwardCompatibility:
         pinned at `3e598c59e7d71eae`. Two Session 10 changes (2026-08-05),
         both genuine fields of `Config`, move it again (ADR 060):
         `UniverseParams.min_mcap_usd` 100e9 -> 30e9 (user's decision,
-        2026-08-03) and the new `SignalParams.stoch_source` field. New
-        value: `1835688bf7d760ba` — a Postgres GUC is set from this
-        literal value."""
-        assert jobs_config_hash(Config()) == "1835688bf7d760ba"
+        2026-08-03) and the new `SignalParams.stoch_source` field, giving
+        `1835688bf7d760ba`.
+
+        Moved again 2026-08-08 by ADR 097's `SplitParams.max_lookback_days`.
+        New value: `4630b12a84ff52de` — a Postgres GUC is set from this
+        literal value, so moving it requires re-pinning that GUC, not only
+        editing this line."""
+        assert jobs_config_hash(Config()) == "4630b12a84ff52de"
 
     def test_sp_only_caller_still_works_and_matches_config_signals_default(
         self, stub_events_reads, captured_events_upsert
@@ -266,8 +278,8 @@ class TestRunEventsBackwardCompatibility:
         events_calls = [c for c in captured_events_upsert if c["table_name"] == "events"]
         row = events_calls[0]["data"][0]
         assert (
-            row["config_hash"] == "1835688bf7d760ba"
-        )  # Session 10: min_mcap_usd 100e9->30e9, new stoch_source field
+            row["config_hash"] == "4630b12a84ff52de"
+        )  # ADR 097 (2026-08-08): new SplitParams.max_lookback_days field
         assert row["split_key"] == "holdout"  # 2026-07-30 is past the default validate_end
 
     def test_sp_and_config_disagreeing_raises_rather_than_silently_picking_one(

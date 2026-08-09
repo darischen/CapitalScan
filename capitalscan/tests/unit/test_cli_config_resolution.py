@@ -77,8 +77,22 @@ def test_default_config_hash_is_pinned():
     2026-08-03), and the new `SignalParams.stoch_source` field (defaults
     to `"k_full"`, same detection behavior as before the field existed,
     but the field's presence still changes the hashed shape). Old value:
-    `3e598c59e7d71eae`. New value: `1835688bf7d760ba`."""
-    assert config_hash(Config()) == "1835688bf7d760ba"
+    `3e598c59e7d71eae`. Then `1835688bf7d760ba`.
+
+    Updated 2026-08-08 for ADR 097's new `SplitParams.max_lookback_days`
+    (756, the rolling two-year backtest window, user's decision). A third
+    genuine `Config` field and therefore a third real move. New value:
+    `4630b12a84ff52de`.
+
+    Worth knowing when this next moves: the field is read only by
+    `research/backtest.py`, so `run_events` and the poller produce output
+    byte-identical to their old rows under the new hash — only the stamp
+    differs. The hash still has to move, because `config_hash` covers the
+    whole `Config` and cannot say "this field matters to one job and not
+    another." The re-stamping cost is real work with no analytical change
+    behind it, which is the trade ADR 060 accepts to keep one hash meaning
+    one config."""
+    assert config_hash(Config()) == "4630b12a84ff52de"
 
 
 # ---------------------------------------------------------------------------

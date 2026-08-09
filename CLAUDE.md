@@ -41,6 +41,8 @@ No `cscan db migrate` or `uv sync`/`uv add` while a job is running. Migrate take
 Long jobs, measured, so nobody starts one blind:
 
 - `cscan backtest --workers 8`, full universe: **2h48m**. Write phase ~20 min; the validation harness is single-threaded and takes ~2h28m regardless of worker count — more workers do not shorten it.
+  - **`runs` does not measure this.** `cli.py::backtest` closes its `with ingest.run_job(...)` block before calling `run_harness`, so `finished_at - started_at` times the write phase **only**. Measured write phases sit at 20-38 min (`SELECT run_id, finished_at-started_at FROM runs WHERE job='backtest'`), which is consistent with the 2h48m total above, not a contradiction of it. A 2026-08-09 session read those durations as the whole job and briefly "corrected" this line to ~36 min. It was wrong. The harness is untimed anywhere; wall-clock is the only way to measure it.
+  - `cscan weekly` genuinely is ~36 min: it calls `run_backtest` and deliberately skips the harness (`cli.py::weekly` docstring). Do not read a weekly duration as a `cscan backtest` duration.
 - `cscan bars --hourly --backfill`, all tickers: **~4.5-5.5 hours**. Yahoo caps hourly at 60 days per request, so backfill walks 13 sequential windows per ticker at 0.5 req/s. No incremental path — already-stored data does not reduce the cost.
 - `cscan universe --quarter`, one quarter: ~10s.
 

@@ -193,6 +193,12 @@ class SplitParams:
     event_start: str = "2010-01-01"
     train_end: str = "2021-12-31"
     validate_end: str = "2023-12-31"
+    # ~2 years of trading days (ADR 097). Bounds the backtest's bar and
+    # indicator reads to `[as_of - this, as_of]`, where `as_of` is the
+    # ticker's last bar date, never `date.today()` — a clock read here would
+    # break ADR 060 determinism. The Phase 3 harness is exempt and stays on
+    # full history.
+    max_lookback_days: int = 756
 
 
 @dataclass(frozen=True)
