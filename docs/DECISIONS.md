@@ -1595,7 +1595,17 @@ Property 2 is the cross-horizon monotonicity question this ADR's main body defer
 
 **Open decision this creates, to be made deliberately.** The four reachability heads become redundant. $P(\max_t R_t \ge X)$ is the survival function of $M_5$, so the peak fan expresses the same distribution at fixed quantiles rather than fixed thresholds. Phase 6 must either retire those heads or keep them explicitly as a calibrated, human-readable slice of the peak distribution. Keeping both without deciding means training six heads against one distribution and reporting them as independent evidence.
 
-**Not materialized, and that is not a deferral to revisit.** $M_h$ stays derived from `path`, per ADR 094. The reason is sharper than "materialize only what serving needs": $M_h$ is a **target**, not a feature. Features are served at signal time under a sub-200ms budget and must be indexed. Targets are read in bulk, offline, once per retrain (monthly, ADR 080), which is the access pattern a bulk scan of `path` is best at. Materializing a target buys nothing where it is used and adds a cache-coherency obligation that has already failed once in this system (ADR 094's event 2775021, `touched_5pct` false against a `path` that had reached 0.153993).
+**Materialized, corrected same day (2026-08-09, user's decision).** An earlier draft of this amendment argued $M_h$ should stay derived because it is a *target* rather than a *feature*, and that materializing it would add a cache-coherency obligation. Both halves were wrong, and the counter-argument is the one this repo already answers by example.
+
+`touched_Xpct` is materialized and derives from the same `path.favorable` column. If "targets stay derived" were the operative rule, that column would not exist. And the coherency obligation is not new: `mfe`, `touched_Xpct`, `day_touched_Xpct`, and `fwd_ret_*d` already carry it, and ADR 094 already built the fix by putting `run_backtest` in the weekly chain. Five more columns ride that same refresh.
+
+ADR 094 also provides for this directly, in the clause the earlier draft read past: "any future label family that needs efficiency can add a materialized column in a separate migration." Materializing is the sanctioned path, gated on a migration rather than forbidden.
+
+The deciding reason is Phase 4, not Phase 6. DESIGN §6.1 pins the statistics job as reading `events`; joining `path` (57M rows) inside it is far heavier than reading a column. Materializing now keeps open the option for Phase 4 to report peak statistics per cell, and specifically to answer this amendment's own reachability-redundancy question — whether `touched_Xpct` carries information $M_5$ does not — which is answerable in Phase 4 only if the column exists. Adding it later means a migration plus a re-run mid-phase.
+
+`events` gains `peak_ret_1d`, `peak_ret_2d`, `peak_ret_3d`, `peak_ret_5d`, `peak_ret_10d`, `numeric(12,6)` nullable, matching `path.favorable`'s precision and the nullability of every other per-event label column. `path` is unchanged and remains the source of truth; these are a cache of it, refreshed on the same schedule as the rest.
+
+One trap to avoid, learned from `699cb410d219_events_giveback.py`: that migration added `events.giveback` and no population path ever wrote it, so the column has sat NULL on every row since. The migration and the write path ship together here.
 
 **Canonical derivation.** One implementation, per invariant 2. `research/path_labels.py` owns it; nothing recomputes `max(favorable)` inline.
 

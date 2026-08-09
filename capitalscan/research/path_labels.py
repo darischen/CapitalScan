@@ -187,6 +187,33 @@ def derive_labels_from_path(
         else:
             out[f"fwd_ret_{h}d"] = float("nan")
 
+    # ADR 093's peak-within-horizon family (amendment, 2026-08-09):
+    # M_h = max over t in [1, h] of the entry-anchored return.
+    #
+    # Computed at function level, outside the `holding_days is None` branch
+    # above, and that placement is the substantive point rather than a
+    # style choice. MFE is bounded by `exit_idx` and so depends on exit
+    # policy; M_h depends only on the price path. An entry that filled but
+    # never resolved an exit still has a peak, and sweeping the stop or
+    # target must not move these numbers (ADR 064's rule for terminal
+    # targets, which applies identically here).
+    #
+    # This is also why `events.mfe` cannot stand in for `peak_ret_5d` even
+    # though both look like "the best it got in five days": mfe stops at
+    # the exit bar, M_5 does not.
+    for h in horizons:
+        window = range(entry_offset + 1, entry_offset + h + 1)
+        in_window = by_offset.index.isin(window)
+        # Require the *whole* window, not merely part of it. A peak taken
+        # over a still-accumulating window is a smaller number wearing a
+        # complete label — the staleness class ADR 094 exists to prevent,
+        # and the same rule `fwd_ret_*d` above applies by demanding its
+        # exact offset be present.
+        if int(in_window.sum()) == len(window):
+            out[f"peak_ret_{h}d"] = float(by_offset.loc[in_window, "favorable"].max())
+        else:
+            out[f"peak_ret_{h}d"] = float("nan")
+
     return out
 
 

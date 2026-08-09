@@ -316,6 +316,10 @@ def _patch_nightly_io(monkeypatch):
     monkeypatch.setattr(scheduled_runs, "complete", lambda *a, **k: 1)
     monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL"])
     monkeypatch.setattr(path_backfill_mod, "run_path_capture", lambda *a, **k: PathBackfillReport())
+    # ADR 093's peak refresh, a third database call in the nightly chain.
+    from capitalscan.research import peak_labels as peak_labels_mod
+
+    monkeypatch.setattr(peak_labels_mod, "backfill_peak_labels", lambda *a, **k: 0)
 
     # `nightly`'s path capture runs inside `ingest.run_job` so its `path`
     # rows carry a `run_id` (ADR 034); the real one writes a `runs` row.

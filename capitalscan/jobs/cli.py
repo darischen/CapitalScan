@@ -1004,6 +1004,39 @@ def schema() -> None:
 path_app = typer.Typer(help="Forward path store (Session 10)")
 
 
+@path_app.command("peak-labels")
+def path_peak_labels_cmd(
+    config_hash: Optional[str] = typer.Option(
+        None, "--config-hash", help="Default: the resolved config's own hash"
+    ),
+) -> None:
+    """Materialize `events.peak_ret_*d` from `path` (ADR 093 amendment).
+
+    Idempotent and set-based: one UPDATE recomputes every event of one
+    config from `path`, so an event whose forward window closed since the
+    last run picks up its value and one still accumulating stays NULL
+    rather than freezing at a partial maximum.
+
+    Scoped to a single `config_hash`, defaulting to the resolved config's
+    (user's decision, 2026-08-09): only the live hash is in use, and the
+    superseded generations in `events` are kept as database history rather
+    than as anything a query reads.
+    """
+    from capitalscan.jobs import db_io, ingest
+    from capitalscan.jobs.config import config_hash as compute_config_hash
+    from capitalscan.research.peak_labels import backfill_peak_labels
+
+    config = _resolve_config_or_exit()
+    chash = config_hash or compute_config_hash(config)
+    engine = db_io.get_engine()
+
+    with ingest.run_job(engine, "peak_labels", {"config_hash": chash}) as job:
+        updated = backfill_peak_labels(engine, chash, config.stats.fwd_ret_horizons)
+        job.rows_written = updated
+
+    console.print(f"peak labels: config_hash={chash} rows_updated={updated:,}")
+
+
 @path_app.command("backfill")
 def path_backfill_cmd(
     quiet: bool = typer.Option(False, "--quiet", help="JSON-lines progress instead of a live bar"),
@@ -1240,6 +1273,19 @@ def nightly() -> None:
     with ingest.run_job(engine, "path_capture", {"trigger": "nightly"}) as path_job:
         path_report = run_path_capture(engine, config, path_job.run_id, quiet=True)
         path_job.rows_written = path_report.rows_written
+    # ADR 093's peak family, refreshed after path capture because it reads
+    # what that step just wrote. Must run on a schedule, not only as a
+    # one-off backfill: `peak_ret_*d` is NULL until an event's forward
+    # window closes, so a column populated once and never again would be
+    # permanently NULL for every event signalled after that run. That is
+    # exactly how `events.giveback` ended up NULL on all 5.57M rows —
+    # migration 699cb410d219 added the column and no writer ever ran.
+    from capitalscan.jobs.config import config_hash as _compute_config_hash
+    from capitalscan.research.peak_labels import backfill_peak_labels
+
+    chash = _compute_config_hash(config)
+    with ingest.run_job(engine, "peak_labels", {"trigger": "nightly", "config_hash": chash}) as pk:
+        pk.rows_written = backfill_peak_labels(engine, chash, config.stats.fwd_ret_horizons)
     # Closes the slot `record` opened above. Without it the row stays
     # `'started'` forever and `cscan system-status` cannot tell a chain that
     # finished from one that died halfway (ADR 080 lists `status` and

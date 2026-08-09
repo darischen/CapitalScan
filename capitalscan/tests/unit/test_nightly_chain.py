@@ -38,6 +38,13 @@ def _no_real_nightly_io(monkeypatch):
     monkeypatch.setattr(
         path_backfill_mod, "run_path_capture", lambda *args, **kwargs: PathBackfillReport()
     )
+    # ADR 093's peak refresh runs after path capture (added 2026-08-09) and
+    # is a third database boundary in this chain. `nightly` imports it
+    # inside the function body, so patching the module attribute is what
+    # the call actually resolves against.
+    from capitalscan.research import peak_labels as peak_labels_mod
+
+    monkeypatch.setattr(peak_labels_mod, "backfill_peak_labels", lambda *args, **kwargs: 0)
 
     # `nightly` wraps its path capture in `ingest.run_job` (2026-08-06) so
     # the rows it writes carry a `run_id` — `path.run_id`, ADR 034. The real

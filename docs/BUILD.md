@@ -53,7 +53,7 @@ entry/exit logic:
 | Database cleanup | 28.1 GB → 16 GB. 39 config generations → 20: dropped one superseded sweep generation (17 configs run under `min_mcap_usd = 100e9`), the residue of a failed 2026-08-04 run sequence, and one superseded default. The Phase 3 run of record (`3e598c59e7d71eae`) and the live hash are kept |
 | ADR 097 | Added 2026-08-08, reverted 2026-08-09, never in effect. A rolling two-year window floors past every split boundary and yields holdout-only event sets. See the ADR before proposing a lookback window again |
 | `cscan system-status` | **Built.** Was a `NotImplementedError` stub since Session 0 while DESIGN §9.6 and ADRs 080/083 specified it. See below |
-| ADR 093 peak-within-horizon | Target family documented (amendment, 2026-08-09) and materialized as `events.peak_ret_1d/2d/3d/5d/10d` (migration `c7e1a4f9d302`) |
+| ADR 093 peak-within-horizon | Target family documented (amendment, 2026-08-09) and materialized as `events.peak_ret_1d/2d/3d/5d/10d` (migration `c7e1a4f9d302`). See below |
 
 **`cscan system-status` (DESIGN §9.6, ADR 080, ADR 083).** Prints last run and
 staleness per job, the latest schedule slot with ADR 080's catch-up flag, and
@@ -75,6 +75,41 @@ Deliberately not done: `runs` rows stuck at `running` are reported by age, not
 relabelled. `runs_status_check` allows only `running`/`ok`/`failed`, and an
 interrupted process is none of the three — marking it `failed` would assert
 something untrue in the table ADR 034 makes the provenance record.
+
+**Peak-within-horizon materialization (ADR 093 amendment).** `M_h = max` of the
+entry-anchored return over `[1, h]`, for the five horizons `StatsParams.
+fwd_ret_horizons` already carries. Two families now sit side by side on
+`events`: `fwd_ret_{h}d` answers "sell on day h regardless of path,"
+`peak_ret_{h}d` answers "best available inside h days."
+
+| Piece | Where |
+|---|---|
+| Migration | `c7e1a4f9d302_events_peak_ret_horizons.py` — five nullable `numeric(12,6)`, catalog-only |
+| Writer (product) | `research/peak_labels.py` — one set-based `UPDATE ... FROM`, idempotent, scoped to one `config_hash` |
+| Reference (oracle) | `path_labels.derive_labels_from_path` — per-event Python |
+| Agreement test | `test_peak_labels.py::TestSqlMatchesPythonReference` |
+| Refresh | `nightly`, after `path_capture`, plus `cscan path peak-labels` |
+
+Two implementations exist on purpose, which invariant 2 would normally forbid.
+The SQL is what runs; the Python is the oracle, and a divergence fails a test
+rather than producing two quiet answers. Same shape as `path_reconcile`'s
+Session-9-versus-path-derived comparison.
+
+Three properties are pinned by test: `M_h >= R_h`, `M_h` non-decreasing in `h`,
+and `M_h` unchanged when `holding_days` moves. The third is the one that
+matters most — **`events.mfe` is not a substitute for `peak_ret_5d`.** MFE stops
+at the exit bar and therefore moves with every stop or target sweep, which is
+the config coupling ADR 064 rejects for model targets. It is also the column
+that already existed, which makes it the easy wrong choice.
+
+`peak_ret_{h}d` is NULL until an event's forward window closes; a partial
+maximum is a smaller number wearing a complete label. Phase 4 and Phase 6 must
+filter on window completeness the same way they already do for the other label
+families.
+
+Populated for the live `config_hash` only (user's decision, 2026-08-09). The
+superseded generations in `events` are kept as database history, not as
+anything a query reads, so retrofitting them buys no consumer anything.
 
 **Phase 4 boundary is after Session 10.** No change to signal detection, event
 creation, or entry/exit logic. Phase 4 does not start until Session 10 passes,
