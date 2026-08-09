@@ -126,10 +126,18 @@ For every migration:
 - Explain what the command does *before* running it
 - Show the generated file and walk through each line
 - Explain what `upgrade()` and `downgrade()` do in that specific case
-- Show how to verify (`alembic current`, `\d tablename`)
+- Show how to verify (`cscan db status`, `\d tablename`)
 - **Never** run `--autogenerate` without reading the output aloud first — it misses index and constraint changes and sometimes produces destructive operations
 
-`cscan db migrate` applies to **both** databases by default. Single-target requires an explicit flag. Forgetting the second database is the main way this goes wrong.
+**Never invoke bare `alembic`.** `alembic.ini:89` still holds the template placeholder `sqlalchemy.url = driver://user:pass@localhost/dbname`, and `db/migrations/env.py` only overrides it from `CAPSCAN_ALEMBIC_URL` / `DATABASE_URL_RESEARCH` **in the environment**. `cscan db *` loads `.env.local` first (`jobs/db.py::_load_env`) and sets that variable; a bare shell has not, so `alembic current` dies with `NoSuchModuleError: Can't load plugin: sqlalchemy.dialects:driver`. This line previously said "verify with `alembic current`" and cost a real session that exact traceback.
+
+| Want | Run |
+|---|---|
+| Current revision | `cscan db status` |
+| Apply | `cscan db migrate` |
+| Undo one | `cscan db rollback --yes` |
+
+`cscan db migrate` applies to **both** databases by default. Single-target requires an explicit flag. Forgetting the second database is the main way this goes wrong. A target whose env var is unset is skipped with a visible `skip <target>: <VAR> not set`, so read the output rather than assuming both ran.
 
 ---
 
