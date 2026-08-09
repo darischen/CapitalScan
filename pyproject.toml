@@ -87,6 +87,22 @@ ignore_missing_imports = true
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# `extend-exclude`, not `exclude`: the latter REPLACES ruff's defaults
+# (.venv, build, dist, __pycache__, ...) rather than adding to them.
+#
+# `.superpowers/sdd/` holds archived session evidence — task reports whose
+# fenced Python blocks record what the code looked like at the time. Ruff
+# formats code blocks inside Markdown, so leaving this in scope means the
+# formatter rewrites historical evidence to match today's style, which
+# destroys the thing the reports exist to preserve.
+#
+# It is declared rather than left to discovery because the two disagree by
+# platform: `ruff format --check .` walks 158 files on this Windows
+# workstation and 208 in CI's Linux container, the difference being exactly
+# these 50 files. CI failed on six of them (2026-08-09) while every local
+# run passed. Whatever the traversal rule is, CI parity should not depend
+# on it.
+extend-exclude = [".superpowers"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
