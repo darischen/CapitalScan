@@ -112,7 +112,7 @@ and 093-094 had drifted outside the ordered run.
 | 090 | Absence is None, never NaN; debounce keys on a tuple | Pinned |
 | 091 | Config resolution lives in jobs, not core | Pinned |
 | 092 | Exit thresholds are ExitParams fields, never literals | Pinned |
-| 093 | Terminal quantiles expand to five horizons | Provisional. Authorizes a Phase 6 rewrite of DESIGN §7.4 |
+| 093 | Terminal quantiles expand to five horizons; peak-within-horizon family added 2026-08-09 | Provisional. Authorizes a Phase 6 rewrite of DESIGN §7.4 |
 | 094 | Path table is source of truth; labels are derived views | Pinned |
 | 095 | Exit thresholds in SQL are a second exit implementation | Provisional. Authorizes a Phase 5 rebuild of `v_positions` |
 | 096 | `cell_stats` is keyed by config, not by cell alone | Pinned |
@@ -1568,6 +1568,51 @@ Cost. Roughly triple the terminal-quantile heads, in line with training time (5 
 What this does not change. Reachability and adverse-excursion head definitions are untouched, still `touched_Xpct` and `touched_-Ypct` over the existing horizon and threshold sets. Exit policy remains a separate layer on top of timeout return, per §7.4's existing rule. Nothing about signal detection, entry, or exit resolution moves. `DESIGN §7.4` itself is not rewritten by this ADR — that table is a Phase 6 implementation spec, and pinning its exact head list now would front-run Phase 4's statistics, which ADR 033's kill criteria could still retire the two-indicator hypothesis before Phase 6 opens. This ADR authorizes the rewrite when Phase 6 begins; it does not perform it.
 
 Status rationale. Provisional rather than Pinned: this constrains a schema decision Session 10 makes now (the path table's window), but the model surface itself is not built until Phase 6, and ADR 033's kill criteria sit between here and there. If Phase 4 finds no cell survives FDR correction, there may be no model to expand.
+
+### Amendment, 2026-08-09: the peak-within-horizon target family
+
+**Decision.** Phase 6 fits a second quantile fan, over the running maximum of the entry-anchored return, at the same five horizons this ADR already names. For an event with entry-anchored return $R_t$:
+
+$$M_h = \max_{1 \le t \le h} R_t, \qquad h \in \{1, 2, 3, 5, 10\}$$
+
+$$\hat{Q}_\tau(M_h), \quad \tau \in \{0.05, 0.25, 0.50, 0.75, 0.95\}$$
+
+Twenty-five peak heads alongside the twenty-five terminal heads above. With reachability (4) and adverse excursion (2), the surface reaches roughly **fifty-six heads**, against the ~31 this ADR previously implied and the 11 in ADR 064.
+
+**Why it was missing.** This ADR was written to force Session 10's path window to eleven trading days, and it argued that case entirely in terms of *terminal* return, because a ten-day window would have made `fwd_ret_10d` underivable for `NEXT_OPEN` entries. Session 10 then built `path` with a per-day `favorable` extreme, which makes the peak process derivable at full resolution — and nobody wrote that down. The gap is documentary, not technical: the data has been complete since Session 10 shipped. Recorded now (user's decision, 2026-08-09) rather than at Phase 6, because an undocumented target family is one a Phase 6 planner builds to this ADR's head list and silently omits.
+
+**Why quantiles, not a point estimate.** Same reason this ADR gives for terminal return. "The median peak inside three days is 2.1%, the 75th percentile 3.8%" sizes a limit order. A mean peak does not, and a peak distribution is skewed enough that the mean is not near the median.
+
+**Why this is not `mfe`.** `events.mfe` is bounded by `exit_idx` and therefore by `ExitParams.max_hold_days`, so it cannot see day 10, and it moves whenever a sweep changes the stop or target. $M_h$ is a property of the price path with no exit policy in it. Training on `mfe` would couple the model to config and force a retrain on every exit sweep, which is exactly the coupling ADR 064 rejects for terminal targets. The same rule applies here and is easy to violate by accident, since `mfe` is the column that already exists.
+
+**Three structural properties, free constraints for the fit.**
+
+1. $M_h \ge R_h$ for every $h$. The peak inside a window is at least its terminal value.
+2. $M_h$ is non-decreasing in $h$. A longer window cannot lower a maximum.
+3. $Q_\tau(M_h) - Q_\tau(R_h)$ is giveback at the distribution level — the quantity `events.giveback` would have carried before ADR 094 dropped it as unserved.
+
+Property 2 is the cross-horizon monotonicity question this ADR's main body defers to Phase 6 for the terminal fan. For the peak fan it is not a modeling judgment but an arithmetic fact, so a fit violating it is a bug rather than a tolerance.
+
+**Open decision this creates, to be made deliberately.** The four reachability heads become redundant. $P(\max_t R_t \ge X)$ is the survival function of $M_5$, so the peak fan expresses the same distribution at fixed quantiles rather than fixed thresholds. Phase 6 must either retire those heads or keep them explicitly as a calibrated, human-readable slice of the peak distribution. Keeping both without deciding means training six heads against one distribution and reporting them as independent evidence.
+
+**Not materialized, and that is not a deferral to revisit.** $M_h$ stays derived from `path`, per ADR 094. The reason is sharper than "materialize only what serving needs": $M_h$ is a **target**, not a feature. Features are served at signal time under a sub-200ms budget and must be indexed. Targets are read in bulk, offline, once per retrain (monthly, ADR 080), which is the access pattern a bulk scan of `path` is best at. Materializing a target buys nothing where it is used and adds a cache-coherency obligation that has already failed once in this system (ADR 094's event 2775021, `touched_5pct` false against a `path` that had reached 0.153993).
+
+**Canonical derivation.** One implementation, per invariant 2. `research/path_labels.py` owns it; nothing recomputes `max(favorable)` inline.
+
+```sql
+SELECT p.event_id,
+       max(p.favorable) FILTER (WHERE p.day_offset <= e.entry_offset + 1)  AS peak_1d,
+       max(p.favorable) FILTER (WHERE p.day_offset <= e.entry_offset + 2)  AS peak_2d,
+       max(p.favorable) FILTER (WHERE p.day_offset <= e.entry_offset + 3)  AS peak_3d,
+       max(p.favorable) FILTER (WHERE p.day_offset <= e.entry_offset + 5)  AS peak_5d,
+       max(p.favorable) FILTER (WHERE p.day_offset <= e.entry_offset + 10) AS peak_10d
+FROM path p JOIN events e ON e.id = p.event_id
+GROUP BY p.event_id;
+```
+
+`entry_offset` is 1 for `NEXT_OPEN` and 0 otherwise, the same convention `derive_labels_from_path` uses. Measured on 20,000 filled `touch` entries under `1835688bf7d760ba` (2026-08-09), mean $M_h$ runs 1.14% / 1.69% / 2.10% / 2.75% / 3.97% across the five horizons, monotone as property 2 requires.
+
+**Status.** Provisional, inheriting this ADR's own rationale. ADR 033's kill criteria still sit between here and Phase 6.
 
 ---
 
