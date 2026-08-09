@@ -105,29 +105,29 @@ from here on, not a target you can append to.
 config**, which is also what the Phase 4 statistics need. No code change is
 required for this criterion; a run is.
 
-**Resolved 2026-08-08, then reopened by ADR 097 (measured 2026-08-09).** The
-run this section was waiting for happened: `backtest_20260808T123636_22fdc650`
-wrote **621,976 events under `1835688bf7d760ba`, spanning 2010-01-05 to
-2026-08-07**, across 590 tickers. The "109 events, 2026-07-31 to 2026-08-06"
-figure above is superseded and was already stale when read on 2026-08-09;
-it is left in place per this file's own no-deletion convention.
+**Resolved 2026-08-08 (measured 2026-08-09).** The run this section was
+waiting for happened: `backtest_20260808T123636_22fdc650` wrote **621,976
+events under `1835688bf7d760ba`, spanning 2010-01-05 to 2026-08-07**, across
+590 tickers. The "109 events, 2026-07-31 to 2026-08-06" figure above is
+superseded and was already stale when read on 2026-08-09; it is left in place
+per this file's own no-deletion convention. The GUC is on
+`1835688bf7d760ba`, that hash now holds a full-history event set, and
+`cscan scan` serves it. **Criterion met.**
 
-ADR 097 (2026-08-08) then moved the default hash again, to
-`4630b12a84ff52de`, and the nightly chain picked the change up immediately:
-`events_20260809T173928_c19cc671` wrote 299 rows under the new hash while the
-GUC still pointed at the old one. So the gate is unmet again, for the same
-mundane reason and with a new wrinkle worth stating plainly — **the split is
-live, not hypothetical.** New rows accumulate under a hash nothing serves,
-while `cscan scan` keeps returning the 622k older rows, stale rather than
-empty. Re-pinning the GUC is a manual `ALTER DATABASE`; no migration records
-it.
+**ADR 097's brief interruption, recorded so the residue is explainable.**
+ADR 097 (2026-08-08) added `SplitParams.max_lookback_days`, moving the
+default hash to `4630b12a84ff52de`; the nightly chain picked it up the same
+day and `events_20260809T173928_c19cc671` wrote 299 rows under it. The ADR
+was reverted on 2026-08-09 once its 756-day window was found to floor at
+2024-07-14, behind every split boundary, producing holdout-only event sets
+(all 299 of those rows carry `split_key = 'holdout'`). See ADR 097 for the
+full reasoning. The default hash is back to `1835688bf7d760ba`, no GUC
+change was ever applied, and no backtest ever completed under the withdrawn
+config.
 
-One consequence of re-pinning that is easy to miss: ADR 097 bounds the
-backtest to a rolling 756-day window, so a backtest under `4630b12a84ff52de`
-never writes events older than that. After the GUC moves, `cscan scan` and
-`v_events` serve roughly two years of history, not sixteen. That is the
-intended scope, not a regression, but it is a visible change to the serving
-surface rather than a silent one.
+Residue: those 299 events under `4630b12a84ff52de` are the only rows under a
+hash no current config can produce. They serve nothing and are safe to
+delete.
 
 **What `runs.duration` measures for a backtest, and what it does not
 (2026-08-09).** `runs` rows for `job='backtest'` sit at 20-38 min for a

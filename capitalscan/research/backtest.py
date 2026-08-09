@@ -36,7 +36,7 @@ from __future__ import annotations
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
-from datetime import date, timedelta
+from datetime import date
 from typing import Any, cast
 
 import pandas as pd
@@ -360,38 +360,6 @@ def _read_indicators(engine: Engine, ticker: str, start: date) -> pd.DataFrame:
     return df
 
 
-def _last_bar_date(engine: Engine, ticker: str, interval: str) -> date | None:
-    """This ticker's most recent bar date, read before the bar frame itself.
-
-    ADR 097's lookback floor bounds the bar read, so the "as of" anchor it
-    counts back from has to be known one query earlier than
-    `apply_eligibility` resolves its own. This is the same anchor —
-    `max(bars.ts)` for the daily frame — not a second definition of it.
-
-    **Never `date.today()`.** ADR 060 pins the engine as a pure function of
-    config plus data, and a clock-derived floor breaks that in the way the
-    provenance record cannot show: the same config against the same database
-    yields a different event set tomorrow, stamped with an unchanged
-    `config_hash`. `run_id` is already a caller-injected parameter for this
-    reason (`run_backtest`'s docstring), and the floor is subject to the same
-    rule.
-
-    Returns `None` for a ticker with no bars at all, which the caller treats
-    as "nothing to backtest" rather than substituting a date (invariant 4).
-    """
-    with engine.connect() as conn:
-        raw = conn.execute(
-            text("SELECT max(ts) FROM bars WHERE ticker = :ticker AND interval = :interval"),
-            {"ticker": ticker, "interval": interval},
-        ).scalar()
-    if raw is None:
-        return None
-    ts = pd.Timestamp(raw)
-    if ts.tzinfo is not None:
-        ts = ts.tz_localize(None)
-    return ts.date()
-
-
 def _read_market_days(engine: Engine) -> pd.DataFrame:
     with engine.connect() as conn:
         df = pd.read_sql(text("SELECT * FROM market_days ORDER BY ts"), conn)
@@ -504,30 +472,12 @@ def _backtest_one_ticker(
     engine = db_io.get_engine(database_url)
     chash = config_hash(config)
 
-    # ADR 097's rolling window, applied to all three reads from one floor.
-    # Safe because every bar access downstream sits at or forward of the
-    # entry — `resolve_exit_for_entry` slices `bars.iloc[entry_idx + 1:]`,
-    # `forward_returns` shifts negative, `_first_hourly_touch` is scoped to
-    # the entry date — so no consumer reads history earlier than the window
-    # and the event set is identical to an unfloored read. That identity is
-    # load-bearing, not incidental: `max_lookback_days` is already a hashed
-    # `SplitParams` field, so `config_hash` cannot distinguish a floored run
-    # from an unfloored one, and a differing event set would put two outputs
-    # under one provenance key (ADR 060).
-    #
-    # `as_of` is data-derived, never `date.today()` — see `_last_bar_date`.
-    as_of = today if today is not None else _last_bar_date(engine, ticker, "1d")
-    if as_of is None:
-        return _empty_events_frame()
-    event_start = date.fromisoformat(config.splits.event_start)
-    effective_start = max(event_start, as_of - timedelta(days=config.splits.max_lookback_days))
-
-    bars = _read_bars(engine, ticker, effective_start, "1d")
+    bars = _read_bars(engine, ticker, date.fromisoformat(config.splits.ingest_start), "1d")
     if bars.empty:
         return _empty_events_frame()
 
-    indicators = _read_indicators(engine, ticker, effective_start)
-    hourly = _read_bars(engine, ticker, effective_start, "1h")
+    indicators = _read_indicators(engine, ticker, date.fromisoformat(config.splits.event_start))
+    hourly = _read_bars(engine, ticker, date.fromisoformat(config.splits.ingest_start), "1h")
     market = _read_market_days(engine)
     universe_flags = _read_universe_flags(engine, ticker)
 

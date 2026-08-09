@@ -6,11 +6,13 @@ Format: each entry states the decision, why, and what it costs. Status is one of
 
 Last updated: 2026-08-08
 
-Recent structural changes: ADR 097 added 2026-08-08 (backtest 2-year window);
-ADR 094's 2026-08-05 corrections; ADRs 095 and 096 added 2026-08-06; ADR 002
-marked Superseded; the "Phase gates" block rewritten to the seven-phase
-numbering (see the note in that section); body order restored to ADR sequence
-— 035-040 and 093-094 had drifted outside the ordered run.
+Recent structural changes: ADR 097 added 2026-08-08 and reverted 2026-08-09
+without ever taking effect (its window emptied the train and validate splits
+— read the entry before proposing a lookback window again); ADR 094's
+2026-08-05 corrections; ADRs 095 and 096 added 2026-08-06; ADR 002 marked
+Superseded; the "Phase gates" block rewritten to the seven-phase numbering
+(see the note in that section); body order restored to ADR sequence — 035-040
+and 093-094 had drifted outside the ordered run.
 
 ---
 
@@ -114,7 +116,7 @@ numbering (see the note in that section); body order restored to ADR sequence
 | 094 | Path table is source of truth; labels are derived views | Pinned |
 | 095 | Exit thresholds in SQL are a second exit implementation | Provisional. Authorizes a Phase 5 rebuild of `v_positions` |
 | 096 | `cell_stats` is keyed by config, not by cell alone | Pinned |
-| 097 | Backtest reads events only within a rolling 2-year window | Pinned |
+| 097 | Backtest reads events only within a rolling 2-year window | Superseded by 019/009. Reverted 2026-08-09, never in effect |
 
 ---
 
@@ -1746,7 +1748,30 @@ key, so an existing `cell_id` string means the same thing it always did.
 
 ## 097. Backtest reads events only within a rolling 2-year window
 
-Status: Pinned
+Status: **Superseded by ADR 019 and ADR 009, which it cannot coexist with. Implemented 2026-08-08, reverted 2026-08-09, never in effect for a completed backtest.**
+
+**Why it was reverted, stated first because the rest of this entry describes something that does not exist.** A 756-day window measured from 2026-08-09 floors at **2024-07-14**. Every split boundary in `SplitParams` sits behind that floor: `train_end` is 2021-12-31 and `validate_end` is 2023-12-31, so the window contains holdout dates and nothing else. Measured on the 299 rows the nightly job wrote under the short-lived hash: **100% `split_key = 'holdout'`, zero train, zero validate.**
+
+Four things break at once, none of them recoverable by tuning the number:
+
+- **Phase 4 cannot run.** Its headline deliverable is the cell grid with BH correction *on the validation split* (Phase gates, below). There is no validation split.
+- **`v_screen` returns nothing.** ADR 088 hardcodes `split_key = 'validate'` in every serving view as a firewall, explicitly not parameterizable.
+- **ADR 009's discipline collapses.** "Sweep on train, select on validate, report on holdout once" requires all three to be non-empty.
+- **The holdout rule inverts.** CLAUDE.md pins holdout as evaluated exactly once at the end. A config producing only holdout events makes every routine run an evaluation of it.
+
+Any window short enough to satisfy this ADR's intent is shorter than the distance from today back to `validate_end`, so no value of `max_lookback_days` fixes this. Only moving the split boundaries would, and that trade is rejected below.
+
+**The concern behind it is legitimate and already has a mechanism.** `StatsParams.era_bounds` is `("2014-12-31", "2019-12-31", "2023-12-31")` and Phase 4's deliverables include an era breakdown. That answers "does the edge hold in the recent regime?" against the full sample, instead of answering it against a sample too small and too recent to carry a train/validate split. Recency is a reporting dimension here, not an ingestion filter.
+
+**Precedent that should have been read first.** ADR 002, superseded, argued: "Two years covers 2024 to 2026 only, a period where dip-buying worked. Testing a dip-buying rule on a window selected for dip-buying success produces a result with no forward validity." It was superseded by ADRs 035 and 040 in the direction of *more* history, not less. This ADR reopened a settled question without engaging the reasoning that settled it. CLAUDE.md's instruction to stop and ask when a task appears to contradict an ADR applied here and was not followed.
+
+**What was rejected, and why.** Re-cutting `SplitParams` inside the two-year window (train 2024-07 to 2025-06, validate 2025-07 to 2026-01, holdout 2026-02 onward) would preserve the window at roughly eight months per split. ADR 001 sized the training universe wide specifically because effective sample after clustering is the binding constraint on detecting a 5-15 point effect. Trading 373k train and 76k validate events for something near 17k and 10k signals moves in the wrong direction on the one axis that decides whether anything is measurable.
+
+**Residue.** 299 events under `4630b12a84ff52de` remain in `events` from the one nightly run that fired while the field existed. That hash is unreachable now and the rows serve nothing.
+
+---
+
+The original entry follows, unchanged except for this header, per this file's no-deletion rule.
 
 Decision. `SplitParams.max_lookback_days` is set to 756 days (approximately 2 years). The backtest reads indicators and detects events only within this window from today's date, regardless of the `event_start` date in config.
 
