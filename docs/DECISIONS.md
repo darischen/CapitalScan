@@ -1543,6 +1543,33 @@ Why a new `ExitParams` field rather than threading `SignalParams` into `resolve_
 
 Enforcement. A source assertion that no bare numeric literal appears in the exit threshold comparison, plus boundary tests on each side of the configured value.
 
+**What that assertion actually covers, measured 2026-08-09.** It is
+`test_exits.py::test_exits_module_contains_no_bare_stochastic_literal`, and
+the sentence above overstates it in three ways worth knowing before trusting
+it:
+
+1. **One module.** It calls `inspect.getsource(exits)`, so its universe is
+   `core/exits.py` and nothing else. No other Python module, no SQL.
+2. **Two spellings.** The body is `assert "80.0" not in body and "20.0" not
+   in body`. A bare `80`, `80.00`, or `int(80)` passes untouched.
+3. **No SQL at all**, which is how ADR 095's `v_positions` defect survived
+   in `db/schema.sql` while this ADR read as solved.
+
+The third is the one that already cost something, and the first two are why
+ADR 095's proposed remedy is insufficient as written. That ADR says to
+"extend ADR 092's source assertion to scan checked-in SQL." Widening the
+file list is not enough: `db/schema.sql:1005` spells the threshold
+`(s.k_full >= (80)::numeric)` and line 1008 spells the timeout `>= 5`.
+Neither string is `"80.0"` or `"20.0"`, so the existing matcher finds
+nothing even pointed directly at the file. **The matcher needs replacing,
+not just re-aiming** — a numeric-literal pattern next to a comparison
+operator on a threshold-bearing column, not a substring search for two
+specific float spellings.
+
+This is recorded here rather than only in ADR 095 because this ADR is the
+one whose Enforcement line a reader consults to decide whether the rule is
+guarded. It is guarded in one file, against two spellings.
+
 Found during the session 1-3 audit. The audit also verified independently that every DESIGN §3.5 formula matches a from-scratch reimplementation, that `ddof=0` genuinely differs from `ddof=1` so the population-std choice is real rather than incidental, that `realized_vol` provably reads `adj_close` (the §2.2 exception) by giving `adj_close` an independent path from `close` and confirming the output followed it, and that all 19 output columns declare warmups at or above their actual first-valid index with `max_warmup() = 272` matching §2.7.
 
 ---
@@ -1760,6 +1787,29 @@ Enforcement, once fixed. Extend ADR 092's source assertion to scan checked-in
 SQL (`db/schema.sql`, `db/migrations/`) for numeric literals in exit
 comparisons, not just Python. The assertion's blind spot is the reason this
 survived.
+
+**The assertion extension is not deferred to Phase 5, and this ADR reads as
+though it is (clarified 2026-08-09).** Two separable pieces got bundled into
+one deferral above:
+
+- **Rebuilding `v_positions`** genuinely waits for Phase 5. Phase 4 does not
+  read the view, and rebuilding a serving surface ahead of the session that
+  owns it invites a second rewrite. That reasoning holds.
+- **Extending the assertion** waits on nothing. It is a test change, it
+  guards every future instance of this defect class rather than the one
+  instance found here, and leaving it until Phase 5 means the next SQL exit
+  literal lands with the same silence. Nothing about Phase 4's scope
+  prevents writing it.
+
+**And the extension as described here would not work.** Measured
+2026-08-09: the existing assertion is a substring search for `"80.0"` and
+`"20.0"` inside `inspect.getsource(core.exits)`. The literals in this very
+view are spelled `(80)::numeric` (`db/schema.sql:1005`) and `>= 5` (line
+1008). Pointing that matcher at SQL files finds nothing, because neither
+string appears. The fix is a different matcher — a numeric literal adjacent
+to a comparison on a threshold-bearing column — not a wider file list. See
+ADR 092's Enforcement section for the full accounting of what the current
+assertion covers.
 
 ---
 

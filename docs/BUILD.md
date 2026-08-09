@@ -111,6 +111,33 @@ Populated for the live `config_hash` only (user's decision, 2026-08-09). The
 superseded generations in `events` are kept as database history, not as
 anything a query reads, so retrofitting them buys no consumer anything.
 
+**Open, carried into Phase 4 planning (2026-08-09).** Not blocking Phase 4's
+statistics work, but decided-against-doing-now rather than unnoticed:
+
+| Item | Status |
+|---|---|
+| `v_positions` exit literals (ADR 095) | Deferred to Phase 5 by that ADR's own reasoning — Phase 4 does not read the view |
+| **ADR 092's source assertion is narrower than it reads** | **Not deferred anywhere. Candidate for Phase 4** |
+| `cscan logs --job X --tail N` | Still a `NotImplementedError` stub; DESIGN §9.6 specifies it alongside `system-status`, which is now built |
+
+The assertion gap is the one worth acting on. ADR 092's Enforcement line says
+"a source assertion that no bare numeric literal appears in the exit threshold
+comparison," which reads as solved. Measured: it is
+`test_exits.py::test_exits_module_contains_no_bare_stochastic_literal`, it
+greps `inspect.getsource(core.exits)` for the two strings `"80.0"` and
+`"20.0"`, and that is its entire universe. One module, two spellings, no SQL.
+
+That is how ADR 095's `v_positions` defect survived. And ADR 095's proposed
+remedy — "extend the assertion to scan checked-in SQL" — does not work as
+stated: `db/schema.sql:1005` spells the threshold `(s.k_full >= (80)::numeric)`
+and line 1008 spells the timeout `>= 5`. Neither matches `"80.0"` or `"20.0"`,
+so re-aiming the existing matcher at SQL finds nothing. **The matcher needs
+replacing**, with a numeric literal adjacent to a comparison on a
+threshold-bearing column, not a substring search.
+
+Doing this in Phase 4 costs a test and guards every future instance. Deferring
+it to Phase 5 means the next SQL exit literal lands with the same silence.
+
 **Phase 4 boundary is after Session 10.** No change to signal detection, event
 creation, or entry/exit logic. Phase 4 does not start until Session 10 passes,
 which it now has.
