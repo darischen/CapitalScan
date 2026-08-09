@@ -451,3 +451,46 @@ class HourlySplitDetection:
 
 
 DEFAULT_HOURLY_SPLIT_DETECTION = HourlySplitDetection()
+
+
+@dataclass(frozen=True)
+class MonitoringThresholds:
+    """Bounds for `cscan system-status` (DESIGN §9.6, ADR 080, ADR 083).
+
+    Deliberately **not** a field of `Config`, same rationale as
+    `SweepParams`, `SharesPlausibility`, and the two hourly-split guards
+    above: nothing here varies a signal, an exit, or a cost, so folding it
+    in would change `config_hash` for every existing config in service of a
+    value that cannot affect a single event row. These describe how loudly
+    to report on jobs, not how to run them.
+
+    **`catch_up_delay_seconds`** comes straight from ADR 080: Task Scheduler
+    runs a missed job at next boot, so a large gap between the intended fire
+    time and the actual start means the machine was off rather than that
+    anything failed. 3600 is the line that ADR draws, and `scheduled_runs`
+    has been recording `delay_seconds` against it since Session 8 with no
+    consumer to read it.
+
+    **`stale_after_days`** matches the 2-day threshold ADR 070 already
+    pins for the serving layer's staleness banner. One number for "this data
+    is too old to trust," used by both surfaces, so the CLI and the API
+    cannot disagree about what stale means.
+
+    **`stale_running_hours`** has no prior ADR. A `runs` row sits at
+    `status='running'` until its context manager closes it, so a process
+    killed by a machine sleeping leaves the row open forever. There is no
+    honest terminal status to rewrite it to (`runs_status_check` allows only
+    `running`/`ok`/`failed`, and neither `ok` nor `failed` is true of an
+    interrupted run), so `system-status` flags them by age instead of
+    mutating history. 12 hours clears the longest legitimately-open job by a
+    wide margin: the poller runs a single session across one market day
+    (6.5 hours), and the longest measured batch job is the ~2h48m full
+    backtest.
+    """
+
+    catch_up_delay_seconds: int = 3600
+    stale_after_days: int = 2
+    stale_running_hours: int = 12
+
+
+DEFAULT_MONITORING = MonitoringThresholds()

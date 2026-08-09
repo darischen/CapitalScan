@@ -44,6 +44,38 @@ source of truth, labels derived on demand). Tests and documentation are
 complete (task 10.7). See `docs/sessions/session10.md` §4 for gate criteria and
 `docs/RESULTS.md` (Session 10 tasks) for run details.
 
+**Pre-Phase-4 cleanup, 2026-08-09.** Work done between Session 10's gate and
+Phase 4 planning, none of it changing signal detection, event creation, or
+entry/exit logic:
+
+| Item | State |
+|---|---|
+| Database cleanup | 28.1 GB → 16 GB. 39 config generations → 20: dropped one superseded sweep generation (17 configs run under `min_mcap_usd = 100e9`), the residue of a failed 2026-08-04 run sequence, and one superseded default. The Phase 3 run of record (`3e598c59e7d71eae`) and the live hash are kept |
+| ADR 097 | Added 2026-08-08, reverted 2026-08-09, never in effect. A rolling two-year window floors past every split boundary and yields holdout-only event sets. See the ADR before proposing a lookback window again |
+| `cscan system-status` | **Built.** Was a `NotImplementedError` stub since Session 0 while DESIGN §9.6 and ADRs 080/083 specified it. See below |
+| ADR 093 peak-within-horizon | Target family documented (amendment, 2026-08-09) and materialized as `events.peak_ret_1d/2d/3d/5d/10d` (migration `c7e1a4f9d302`) |
+
+**`cscan system-status` (DESIGN §9.6, ADR 080, ADR 083).** Prints last run and
+staleness per job, the latest schedule slot with ADR 080's catch-up flag, and
+any `runs` row still marked `running` past a threshold. Query layer is
+`jobs/status.py` (read-only, returns frames); rendering is in the CLI.
+Thresholds live in `core/config.MonitoringThresholds`, a standalone frozen
+dataclass deliberately **not** a field of `Config` — same standing as
+`SweepParams` and `SharesPlausibility`, so `config_hash` does not move for a
+value that cannot affect an event row.
+
+Two write-side gaps closed alongside it. `scheduled_runs.status` could only
+ever hold `'started'`, because `record` wrote that literal and nothing else
+touched the column; `scheduled_runs.complete` now closes the slot, and
+`nightly`, `weekly`, and `monthly` call it. `run_id` was NULL on all three of
+those jobs' slots, breaking the join back to `runs` that ADR 080 specified it
+for; `complete` writes it, since `record` fires before `run_job` mints one.
+
+Deliberately not done: `runs` rows stuck at `running` are reported by age, not
+relabelled. `runs_status_check` allows only `running`/`ok`/`failed`, and an
+interrupted process is none of the three — marking it `failed` would assert
+something untrue in the table ADR 034 makes the provenance record.
+
 **Phase 4 boundary is after Session 10.** No change to signal detection, event
 creation, or entry/exit logic. Phase 4 does not start until Session 10 passes,
 which it now has.

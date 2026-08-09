@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, time, timedelta
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, text
 
 from capitalscan.jobs import db_io
 
@@ -70,3 +70,42 @@ def record(engine: Engine, job: str, run_id: str | None = None, now: datetime | 
         ["job", "scheduled_for"],
     )
     return delay_seconds
+
+
+def complete(engine: Engine, job: str, status: str, run_id: str | None = None) -> int:
+    """Close the slot `record` opened, returning rows updated (0 or 1).
+
+    Without this, `scheduled_runs.status` could only ever hold `'started'` —
+    `record` wrote that literal and nothing else ever touched the column.
+    Measured 2026-08-09: every row in the table, going back to Session 8,
+    said `'started'`, including jobs that had finished successfully days
+    earlier. ADR 080 lists `status` as part of this table's contract, so the
+    column existed and simply had no writer for its terminal half.
+
+    **Targets the job's most recent slot, not a recomputed one.** The
+    obvious implementation calls `_scheduled_for(job, now())` again and
+    updates that key, which is wrong across a slot boundary: `nightly` is
+    scheduled at 16:30, so a run starting 16:29 and finishing 16:31 opens
+    the previous day's slot and would close the current day's, leaving one
+    row permanently `'started'` and marking another complete that never
+    ran. `max(scheduled_for)` is unambiguous — `record` has just written
+    the newest slot for this job — and is immune to how long the job took.
+
+    `run_id` is written here rather than at `record` time because the two
+    are ordered the other way around: `record` fires before config
+    resolution (deliberately, so a config failure still leaves a schedule
+    trace), and `ingest.run_job` does not mint a `run_id` until after. That
+    ordering is why `nightly`, `weekly`, and `monthly` all left the column
+    NULL, breaking the join back to `runs` that ADR 080 specified it for.
+    """
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                "UPDATE scheduled_runs SET status = :status, "
+                "run_id = COALESCE(:run_id, run_id) "
+                "WHERE job = :job AND scheduled_for = ("
+                "  SELECT max(scheduled_for) FROM scheduled_runs WHERE job = :job)"
+            ),
+            {"job": job, "status": status, "run_id": run_id},
+        )
+    return int(result.rowcount)

@@ -1240,6 +1240,13 @@ def nightly() -> None:
     with ingest.run_job(engine, "path_capture", {"trigger": "nightly"}) as path_job:
         path_report = run_path_capture(engine, config, path_job.run_id, quiet=True)
         path_job.rows_written = path_report.rows_written
+    # Closes the slot `record` opened above. Without it the row stays
+    # `'started'` forever and `cscan system-status` cannot tell a chain that
+    # finished from one that died halfway (ADR 080 lists `status` and
+    # `run_id` as part of this table's contract; both went unwritten until
+    # 2026-08-09). `run_id` is the path-capture job's, the last link in the
+    # chain, so a reader landing here can follow it into `runs`.
+    scheduled_runs.complete(engine, "nightly", "ok", run_id=path_job.run_id)
     console.print("nightly: chain complete (sync --to-serving not yet implemented)")
 
 
@@ -1318,6 +1325,10 @@ def weekly(
                 more = "" if len(failed) <= 10 else f", +{len(failed) - 10} more"
                 report.notes = f"{len(failed)}/{len(resolved)} ticker(s) failed: {sample}{more}"
     except BacktestRunFailed as exc:
+        # Closed as `failed` before the exit, not left `'started'`: a chain
+        # that raised is exactly the case `system-status` exists to surface,
+        # and the old code path left no terminal state at all.
+        scheduled_runs.complete(engine, "weekly", "failed")
         console.print(
             "[red]error[/red]: weekly backtest refresh failed — every dispatched "
             f"ticker's worker raised, which points at the config, not the data. {exc}"
@@ -1331,8 +1342,13 @@ def weekly(
         "(cell_stats is Phase 4 scope, sync is Phase 5 scope)"
     )
     if bt_report.failed_tickers:
+        # Partial failure is still a failed slot: `run_backtest` wrote what
+        # succeeded, but a reader asking "did the weekly refresh do its job"
+        # should not be told yes.
+        scheduled_runs.complete(engine, "weekly", "failed", run_id=bt_report.run_id)
         console.print(f"[red]{len(bt_report.failed_tickers)} ticker(s) failed[/red]")
         raise typer.Exit(code=1)
+    scheduled_runs.complete(engine, "weekly", "ok", run_id=bt_report.run_id)
 
 
 @app.command()
@@ -1342,7 +1358,13 @@ def monthly() -> None:
     """
     from capitalscan.jobs import db_io, scheduled_runs
 
-    scheduled_runs.record(db_io.get_engine(), "monthly")
+    engine = db_io.get_engine()
+    scheduled_runs.record(engine, "monthly")
+    # Closed immediately and honestly: the slot fired and the chain has
+    # nothing wired into it yet, which is a completed no-op rather than an
+    # unfinished run. Leaving it `'started'` would make `system-status`
+    # report a monthly job perpetually in flight.
+    scheduled_runs.complete(engine, "monthly", "ok")
     console.print("monthly: no jobs wired yet (retrain/calibrate are Phase 6 scope)")
 
 
@@ -1379,8 +1401,93 @@ def verify_indicators(
 
 @app.command()
 def system_status() -> None:
-    """Show system status and last run times."""
-    raise NotImplementedError("system-status")
+    """Show last run and staleness per job, schedule catch-up, and any
+    interrupted runs (DESIGN §9.6, ADR 080, ADR 083).
+
+    Read-only. Nothing here rewrites a `runs` row: an interrupted process
+    is neither `ok` nor `failed`, and `runs_status_check` offers no third
+    terminal value, so those rows are reported by age rather than
+    relabelled (see `jobs/status.py`'s module docstring).
+
+    Exits non-zero when any job is stale or any run failed, so a scheduled
+    wrapper can act on it. Catch-up delay alone does not fail the command:
+    ADR 080 treats a missed slot as the normal consequence of a workstation
+    being off, which is the reason Task Scheduler's catch-up is enabled.
+    """
+    import pandas as pd
+    from rich.table import Table
+
+    from capitalscan.core.config import DEFAULT_MONITORING
+    from capitalscan.jobs import db_io
+    from capitalscan.jobs import status as job_status
+
+    engine = db_io.get_engine()
+    jobs = job_status.job_summary(engine, DEFAULT_MONITORING)
+    schedule = job_status.schedule_summary(engine, DEFAULT_MONITORING)
+    interrupted = job_status.stale_running(engine, DEFAULT_MONITORING)
+
+    if jobs.empty:
+        console.print("[yellow]no runs recorded[/yellow]")
+        return
+
+    table = Table(title="Jobs — last run", header_style="bold")
+    for col in ("job", "status", "last seen", "age (days)", "rows"):
+        table.add_column(col)
+    for _, r in jobs.iterrows():
+        age = f"{r['staleness_days']:.1f}"
+        colour = "red" if r["is_stale"] else ("yellow" if r["status"] == "running" else "green")
+        rows_written = "-" if pd.isna(r["rows_written"]) else f"{int(r['rows_written']):,}"
+        table.add_row(
+            r["job"],
+            f"[{colour}]{r['status']}[/{colour}]",
+            str(pd.to_datetime(r["last_seen"]).strftime("%Y-%m-%d %H:%M")),
+            f"[{colour}]{age}[/{colour}]",
+            rows_written,
+        )
+    console.print(table)
+
+    if not schedule.empty:
+        sched_table = Table(title="Schedule — latest slot per job", header_style="bold")
+        for col in ("job", "scheduled for", "delay", "status", "run_id"):
+            sched_table.add_column(col)
+        for _, r in schedule.iterrows():
+            delay = int(r["delay_seconds"] or 0)
+            # ADR 080: past the threshold the machine was off, which is a
+            # normal workstation condition, not a fault. Yellow, not red.
+            marker = "[yellow]" if r["was_caught_up"] else "["
+            suffix = " (caught up)" if r["was_caught_up"] else ""
+            sched_table.add_row(
+                r["job"],
+                str(pd.to_datetime(r["scheduled_for"]).strftime("%Y-%m-%d %H:%M")),
+                f"{marker}{delay // 60}m{suffix}[/]" if r["was_caught_up"] else f"{delay // 60}m",
+                str(r["status"]),
+                # `pd.isna`, not `or`: a float NaN is truthy, so `x or "-"`
+                # renders the literal "nan" for the NULL `run_id` that
+                # `record` leaves on nightly/weekly/monthly slots.
+                "-" if pd.isna(r["run_id"]) else str(r["run_id"]),
+            )
+        console.print(sched_table)
+
+    if not interrupted.empty:
+        console.print(
+            f"\n[yellow]{len(interrupted)} run(s) still marked 'running' past "
+            f"{DEFAULT_MONITORING.stale_running_hours}h[/yellow] — a process that died before "
+            "recording a terminal status (machine slept, Ctrl-C). Not rewritten: "
+            "'failed' would assert something untrue."
+        )
+        for _, r in interrupted.iterrows():
+            console.print(f"  {r['job']:<14} {r['run_id']}  open {r['open_hours']:.0f}h")
+
+    stale_jobs = jobs.loc[jobs["is_stale"], "job"].tolist()
+    failed_jobs = jobs.loc[jobs["status"] == "failed", "job"].tolist()
+    if stale_jobs:
+        console.print(
+            f"\n[red]stale[/red] (>{DEFAULT_MONITORING.stale_after_days}d): {', '.join(stale_jobs)}"
+        )
+    if failed_jobs:
+        console.print(f"[red]last run failed[/red]: {', '.join(failed_jobs)}")
+    if stale_jobs or failed_jobs:
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

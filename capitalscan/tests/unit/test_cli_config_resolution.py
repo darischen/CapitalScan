@@ -311,6 +311,9 @@ def _patch_nightly_io(monkeypatch):
 
     monkeypatch.setattr(db_io, "get_engine", lambda: "fake-engine")
     monkeypatch.setattr(scheduled_runs, "record", lambda engine, job: None)
+    # Same reason as `record`: `complete` (added 2026-08-09) is a second
+    # database call in the same chain, stubbed so this stays a unit test.
+    monkeypatch.setattr(scheduled_runs, "complete", lambda *a, **k: 1)
     monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL"])
     monkeypatch.setattr(path_backfill_mod, "run_path_capture", lambda *a, **k: PathBackfillReport())
 

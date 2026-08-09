@@ -30,6 +30,11 @@ def _no_real_nightly_io(monkeypatch):
     monkeypatch.setattr(db_io, "get_engine", lambda: "fake-engine")
     monkeypatch.setattr(cli, "_resolve_tickers", lambda tickers: ["AAPL", "MSFT"])
     monkeypatch.setattr(scheduled_runs, "record", lambda engine, job: None)
+    # `complete` closes the slot `record` opened (DESIGN §9.6, added
+    # 2026-08-09). It is a second database boundary in the same chain, so it
+    # needs the same stub — without it the real function runs against this
+    # fixture's placeholder engine string.
+    monkeypatch.setattr(scheduled_runs, "complete", lambda *args, **kwargs: 1)
     monkeypatch.setattr(
         path_backfill_mod, "run_path_capture", lambda *args, **kwargs: PathBackfillReport()
     )
