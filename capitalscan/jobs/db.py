@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -107,20 +108,45 @@ def rollback(only: str | None = None) -> None:
         command.downgrade(_alembic_config(url), "-1")
 
 
-def schema(only: str = "research", out: Path | None = None) -> None:
-    """Dump schema-only DDL to db/schema.sql via `docker exec ... pg_dump`.
+# Docker Desktop installs its CLI here but does not always put it on PATH —
+# notably not in agent shells (CLAUDE.md says so and then tells you to reach
+# Postgres directly, which is fine for queries and useless for `pg_dump`).
+# Falling back to the known install path is what lets `cscan db schema` and
+# the drift guard in `tests/integration/test_schema_drift.py` run in the same
+# shells everything else runs in. The container's own `pg_dump` is the one
+# that must be used: it is 16.14, matching the server, while this workstation
+# has only a 18 client, and a cross-version dump differs in header and
+# formatting badly enough to swamp a real DDL diff.
+_DOCKER_FALLBACK = Path(r"C:\Program Files\Docker\Docker\resources\bin\docker.exe")
+
+
+def _docker_executable() -> str | None:
+    found = shutil.which("docker")
+    if found:
+        return found
+    return str(_DOCKER_FALLBACK) if _DOCKER_FALLBACK.exists() else None
+
+
+def dump_schema() -> str:
+    """The research database's schema-only DDL, restrict tokens stripped.
+
+    Split out of `schema()` so the drift guard can compare a live dump
+    against the committed file without writing to the working tree.
 
     Only the research database is expected to be reachable through the
     local Docker container; the serving database lives on Neon.
     """
     _load_env()
-    out = out or (REPO_ROOT / "db" / "schema.sql")
     container = os.environ.get("CAPSCAN_PG_CONTAINER", "capitalscan-postgres")
     db_user = os.environ.get("CAPSCAN_PG_USER", "capscan")
     db_name = os.environ.get("CAPSCAN_PG_DB", "capitalscan")
 
+    docker = _docker_executable()
+    if docker is None:
+        raise RuntimeError("docker executable not found on PATH or at the Docker Desktop path")
+
     result = subprocess.run(
-        ["docker", "exec", container, "pg_dump", "-U", db_user, "-d", db_name, "--schema-only"],
+        [docker, "exec", container, "pg_dump", "-U", db_user, "-d", db_name, "--schema-only"],
         capture_output=True,
         text=True,
         check=False,
@@ -129,7 +155,13 @@ def schema(only: str = "research", out: Path | None = None) -> None:
         console.print(f"[red]pg_dump failed:[/red] {result.stderr}")
         raise RuntimeError(result.stderr)
 
-    dump = _strip_restrict_tokens(result.stdout)
+    return _strip_restrict_tokens(result.stdout)
+
+
+def schema(only: str = "research", out: Path | None = None) -> None:
+    """Write `dump_schema()` to db/schema.sql."""
+    out = out or (REPO_ROOT / "db" / "schema.sql")
+    dump = dump_schema()
     out.write_text(dump, encoding="utf-8")
     console.print(f"wrote {out} ({len(dump)} bytes)")
 

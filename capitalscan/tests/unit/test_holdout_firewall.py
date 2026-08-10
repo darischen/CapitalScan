@@ -15,8 +15,14 @@ scans every view definition and fails if a view joins `events` to
 `cell_stats` without being in the set, so the list cannot go stale when
 Phase 5 adds views.
 
-Reads `db/schema.sql`, which is regenerated after every migration, so this
-runs in the fast tier with no database.
+Reads `db/schema.sql`, so this runs in the fast tier with no database.
+
+That file must be regenerated after every migration, or this test is
+checking a schema that no longer exists. It drifted twice while this
+comment merely asserted the requirement, so the requirement now has an
+enforcer: `tests/integration/test_schema_drift.py` diffs the committed file
+against a live `pg_dump`. Do not weaken the coupling by relaxing that test
+instead of running `cscan db schema`.
 """
 
 from __future__ import annotations

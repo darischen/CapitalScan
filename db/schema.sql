@@ -338,6 +338,11 @@ CREATE TABLE public.events (
     split_key text NOT NULL,
     fwd_window_days integer,
     giveback numeric(12,6),
+    peak_ret_1d numeric(12,6),
+    peak_ret_2d numeric(12,6),
+    peak_ret_3d numeric(12,6),
+    peak_ret_5d numeric(12,6),
+    peak_ret_10d numeric(12,6),
     CONSTRAINT events_side_check CHECK ((side = ANY (ARRAY['long'::text, 'short'::text]))),
     CONSTRAINT events_split_key_check CHECK ((split_key = ANY (ARRAY['train'::text, 'validate'::text, 'holdout'::text])))
 );
