@@ -1,0 +1,87 @@
+Ticker,Date,Signal Type,All Signals,Signal Strength,Direction,Upper Bound,20-day MA (Split-Adjusted),Lower Bound,bb_pctb,Full Stochastic Value,Fast Stochastic Value,K Crossed Up,K Crossed Down,52-Week Drawdown Range,Price vs 200-day MA
+A,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,142.742049,135.908,129.073951,0.740853,81.075392,81.515499,True,False,10-20,above_sma200
+ABBV,2026-08-05,Stochastic Oversold,Stochastic Oversold,1,Long,264.392715,252.811,241.229285,0.110982,15.398593,5.62201,False,False,0-10,above_sma200
+ADM,2026-08-05,Stochastic Oversold,Stochastic Oversold,1,Long,88.097005,82.561,77.024995,0.256955,11.135464,23.028674,True,False,0-10,above_sma200
+AEE,2026-08-05,Bollinger Band Lower Bound,Bollinger Band Lower Bound,1,Long,114.697998,111.581,108.464002,0.156561,29.488804,28.51711,False,False,0-10,above_sma200
+AEP,2026-08-05,Confluence Low,Confluence Low; Bollinger Band Lower Bound; Stochastic Oversold,3,Long,137.804004,132.3445,126.884996,0.13417,16.583982,20.194175,True,False,0-10,above_sma200
+AEP,2026-08-05,Stochastic Oversold,Stochastic Oversold,1,Long,137.804004,132.3445,126.884996,0.13417,16.583982,20.194175,True,False,0-10,above_sma200
+AMGN,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,394.541982,372.479,350.416018,0.897521,69.20074,80.178838,False,False,0-10,above_sma200
+AMZN,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,277.245193,247.423,217.600807,1.002931,91.754201,83.97772,False,False,0-10,above_sma200
+AMZN,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,277.245193,247.423,217.600807,1.002931,91.754201,83.97772,False,False,0-10,above_sma200
+ANET,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,191.464103,176.006,160.547897,0.969139,88.05318,89.76273,False,False,0-10,above_sma200
+APH,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,168.203217,156.491,144.778783,1.133484,85.822312,95.275354,False,False,0-10,above_sma200
+AVGO,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,409.919057,388.0155,366.111943,1.188119,83.465924,93.916291,False,False,10-20,above_sma200
+BAC,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,63.514681,61.158,58.801319,0.869588,80.005456,81.556196,False,False,0-10,above_sma200
+BAC,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,63.514681,61.158,58.801319,0.869588,80.005456,81.556196,False,False,0-10,above_sma200
+BMY,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,66.743139,61.278,55.812861,0.921947,83.029749,76.810073,False,True,0-10,above_sma200
+CAH,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,238.081033,229.8645,221.647967,0.724273,85.209166,85.640026,False,False,0-10,above_sma200
+CAH,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,238.081033,229.8645,221.647967,0.724273,85.209166,85.640026,False,False,0-10,above_sma200
+CRWD,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,213.334943,193.242,173.149057,0.947371,66.790243,96.311688,False,False,0-10,above_sma200
+CSCO,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,121.345345,114.7475,108.149655,1.029908,83.318393,98.886569,False,False,0-10,above_sma200
+CSCO,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,121.345345,114.7475,108.149655,1.029908,83.318393,98.886569,False,False,0-10,above_sma200
+CTVA,2026-08-05,Stochastic Oversold,Stochastic Oversold,1,Long,93.300376,85.691,78.081624,0.015006,8.047619,23.08627,False,False,10-20,above_sma200
+CVS,2026-08-05,Bollinger Band Lower Bound,Bollinger Band Lower Bound,1,Long,109.957061,106.304,102.650939,0.242134,22.555411,18.383312,False,False,0-10,above_sma200
+D,2026-08-05,Confluence Low,Confluence Low; Bollinger Band Lower Bound; Stochastic Oversold,3,Long,71.992987,70.368,68.743013,0.146766,12.96132,25.787402,False,False,0-10,above_sma200
+D,2026-08-05,Stochastic Oversold,Stochastic Oversold,1,Long,71.992987,70.368,68.743013,0.146766,12.96132,25.787402,False,False,0-10,above_sma200
+DAL,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,91.850162,86.7305,81.610838,1.089834,87.459861,90.252976,False,False,0-10,above_sma200
+DD,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,142.654031,137.2935,131.932969,1.025741,75.671551,95.359281,False,False,0-10,above_sma200
+DDOG,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,281.89521,261.215,240.53479,1.151226,85.946683,96.649435,False,False,0-10,above_sma200
+DELL,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,471.394196,420.1,368.805804,0.959799,68.278507,91.840366,False,False,0-10,above_sma200
+DTE,2026-08-05,Confluence Low,Confluence Low; Bollinger Band Lower Bound; Stochastic Oversold,3,Long,153.022064,146.7825,140.542936,0.094323,14.252876,19.303797,True,False,0-10,below_sma200
+DTE,2026-08-05,Stochastic Oversold,Stochastic Oversold,1,Long,153.022064,146.7825,140.542936,0.094323,14.252876,19.303797,True,False,0-10,above_sma200
+DUK,2026-08-05,Confluence Low,Confluence Low; Bollinger Band Lower Bound; Stochastic Oversold,3,Long,130.308058,126.6555,123.002942,0.173448,15.615041,22.764977,False,False,0-10,below_sma200
+DUK,2026-08-05,Stochastic Oversold,Stochastic Oversold,1,Long,130.308058,126.6555,123.002942,0.173448,15.615041,22.764977,False,False,0-10,below_sma200
+EBAY,2026-08-05,Bollinger Band Lower Bound,Bollinger Band Lower Bound,1,Long,118.595469,113.013,107.430531,0.195207,34.96988,30.981067,False,False,0-10,above_sma200
+EME,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,831.449592,763.4625,695.475408,0.914913,83.400518,88.251446,False,False,10-20,above_sma200
+EME,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,831.449592,763.4625,695.475408,0.914913,83.400518,88.251446,False,False,10-20,above_sma200
+EMR,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,157.137894,143.34,129.542106,1.06168,94.893798,97.531816,False,False,0-10,above_sma200
+EMR,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,157.137894,143.34,129.542106,1.06168,94.893798,97.531816,False,False,0-10,above_sma200
+ETN,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,439.203274,405.125,371.046726,1.081676,94.64056,92.337206,False,False,0-10,above_sma200
+ETR,2026-08-05,Confluence Low,Confluence Low; Bollinger Band Lower Bound; Stochastic Oversold,3,Long,118.383619,112.656,106.928381,0.168623,12.282715,22.233105,False,False,0-10,above_sma200
+ETR,2026-08-05,Stochastic Oversold,Stochastic Oversold,1,Long,118.383619,112.656,106.928381,0.168623,12.282715,22.233105,False,False,0-10,above_sma200
+FCX,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,66.362918,61.6595,56.956082,1.099617,82.228069,95.35865,False,False,0-10,above_sma200
+FTNT,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,169.075143,158.65,148.224857,0.962344,79.243192,96.194586,False,False,0-10,above_sma200
+GE,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,373.224916,354.9735,336.722084,1.11109,90.360674,96.29017,False,False,0-10,above_sma200
+GOOG,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,379.832199,347.905,315.977801,0.929806,86.869258,96.30609,False,False,0-10,above_sma200
+GOOGL,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,381.989868,348.9375,315.885132,0.934349,86.25846,95.626333,False,False,0-10,above_sma200
+GOOGL,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,381.989868,348.9375,315.885132,0.934349,86.25846,95.626333,False,False,0-10,above_sma200
+GRMN,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,306.977637,257.897,208.816363,1.003895,93.74161,96.548004,False,False,0-10,above_sma200
+GRMN,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,306.977637,257.897,208.816363,1.003895,93.74161,96.548004,False,False,0-10,above_sma200
+GWW,2026-08-05,Bollinger Band Lower Bound,Bollinger Band Lower Bound,1,Long,1416.0705,1371.233495,1326.39649,-0.289342,40.537672,25.192561,False,False,0-10,above_sma200
+HLT,2026-08-05,Confluence Low,Confluence Low; Bollinger Band Lower Bound; Stochastic Oversold,3,Long,336.693786,324.412,312.130214,-0.002451,18.27699,2.863535,False,False,10-20,above_sma200
+HLT,2026-08-05,Stochastic Oversold,Stochastic Oversold,1,Long,336.693786,324.412,312.130214,-0.002451,18.27699,2.863535,False,False,10-20,above_sma200
+HPE,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,51.383558,47.4045,43.425442,1.126467,83.693121,89.866535,False,False,0-10,above_sma200
+HWM,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,291.91346,278.8,265.68654,0.85841,67.219776,76.024382,False,False,0-10,above_sma200
+IRM,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,128.888558,123.3815,117.874442,0.693252,36.790463,46.472727,False,False,0-10,above_sma200
+JBL,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,340.15577,316.267,292.37823,0.99674,76.015845,90.741671,False,False,10-20,above_sma200
+JCI,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,149.431102,143.0545,136.677898,1.328458,89.734368,96.128319,False,False,0-10,above_sma200
+JPM,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,361.391071,345.879,330.366929,0.875224,76.848381,80.39356,False,False,0-10,above_sma200
+KEYS,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,337.10879,319.1715,301.23421,1.115157,77.363943,94.77345,False,False,0-10,above_sma200
+KMI,2026-08-05,Bollinger Band Lower Bound,Bollinger Band Lower Bound,1,Long,33.042404,32.1865,31.330596,0.028861,26.954375,27.131783,False,False,0-10,above_sma200
+LLY,2026-08-05,Stochastic Oversold,Stochastic Oversold,1,Long,1233.746684,1174.848005,1115.949326,-0.002286,13.887179,5.315507,False,False,0-10,above_sma200
+MO,2026-08-05,Stochastic Oversold,Stochastic Oversold,1,Long,76.217997,71.805,67.392003,0.076818,13.587488,12.121212,False,False,0-10,above_sma200
+NTAP,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,185.041495,169.9705,154.899505,1.179766,91.986443,86.713996,False,False,0-10,above_sma200
+NUE,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,271.212671,243.017,214.821329,1.050138,81.832118,99.144529,True,False,0-10,above_sma200
+NVDA,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,216.910539,204.6015,192.292461,0.798094,67.404977,89.950779,False,False,10-20,above_sma200
+OKE,2026-08-05,Bollinger Band Lower Bound,Bollinger Band Lower Bound,1,Long,94.574336,90.989,87.403664,0.034353,27.157066,33.629032,True,False,0-10,above_sma200
+PANW,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,366.772622,336.5825,306.392378,0.992835,66.202013,95.91769,False,False,0-10,above_sma200
+PH,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,1001.427884,967.1435,932.859116,0.871984,80.119214,81.644949,False,False,0-10,above_sma200
+PH,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,1001.427884,967.1435,932.859116,0.871984,80.119214,81.644949,False,False,0-10,above_sma200
+PLD,2026-08-05,Stochastic Oversold,Stochastic Oversold,1,Long,151.267364,144.9935,138.719636,0.026329,16.093857,0.969529,False,False,0-10,above_sma200
+PNC,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,255.362577,251.187,247.011423,0.853604,53.643725,76.214575,False,False,0-10,above_sma200
+PWR,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,702.883802,643.5975,584.311198,0.916643,90.025226,90.216968,False,False,10-20,above_sma200
+ROK,2026-08-05,Bollinger Band Lower Bound,Bollinger Band Lower Bound,1,Long,480.880688,465.2135,449.546312,-0.13775,64.077228,21.508628,False,True,10-20,above_sma200
+ROST,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,260.666375,236.4305,212.194625,0.801815,86.070173,80.389568,False,False,0-10,above_sma200
+RTX,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,224.948773,204.0475,183.146227,0.832097,84.8659,89.112388,True,False,0-10,above_sma200
+STLD,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,265.1122,241.635,218.1578,0.99974,78.721333,94.510926,True,False,0-10,above_sma200
+STT,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,188.368159,182.7125,177.056841,0.722565,52.047815,57.201646,False,False,0-10,above_sma200
+TER,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,394.954785,351.667,308.379215,1.099395,80.491991,94.543844,False,False,10-20,above_sma200
+TER,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,394.954785,351.667,308.379215,1.099395,80.491991,94.543844,False,False,10-20,above_sma200
+TGT,2026-08-05,Stochastic Overbought,Stochastic Overbought,1,Short,149.512735,139.5425,129.572265,0.929654,87.717535,88.812785,False,False,0-10,above_sma200
+TPL,2026-08-05,Bollinger Band Lower Bound,Bollinger Band Lower Bound,1,Long,431.575766,406.501,381.426234,0.281035,39.661454,29.74609,False,False,20-35,below_sma200
+TRGP,2026-08-05,Bollinger Band Lower Bound,Bollinger Band Lower Bound,1,Long,290.256919,275.0375,259.818081,0.103878,22.20744,17.664319,False,True,0-10,above_sma200
+UAL,2026-08-05,Confluence High,Confluence High; Bollinger Band Upper Bound; Stochastic Overbought,3,Short,130.929173,121.6865,112.443827,1.091468,86.348128,94.339623,False,False,0-10,above_sma200
+URI,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,1158.420074,1080.101,1001.781926,0.947075,65.775031,84.935179,False,False,0-10,above_sma200
+VTR,2026-08-05,Stochastic Oversold,Stochastic Oversold,1,Long,101.102733,94.765,88.427267,0.191136,17.32225,18.250951,False,False,0-10,above_sma200
+WAT,2026-08-05,Bollinger Band Upper Bound,Bollinger Band Upper Bound,1,Short,390.472011,375.47,360.467989,1.186908,73.791922,89.29261,True,False,0-10,above_sma200
+WELL,2026-08-05,Stochastic Oversold,Stochastic Oversold,1,Long,252.151109,239.4645,226.777891,0.188865,10.494319,17.722841,False,False,0-10,above_sma200
