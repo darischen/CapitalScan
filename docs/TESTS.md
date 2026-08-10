@@ -341,6 +341,31 @@ Each hypothesis test generates 200 cases in `dev` profile, 250 in CI fast tier, 
 
 ---
 
+## Session 11.1: Interval and Multiple-Testing Primitives
+
+### Unit Tests (capitalscan/tests/unit/test_stats.py)
+
+**Wilson Confidence Interval**
+- Reference values: 6 published cases (small n, p near 0/1/0.5)
+- Bounds in [0,1]: property test across full parameter space
+- Error handling: invalid inputs rejected
+
+**Standard Error on n_eff**
+- Formula: SE = sqrt(p(1-p)/n_eff) against known values
+- Boundaries: SE=0 at p=0 and p=1
+- Signature: parameter named n_eff (structural test)
+
+**Benjamini-Hochberg**
+- Hand-computed example: reproduces with monotonicity
+- Monotonicity enforced: q-values never decrease in p-value order
+- Property test: q >= p always
+- Edge cases: all-ones rejects nothing, all-zeros rejects all
+- Error handling: invalid p-values and alpha rejected
+
+**Coverage:** 100% of `capitalscan/core/stats.py`
+
+---
+
 ## 6. Statistical verification
 
 Two tests catching a category no unit test can (ADR 087).

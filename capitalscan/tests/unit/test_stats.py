@@ -104,6 +104,7 @@ class TestStandardErrorNEff:
     def test_se_n_eff_not_n(self):
         """Parameter is named n_eff, not n (structural test)."""
         import inspect
+
         sig = inspect.signature(standard_error_n_eff)
         assert "n_eff" in sig.parameters
         assert "n" not in [p for p in sig.parameters if p != "n_eff"]
@@ -178,6 +179,7 @@ class TestBenjaminiHochberg:
 
     def test_bh_q_ge_p_always(self):
         """Property test: q_value >= p_value for every test."""
+
         @given(
             p_array_len=st.integers(min_value=1, max_value=100),
         )
