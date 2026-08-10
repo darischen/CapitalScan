@@ -130,6 +130,16 @@ def benjamini_hochberg(
     sorted_indices = np.argsort(p_values)
     sorted_p = p_values[sorted_indices]
 
+    # Find threshold: largest k where p_(k) <= (k/m) * alpha
+    # k is 1-indexed in the paper; we use 0-indexed, so k_0 <= (k_0+1)/m * alpha
+    thresholds = ((np.arange(1, m + 1)) / m) * alpha
+    below_threshold = sorted_p <= thresholds
+
+    if np.any(below_threshold):
+        _k = np.where(below_threshold)[0][-1] + 1  # Largest index (1-indexed count)
+    else:
+        _k = 0  # No rejections
+
     # Compute raw q-values: (m/j) * p_(j) for each j
     raw_q = (m / np.arange(1, m + 1)) * sorted_p
 
