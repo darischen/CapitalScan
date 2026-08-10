@@ -84,3 +84,66 @@ def standard_error_n_eff(p: float, n_eff: float) -> float:
     # At the boundaries (p=0 or p=1), SE is zero
     se = np.sqrt(p * (1 - p) / n_eff)
     return float(se)
+
+
+def benjamini_hochberg(
+    p_values: np.ndarray,
+    alpha: float = 0.05,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Benjamini-Hochberg procedure for FDR control.
+
+    Controls the False Discovery Rate (FDR) at level alpha across a
+    family of tests. Returns both p-values (unchanged) and q-values
+    (adjusted p-values for FDR control).
+
+    The q-value is computed with running minimum enforcement, so
+    q_values are monotone increasing with the original p-value ordering.
+    A naive implementation omitting this produces non-monotone q-values.
+
+    Args:
+        p_values: Array of p-values from m independent tests, in [0, 1]
+        alpha: FDR control level; default 0.05
+
+    Returns:
+        (p_values_out, q_values) tuple, both as numpy arrays
+
+    Reference: Benjamini, Y. & Hochberg, Y. (1995). "Controlling the
+    False Discovery Rate: A Practical and Powerful Approach to Multiple
+    Testing." JRSS-B 57(1): 289-300.
+    """
+    if not isinstance(p_values, np.ndarray):
+        p_values = np.asarray(p_values)
+
+    if p_values.size == 0:
+        return p_values.copy(), np.array([], dtype=float)
+
+    if not (0 < alpha <= 1):
+        raise ValueError(f"alpha must be in (0, 1], got {alpha}")
+
+    # Check p-values are in [0, 1]
+    if np.any((p_values < 0) | (p_values > 1)):
+        raise ValueError("all p-values must be in [0, 1]")
+
+    m = len(p_values)
+
+    # Sort p-values and track original indices
+    sorted_indices = np.argsort(p_values)
+    sorted_p = p_values[sorted_indices]
+
+    # Compute raw q-values: (m/j) * p_(j) for each j
+    raw_q = (m / np.arange(1, m + 1)) * sorted_p
+
+    # Apply running minimum from right to left to ensure monotonicity
+    q_sorted = np.zeros_like(raw_q)
+    q_sorted[-1] = raw_q[-1]
+    for i in range(m - 2, -1, -1):
+        q_sorted[i] = min(raw_q[i], q_sorted[i + 1])
+
+    # Clip to [0, 1]
+    q_sorted = np.clip(q_sorted, 0, 1)
+
+    # Restore to original order
+    q_values = np.empty_like(q_sorted)
+    q_values[sorted_indices] = q_sorted
+
+    return p_values.copy(), q_values

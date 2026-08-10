@@ -3,7 +3,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from capitalscan.core.stats import standard_error_n_eff, wilson_ci
+from capitalscan.core.stats import benjamini_hochberg, standard_error_n_eff, wilson_ci
 
 
 class TestWilsonCI:
@@ -116,3 +116,89 @@ class TestStandardErrorNEff:
             standard_error_n_eff(p=1.1, n_eff=100)
         with pytest.raises(ValueError):
             standard_error_n_eff(p=0.5, n_eff=-1)
+
+
+class TestBenjaminiHochberg:
+    """Benjamini-Hochberg multiple testing correction."""
+
+    def test_bh_hand_computed_example(self):
+        """Reproduce a hand-computed example with known answer."""
+        # Example: 5 tests with p-values [0.001, 0.008, 0.039, 0.041, 0.042]
+        # At alpha=0.05:
+        # Thresholds: 0.01, 0.02, 0.03, 0.04, 0.05
+        # Below: [True, False, False, False, False] -> k=1
+        # Reject only the first test
+        # Raw q-values: (5/1)*0.001=0.005, (5/2)*0.008=0.020, (5/3)*0.039=0.065,
+        #               (5/4)*0.041=0.051, (5/5)*0.042=0.042
+        # After running min: 0.005, 0.020, 0.042, 0.042, 0.042
+        # (monotone increasing)
+        p_vals = np.array([0.001, 0.008, 0.039, 0.041, 0.042])
+        p_out, q_vals = benjamini_hochberg(p_vals, alpha=0.05)
+
+        np.testing.assert_array_equal(p_out, p_vals)
+
+        # Check monotonicity: q-values should be monotone non-decreasing
+        assert np.all(np.diff(q_vals) >= -1e-10)
+
+        # Check first few q-values
+        assert abs(q_vals[0] - 0.005) < 0.001
+        assert abs(q_vals[1] - 0.020) < 0.001
+
+        # All should be >= corresponding p-value
+        assert np.all(q_vals >= p_vals - 1e-10)
+
+    def test_bh_monotonicity_enforced(self):
+        """Q-values are monotone even without naive implementation."""
+        # Construct a case where naive (without running min) would fail
+        p_vals = np.array([0.001, 0.01, 0.05, 0.002, 0.03])
+        p_out, q_vals = benjamini_hochberg(p_vals, alpha=0.05)
+
+        # The sorted p-values are [0.001, 0.002, 0.01, 0.03, 0.05]
+        # Naive would give (5/1)*0.001=0.005, (5/2)*0.002=0.005, (5/3)*0.01=0.017,
+        #                  (5/4)*0.03=0.0375, (5/5)*0.05=0.05
+        # But without running min, after unsort, the original order might not be monotone
+        # Our implementation ensures it is by applying running min to sorted
+
+        # Check: sorted q-values should be monotone
+        sorted_idx = np.argsort(p_vals)
+        sorted_q = q_vals[sorted_idx]
+        assert np.all(np.diff(sorted_q) >= -1e-10)
+
+    def test_bh_all_ones_rejects_nothing(self):
+        """All p-values = 1.0 means no rejections."""
+        p_vals = np.ones(10)
+        p_out, q_vals = benjamini_hochberg(p_vals, alpha=0.05)
+        assert np.all(q_vals == 1.0)
+
+    def test_bh_all_zeros_rejects_all(self):
+        """All p-values ~ 0 means all rejected."""
+        p_vals = np.full(10, 1e-10)
+        p_out, q_vals = benjamini_hochberg(p_vals, alpha=0.05)
+        assert np.all(q_vals <= 0.05 + 1e-10)
+
+    def test_bh_q_ge_p_always(self):
+        """Property test: q_value >= p_value for every test."""
+        @given(
+            p_array_len=st.integers(min_value=1, max_value=100),
+        )
+        def check_q_ge_p(p_array_len):
+            p_vals = np.random.uniform(0, 1, size=p_array_len)
+            p_out, q_vals = benjamini_hochberg(p_vals, alpha=0.05)
+            assert np.all(q_vals >= p_vals - 1e-10)
+
+        check_q_ge_p()
+
+    def test_bh_error_handling(self):
+        """Reject invalid inputs."""
+        with pytest.raises(ValueError):
+            benjamini_hochberg(np.array([-0.1, 0.5]), alpha=0.05)
+        with pytest.raises(ValueError):
+            benjamini_hochberg(np.array([0.5, 1.1]), alpha=0.05)
+        with pytest.raises(ValueError):
+            benjamini_hochberg(np.array([0.5, 0.3]), alpha=-0.05)
+
+    def test_bh_empty_input(self):
+        """Handle empty p-value array."""
+        p_vals = np.array([])
+        p_out, q_vals = benjamini_hochberg(p_vals, alpha=0.05)
+        assert len(q_vals) == 0
