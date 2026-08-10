@@ -27,11 +27,30 @@ HORIZONS = (1, 2, 3, 5, 10)
 TARGETS = (0.02, 0.03, 0.05, 0.10)
 
 
-def _path(favorable: list[float], entry_offset: int = 0) -> pd.DataFrame:
-    """One event's path rows, offsets starting at entry_offset + 1."""
+def _path(
+    favorable: list[float], entry_offset: int = 0, first_offset: int | None = None
+) -> pd.DataFrame:
+    """One event's path rows.
+
+    `first_offset` is deliberately independent of `entry_offset`. Production
+    decouples them: `core.returns.path_for_event` numbers `day_offset` from 1
+    for every event, because `fwd_window_for_signal` slices from `pos + 1`
+    relative to `signal_date` regardless of entry kind, while
+    `entry_offset_for(NEXT_OPEN)` is 1. So a real `next_open` event has a
+    `day_offset = 1` row sitting *before* its entry, outside every label
+    window by definition.
+
+    Defaulting `first_offset` to `entry_offset + 1` (the old, only behavior)
+    made that row impossible to express, which is why the parametrized
+    `entry_offset=1` case in `TestSqlMatchesPythonReference` passed
+    vacuously while the SQL was summing an out-of-window offset into every
+    peak. Pass `first_offset=1, entry_offset=1` for the production shape.
+    """
+    if first_offset is None:
+        first_offset = entry_offset + 1
     return pd.DataFrame(
         {
-            "day_offset": [entry_offset + 1 + i for i in range(len(favorable))],
+            "day_offset": [first_offset + i for i in range(len(favorable))],
             "favorable": favorable,
             "adverse": [-abs(f) / 2 for f in favorable],
             "terminal": favorable,
@@ -166,11 +185,17 @@ class TestSqlMatchesPythonReference:
 
     @staticmethod
     def _sql_semantics(path: pd.DataFrame, entry_offset: int) -> dict:
-        """Replays `peak_label_sql`'s FILTER/count logic exactly."""
+        """Replays `peak_label_sql`'s FILTER/count logic exactly.
+
+        A transcription, so it can only catch a divergence between the
+        Python reference and *this reading* of the SQL — never a divergence
+        between this and the SQL Postgres actually runs. That is what
+        `tests/integration/test_peak_labels_sql.py` is for; keep both.
+        """
         out = {}
         for h in HORIZONS:
             lo, hi = entry_offset + 1, entry_offset + h
-            pk = path.loc[path["day_offset"] <= hi, "favorable"]
+            pk = path.loc[path["day_offset"].between(lo, hi), "favorable"]
             n = int(path["day_offset"].between(lo, hi).sum())
             out[f"peak_ret_{h}d"] = float(pk.max()) if n == h else float("nan")
         return out
@@ -184,9 +209,20 @@ class TestSqlMatchesPythonReference:
             [0.01, 0.02, 0.03],
         ],
     )
-    @pytest.mark.parametrize("entry_offset", [0, 1])
-    def test_both_implementations_agree(self, favorable, entry_offset):
-        path = _path(favorable, entry_offset=entry_offset)
+    @pytest.mark.parametrize(
+        ("entry_offset", "first_offset"),
+        [
+            (0, 1),
+            (1, 2),
+            # The production shape: path numbered from 1 while entry sits at
+            # offset 1, so `day_offset = 1` is present and out of window.
+            # The only case that distinguishes a lower-bounded peak filter
+            # from an unbounded one; the two cases above cannot.
+            (1, 1),
+        ],
+    )
+    def test_both_implementations_agree(self, favorable, entry_offset, first_offset):
+        path = _path(favorable, entry_offset=entry_offset, first_offset=first_offset)
         py = _derive(path, entry_offset=entry_offset)
         sql = self._sql_semantics(path, entry_offset)
         for h in HORIZONS:
@@ -195,6 +231,22 @@ class TestSqlMatchesPythonReference:
                 assert pd.isna(py[key]), f"{key}: SQL null, Python {py[key]}"
             else:
                 assert py[key] == pytest.approx(sql[key]), key
+
+    def test_peak_filter_is_bounded_below_like_the_count_filter(self):
+        """The peak window is `[off+1, off+h]`, closed at both ends.
+
+        An unbounded `day_offset <= off + h` agrees with the Python
+        reference for every `entry_offset = 0` event and diverges for every
+        `next_open` one, which is the default entry kind (ADR 059) and the
+        population `v_screen`/`v_chart` serve. It shipped and wrote wrong
+        values to 80,273 of 155,344 labelled `next_open` events before this
+        assertion existed. Structural, because `_sql_semantics` transcribes
+        the SQL and so cannot fail on a bug it faithfully copies.
+        """
+        sql = peak_label_sql(HORIZONS)
+        for h in HORIZONS:
+            assert f"BETWEEN eo.entry_offset + 1 AND eo.entry_offset + {h}) AS pk{h}" in sql
+        assert "<= eo.entry_offset" not in sql
 
     def test_generated_sql_covers_every_configured_horizon(self):
         """Invariant 9: the column list follows `fwd_ret_horizons`, never a

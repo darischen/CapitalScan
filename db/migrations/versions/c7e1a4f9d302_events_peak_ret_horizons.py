@@ -36,13 +36,25 @@ pins the statistics job as reading `events`. Joining `path` (57M rows)
 inside it is far heavier than reading a column, and ADR 094 explicitly
 provides for this — "any future label family that needs efficiency can add
 a materialized column in a separate migration." `path` stays the source of
-truth; these are a cache refreshed by the same weekly `run_backtest` that
-already refreshes `mfe` and `touched_*pct`.
+truth; these are a cache refreshed by `cli.py::nightly`, immediately after
+the path-capture step whose rows they read.
+
+Nightly, not the weekly `run_backtest` that refreshes `mfe` and
+`touched_*pct` (an earlier draft of this docstring said weekly, and the
+code never did). Nightly is the right cadence and not merely the one that
+shipped: `peak_ret_{h}d` is NULL until an event's forward window closes,
+so the value becomes available as days pass rather than as the backtest
+reruns. Tying it to the weekly job would leave every event signalled
+mid-week NULL for up to six days after its window had already closed.
 
 **The population path ships with this migration, deliberately.**
 `699cb410d219_events_giveback.py` added `events.giveback` with no writer,
-and that column has been NULL on all 5.57M rows ever since. See
-`research/path_labels.py::derive_labels_from_path` for the writer here.
+and that column has been NULL on all 5.57M rows ever since. The writer
+here is `research/peak_labels.py::backfill_peak_labels`, a set-based
+UPDATE. `research/path_labels.py::derive_labels_from_path` computes the
+same family per event in Python but writes nothing by its own contract
+(see that module's docstring); it is the oracle the SQL is tested against,
+not the writer.
 """
 
 from typing import Sequence, Union

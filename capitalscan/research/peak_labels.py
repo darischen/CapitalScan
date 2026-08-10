@@ -53,8 +53,20 @@ def peak_label_sql(horizons: tuple[int, ...]) -> str:
     the same failure mode `_EVENT_COLUMNS` guards against in
     `research/backtest.py`, and loud is the right answer both times.
     """
+    # Closed at BOTH ends, matching the count filter below and the Python
+    # reference's `range(entry_offset + 1, entry_offset + h + 1)`. The lower
+    # bound is not redundant: `path.day_offset` is numbered from 1 for every
+    # event (`core.returns.path_for_event`), while a `next_open` event's
+    # entry sits at offset 1, so offset 1 is a real row that lands *before*
+    # entry. An unbounded `<= eo.entry_offset + {h}` swept it into every
+    # peak, agreeing with the reference for `entry_offset = 0` and
+    # overstating every `next_open` label — the default entry kind (ADR 059)
+    # and the population `v_screen`/`v_chart` serve. Measured live before the
+    # fix: 80,273 of 155,344 labelled `next_open` events wrong, mean
+    # overstatement 1.1pp, max 44pp.
     peaks = ",\n           ".join(
-        f"max(p.favorable) FILTER (WHERE p.day_offset <= eo.entry_offset + {h}) AS pk{h}"
+        f"max(p.favorable) FILTER (WHERE p.day_offset BETWEEN eo.entry_offset + 1 "
+        f"AND eo.entry_offset + {h}) AS pk{h}"
         for h in horizons
     )
     counts = ",\n           ".join(
