@@ -58,3 +58,29 @@ def wilson_ci(
     upper = float(np.round(np.clip(center + margin, 0, 1), 4))
 
     return (lower, upper)
+
+
+def standard_error_n_eff(p: float, n_eff: float) -> float:
+    """Standard error of a proportion on effective sample size.
+
+    SE = sqrt(p * (1 - p) / n_eff)
+
+    Always uses n_eff, never raw sample count n. This ensures inflated
+    sample sizes from correlated events are properly reflected in wider
+    confidence intervals (ADR 098).
+
+    Args:
+        p: Estimated proportion, in [0, 1]
+        n_eff: Effective sample size (not raw count)
+
+    Returns:
+        Standard error as a float
+    """
+    if not (0 <= p <= 1):
+        raise ValueError(f"p must be in [0, 1], got {p}")
+    if n_eff <= 0:
+        raise ValueError(f"n_eff must be positive, got {n_eff}")
+
+    # At the boundaries (p=0 or p=1), SE is zero
+    se = np.sqrt(p * (1 - p) / n_eff)
+    return float(se)

@@ -1,8 +1,9 @@
+import numpy as np
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from capitalscan.core.stats import wilson_ci
+from capitalscan.core.stats import standard_error_n_eff, wilson_ci
 
 
 class TestWilsonCI:
@@ -80,3 +81,38 @@ class TestWilsonCI:
             wilson_ci(successes=101, trials=100)
         with pytest.raises(ValueError):
             wilson_ci(successes=50, trials=0)
+
+
+class TestStandardErrorNEff:
+    """Standard error on effective sample size."""
+
+    def test_se_formula(self):
+        """Compute against known values."""
+        # p=0.5, n_eff=100 -> SE = sqrt(0.25 / 100) = 0.05
+        se = standard_error_n_eff(p=0.5, n_eff=100)
+        assert abs(se - 0.05) < 1e-10
+
+        # p=0.3, n_eff=50 -> SE = sqrt(0.21 / 50) ≈ 0.0648
+        se = standard_error_n_eff(p=0.3, n_eff=50)
+        assert abs(se - np.sqrt(0.21 / 50)) < 1e-10
+
+    def test_se_boundaries(self):
+        """SE is zero at p=0 and p=1."""
+        assert standard_error_n_eff(p=0.0, n_eff=100) == 0.0
+        assert standard_error_n_eff(p=1.0, n_eff=100) == 0.0
+
+    def test_se_n_eff_not_n(self):
+        """Parameter is named n_eff, not n (structural test)."""
+        import inspect
+        sig = inspect.signature(standard_error_n_eff)
+        assert "n_eff" in sig.parameters
+        assert "n" not in [p for p in sig.parameters if p != "n_eff"]
+
+    def test_se_error_handling(self):
+        """Reject invalid inputs."""
+        with pytest.raises(ValueError):
+            standard_error_n_eff(p=-0.1, n_eff=100)
+        with pytest.raises(ValueError):
+            standard_error_n_eff(p=1.1, n_eff=100)
+        with pytest.raises(ValueError):
+            standard_error_n_eff(p=0.5, n_eff=-1)
