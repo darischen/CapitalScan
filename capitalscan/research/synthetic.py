@@ -107,6 +107,115 @@ def gbm_bars(
     return pd.concat(frames, ignore_index=True)
 
 
+def single_factor_bars(
+    betas: tuple[float, ...],
+    n_days: int = 1500,
+    sigma_market_annual: float = 0.16,
+    sigma_resid_annual: float = 0.20,
+    resid_rho: float = 0.0,
+    mu_annual: float = 0.0,
+    start_price: float = 100.0,
+    seed: int = 20260810,
+) -> tuple[pd.DataFrame, pd.Series]:
+    """A panel generated from a **known** single-factor model, plus its
+    market series. Session 11.3's check on ADR 098's factor diagnostic.
+
+    ```
+    r_i = beta_i * r_m + eps_i
+    eps_i = sigma_e * ( sqrt(resid_rho) * z_common + sqrt(1 - resid_rho) * z_i )
+    ```
+
+    Everything the factor-implied estimator claims to recover is an input
+    here, so the analytical answer is available in closed form:
+
+    ```
+    sigma_i^2 = beta_i^2 sigma_m^2 + sigma_e^2
+    rho_ij    = ( beta_i beta_j sigma_m^2 + resid_rho sigma_e^2 )
+                / ( sigma_i sigma_j )
+    ```
+
+    `resid_rho = 0` is the case where the single-factor formula is exactly
+    right, and the diagnostic must reproduce the analytical value.
+    `resid_rho > 0` is the sector co-movement ADR 098 says the factor
+    version omits: the empirical estimate must then come out **above** the
+    factor-implied one and `rho_gap` must be positive. That direction is the
+    whole basis for treating the factor value as a diagnostic rather than as
+    the correction, so it is generated, not assumed.
+
+    Returns `(bars, market_close)`. `bars` matches `gbm_bars`' columns; the
+    market series is a close series indexed by the same dates, which is the
+    shape `market_days.spx_close` arrives in.
+
+    Determinism: one generator seeded from `seed` drives the market and the
+    common residual factor; ticker `i`'s idiosyncratic draw comes from
+    `seed + 1 + i`, so adding a ticker leaves the existing ones' paths
+    unchanged, matching `gbm_bars`' guarantee.
+    """
+    if not betas:
+        raise ValueError("betas must not be empty")
+    if n_days <= 0:
+        raise ValueError(f"n_days must be positive; got {n_days}")
+    if sigma_market_annual <= 0 or sigma_resid_annual < 0:
+        raise ValueError(
+            f"sigma_market_annual must be positive and sigma_resid_annual non-negative; "
+            f"got {sigma_market_annual}, {sigma_resid_annual}"
+        )
+    if not (0.0 <= resid_rho <= 1.0):
+        raise ValueError(f"resid_rho must be in [0, 1]; got {resid_rho}")
+
+    sigma_m = sigma_market_annual / np.sqrt(TRADING_DAYS_PER_YEAR)
+    sigma_e = sigma_resid_annual / np.sqrt(TRADING_DAYS_PER_YEAR)
+    mu_daily = mu_annual / TRADING_DAYS_PER_YEAR
+
+    shared = np.random.default_rng(seed)
+    market_returns = shared.normal(loc=0.0, scale=sigma_m, size=n_days)
+    common_resid = shared.normal(loc=0.0, scale=1.0, size=n_days)
+
+    ts = pd.bdate_range("2010-01-04", periods=n_days, freq="C")
+    frames = []
+    for i, (ticker, beta) in enumerate(zip(synthetic_ticker_names(len(betas)), betas)):
+        rng = np.random.default_rng(seed + 1 + i)
+        idiosyncratic = rng.normal(loc=0.0, scale=1.0, size=n_days)
+        eps = sigma_e * (np.sqrt(resid_rho) * common_resid + np.sqrt(1.0 - resid_rho) * idiosyncratic)
+        log_returns = mu_daily + beta * market_returns + eps
+        close = start_price * np.exp(np.cumsum(log_returns))
+        frames.append(
+            pd.DataFrame(
+                {
+                    "ticker": ticker,
+                    "ts": ts,
+                    "open": close,
+                    "high": close,
+                    "low": close,
+                    "close": close,
+                    "adj_close": close,
+                }
+            )
+        )
+
+    market_close = pd.Series(start_price * np.exp(np.cumsum(market_returns)), index=ts)
+    return pd.concat(frames, ignore_index=True), market_close
+
+
+def analytical_pair_correlation(
+    beta_i: float,
+    beta_j: float,
+    sigma_market_annual: float,
+    sigma_resid_annual: float,
+    resid_rho: float = 0.0,
+) -> float:
+    """The correlation `single_factor_bars` was generated to have.
+
+    The closed form in that function's docstring, in one place so a test
+    cannot quietly rewrite it while asserting against it.
+    """
+    var_m = sigma_market_annual**2
+    var_e = sigma_resid_annual**2
+    sigma_i = np.sqrt(beta_i**2 * var_m + var_e)
+    sigma_j = np.sqrt(beta_j**2 * var_m + var_e)
+    return float((beta_i * beta_j * var_m + resid_rho * var_e) / (sigma_i * sigma_j))
+
+
 def analytical_touch_probability(target: float, sigma_annual: float, horizon_days: int) -> float:
     """P(a driftless log random walk touches `+target` within
     `horizon_days`), by the reflection principle.

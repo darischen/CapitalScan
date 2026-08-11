@@ -1,9 +1,14 @@
 import numpy as np
 import pytest
-from hypothesis import given
+from hypothesis import assume, given
 from hypothesis import strategies as st
 
-from capitalscan.core.stats import benjamini_hochberg, standard_error_n_eff, wilson_ci
+from capitalscan.core.stats import (
+    benjamini_hochberg,
+    effective_sample_size,
+    standard_error_n_eff,
+    wilson_ci,
+)
 
 
 class TestWilsonCI:
@@ -204,3 +209,67 @@ class TestBenjaminiHochberg:
         p_vals = np.array([])
         p_out, q_vals = benjamini_hochberg(p_vals, alpha=0.05)
         assert len(q_vals) == 0
+
+
+class TestEffectiveSampleSizeProperties:
+    """Session 11.3: the two identities `n_eff` must satisfy everywhere.
+
+    Property tests rather than examples because these are the assumptions
+    every confidence interval in Phase 4 rests on. A violation would not
+    show up as an obviously wrong number; it would show up as an interval
+    that is slightly too narrow, which reads as a finding.
+    """
+
+    @given(
+        n=st.integers(min_value=0, max_value=100_000),
+        k_bar=st.floats(min_value=1.0, max_value=60.0),
+        rho_bar=st.floats(min_value=0.0, max_value=1.0),
+    )
+    def test_n_eff_never_exceeds_n(self, n, k_bar, rho_bar):
+        assert effective_sample_size(n, k_bar, rho_bar) <= n + 1e-9
+
+    @given(
+        n=st.integers(min_value=1, max_value=100_000),
+        rho_bar=st.floats(min_value=0.0, max_value=1.0),
+        k_bar=st.floats(min_value=1.0, max_value=60.0),
+    )
+    def test_equality_exactly_at_the_boundary_cases(self, n, rho_bar, k_bar):
+        assert effective_sample_size(n, 1.0, rho_bar) == pytest.approx(float(n))
+        assert effective_sample_size(n, k_bar, 0.0) == pytest.approx(float(n))
+
+    @given(
+        n=st.integers(min_value=1, max_value=100_000),
+        k_low=st.floats(min_value=1.0, max_value=30.0),
+        k_step=st.floats(min_value=0.0, max_value=30.0),
+        rho_bar=st.floats(min_value=0.0, max_value=1.0),
+    )
+    def test_monotone_decreasing_in_k_bar(self, n, k_low, k_step, rho_bar):
+        assert effective_sample_size(n, k_low + k_step, rho_bar) <= effective_sample_size(
+            n, k_low, rho_bar
+        ) + 1e-9
+
+    @given(
+        n=st.integers(min_value=1, max_value=100_000),
+        k_bar=st.floats(min_value=1.0, max_value=60.0),
+        rho_low=st.floats(min_value=0.0, max_value=1.0),
+        rho_step=st.floats(min_value=0.0, max_value=1.0),
+    )
+    def test_monotone_decreasing_in_rho_bar(self, n, k_bar, rho_low, rho_step):
+        rho_high = min(rho_low + rho_step, 1.0)
+        assert effective_sample_size(n, k_bar, rho_high) <= effective_sample_size(
+            n, k_bar, rho_low
+        ) + 1e-9
+
+    @given(
+        p=st.floats(min_value=0.0, max_value=1.0),
+        n=st.integers(min_value=1, max_value=10_000),
+        k_bar=st.floats(min_value=1.0, max_value=40.0),
+        rho_bar=st.floats(min_value=0.0, max_value=1.0),
+    )
+    def test_clustering_never_narrows_the_standard_error(self, p, n, k_bar, rho_bar):
+        # The consequence that matters: correcting for clustering must widen
+        # the interval, never tighten it. This is the assertion the
+        # deliberately-broken null-test variant violates.
+        n_eff = effective_sample_size(n, k_bar, rho_bar)
+        assume(n_eff > 0)
+        assert standard_error_n_eff(p, n_eff) >= standard_error_n_eff(p, n) - 1e-12

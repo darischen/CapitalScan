@@ -86,6 +86,74 @@ def standard_error_n_eff(p: float, n_eff: float) -> float:
     return float(se)
 
 
+def effective_sample_size(n: int, k_bar: float, rho_bar: float) -> float:
+    """DESIGN §6.3 / ADR 098's clustering correction.
+
+    ```
+    n_eff = n / (1 + (k_bar - 1) * rho_bar)
+    ```
+
+    A signal firing on twelve names the same day does not deliver twelve
+    independent observations. If the market fell that day it delivers
+    something closer to one, and this is the discount that says so.
+
+    `k_bar` is the mean `cofire_count` across the cell's events, already
+    stored on `events`. `rho_bar` is the mean pairwise correlation of 5-day
+    returns among co-firing tickers, measured per era and read from
+    `rho_era` — never a literal, and never `StatsParams`, because it is a
+    measurement rather than a chosen parameter (ADR 098 part 3).
+
+    Two identities hold exactly and are pinned by property test:
+    `n_eff <= n` always, with equality precisely when `k_bar == 1` (no
+    co-firing) or `rho_bar == 0` (co-firing carries no shared information).
+
+    Args:
+        n: Raw event count
+        k_bar: Mean co-fire count, at least 1 (an event always co-fires
+            with itself)
+        rho_bar: Mean pairwise correlation, in [0, 1]
+
+    Returns:
+        Effective sample size as a float, never exceeding `n`
+    """
+    if n < 0:
+        raise ValueError(f"n must be non-negative, got {n}")
+    if k_bar < 1:
+        raise ValueError(f"k_bar must be at least 1, got {k_bar}")
+    if not (0 <= rho_bar <= 1):
+        raise ValueError(f"rho_bar must be in [0, 1], got {rho_bar}")
+
+    # The denominator is >= 1 for every admissible input, so no clamp is
+    # needed to keep n_eff <= n. A negative rho_bar would break that, which
+    # is why it is rejected above rather than clipped: a negative mean
+    # pairwise correlation among co-firing names would mean the clustering
+    # *adds* information, and that claim deserves an error, not a silent 0.
+    return float(n / (1.0 + (k_bar - 1.0) * rho_bar))
+
+
+def rho_bar_for_correction(rho_measured: float) -> float:
+    """The measured `rho_bar`, made admissible for `effective_sample_size`.
+
+    A measured mean pairwise correlation can land slightly below zero on a
+    population with no real clustering — that is estimation noise around
+    zero, not evidence that co-firing adds information. Passing it through
+    unchanged would make the denominator smaller than 1 and hand back an
+    `n_eff` **larger** than `n`, which is the unsafe direction and the one
+    ADR 098 spends its whole overlapping-window argument avoiding.
+
+    Clamping at zero means "apply no correction," which is the conservative
+    reading of a null measurement. The stored `rho_era.rho_empirical` keeps
+    the raw value: this function is applied at the point of use, so the
+    measurement stays visible and only the correction is bounded.
+
+    Values above 1 are impossible for a correlation and are rejected rather
+    than clamped, since they indicate a computation error rather than noise.
+    """
+    if rho_measured > 1.0:
+        raise ValueError(f"rho_measured cannot exceed 1, got {rho_measured}")
+    return float(max(rho_measured, 0.0))
+
+
 def benjamini_hochberg(
     p_values: np.ndarray,
     alpha: float = 0.05,

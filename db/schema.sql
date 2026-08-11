@@ -635,6 +635,27 @@ CREATE TABLE public.quotes_live (
 ALTER TABLE public.quotes_live OWNER TO capscan;
 
 --
+-- Name: rho_era; Type: TABLE; Schema: public; Owner: capscan
+--
+
+CREATE TABLE public.rho_era (
+    era text NOT NULL,
+    run_id text NOT NULL,
+    config_hash text NOT NULL,
+    rho_empirical numeric NOT NULL,
+    rho_factor_implied numeric,
+    rho_gap numeric,
+    n_pairs integer NOT NULL,
+    n_cofire_days integer NOT NULL,
+    mean_beta numeric,
+    computed_at timestamp with time zone NOT NULL,
+    git_sha text NOT NULL
+);
+
+
+ALTER TABLE public.rho_era OWNER TO capscan;
+
+--
 -- Name: runs; Type: TABLE; Schema: public; Owner: capscan
 --
 
@@ -1378,6 +1399,14 @@ ALTER TABLE ONLY public.predictions
 
 ALTER TABLE ONLY public.quotes_live
     ADD CONSTRAINT quotes_live_pkey PRIMARY KEY (ticker, ts);
+
+
+--
+-- Name: rho_era rho_era_pkey; Type: CONSTRAINT; Schema: public; Owner: capscan
+--
+
+ALTER TABLE ONLY public.rho_era
+    ADD CONSTRAINT rho_era_pkey PRIMARY KEY (era, config_hash);
 
 
 --
