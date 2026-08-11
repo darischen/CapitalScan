@@ -231,12 +231,15 @@ def factor_implied_rho_bar(
         return None, None
     sigma_m = float(sigma_m_values.iloc[0])
 
+    beta_of = {str(k): float(v) for k, v in betas["beta"].items()}
+    sigma_of = {str(k): float(v) for k, v in betas["sigma"].items()}
+
     values = np.full(len(pairs), np.nan)
     for idx, (a, b) in enumerate(pairs):
-        if a not in betas.index or b not in betas.index:
+        if a not in beta_of or b not in beta_of:
             continue
-        beta_a, sigma_a = float(betas.at[a, "beta"]), float(betas.at[a, "sigma"])
-        beta_b, sigma_b = float(betas.at[b, "beta"]), float(betas.at[b, "sigma"])
+        beta_a, sigma_a = beta_of[a], sigma_of[a]
+        beta_b, sigma_b = beta_of[b], sigma_of[b]
         if np.isnan(beta_a) or np.isnan(beta_b) or sigma_a == 0.0 or sigma_b == 0.0:
             continue
         values[idx] = (beta_a * beta_b * sigma_m**2) / (sigma_a * sigma_b)

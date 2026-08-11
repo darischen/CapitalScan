@@ -1273,7 +1273,11 @@ Why per ticker-year matters: selecting on growth hands you free baseline points.
 n_eff = n / (1 + (k̄ − 1)·ρ̄)
 ```
 
-`k̄` is the mean `cofire_count` across the cell's events. `ρ̄` is the mean pairwise correlation of 5-day returns among co-firing tickers, computed once per era and stored as a per-era constant.
+`k̄` is the mean `cofire_count` across the cell's events. `ρ̄` is the mean pairwise correlation of 5-day returns among co-firing tickers, computed once per era.
+
+**`ρ̄` is a measurement in the `rho_era` table, not a configuration constant** (ADR 098, Session 11.3). It is measured on **overlapping** 5-day windows and weighted by how many days each ticker pair fired together; pairs that never co-fired are excluded. Both choices are deliberate and both run conservative — see ADR 098. A second, factor-implied estimate is stored alongside it as a diagnostic and never feeds `n_eff`: it assumes residual independence, so it understates `ρ̄` and inflates `n_eff`, which is the unsafe direction. `rho_era` is keyed `(era, config_hash)` and carries `run_id`, `computed_at`, and `git_sha`, because two `cell_stats` runs against the same config can legitimately disagree and that provenance is what explains the difference. A `cell_stats` row is only interpretable alongside the `rho_era` row sharing its `config_hash`.
+
+A negative measured `ρ̄` clamps to zero at the point of use (`core.stats.rho_bar_for_correction`), since passing it through would return `n_eff > n`. The stored measurement keeps its raw value.
 
 All standard errors use `n_eff`, and both are displayed:
 

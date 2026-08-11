@@ -169,7 +169,7 @@ class TestEmpiricalBaselineHandVerified:
         # 5-day window straddling the split prints a ~-50% "return" that
         # never happened.
         def five_day(series: np.ndarray) -> np.ndarray:
-            return series[5:] / series[:-5] - 1.0
+            return np.asarray(series[5:] / series[:-5] - 1.0)
 
         assert five_day(raw).min() < -0.45
         assert five_day(adj).min() > -0.45

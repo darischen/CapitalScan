@@ -26,6 +26,8 @@ than about which days each happened to see.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 from sqlalchemy import Engine, text
@@ -35,7 +37,7 @@ from capitalscan.core.baselines import (
     disagreement_flag,
     empirical_baseline,
     event_weighted_baseline,
-    parametric_baseline,
+    parametric_baseline_series,
     trailing_drift_vol,
 )
 from capitalscan.core.config import BaselineParams
@@ -89,12 +91,7 @@ def _one_ticker(
         for target in targets:
             emp, n_obs = empirical_baseline(fwd.loc[day_index], target)
             if has_history:
-                per_day = np.array(
-                    [
-                        parametric_baseline(target, float(m), float(s), bp)
-                        for m, s in zip(mu.to_numpy(), sigma.to_numpy())
-                    ]
-                )
+                per_day = parametric_baseline_series(target, mu.to_numpy(), sigma.to_numpy(), bp)
                 par: float | None = float(per_day.mean())
                 mu_out: float | None = float(mu.mean())
                 sigma_out: float | None = float(sigma.mean())
@@ -104,7 +101,7 @@ def _one_ticker(
             rows.append(
                 {
                     "ticker": ticker,
-                    "year": int(year),
+                    "year": int(str(year)),
                     "target_pct": float(target),
                     "n_obs": n_obs,
                     "baseline_empirical": emp,
@@ -221,7 +218,7 @@ def load_adj_close_panel(
         "SELECT ticker, ts::date AS ts, adj_close",
         "FROM bars WHERE interval = '1d'",
     ]
-    params: dict[str, object] = {}
+    params: dict[str, Any] = {}
     if tickers:
         sql.append("AND ticker = ANY(:tickers)")
         params["tickers"] = tickers

@@ -1129,6 +1129,165 @@ permanently, which is acceptable: it is published evidence, and the events it
 covers ran their windows out long ago except for the tail the 2026-08-05 audit
 already identified.
 
+### 2026-08-09 — Peak-within-horizon label defect, found and fixed pre-Phase-4
+
+`research/peak_labels.py` shipped with an unbounded lower edge on its peak
+filter:
+
+    max(p.favorable) FILTER (WHERE p.day_offset <= eo.entry_offset + {h})
+
+The Python reference in `path_labels.derive_labels_from_path` uses
+`range(entry_offset + 1, entry_offset + h + 1)`, closed at both ends. The
+count filter two lines below in the same statement was already bounded
+correctly, so the two halves of one statement disagreed about the window.
+
+**Why it diverged only for one entry kind.** `core.returns.path_for_event`
+numbers `day_offset` from 1 for every event, because
+`fwd_window_for_signal` slices from `pos + 1` relative to `signal_date`
+regardless of entry kind. `entry_offset_for(NEXT_OPEN)` is 1. A `next_open`
+event therefore has a real `day_offset = 1` row sitting before its own
+entry, and the unbounded filter swept it into every horizon. For every
+`entry_offset = 0` kind the two expressions describe the same set, so the
+defect was invisible outside `next_open`.
+
+`next_open` is the default entry kind (ADR 059) and the population
+`v_screen` and `v_chart` serve.
+
+| Measure | Value |
+|---|---|
+| Labelled `next_open` events | 155,344 |
+| Written wrong | 80,273 (51.7%) |
+| Mean overstatement | 1.1 pp |
+| Max overstatement | 44 pp |
+| Horizons affected | All five |
+| Direction | Always overstated, never understated |
+
+Direction follows from the arithmetic. Adding an offset to a maximum can
+only raise it, so every wrong value was optimistic. Had this reached Phase
+4, `peak_ret_*d` would have carried a systematic upward bias in exactly the
+family ADR 093 added to expose giveback behavior.
+
+**Why the existing guard passed.** `test_peak_labels.py::TestSqlMatchesPython
+Reference` replays the generated SQL in pandas and diffs it against the
+Python reference, and it parametrized `entry_offset` over `(0, 1)`. Its
+fixture helper `_path` derived the first offset as `entry_offset + 1`, so
+the `entry_offset = 1` case produced rows numbered from 2 and the
+distinguishing row was impossible to express. The oracle was also a hand
+transcription of the statement under test, so it copied the unbounded
+filter faithfully and agreed with it.
+
+**Fix, four parts.**
+
+| Part | Change |
+|---|---|
+| Statement | Peak filter bounded below, matching the count filter and the reference |
+| Unit fixture | `_path` gained `first_offset`, independent of `entry_offset`; agreement test parametrizes `(entry_offset=1, first_offset=1)`, the production shape |
+| Structural test | `test_peak_filter_is_bounded_below_like_the_count_filter` asserts the bound directly, because a transcribed oracle cannot fail on a bug it copies |
+| Integration tier | `tests/integration/test_peak_labels_sql.py` executes the real statement against Postgres and compares to the reference, plus a literal-valued regression case so a future change to `derive_labels_from_path` cannot move both sides at once |
+
+Verified after the fix, one path shared by two entry kinds, day 1 favorable
+`0.20` and in-window days topping out at `0.03`:
+
+| Entry kind | `peak_ret_1d/2d/3d/5d/10d` | Correct |
+|---|---|---|
+| `next_open` | 0.01, 0.02, 0.03, 0.03, 0.03 | Yes, pre-entry day excluded |
+| `touch` | 0.20, 0.20, 0.20, 0.20, 0.20 | Yes, offset 1 is in window at `entry_offset = 0` |
+
+**Remediation.** `cscan path peak-labels` re-run against the live
+`config_hash` after the fix. The UPDATE is idempotent and recomputes from
+`path`, so this rewrote rather than repaired. Rows updated: 284,427
+(`cscan path peak-labels`, 2026-08-10, `config_hash=1835688bf7d760ba`).
+
+**Carried lesson.** Two implementations of one calculation are acceptable
+only when a divergence fails something, and a pandas transcription of a SQL
+statement is not an independent implementation. Any future product/oracle
+pairing needs the product executed in its own runtime, not replayed.
+
+---
+
+### 2026-08-10 — Reconciliation re-run: `capture_ratio` explanation was misattributed
+
+`cscan backtest` (default config, `config_hash=1835688bf7d760ba`, 626,552
+rows) passed all five harness checks. `cscan path reconcile` then returned
+PASS on 626,703 events. The PASS is correct. The stored *reason* behind one
+of its `explained` columns was not.
+
+**What PASS asserts.** `ReconciliationReport.passes` is
+`len(unexplained_mismatch_columns) == 0`, and `explained` is built by
+column-name lookup into `EXPLAINED_COLUMNS`. Count never enters it. Any
+number of `capture_ratio` mismatches, from 1 to the full population, returns
+PASS on the strength of a hand verification done once, on 38 events, on
+2026-08-04. Treat a PASS as "every mismatching column has a registered
+reason", never as "every mismatch was checked".
+
+**Residual rates are stable.** Both families thinned as the population grew
+2.5x, which is the shape boundary noise predicts:
+
+| Column family | 2026-08-04 | 2026-08-10 | Rate then | Rate now |
+|---|---|---|---|---|
+| `capture_ratio` | 38 / 246,134 | 79 / 626,703 | 1.54e-4 | 1.26e-4 |
+| `touched_*` + `day_touched_*` | 14 / 246,134 | 21 / 626,703 | 5.69e-5 | 3.35e-5 |
+
+**The stored explanation did not survive a direct query.** It attributed the
+`capture_ratio` residual to `bars_daily_20260803T211515_2b91b436` having
+revised the affected tickers' full split-adjusted history after the path
+backfill ran. Measured:
+
+| Check | Result |
+|---|---|
+| Bars owned by `2b91b436` | 606 rows, 606 tickers, single date 2026-07-29 |
+| Bars in the 79 events' forward windows | 1,153 rows, **all** `bars_daily_20260802T121443_f8d6ed24` |
+| Path rows for the 79 events | **all** `path_backfill_20260807T174208_3b83c5db` |
+
+The bars were ingested 2026-08-02, five days *before* the backfill wrote the
+path rows. Both sides read the same settled snapshot, so no freshness gap
+exists to explain anything. `2b91b436` is a one-day incremental pull.
+
+**Actual mechanism: price-storage quantization.** `enrich.path_metrics`
+computes `capture_ratio = r_exit / mfe` from full-precision float prices,
+while `entry_price`/`exit_price` persist as `numeric(12,4)`.
+`derive_labels_from_path` reads only `path` plus events metadata, so it
+recomputes `r_exit` from the rounded stored prices. On a near-flat exit,
+`exit - entry` is a small difference of two nearby prices, and catastrophic
+cancellation amplifies a sub-quantum price rounding into a large relative
+error in the ratio. `_capture_ratio_tolerance` models only `mfe`'s noise
+propagated through the division, never the numerator's.
+
+Verified on the full 79-event residual, not a sample:
+
+| Measure | Value |
+|---|---|
+| Implied price error inside one `numeric(12,4)` quantum | 79 / 79 |
+| Max implied price error | 5.042e-5 (one half-quantum) |
+| `mfe` agreeing within `_FLOAT_TOL` | 79 / 79 (max diff 9.1e-5) |
+| Median \|`capture_ratio`\| among the 79 | 0.000954 |
+| Median entry price, the 79 vs all events | $43.82 vs $127.04 |
+| `signal_date` in 2010 | 32 / 79 |
+
+Every column points one way. The denominator is not the source, the affected
+events exit near flat, and they concentrate at low split-adjusted prices
+where a 1e-4 quantum is the largest relative error. This is the same class as
+the `touched_*pct` boundary explanation, a rounding grid, and a different
+class from `RECENT_BARS_REVISION_DAYS`.
+
+The verdict `explained` stands. The comment at `EXPLAINED_COLUMNS["capture_ratio"]`
+was rewritten to state the mechanism actually in evidence.
+
+**Open item, not fixed here.** `diff_labels` tests `capture_ratio` relative to
+`|cr_actual|`, so as a near-flat exit drives the stored ratio toward zero the
+permitted absolute difference collapses while the underlying noise does not.
+`CAPTURE_RATIO_MFE_FLOOR` guards the near-zero *denominator*; nothing guards a
+near-zero *stored ratio*. 68 of the 79 have `|capture_ratio| < 0.01`. A
+numerator-side floor would retire this residual, and it is a behavior change
+needing its own ADR rather than a comment edit.
+
+**Carried lesson.** A per-column `explained` stamp verified once against a
+sample silently widens to cover every future event in that column. The
+citation went stale the moment the bars it named were superseded, and PASS
+never noticed. Where an explanation names a specific external run_id, the
+claim needs re-verification whenever the population changes, or the check
+needs to assert the mechanism rather than the column name.
+
 ---
 
 ## Phase 4 — Statistics
@@ -1137,9 +1296,48 @@ already identified.
 
 *(Random-walk null test and known-drift recovery test. These must pass before any real result below is trusted.)*
 
+#### 2026-08-10 — Session 11 gate: PASS
+
+Run with `cscan stats self-validate` (seed 20260811, 10 replications). Reproducible: the same command reproduces every number below exactly. No real event touched this run; every input is seeded synthetic data with a known answer.
+
+| Check | Result | Threshold |
+|---|---|---|
+| Null test, cells at `q < 0.05` | **0 of 480 = 0.00%** | ≤ 5% |
+| Recovery test, parametric baseline gap | **0.039 pp** (analytical 0.4125, measured 0.4121) | ≤ 1 pp |
+| Broken variant (SE on raw `n`) caught | **11.67%**, well above threshold | must exceed 5% |
+
+Per-replication null rates: 0.0% in all ten. The observed rate is not "0.0% by rounding" — the smallest q-value across all 480 tests is **0.1379**, so no cell came close to significance.
+
+**The layer is conservative, not merely passing.** Under a correct correction the cell z-scores are standard normal; measured `z_sd = 0.755`. Intervals are therefore roughly 30% wider than a perfectly calibrated correction would make them, which is the safe direction and is consistent with ADR 098's deliberate choice of overlapping windows. Worth revisiting if Phase 4 finds nothing: some of the suppression is the correction, not the signal.
+
+Null-panel measurements, for reference when the same quantities are computed on real events:
+
+| Quantity | Value |
+|---|---|
+| `rho_bar` (empirical, co-fire weighted) | 0.4802 mean; 0.4591-0.5117 across replications |
+| `k_bar` (mean co-fire count) | 10.33 |
+| `n` per cell | 73.8 mean |
+| `n_eff` per cell | 13.4 mean, i.e. **`n_eff / n` = 0.186** |
+| Mean measured edge | +0.0074 (sd 0.0824) |
+
+`n_eff/n = 0.186` is the number to carry forward: on a population clustered like this one, 2,100 events buy roughly 390 effective observations, and DESIGN §6.3's power table is stated in `n_eff`. Cell counts on real events need to be read against that ratio before concluding a cell is adequately powered.
+
+**Item 3 of the session gate, stated explicitly.** The broken variant is not a hypothetical. `run_null_test(broken_se_on_raw_n=True)` computes every standard error on the raw event count instead of `n_eff`, and the null test reports 11.67% of cells significant on data containing no edge, with `z_sd = 1.767`. The guard has been observed to fail on a real bug, not merely observed to pass.
+
+One construction detail that changed the answer and is recorded because it would otherwise look arbitrary. The synthetic panel carries a market factor (equal market and residual volatility, giving a measured pairwise 5-day correlation near 0.48, in line with mega-cap co-movement), and cells are assigned per firing day rather than per event. Both make co-firing names share a cell, which is how the real headline grid behaves, since drawdown bucket and signal strength move with the market. With cells assigned per event instead, each day's co-firing group scatters across twelve cells, there is almost no within-cell clustering left for `n_eff` to correct, and the broken variant's rate falls to 0% — a null test that no bug can break. The correct pipeline reports zero significant cells under every construction tried; only the guard's sensitivity changed.
+
 ### Baseline table
 
 *(Per ticker-year, empirical and parametric, with disagreement flags.)*
+
+#### 2026-08-10 — Session 11.2 verification, synthetic only
+
+No real ticker-year baseline has been computed yet; Session 12 writes the first. What is verified:
+
+- The parametric baseline reproduces DESIGN §6.2's worked example exactly: at 30% annualized drift and 40% volatility, `mu_5d = 0.595%`, `sigma_5d = 5.634%`, `P(R_5d >= 2%) = 40.16%`, against **36.13%** at zero drift. The 4-point gap DESIGN describes is real and arrives before any indicator fires.
+- The empirical baseline matches spreadsheet arithmetic on three synthetic ticker-years, including one spanning a 2:1 split. The split case is the one worth noting: measured on raw `close`, the 5-day windows straddling the split print returns near **-50%** that never happened. Measured on `adj_close`, as the code does, the minimum is ordinary.
+- The disagreement flag fires on a rare-jump series (empirical 0.096 vs parametric 0.256, a **16-point** gap) and stays silent on Gaussian series (max gap under 10 points, the configured threshold).
+- Event weighting versus pooling, hand-computed: a cell with 90 events in a ticker-year at baseline 0.20 and 10 at 0.60 has an event-weighted baseline of **0.24** and a pooled-over-days rate of **0.40**. Sixteen points on identical data.
 
 ### Headline grid
 

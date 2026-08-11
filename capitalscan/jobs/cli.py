@@ -1158,6 +1158,75 @@ def path_reconcile_cmd(
 app.add_typer(path_app, name="path")
 
 
+stats_app = typer.Typer(help="Statistics layer (Phase 4, Session 11)")
+
+
+@stats_app.command("self-validate")
+def stats_self_validate_cmd(
+    seed: int = typer.Option(20260811, help="Base seed; replication r uses seed + 1000*r"),
+    replications: int = typer.Option(10, help="Independent synthetic worlds"),
+    check_broken: bool = typer.Option(
+        True,
+        help="Also run the deliberately-broken variant and confirm the null test catches it",
+    ),
+) -> None:
+    """Session 11.4's gate: the null test and the recovery test (ADR 087).
+
+    Reads nothing and writes nothing. Every number comes from seeded
+    synthetic data with a known answer, so this is re-runnable at will and
+    cannot touch production data.
+    """
+    from capitalscan.research.selfvalidation import (
+        confirm_broken_variant_fails,
+        run_null_test,
+        run_recovery_test,
+    )
+
+    if check_broken:
+        null, broken = confirm_broken_variant_fails(seed=seed, replications=replications)
+    else:
+        null, broken = run_null_test(seed=seed, replications=replications), None
+
+    console.print(
+        f"null test: {null.n_significant}/{null.n_tests} cells at q < {null.alpha} = "
+        f"[bold]{null.rate:.2%}[/bold] (threshold {null.threshold:.0%}) "
+        f"over {null.replications} replications"
+    )
+    console.print(
+        f"  rho_bar={null.rho_bar:.4f} k_bar={null.mean_k_bar:.2f} "
+        f"n={null.mean_n:.1f} n_eff={null.mean_n_eff:.1f} z_sd={null.z_sd:.3f} "
+        f"min_p={null.min_p_value:.3g}"
+    )
+    console.print(
+        "  per-replication rates: " + ", ".join(f"{r:.1%}" for r in null.rate_by_replication)
+    )
+
+    recovery = run_recovery_test(seed=seed + 1)
+    console.print(
+        f"recovery test: analytical={recovery.analytical:.4f} "
+        f"measured={recovery.measured:.4f} gap=[bold]{recovery.gap_pct_points:.3f}[/bold] pp "
+        f"(tolerance {recovery.tolerance_pct_points:.1f} pp, "
+        f"{recovery.n_ticker_years} ticker-years)"
+    )
+
+    if broken is not None:
+        caught = broken.rate > broken.threshold
+        console.print(
+            f"broken variant (SE on raw n): {broken.rate:.2%} at q < {broken.alpha} "
+            f"z_sd={broken.z_sd:.3f} -> "
+            + ("[green]caught[/green]" if caught else "[red]NOT CAUGHT[/red]")
+        )
+
+    # Report the state of the world before the verdict, never instead of it.
+    ok = null.passed and recovery.passed and (broken is None or broken.rate > broken.threshold)
+    console.print("[green]PASS[/green]" if ok else "[red]FAIL[/red]")
+    if not ok:
+        raise typer.Exit(code=1)
+
+
+app.add_typer(stats_app, name="stats")
+
+
 positions_app = typer.Typer(help="Personal trade log (ADR 073)")
 app.add_typer(positions_app, name="positions")
 

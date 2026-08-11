@@ -58,6 +58,52 @@ def horizon_drift_vol(
     return float(mu_annual * fraction), float(sigma_annual * np.sqrt(fraction))
 
 
+def parametric_baseline_series(
+    target: float,
+    mu_annual: np.ndarray,
+    sigma_annual: np.ndarray,
+    bp: BaselineParams,
+) -> np.ndarray:
+    """`P(R_h >= target)` for a whole array of trailing (drift, vol) pairs.
+
+    ```
+    P_base = 1 - Phi( (X - mu_h) / sigma_h )
+    ```
+
+    The vectorized form is the **only** implementation of the formula;
+    `parametric_baseline` below is a scalar wrapper around it. The
+    per-ticker-year path evaluates this once per trading day per target, and
+    a Python-level loop over `scipy.stats.norm` there cost roughly a minute
+    per null-test run for arithmetic numpy does instantly. Writing the
+    formula twice to get both shapes is what invariant 2 forbids in the
+    signal path and is no better an idea here.
+
+    `sigma_h == 0` is degenerate rather than an error: a series with no
+    variance reaches the target with probability 1 or 0 depending on whether
+    the drift alone clears it.
+    """
+    mu_h, sigma_h = horizon_drift_vol_array(mu_annual, sigma_annual, bp)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        z = np.where(sigma_h > 0, (target - mu_h) / sigma_h, 0.0)
+        return np.asarray(
+            np.where(sigma_h > 0, stats.norm.sf(z), np.where(mu_h >= target, 1.0, 0.0)),
+            dtype="float64",
+        )
+
+
+def horizon_drift_vol_array(
+    mu_annual: np.ndarray,
+    sigma_annual: np.ndarray,
+    bp: BaselineParams,
+) -> tuple[np.ndarray, np.ndarray]:
+    """`horizon_drift_vol` over arrays. Same two divisors, same reason."""
+    sigma = np.asarray(sigma_annual, dtype="float64")
+    if np.any(sigma < 0):
+        raise ValueError("sigma_annual must be non-negative")
+    fraction = bp.horizon_days / bp.trading_days_per_year
+    return np.asarray(mu_annual, dtype="float64") * fraction, sigma * np.sqrt(fraction)
+
+
 def parametric_baseline(
     target: float,
     mu_annual: float,
@@ -66,25 +112,17 @@ def parametric_baseline(
 ) -> float:
     """`P(R_h >= target)` under a normal fitted to trailing drift and vol.
 
-    ```
-    P_base = 1 - Phi( (X - mu_h) / sigma_h )
-    ```
-
     DESIGN §6.2's worked example: at 30% annualized drift and 40% vol,
     `mu_5d = 0.60%`, `sigma_5d = 5.6%`, and `P(R_5d >= 2%) = 40.1%`, against
     36.1% at zero drift. Those four points arrive before any indicator
     fires, which is the whole reason the baseline is per ticker-year rather
     than pooled.
-
-    `sigma_annual == 0` is degenerate rather than an error: a series with no
-    variance reaches the target with probability 1 or 0 depending on whether
-    the drift alone clears it.
     """
-    mu_h, sigma_h = horizon_drift_vol(mu_annual, sigma_annual, bp)
-    if sigma_h == 0.0:
-        return 1.0 if mu_h >= target else 0.0
-    z = (target - mu_h) / sigma_h
-    return float(stats.norm.sf(z))
+    if sigma_annual < 0:
+        raise ValueError(f"sigma_annual must be non-negative, got {sigma_annual}")
+    return float(
+        parametric_baseline_series(target, np.array([mu_annual]), np.array([sigma_annual]), bp)[0]
+    )
 
 
 def trailing_drift_vol(

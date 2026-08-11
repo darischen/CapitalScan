@@ -176,7 +176,9 @@ def single_factor_bars(
     for i, (ticker, beta) in enumerate(zip(synthetic_ticker_names(len(betas)), betas)):
         rng = np.random.default_rng(seed + 1 + i)
         idiosyncratic = rng.normal(loc=0.0, scale=1.0, size=n_days)
-        eps = sigma_e * (np.sqrt(resid_rho) * common_resid + np.sqrt(1.0 - resid_rho) * idiosyncratic)
+        eps = sigma_e * (
+            np.sqrt(resid_rho) * common_resid + np.sqrt(1.0 - resid_rho) * idiosyncratic
+        )
         log_returns = mu_daily + beta * market_returns + eps
         close = start_price * np.exp(np.cumsum(log_returns))
         frames.append(

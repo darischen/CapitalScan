@@ -244,9 +244,10 @@ class TestEffectiveSampleSizeProperties:
         rho_bar=st.floats(min_value=0.0, max_value=1.0),
     )
     def test_monotone_decreasing_in_k_bar(self, n, k_low, k_step, rho_bar):
-        assert effective_sample_size(n, k_low + k_step, rho_bar) <= effective_sample_size(
-            n, k_low, rho_bar
-        ) + 1e-9
+        assert (
+            effective_sample_size(n, k_low + k_step, rho_bar)
+            <= effective_sample_size(n, k_low, rho_bar) + 1e-9
+        )
 
     @given(
         n=st.integers(min_value=1, max_value=100_000),
@@ -256,9 +257,10 @@ class TestEffectiveSampleSizeProperties:
     )
     def test_monotone_decreasing_in_rho_bar(self, n, k_bar, rho_low, rho_step):
         rho_high = min(rho_low + rho_step, 1.0)
-        assert effective_sample_size(n, k_bar, rho_high) <= effective_sample_size(
-            n, k_bar, rho_low
-        ) + 1e-9
+        assert (
+            effective_sample_size(n, k_bar, rho_high)
+            <= effective_sample_size(n, k_bar, rho_low) + 1e-9
+        )
 
     @given(
         p=st.floats(min_value=0.0, max_value=1.0),

@@ -173,7 +173,9 @@ class TestEmpiricalRhoBar:
         )
 
     def test_no_co_firing_yields_null(self):
-        rho, values, weights, pairs = empirical_rho_bar(_correlated_returns(), cofire_pair_days(_events([("AAA", 0)])))
+        rho, values, weights, pairs = empirical_rho_bar(
+            _correlated_returns(), cofire_pair_days(_events([("AAA", 0)]))
+        )
         assert rho is None
         assert pairs == []
 
@@ -242,9 +244,7 @@ class TestFactorImplied:
         # empirical estimate and the gap opens upward.
         returns, market = self._panel(resid_rho=0.5)
         pairs, weights = self._all_pairs(returns)
-        rho_emp, _, _, _ = empirical_rho_bar(
-            returns, {p: 1 for p in pairs}
-        )
+        rho_emp, _, _, _ = empirical_rho_bar(returns, {p: 1 for p in pairs})
         rho_factor, _ = factor_implied_rho_bar(factor_betas(returns, market), pairs, weights)
 
         assert rho_emp is not None and rho_factor is not None
@@ -310,7 +310,9 @@ class TestEraAggregation:
             rows += [("AAA", day), ("BBB", day)]
         events = _events(rows)
         events["era"] = "2015-2019"
-        second = _events([("AAA", d) for d in range(100, 140)] + [("CCC", d) for d in range(100, 140)])
+        second = _events(
+            [("AAA", d) for d in range(100, 140)] + [("CCC", d) for d in range(100, 140)]
+        )
         second["era"] = "2020-2023"
         return pd.concat([events, second], ignore_index=True)
 
@@ -328,7 +330,14 @@ class TestEraAggregation:
         stamp = datetime(2026, 8, 10, tzinfo=timezone.utc)
         first = rho_era_rows(compute_rho_eras(events, returns), "run-a", "hash1", "sha1", stamp)
         second = rho_era_rows(compute_rho_eras(events, returns), "run-b", "hash1", "sha2", stamp)
-        measured = ["era", "rho_empirical", "rho_factor_implied", "rho_gap", "n_pairs", "n_cofire_days"]
+        measured = [
+            "era",
+            "rho_empirical",
+            "rho_factor_implied",
+            "rho_gap",
+            "n_pairs",
+            "n_cofire_days",
+        ]
         pd.testing.assert_frame_equal(first[measured], second[measured])
 
     def test_a_second_config_adds_rows_rather_than_replacing(self):
@@ -349,7 +358,9 @@ class TestEraAggregation:
         assert rows.duplicated(subset=["era", "config_hash"]).sum() == 0
 
     def test_row_shape_matches_the_table(self):
-        rows = rho_era_rows(compute_rho_eras(self._era_events(), _correlated_returns()), "r", "h", "s")
+        rows = rho_era_rows(
+            compute_rho_eras(self._era_events(), _correlated_returns()), "r", "h", "s"
+        )
         assert list(rows.columns) == RHO_ERA_COLUMNS
         assert rows["run_id"].eq("r").all()
         assert rows["git_sha"].eq("s").all()
