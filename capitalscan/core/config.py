@@ -238,6 +238,46 @@ DEFAULT_SWEEP = SweepParams()
 
 
 @dataclass(frozen=True)
+class BaselineParams:
+    """DESIGN §6.2 / ADR 062's dual-baseline geometry (Session 11.2).
+
+    Standalone for the same reason as `SweepParams` above: nothing here
+    varies a backtest result, and `jobs.config.config_hash` hashes
+    `dataclasses.asdict(config)`, so folding these into `Config` would move
+    `config_hash` for every config already written to `events` in order to
+    name constants the backtest never reads. Invariant 9 is still satisfied
+    — the numbers live in `core/config.py` and `core/baselines.py` holds no
+    literals.
+
+    `trailing_window_days` is the strictly-prior window the parametric
+    baseline reads. A window that includes the day being predicted is
+    lookahead, and it produces a baseline that looks excellent.
+
+    `horizon_days` and `trading_days_per_year` are what turn an annual drift
+    and vol into the horizon values DESIGN §6.2 spells as `mu_ann / 50.4`
+    and `sigma_ann * sqrt(5/252)`: 50.4 is `252 / 5`, derived here rather
+    than written down, so a horizon change cannot leave a stale divisor
+    behind.
+
+    `disagreement_pct` is the gap, in absolute probability, above which the
+    empirical and parametric baselines are called disagreeing. Ten points on
+    a baseline that typically sits near 0.36-0.40 is a quarter of the
+    quantity, far outside what estimation noise on ~250 overlapping
+    observations produces, and it is the diagnostic ADR 062 asks for: a flag
+    that the ticker-year's return distribution is not normal, never an input
+    to any reported number.
+    """
+
+    trailing_window_days: int = 252
+    horizon_days: int = 5
+    trading_days_per_year: int = 252
+    disagreement_pct: float = 0.10
+
+
+DEFAULT_BASELINE = BaselineParams()
+
+
+@dataclass(frozen=True)
 class SharesPlausibility:
     """Absolute floor/ceiling for a single `shares_outstanding.shares` value,
     ingested in `jobs.ingest.run_shares` (Session 9 shares-guard task).
