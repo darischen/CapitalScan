@@ -34,7 +34,7 @@ while ($true) {
         $timeUntilOpen = $marketOpen.Add([TimeSpan]::FromSeconds(30)) - $currentTime
         $minutesUntilOpen = [math]::Floor($timeUntilOpen.TotalMinutes)
         $secondsUntilOpen = [math]::Floor($timeUntilOpen.TotalSeconds % 60)
-        Write-Host "[WAIT] $(Get-Date -Format 'HH:mm:ss') - Waiting for market open (6:30 AM PT / 9:30 AM ET). Opens in ~${minutesUntilOpen}m ${secondsUntilOpen}s"
+        Write-Host "[WAIT] $(Get-Date -Format 'HH:mm:ss') - Waiting for market open (6:30 AM PT). Opens in ~${minutesUntilOpen}m ${secondsUntilOpen}s"
         Start-Sleep -Seconds 10
         continue
     }
@@ -48,7 +48,7 @@ while ($true) {
     }
 
     # Launch the poller
-    Write-Host "[START] $(Get-Date -Format 'HH:mm:ss') - Launching poller. Will run until 4:00 PM ET"
+    Write-Host "[START] $(Get-Date -Format 'HH:mm:ss') - Launching poller. Will run until 1:00 PM PT"
     $csvPath = "C:\Users\daris\Desktop\School\CapitalScan\reports\poller_session_$(Get-Date -Format 'yyyy_MM_dd_HHmmss').csv"
 
     # Start poller in background
@@ -74,7 +74,13 @@ while ($true) {
     # timestamps in one line. `touch_level` is the band level the signal
     # actually fired against, it lives on `events`, and it is the honest
     # answer to the question bb_lower/bb_upper were there to ask.
-    $csvHeader = "fired_at,ticker,signal_type,entry_price,side,touch_level,k_full,d_full,k_fast,atr_14,vix_close,spx_ret_1d,channels_sent"
+    # `fired_at_pt`, not `fired_at`: the column below is converted out of UTC
+    # by the query, so the name has to say which clock it is on. Every other
+    # timestamp this script prints comes from `Get-Date` on a machine set to
+    # Pacific, and an unlabelled UTC column sitting next to those read as the
+    # same clock three hours off — 12:42 in the 2026-08-10 session was 05:42
+    # PT, before the market had opened.
+    $csvHeader = "fired_at_pt,ticker,signal_type,entry_price,side,touch_level,k_full,d_full,k_fast,atr_14,vix_close,spx_ret_1d,channels_sent"
     $csvHeader | Out-File -FilePath $csvPath -Encoding UTF8
 
     # Monitor for new events
@@ -82,8 +88,27 @@ while ($true) {
         Start-Sleep -Seconds 3
 
         try {
-            # Query for new events since last check
-            $query = "SELECT s.event_id, s.fired_at, e.ticker, e.signal_type, e.entry_price::text, e.side, e.touch_level::text, e.k_full::text, e.d_full::text, e.k_fast::text, e.atr_14::text, e.vix_close::text, e.spx_ret_1d::text, s.channels_sent FROM events e JOIN signal_reports s ON e.id = s.event_id WHERE DATE(e.signal_date) = CURRENT_DATE AND e.id > $lastEventId ORDER BY s.fired_at ASC;"
+            # Query for new events since last check.
+            #
+            # The three-step conversion is not redundant, and it works around a
+            # defect rather than expressing a preference.
+            # `jobs/poll.py::_now_et` returns a **naive** datetime holding ET
+            # wall-clock time. `signal_reports.fired_at` is `timestamptz` and the
+            # session runs on `Etc/UTC` (SHOW timezone), so Postgres reads that
+            # naive ET value as UTC and stores it with a `+00` offset it never
+            # had. Every row is ET wearing a UTC label.
+            #
+            # So: strip the false label (AT TIME ZONE 'UTC' -> naive ET), attach
+            # the true one (AT TIME ZONE 'America/New_York'), then convert to
+            # Pacific. A single `AT TIME ZONE 'America/Los_Angeles'` trusts the
+            # label and lands three hours early -- 09:42 PT rendered as 05:42,
+            # before the market opened, which is how this was noticed.
+            #
+            # Named zones, not fixed offsets, so DST comes from Postgres tzdata.
+            # ORDER BY stays on the raw `timestamptz`, which sorts identically.
+            # Delete this chain if `_now_et` is fixed to return an aware
+            # datetime -- it becomes wrong the moment the stored data is right.
+            $query = "SELECT s.event_id, ((s.fired_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York' AT TIME ZONE 'America/Los_Angeles'), e.ticker, e.signal_type, e.entry_price::text, e.side, e.touch_level::text, e.k_full::text, e.d_full::text, e.k_fast::text, e.atr_14::text, e.vix_close::text, e.spx_ret_1d::text, s.channels_sent FROM events e JOIN signal_reports s ON e.id = s.event_id WHERE DATE(e.signal_date) = CURRENT_DATE AND e.id > $lastEventId ORDER BY s.fired_at ASC;"
 
             $newEvents = & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -h localhost -U capscan -d capitalscan -t -c $query
 

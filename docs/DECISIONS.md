@@ -4,7 +4,7 @@ Architecture decision record for `CapitalScan`.
 
 Format: each entry states the decision, why, and what it costs. Status is one of Pinned, Provisional, or Superseded. Never delete an entry. Mark it Superseded and add the replacement below it.
 
-Last updated: 2026-08-08
+Last updated: 2026-08-10
 
 Recent structural changes: ADR 097 added 2026-08-08 and reverted 2026-08-09
 without ever taking effect (its window emptied the train and validate splits
@@ -12,7 +12,10 @@ without ever taking effect (its window emptied the train and validate splits
 2026-08-05 corrections; ADRs 095 and 096 added 2026-08-06; ADR 002 marked
 Superseded; the "Phase gates" block rewritten to the seven-phase numbering
 (see the note in that section); body order restored to ADR sequence — 035-040
-and 093-094 had drifted outside the ordered run.
+and 093-094 had drifted outside the ordered run; ADRs 098-100 added 2026-08-10
+opening Phase 4 (098 defines rho-bar and therefore every confidence interval
+in the statistics layer, 100 records a `v_screen` defect ADR 096 created and
+left dormant until `cell_stats` holds two configs).
 
 ---
 
@@ -117,6 +120,9 @@ and 093-094 had drifted outside the ordered run.
 | 095 | Exit thresholds in SQL are a second exit implementation | Provisional. Authorizes a Phase 5 rebuild of `v_positions` |
 | 096 | `cell_stats` is keyed by config, not by cell alone | Pinned |
 | 097 | Backtest reads events only within a rolling 2-year window | Superseded by 019/009. Reverted 2026-08-09, never in effect |
+| 098 | Effective sample size: overlapping windows, co-fire weighting, stored per-era table, factor-implied diagnostic | Pinned |
+| 099 | Market breadth as a reporting split, not a grid dimension | Pinned |
+| 100 | Three Phase 4 contract corrections: v_screen config scope, cell_key wording, exit_mix semantics | Pinned |
 
 ---
 
@@ -1905,6 +1911,238 @@ Cost, provenance. This moves the default `config_hash` from `1835688bf7d760ba` t
 Note the asymmetry this exposes. `max_lookback_days` is read only by `research/backtest.py`, so `run_events` and the poller write rows byte-identical to their old ones under the new hash. Only the stamp differs. The hash still has to move, because it covers the whole `Config` and cannot express "this field matters to one job and not another." Re-stamping 622k rows with no analytical change behind it is the price ADR 060 charges to keep one hash meaning exactly one config.
 
 What this does not change. The research store continues ingesting from 2009 and computing indicators back to 2010, so the 200-day SMA and 252-day drawdown windows are unaffected. Indicators are precomputed and stored by a separate job with full history behind them (`max_warmup() = 272`, ADR 092); reading a two-year slice reads finished values, never a recomputation from truncated input. The train/validate/holdout splits by date (ADR 019) remain fixed calendar dates.
+
+---
+
+## 098. Effective sample size: rho-bar definition, computation, and storage
+
+**Status.** Pinned, 2026-08-10.
+
+**Context.**
+
+DESIGN §6.3 defines the effective sample size correction as
+
+```
+n_eff = n / (1 + (k_bar - 1) * rho_bar)
+```
+
+and specifies `k_bar` as the mean `cofire_count` across a cell's events, which `events.cofire_count` already stores. It specifies `rho_bar` only as "the mean pairwise correlation of 5-day returns among co-firing tickers, computed once per era and stored as a per-era constant."
+
+Three things were left open, and every confidence interval and every Benjamini-Hochberg q-value in Phase 4 depends on all three. A `rho_bar` set too low understates clustering, narrows every interval, and turns noise into apparent significance. Set too high, it suppresses cells carrying real information.
+
+The correction exists because a signal firing on twelve names the same day does not deliver twelve independent observations. If the market fell that day, it delivers something closer to one. DESIGN §6.3's power table assumes `n_eff`, not `n`: detecting a 3-point edge at 80% power needs roughly 2,100 events, and a wrong `rho_bar` moves that number by a multiple, not a margin.
+
+**Decision.**
+
+Four parts.
+
+**1. Overlapping 5-day windows.** Measure the 5-day return starting on every trading day, yielding roughly 250 observations per ticker-year, rather than every fifth day yielding roughly 50.
+
+Overlapping windows share days between adjacent observations, which inflates the measured correlation above the true independent-sample correlation. That bias is accepted deliberately, because it runs in the conservative direction: a higher `rho_bar` produces a smaller `n_eff`, a wider interval, and a higher bar for significance. Fifty non-overlapping observations per ticker-year is a thin base for a correlation estimate, and the noise in that estimate is not sign-controlled the way the overlap bias is. Between a bias whose direction is known and safe and a variance whose direction is not, take the bias.
+
+**2. Weighted by co-fire frequency.** `rho_bar` is the mean over ticker pairs, weighted by the number of days the pair fired together, not an unweighted mean over every pair appearing together at least once.
+
+The correction is a statement about the clustering actually present in the event population. A pair co-firing 200 times contributes 200 times as much clustering to the sample as a pair co-firing once, and an unweighted mean gives them equal say. The unweighted version also lets thin, noisy pair estimates dominate: two co-firings produce a correlation estimate with almost no information in it, and there are far more such pairs than dense ones.
+
+Pairs never co-firing are excluded entirely. Their correlation says nothing about the dependence structure of the event set.
+
+**3. Stored in a new table, not in `StatsParams`.** The four per-era values live in a `rho_era` table with `run_id` and `computed_at`.
+
+These are measurements, not chosen parameters. Putting them in `StatsParams` would fold a measured quantity into `config_hash`, meaning a recomputation against more data would move the hash and appear to be a config change when no configuration was chosen differently. It would also strand the values without provenance, which ADR 034 requires for every generated row and which the `path` table's omission already cost real investigation time in session 10's reconciliation findings 3 and 7.
+
+```sql
+CREATE TABLE rho_era (
+  era text NOT NULL,
+  run_id text NOT NULL,
+  config_hash text NOT NULL,
+  PRIMARY KEY (era, config_hash),
+
+  rho_empirical numeric NOT NULL,
+  rho_factor_implied numeric,
+  rho_gap numeric,
+
+  n_pairs int NOT NULL,
+  n_cofire_days int NOT NULL,
+  mean_beta numeric,
+
+  computed_at timestamptz NOT NULL,
+  git_sha text NOT NULL
+);
+```
+
+`config_hash` sits in the primary key for the same reason ADR 096 put it in `cell_stats`: an 18-config sweep produces 18 event populations with different co-firing structures, and one snapshot per era would make each Phase 4 run overwrite the last.
+
+**4. A factor-implied second estimate, stored as a diagnostic only.** Alongside the empirical value, compute `rho_bar` a second way from a single-factor decomposition against the S&P 500 series already in `market_days`:
+
+```
+r_i = alpha_i + beta_i * r_m + eps_i
+
+rho_ij = (beta_i * beta_j * sigma_m^2) / (sigma_i * sigma_j)
+```
+
+This costs 750 betas rather than roughly 280,000 pairwise correlations per era, and is stored in `rho_factor_implied` with the difference in `rho_gap`.
+
+It is not the value feeding `n_eff`. The derivation assumes the residuals `eps_i` are mutually uncorrelated, and they are not: two semiconductor names co-firing share a sector move on top of the market move. The factor version therefore understates `rho_bar`, inflating `n_eff` and narrowing intervals, which is the opposite of the direction part 1 deliberately chose.
+
+Its value is diagnostic and reportable:
+
+| Observation | Reading |
+|---|---|
+| `rho_gap` near zero | Co-firing is largely a market effect. The signal fires when the index falls |
+| `rho_gap` clearly positive | Sector or residual co-movement exists beyond the market factor. The signal clusters within industries |
+
+Either result is a finding about the signal, and the check costs two columns.
+
+**Consequences.**
+
+Every `n_eff` in Phase 4 depends on a stored measurement rather than a constant, so `cell_stats` rows are only interpretable alongside the `rho_era` row sharing their `config_hash`. Phase 4's output contract should surface the `rho_bar` used, not only the resulting `n_eff`.
+
+Recomputing `rho_bar` on more data changes every downstream interval without changing `config_hash`. That is intended, and it is why `run_id` and `computed_at` are mandatory: two `cell_stats` runs against the same config can legitimately disagree, and the `rho_era` provenance is what explains the difference.
+
+The overlap bias is not quantified. It is known to be positive and known to be conservative, which is enough to justify the choice, but a future session wanting a tighter estimate should measure the two side by side rather than assume the gap is small.
+
+The single-factor diagnostic uses the S&P series only. See ADR 099's consequences for QQQ.
+
+**Implementation notes, added 2026-08-11 after Session 11's review.** Two things this ADR left implicit, resolved in the direction the ADR already argues for. Neither changes the DDL above.
+
+`n_cofire_days` is the count of **days** on which two or more tickers fired together, not the sum over pairs of their co-fire counts. The first implementation stored the pair total, which at ~10 co-firing names a day reads roughly 47x the number of days it names — a day with `k` names produces `C(k, 2)` pairs. The column feeds no computation; it exists so a reader can size the evidence behind a stored `rho_bar`, and a number 47x too large defeats that.
+
+`sigma_m` is measured per ticker, on that ticker's own joint sample with the market, and `rho_ij` is written as `(beta_i sigma_m_i)(beta_j sigma_m_j) / (sigma_i sigma_j)` — the product of the two systematic volatilities. Algebraically identical to the formula above whenever both tickers were observed on the same days, which is the case this ADR was written against. It differs when they were not, and on real `bars` they are not: names list and delist mid-era. The first implementation took `beta_i` and `sigma_i` from each ticker's own sample while taking `sigma_m` from the full index, so `rho_ij` mixed three samples. Restricting every ticker to the days where all of them are observed was the alternative and is worse, since one late-listing name would truncate the sample for every other.
+
+The first measurement under this ADR, 2026-08-11, `config_hash = 1835688bf7d760ba`: `rho_gap` is positive in all four eras and widens monotonically from +0.014 (2010-2014) to +0.086 (2024+). Under the reading table above, that is sector co-movement beyond the market factor, growing. See `RESULTS.md` and ADR 099's deferred QQQ decision, which this is the evidence for.
+
+**Alternatives rejected.**
+
+Non-overlapping windows. Cleaner statistically, but roughly 50 observations per ticker-year, and the resulting estimation noise has no controlled direction.
+
+Unweighted pairwise mean. Lets sparse, noisy pairs dominate a quantity meant to describe dense clustering.
+
+All universe pairs regardless of co-firing. Measures market correlation rather than signal clustering, and would apply a correction unrelated to the dependence in the event set.
+
+Factor-implied as the primary estimate. Cheaper and more stable, but understates `rho_bar` by omitting residual co-movement, in the unsafe direction.
+
+Recompute fresh every Phase 4 run without storing. Never stale, but leaves no record of which value produced a published interval, and repeats the provenance mistake ADR 034 exists to prevent.
+
+---
+
+## 099. Market breadth is a reporting split, not a grid dimension
+
+**Status.** Pinned, 2026-08-10.
+
+**Context.**
+
+`n_eff` corrects a statistical problem: how much independent information a clustered sample carries. It does not answer a separate and more consequential question, which is why the co-firing happened.
+
+A `CONFLUENCE_LOW` firing on 3 of 60 trade-universe names is a claim about those three names. The same signal firing on 40 of 60 is a claim about the market. Both currently land in the same cell and are averaged together.
+
+The distinction matters because of the benchmark structure in DESIGN §6.4. Buy-and-hold is the number to beat, and a signal firing on 4% of days with a 5-day hold sits in the market roughly 20% of the time, needing about 5x the annualized rate while deployed to match a name compounding at 30%. A signal whose edge lives entirely on broad-selloff days is not a stock-selection signal. It is a market-timing signal, and it fires precisely when buy-and-hold is also buying cheaply. Pooled reporting cannot distinguish the two, and a 4-point pooled edge looks identical either way.
+
+CapitalScan is a detection engine and the humans decide. A pooled number conflating stock-specific dislocation with market timing gives them a worse basis for deciding.
+
+**Decision.**
+
+Breadth is defined as the fraction of the trade universe firing the same signal type on the same day. The numerator is `events.cofire_count`, already stored. The denominator is the trade universe size on that date, available from `universe`. No new ingestion.
+
+Every headline cell is additionally reported by breadth tercile, in the same manner DESIGN §6.11 already reports every headline cell by era. Terciles are cut on the empirical breadth distribution per era, not on fixed thresholds, since firing rates differ across regimes.
+
+Breadth does not become a headline grid dimension. ADR 011 caps the grid at twelve cells against roughly 2,000 effective events, and DESIGN §6.7's reasoning applies unchanged: a third dimension triples the cell count and divides the events, and clustering means the split is uneven, so most new cells would land under the `n_eff < 30` suppression floor and render nothing. Breadth joins bandwidth regime, trend, VIX percentile, and days-to-earnings as a continuous quantity reported and fed forward, rather than a cut.
+
+The session 13 three-arm comparison additionally runs on the high-breadth subset alone. Comparing signal entry to buy-and-hold on exactly the days the signal goes market-wide is the direct test of the market-timing hypothesis. An inference from the cell-level breadth split is weaker than the arm comparison answering it head-on.
+
+Two secondary breadth measures are stored but not used as the primary split. `events.spx_ret_1d` and `market_days.vix_pct_252d` are already present on every event. Co-fire fraction is primary because it measures whether this signal went market-wide, which is the question, rather than whether the market moved, which is a proxy for it.
+
+**Consequences.**
+
+Three possible outcomes, all reportable:
+
+| Pattern | Reading |
+|---|---|
+| Edge concentrates at low breadth | The signal finds stock-specific dislocation. The most useful result |
+| Edge flat across terciles | The signal works independently of market context |
+| Edge concentrates at high breadth | The apparent edge is substantially market timing, and the three-arm comparison on the high-breadth subset is where it is confirmed or denied |
+
+The third outcome is the one this ADR exists to make visible. It is also the one most likely to be missed, because a strong pooled result invites no further questions.
+
+Breadth terciles multiply the reported rows per headline cell by three without multiplying the Benjamini-Hochberg test family. Per DESIGN §6.8, the family is all headline-grid cells across all ladder targets for one config. Breadth splits are descriptive reporting on an already-tested cell, not additional hypotheses, and treating them as such would over-correct and suppress the pooled results the family exists to test.
+
+The pattern this system was built around has years of informal observed use. That use may have selected for one breadth regime without anyone stating it, and the split is what would reveal it. Any such finding is a description of historical outcomes under a regime, not a validated edge, and it does not change that all decisions remain with the humans.
+
+On QQQ. QQQ is ingested through the Yahoo path as an ordinary ticker and is correctly excluded from the SEC shares pull via `SEC_NON_FILER_TICKERS`, since it files nothing. It is not in `market_days` as an index series, so ADR 098's factor diagnostic uses the S&P series alone.
+
+Adding QQQ as a second factor is deferred, not rejected. The universe is mega-cap equities and skews toward Nasdaq names, so QQQ beta would plausibly explain more co-movement than S&P beta for a large slice of it. Against that, the two indices correlate above 0.9 on daily returns, so the second factor buys less than it appears to, and adding it costs a `market_days` migration, an ingest change, a backfill to 2009, and a second beta per ticker.
+
+ADR 098's `rho_gap` is the evidence for deciding. A large gap means one factor is insufficient and a second is worth the cost. A small gap means it is not. Decide on the measurement rather than in advance.
+
+**Alternatives rejected.**
+
+Breadth as a fourth grid dimension. Triples cell count against a fixed event population, and clustering means most resulting cells fall under the suppression floor.
+
+Breadth as a suppression filter, discarding high-breadth events. Throws away data and presupposes the answer. Whether high-breadth firings behave differently is the question, not the premise.
+
+S&P 1-day return as the primary breadth measure. Measures the market, not the signal's own concentration. Kept as a secondary cut.
+
+---
+
+## 100. Three Phase 4 contract corrections
+
+**Status.** Pinned, 2026-08-10.
+
+**Context.**
+
+Three small defects sit in the Phase 4 contract. Each is independently minor, and each would produce a wrong result or a wrong belief if carried into the statistics layer. Grouped into one ADR because they share a cause: ADR 096 changed the `cell_stats` key while the table was still empty, and the downstream consequences were not fully traced.
+
+**Decision.**
+
+**1. `v_screen` gains a `config_hash` scope, matching `v_events`.**
+
+The view currently joins `cell_stats` on nine component columns with no `config_hash` predicate:
+
+```sql
+LEFT JOIN cell_stats c ON c.signal_type = e.signal_type
+  AND c.side = e.side AND c.dd_bucket = e.dd_bucket
+  AND c.signal_strength = e.signal_strength
+  AND c.entry_kind = e.entry_kind
+  AND c.split_key = 'validate' AND c.era IS NULL
+  AND c.horizon_days = 5 AND c.target_pct = 0.03
+```
+
+That was correct while `cell_id` alone was the primary key and one statistics snapshot existed at a time. ADR 096 made the key `(cell_id, config_hash)` specifically so multiple configs coexist. The first Phase 4 run writing two configs duplicates every screener row, three configs triples it, and duplicate rows in a screener read as duplicate signals.
+
+The fix pins the GUC, the same mechanism `v_events` already uses:
+
+```sql
+AND c.config_hash = current_setting('capitalscan.default_config_hash', true)
+```
+
+Joining `cell_stats` to each event's own `config_hash` was considered and rejected. It would give each event statistics from whichever generation produced it, so a screener showing events from several generations would silently mix statistical regimes. A screener should present one config's view of the world.
+
+This lands in session 12, alongside the first write to `cell_stats`, rather than being deferred. The defect is dormant only until the table is populated, and session 12 is what populates it.
+
+**2. DESIGN §6.9's amendment note is corrected.**
+
+The note reads "`cell_key()` takes `config_hash` as an input." The live function takes nine parameters and `config_hash` is not among them, and migration `b2e5d81a4c76`'s docstring states the opposite: the two are separate columns in a composite key, not a concatenated string. DESIGN §8.2's own canonical definition of the function agrees with the migration.
+
+The function and the migration agree with each other and with the built artifact. DESIGN §6.9 is the outlier and is corrected to read that `config_hash` is a separate primary key column, with `cell_id` unchanged and still derived from its component columns only.
+
+Changing the function to match the doc was rejected: it would concatenate `config_hash` into `cell_id`, making the composite key redundant and the identifier less readable, to satisfy a sentence written after the fact.
+
+**3. `exit_mix` is a config-dependent diagnostic, and says so.**
+
+`cell_stats.exit_mix` holds the fraction of positions leaving by each exit reason, read from `events.exit_reason`, which the backtest writes using `ExitParams`. Moving the stop from 3% to 5% changes `exit_mix` while the signal is unchanged.
+
+This is coherent under ADR 096's composite key, since each config gets its own row and comparing `exit_mix` across configs is a legitimate use. The risk is interpretive: a reader encountering `exit_mix` in a single-config context can mistake it for a property of the signal.
+
+DESIGN §6.9 already describes `exit_mix` as the diagnostic separating "a few large winners carrying many small losses" from "consistently positive." That description gains an explicit sentence: `exit_mix` describes the signal under a specific exit policy, and comparing it across cells is only meaningful within one `config_hash`.
+
+Defining `exit_mix` against a fixed reference exit policy was rejected. It would make the column comparable across configs at the cost of describing a policy nobody runs, and the composite key already provides the comparison.
+
+**Consequences.**
+
+Correction 1 requires a view migration in session 12 and a test asserting one row per event in `v_screen` when more than one config has `cell_stats` rows. A test asserting the view's shape under a single config would pass today and still pass after the defect returns.
+
+Corrections 2 and 3 are documentation only. Neither changes behavior, and both prevent a wrong belief about behavior, which is the class of defect session 10's audit found most of.
+
+The shared cause is worth naming. ADR 096 was a correct decision whose downstream consumers were not enumerated. Any future change to a primary key or a shared identifier should list every view, join, and document referencing it before the migration is written, not after.
 
 ---
 

@@ -278,6 +278,37 @@ DEFAULT_BASELINE = BaselineParams()
 
 
 @dataclass(frozen=True)
+class RhoParams:
+    """ADR 098's `rho_bar` measurement settings (Session 11.3).
+
+    Standalone, same rationale as `BaselineParams` above: `rho_bar` is a
+    measurement stored in `rho_era`, deliberately kept out of `config_hash`
+    (ADR 098 part 3), so folding these into `Config` would do the one thing
+    that ADR exists to prevent.
+
+    `min_pair_overlap` is how many shared observations a ticker pair needs
+    before its correlation counts toward the weighted mean. Below it the
+    estimate carries almost no information: a pair with three overlapping
+    days can return exactly 1.0 by coincidence, and there are far more thin
+    pairs than dense ones. Such pairs drop out rather than being counted as
+    perfectly correlated. 30 is the same floor `factor_betas` applies before
+    it will fit a beta, so a pair either informs both estimates or neither,
+    which is what keeps `rho_gap` a statement about the two estimators
+    rather than about which pairs each happened to see.
+
+    The 5-day horizon is **not** here. It lives in `BaselineParams.horizon_days`
+    and is read from there: `rho_bar` and the baseline must describe the same
+    quantity, and two independently editable horizons is exactly how they
+    would stop doing so.
+    """
+
+    min_pair_overlap: int = 30
+
+
+DEFAULT_RHO = RhoParams()
+
+
+@dataclass(frozen=True)
 class SharesPlausibility:
     """Absolute floor/ceiling for a single `shares_outstanding.shares` value,
     ingested in `jobs.ingest.run_shares` (Session 9 shares-guard task).

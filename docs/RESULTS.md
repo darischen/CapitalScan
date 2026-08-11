@@ -433,6 +433,84 @@ current work.
 
 ---
 
+## Phase 4 — Statistics layer, baselines, and self-validation
+
+### Session 11 — Statistical primitives and self-validation gate
+
+**Session 11 passes all ten of its gate criteria (2026-08-11).** The statistics layer every later Phase 4 session depends on passes its self-validation.
+
+**This is the Session 11 gate, not the Phase 4 gate.** `TESTS.md` §10 lists five Phase 4 criteria; Session 11 satisfies one of them ("random-walk null test passes on the full pipeline"). The three-arm comparison, the 200-replication random-entry null, headline cells reporting `n_eff`/CI/baseline/q-value, and the drawdown slice all belong to Sessions 12 and 13.
+
+Implementations of Session 11.1 through 11.4:
+
+**11.1: Interval and multiple-testing primitives** — `core/stats.py`
+- Wilson confidence intervals: match published reference values on 6 cases, bounds always in [0,1]
+- Standard error on `n_eff`: formula SE = sqrt(p(1-p)/n_eff), parameter named structurally
+- Benjamini-Hochberg: q-values monotone, reproduce hand-computed examples, property test q >= p
+
+**11.2: Baselines** — `core/baselines.py` and `research/baselines.py`
+- Per-ticker-year empirical baseline: 5-day forward returns, fraction reaching target
+- Per-ticker-year parametric baseline: from trailing 252-day drift and volatility, matches DESIGN §6.2 worked example
+- Lookahead guard: trailing window strictly prior to observation day, tested on synthetic data
+- Disagreement flag: fires on fat-tailed return distributions, quiet on Gaussian
+- Null propagation: ticker-years with insufficient history produce null, never shortened
+- Event-weighted aggregation: cell baseline is weighted mean of constituent events' per-ticker-year baselines
+
+**11.3: Effective sample size and rho-bar** — ADR 098 implementation
+- Formula: n_eff = n / (1 + (k_bar - 1) * rho_bar)
+- Empirical rho_bar: mean pairwise correlation of 5-day returns among co-firing tickers, weighted by co-fire days
+- Factor-implied rho_bar (diagnostic): from single-factor decomposition, stored alongside empirical
+- `rho_era` table: keyed (era, config_hash), holds both estimates, gap, run provenance. Written by `cscan stats rho --config-hash <hash>`; Session 12 reads it, since a `cell_stats` row is only interpretable next to the `rho_era` row sharing its `config_hash`
+- Properties: n_eff <= n always, monotone in both k_bar and rho_bar
+
+**11.4: Self-validation** — `research/selfvalidation.py`
+- Null test: 50 tickers, 2,500 days, zero drift, single-factor panel at 0.22 market and 0.22 residual annualized volatility with betas spread across [0.6, 1.4]. The shared factor is required, not decorative: on independent tickers the `n_eff` correction has nothing to correct and the broken variant is indistinguishable from the correct one
+- Recovery test: 30 tickers at beta 0, 30% annualized log drift, 40% volatility; parametric baseline matches the analytical value within 1 percentage point
+- Both run from one entry point, `cscan stats self-validate`, seeded and re-runnable
+- Deliberately broken variant confirmed to fail the null test
+
+**Session 11 session gate — measured 2026-08-11**
+
+Command: `cscan stats self-validate --replications 10`. Every number below is from that run, not from the test suite, which runs 3 replications to stay inside the fast tier.
+
+| Criterion | Result | Measurement |
+|---|---|---|
+| Null test: fraction at q < 0.05 at or under 5% | PASS | **2 of 480 cells = 0.42%**, threshold 5%. Per-replication: eight worlds at 0.0%, two at 2.1% (1 of 48, the finest rate one world can express). Smallest p-value 0.000172 |
+| Correction calibration | PASS | `z_sd = 0.770`. Under 1, so the correction runs conservative — the safe direction. Reported because a rate alone cannot distinguish a calibrated layer from a silent one |
+| Recovery test: parametric baseline within 1 pp | PASS | analytical 0.4125, measured 0.4121, **gap 0.039 pp**, 210 ticker-years |
+| Deliberately broken variant fails the null test | PASS | SE on raw `n`: **11.67%** at q < 0.05, `z_sd = 1.786`, caught. This is gate item 3 and the one carrying the most information |
+| Wilson bounds match published values on 6 cases, never leave [0,1] | PASS | Reference cases plus a property test across the parameter space. The sample-size parameter is `n_eff` and a signature test pins the name |
+| Benjamini-Hochberg q-values monotone, reproduce hand example | PASS | Running minimum asserted directly; a naive implementation fails it |
+| Parametric baseline reproduces DESIGN §6.2 worked example | PASS | mu_5d near 0.60%, sigma_5d near 5.6%, P(R_5d >= 2%) near 40.1% against 36.1% at zero drift |
+| `rho_era` holds four rows per config with both estimates | PASS | Four rows written for `config_hash = 1835688bf7d760ba`, table below |
+| `n_eff <= n` across property-generated cases | PASS | Hypothesis property tests, 250 cases per test in the CI fast profile |
+| Determinism: identical inputs produce identical output | PASS | Two null-test runs produce identical frames; two `rho_era` runs agree on every measured column |
+
+**Observed sample-size regime.** The null test's cells average `n = 74.0` and `n_eff = 13.5` at `k_bar = 10.32` and `rho_bar = 0.477`. That sits **below** `StatsParams.min_n_eff = 30`, so every cell the guard exercises would be suppressed by Session 12's serving path. The guard is therefore demonstrated in a thinner regime than production publishes, which is the harder direction but worth stating rather than leaving for a reader to infer.
+
+**Per-era rho_bar** (`rho_era`, keyed `(era, config_hash)`)
+
+Command: `cscan stats rho --config-hash 1835688bf7d760ba`, run 2026-08-11, `run_id = rho_20260811T073817_a3d372ae`, 55 seconds, 156,638 distinct (ticker, date, type) events across 590 tickers. Overlapping 5-day windows among co-firing tickers, weighted by co-fire days (ADR 098 parts 1 and 2). `rho_empirical` is the value feeding `n_eff`; `rho_factor_implied` is the single-factor diagnostic and feeds nothing.
+
+| Era | rho_empirical | rho_factor_implied | rho_gap | n_pairs | n_cofire_days | mean_beta |
+|---|---|---|---|---|---|---|
+| 2010-2014 | 0.4257 | 0.4117 | +0.0140 | 127,466 | 1,184 | 1.097 |
+| 2015-2019 | 0.3602 | 0.3343 | +0.0259 | 10,257 | 1,251 | 1.004 |
+| 2020-2023 | 0.4708 | 0.4297 | +0.0411 | 20,604 | 1,004 | 1.070 |
+| 2024+ | 0.2491 | 0.1633 | +0.0858 | 30,932 | 652 | 0.870 |
+
+`n_cofire_days` counts **days on which two or more tickers fired together**, not pair-days. Era labels come from `events.era` (`research.enrich._era`), which is why the last one reads `2024+` rather than `2024-2026`.
+
+Three readings, stated as findings rather than conclusions:
+
+- **`rho_gap` is positive in all four eras**, which is the direction ADR 098 predicts and never guarantees. Sector and residual co-movement exists beyond the market factor, so the factor-implied estimate understates clustering in every era. Using it for `n_eff` would have inflated every effective sample size, and by the most in the era that matters most.
+- **The gap widens monotonically over time**, from +0.014 to +0.086. Under ADR 099's reading, co-firing has shifted from largely a market effect toward within-industry clustering. That is the evidence ADR 099 defers the "is one factor enough" question to, and it now argues for revisiting it before Phase 6.
+- **2024+ carries the lowest `rho_empirical` (0.249) and the lowest `mean_beta` (0.870)** on 652 co-firing days. Less clustering means a larger `n_eff` per event, so the most recent era buys more statistical power per event than any earlier one.
+
+Live events are excluded from this measurement: `signal_date` past the last era boundary carries a null `era` and there is no era row for it to inform.
+
+---
+
 ## Phase 2 — Poller and notifications
 
 ### Phase 2 gate — 2 of 4 criteria PASS, 1 not yet built, 1 unverified

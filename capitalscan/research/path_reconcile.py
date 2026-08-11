@@ -102,34 +102,53 @@ EXPLAINED_COLUMNS = {
 # produce much larger, non-boundary-clustered mismatches across many
 # events, not ~14 out of 246,134 all sitting within a hundredth-of-a-cent
 # of the target).
-# capture_ratio's remaining post-tolerance residual (real run, 2026-08-04:
-# 38 events, all under one backtest_sweep run reusing this config_hash) is
-# NOT rounding-noise-shaped like the population `_capture_ratio_tolerance`
-# already covers — individually verified all 38/38 (not a sample) against
-# `bars`: every one is on a ticker (AAPL, MSFT, NVDA, JNJ, ORLY, ... ~30
-# tickers total) whose `bars` rows carry
-# run_id='bars_daily_20260803T211515_2b91b436' — the SAME re-ingestion job
-# already identified as the cause of the RECENT_BARS_REVISION_DAYS
-# exclusion above, except this job revised these tickers' FULL
-# split-adjusted daily history, not just a rolling recent window (a split
-# discovered/corrected retroactively re-derives every historical
-# split-adjusted price for the affected ticker). `_drop_recent_events`'s
-# signal_date-window heuristic cannot catch this: these events' signal
-# dates go back to 2010, decades outside any recency window, yet their
-# `entry_price`/`exit_price`/`mfe` were recomputed by a later sweep run
-# against the revised bars, while `path` (populated by the earlier
-# backfill run, before this revision) still reflects the pre-revision
-# prices. Explained as a data-freshness artifact of the same class as
-# RECENT_BARS_REVISION_DAYS, not a computation defect — a real formula bug
-# would not correlate 38/38 with one specific external ingestion run_id.
+# capture_ratio's remaining post-tolerance residual is a *price-storage
+# quantization* artifact, in the same class as the touched_*pct boundary
+# case above and NOT the bars-freshness class RECENT_BARS_REVISION_DAYS
+# covers.
+#
+# Mechanism. Session 9's `research/enrich.py::path_metrics` computes
+# `capture_ratio = r_exit / mfe` from full-precision float prices, but
+# `events.entry_price`/`exit_price` persist as `numeric(12,4)`. Task 10.3's
+# `derive_labels_from_path` reads only `path` plus events metadata (its own
+# acceptance criterion — never `bars`), so it recomputes `r_exit` from those
+# already-rounded stored prices. On a near-flat exit, `exit - entry` is a
+# small difference of two nearby prices, so catastrophic cancellation turns
+# a <=5e-5 price rounding into a large *relative* error in `r_exit`, and the
+# ratio inherits it. `_capture_ratio_tolerance` does not cover this: it
+# models only `mfe`'s noise propagated through the division, not the
+# numerator's.
+#
+# Measured on the real run (2026-08-10, config_hash=1835688bf7d760ba,
+# 626,703 events, 79 residual mismatches — full population, not a sample):
+#   - 79/79 implied price errors fall inside one `numeric(12,4)` quantum,
+#     max 5.042e-5, i.e. one half-quantum. That is a rounding grid, not data.
+#   - `mfe` agrees on 79/79 within `_FLOAT_TOL` (max diff 9.1e-5), so the
+#     denominator is not the source.
+#   - Median `|capture_ratio|` among them is 0.000954 (near-flat exits) and
+#     median entry price is $43.82 against $127.04 across all events — a
+#     lower price carries a larger relative quantum, as the mechanism predicts.
+#   - The residual rate is falling, not growing: 38/246,134 (1.54e-4) on
+#     2026-08-04 against 79/626,703 (1.26e-4) here.
+#
+# Corrected 2026-08-10. This comment previously attributed the residual to
+# `bars_daily_20260803T211515_2b91b436` having "revised these tickers' FULL
+# split-adjusted daily history". Direct query disproves that: the run owns
+# 606 bars across 606 tickers on the single date 2026-07-29 (a one-day
+# incremental pull), and the forward-window bars for all 79 events come from
+# `bars_daily_20260802T121443_f8d6ed24`, ingested five days *before*
+# `path_backfill_20260807T174208_3b83c5db` wrote their `path` rows. Both
+# sides read the same settled snapshot, so no freshness gap exists to
+# explain anything. See docs/RESULTS.md, Session 11 reconciliation entry.
 EXPLAINED_COLUMNS["capture_ratio"] = (
-    "All 38 residual events (real run 2026-08-04) verified individually "
-    "against `bars`: every one is on a ticker re-ingested by "
-    "bars_daily_20260803T211515_2b91b436 after the path backfill ran — the "
-    "same bars-revision job RECENT_BARS_REVISION_DAYS excludes by "
-    "signal_date, except this job revised full split-adjusted history for "
-    "specific tickers, not a recent rolling window, so the date-based "
-    "exclusion misses it. Data-freshness artifact, not a computation bug."
+    "Price-storage quantization, verified on the full 79-event residual "
+    "(real run 2026-08-10): `enrich.path_metrics` computes the ratio from "
+    "full-precision prices while `entry_price`/`exit_price` persist as "
+    "numeric(12,4), and Task 10.3 recomputes `r_exit` from the rounded "
+    "values. On near-flat exits the subtraction cancels, amplifying a "
+    "<=5e-5 price rounding into a large relative error in the ratio. All "
+    "79 implied price errors sit inside one storage quantum (max 5.042e-5) "
+    "and `mfe` agrees on all 79. Rounding-grid artifact, not a computation bug."
 )
 
 _REACHABILITY_COLUMNS = [

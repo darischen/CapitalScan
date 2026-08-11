@@ -16,11 +16,11 @@ from scipy import stats
 
 
 def wilson_ci(
-    successes: int,
-    trials: int,
+    successes: float,
+    n_eff: float,
     alpha: float = 0.05,
 ) -> Tuple[float, float]:
-    """Wilson score interval for a proportion.
+    """Wilson score interval for a proportion, on **effective** sample size.
 
     Computes a confidence interval on a binomial success probability
     using the Wilson score method, which handles edge cases (p near 0 or 1,
@@ -29,9 +29,22 @@ def wilson_ci(
     At p=0.03, n=35, the normal interval's lower bound goes negative.
     This method never leaves [0, 1].
 
+    **The sample-size parameter is `n_eff`, never a raw event count**, for
+    the same reason `standard_error_n_eff` names its own (invariant 8, ADR
+    098): every probability Phase 4 publishes carries an interval, and an
+    interval sized on `n` rather than `n_eff` is too narrow by
+    `sqrt(1 + (k_bar - 1) * rho_bar)` — the exact bug the Session 11.4 null
+    test catches, and the reason the name is enforced by a signature test
+    rather than by a comment.
+
+    `n_eff` is a float and is used as one. Rounding it to an integer first
+    (the shape this function originally forced on its callers) discards the
+    correction's precision for no gain: the Wilson formula is continuous in
+    the sample size and never required an integer.
+
     Args:
-        successes: Number of successes (k)
-        trials: Total number of trials (n)
+        successes: Effective successes, `p_hit * n_eff`. Need not be integral
+        n_eff: Effective sample size, after the ADR 098 clustering correction
         alpha: Significance level; default 0.05 for 95% CI
 
     Returns:
@@ -40,19 +53,19 @@ def wilson_ci(
     Reference: Wilson, E.B. (1927). "Probable Inference, the Law of
     Succession, and Statistical Inference." JASA 22(158): 209-212.
     """
-    if trials <= 0:
-        raise ValueError(f"trials must be positive, got {trials}")
-    if successes < 0 or successes > trials:
-        raise ValueError(f"successes must be in [0, trials], got {successes} / {trials}")
+    if n_eff <= 0:
+        raise ValueError(f"n_eff must be positive, got {n_eff}")
+    if successes < 0 or successes > n_eff:
+        raise ValueError(f"successes must be in [0, n_eff], got {successes} / {n_eff}")
     if not (0 < alpha < 1):
         raise ValueError(f"alpha must be in (0, 1), got {alpha}")
 
-    p = successes / trials
+    p = successes / n_eff
     z = stats.norm.ppf(1 - alpha / 2)  # two-tailed critical value
 
-    denom = 1 + z**2 / trials
-    center = (p + z**2 / (2 * trials)) / denom
-    margin = z * np.sqrt(p * (1 - p) / trials + z**2 / (4 * trials**2)) / denom
+    denom = 1 + z**2 / n_eff
+    center = (p + z**2 / (2 * n_eff)) / denom
+    margin = z * np.sqrt(p * (1 - p) / n_eff + z**2 / (4 * n_eff**2)) / denom
 
     lower = float(np.round(np.clip(center - margin, 0, 1), 4))
     upper = float(np.round(np.clip(center + margin, 0, 1), 4))
@@ -198,15 +211,13 @@ def benjamini_hochberg(
     sorted_indices = np.argsort(p_values)
     sorted_p = p_values[sorted_indices]
 
-    # Find threshold: largest k where p_(k) <= (k/m) * alpha
-    # k is 1-indexed in the paper; we use 0-indexed, so k_0 <= (k_0+1)/m * alpha
-    thresholds = ((np.arange(1, m + 1)) / m) * alpha
-    below_threshold = sorted_p <= thresholds
-
-    if np.any(below_threshold):
-        _k = np.where(below_threshold)[0][-1] + 1  # Largest index (1-indexed count)
-    else:
-        _k = 0  # No rejections
+    # The rejection set is not returned, and deliberately so. The paper's
+    # step is "find the largest k with p_(k) <= (k/m) * alpha, reject 1
+    # through k", and `q_(i) <= alpha` holds for exactly those same i — the
+    # running minimum below is what makes the two equivalent. Every caller
+    # thresholds on `q < alpha`, and DESIGN §6.8 stores `p_value` and
+    # `q_value`, never a rejection flag, so computing k here as well would
+    # be a second encoding of one decision with no consumer.
 
     # Compute raw q-values: (m/j) * p_(j) for each j
     raw_q = (m / np.arange(1, m + 1)) * sorted_p

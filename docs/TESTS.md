@@ -348,6 +348,9 @@ Each hypothesis test generates 200 cases in `dev` profile, 250 in CI fast tier, 
 **Wilson Confidence Interval**
 - Reference values: 6 published cases (small n, p near 0/1/0.5)
 - Bounds in [0,1]: property test across full parameter space
+- Fractional `n_eff` accepted and used as a float, property test. The ADR 098 correction is almost never integral, and Wilson is continuous in the sample size
+- Interval widens as `n_eff` shrinks at a fixed hit rate, so the clustering correction reaches the published number
+- Signature: sample-size parameter is named `n_eff`, with `trials` and `n` both absent (structural test, 11.1 acceptance 6). An interval sized on a raw event count is too narrow by `sqrt(1 + (k_bar - 1) * rho_bar)`
 - Error handling: invalid inputs rejected
 
 **Standard Error on n_eff**
@@ -362,7 +365,125 @@ Each hypothesis test generates 200 cases in `dev` profile, 250 in CI fast tier, 
 - Edge cases: all-ones rejects nothing, all-zeros rejects all
 - Error handling: invalid p-values and alpha rejected
 
-**Coverage:** 100% of `capitalscan/core/stats.py`
+**Coverage:** `capitalscan/core/stats.py` at 97% under the fast tier's `--cov=capitalscan/core` gate. The two uncovered lines are the out-of-range `alpha` raise in `wilson_ci` and the list-to-array coercion in `benjamini_hochberg`, which every caller bypasses by passing an ndarray.
+
+---
+
+## Session 11.2: Baselines
+
+### Unit Tests (capitalscan/tests/unit/test_baselines.py)
+
+**Parametric Baseline (DESIGN §6.2 worked example)**
+- Horizon scaling: mu_5d = mu_ann / 50.4, sigma_5d = sigma_ann * sqrt(5/252)
+- Reachability: P(R_5d >= 2%) matches analytical at ~40.1% with drift, ~36.1% without
+- Degenerate volatility: zero variance handled determinately, not as error
+
+**Trailing Window Strictly Prior (lookahead guard)**
+- Observation day excluded from its own baseline window
+- Short history returns null, never shortened (< 252 days prior)
+- Tested on synthetic jump data: jump day's own baseline does not see the jump
+
+**Empirical Baseline Hand-Verified**
+- Three ticker-years checked against independent arithmetic
+- Split spanning year: baseline identical to same series with no split (reads adj_close)
+- No complete forward window returns null
+- Counts only complete windows
+
+**Disagreement Flag**
+- Fires on fat-tailed synthetic data, quiet on Gaussian
+- Two-sided: fires on either empirical > parametric or parametric > empirical
+- Null propagates: flag returns None when either baseline is None
+
+**Null Propagation**
+- Ticker-year without 252 prior days has null parametric baseline
+- Empirical baseline still computed (no prior history needed)
+- Cell counts its nulls separately from n_events
+
+**Event-Weighted Aggregation**
+- Event-weighted differs visibly from pooled rate (16 points on hand-computed case)
+- Never pools; always reads per-event baseline from ticker-year join
+
+**Coverage:** `capitalscan/core/baselines.py` at 96% under the fast tier's `--cov=capitalscan/core` gate. `capitalscan/research/baselines.py` is exercised by these tests but sits outside the coverage gate, which is `core/` only (CLAUDE.md).
+
+---
+
+## Session 11.3: Effective Sample Size and Rho-Bar
+
+### Unit Tests (capitalscan/tests/unit/test_stats.py)
+
+**Effective Sample Size Properties (ADR 098)**
+- n_eff never exceeds n: property test across all parameter space
+- Boundary equality: n_eff = n exactly when k_bar = 1 or rho_bar = 0
+- Monotone decreasing in k_bar: property test with step increments
+- Monotone decreasing in rho_bar: property test with step increments
+- Clustering widens intervals: standard error never narrows with correlated events
+
+### Unit Tests (capitalscan/tests/unit/test_rho.py)
+
+**Co-Fire Counting**
+- Distinct tickers per `(signal_date, signal_type)`, matching `add_cofire_count`
+- Entry-kind fan-out collapses: one ticker firing four kinds is one co-firing name
+- Different signal types on one date are not co-firing
+- Solo days produce no pairs
+- `n_cofire_days` counts **days**, not pair-days: five names co-firing is one day and ten pairs
+
+**Empirical rho_bar Weighting (the part ADR 098 argues for)**
+- Weighted mean matches hand arithmetic on three tickers with known correlations
+- Weighting visibly changes the answer against the unweighted mean
+- Pairs that never co-fired are excluded, constructed so their inclusion would move the result
+- Pairs under `RhoParams.min_pair_overlap` drop out rather than counting as perfectly correlated
+- No co-firing at all yields null, never zero
+
+**Factor-Implied Diagnostic**
+- Reproduces the analytical value at zero residual correlation, tolerance 0.03
+- Recovers the known betas within 0.10
+- Correlated residuals make `rho_gap` positive by more than 0.10 (ADR 098's stated bias direction, generated rather than assumed)
+- Zero residual correlation leaves a gap under 0.05
+- Every quantity comes from one sample: a ticker observed only on calm days gets its own `sigma_m`, and the implied correlation stays in [-1, 1]
+- A ticker under the overlap floor drops out rather than poisoning the others
+- Missing market series yields a null diagnostic and does not block `rho_empirical`
+
+**Era Aggregation and the rho_era Row**
+- One estimate per era; missing `era` column raises
+- Two runs against identical data agree on every measured column
+- A second config adds rows rather than replacing the first's
+- Row shape matches `RHO_ERA_COLUMNS`
+- An era with no measurable `rho_empirical` writes no row (the column is NOT NULL)
+
+**Coverage:** `capitalscan/core/stats.py` at 97% under the fast tier gate. `capitalscan/research/rho.py` sits outside the gate, which is `core/` only.
+
+---
+
+## Session 11.4: Self-Validation
+
+### Unit Tests (capitalscan/tests/unit/test_selfvalidation.py)
+
+Run by the fast tier. `capitalscan/tests/acceptance/` is **not** collected by the fast-tier command in CLAUDE.md, so a self-validation test placed there would never run.
+
+**Null Test (driftless correlated synthetic data)**
+- 50 tickers, 2,500 days, zero drift, single-factor panel at 0.22 market and 0.22 residual annualized volatility, betas spread across [0.6, 1.4]
+- The shared market factor is load-bearing: on independent tickers the `n_eff` correction has nothing to correct and the broken variant behaves identically to the correct one
+- Full pipeline: synthetic panel → synthetic events → ticker-year baselines → empirical rho_bar → n_eff → Wilson CI → Benjamini-Hochberg
+- Assertion: fraction of cells at `q < StatsParams.fdr_alpha` must not exceed that same alpha
+- 3 replications in the fast tier, 10 in the recorded run; the rate is reported, never reduced to a boolean
+- `z_sd <= 1.0` asserted separately: it distinguishes a calibrated correction from one that passes on the luck of a seed
+- Seeded and reproducible: two runs produce identical frames; a different seed produces a different world
+
+**The Null Is Actually Null**
+- Event generation never reads a price: the panel's prices are scrambled and the event set is unchanged
+- Events leave room for the forward window to close
+- Cells are assigned per firing day, not per event (per-event assignment leaves no within-cell clustering and makes the null test unable to fail)
+- Outcomes come from the same series the baseline is measured on
+
+**Recovery Test (known drift)**
+- 30 tickers at beta 0, 30% annualized log drift and 40% volatility
+- The analytical target carries the Ito correction (`mu + sigma^2/2`), pinned by its own test. Asserting against DESIGN §6.2's uncorrected 40.1% would pass on roughly half a point of luck
+- Computed parametric baseline matches the analytical value within 1 percentage point
+
+**Deliberately Broken Variant (session gate item 3)**
+- Standard errors computed on raw `n` instead of `n_eff`
+- Asserted: the broken rate exceeds the threshold, its `z_sd` exceeds the correct run's, and its smallest p-value is smaller
+- The load-bearing test in the file. Every other assertion would still pass on a null test that could never fail
 
 ---
 

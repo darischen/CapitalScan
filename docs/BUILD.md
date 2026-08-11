@@ -27,6 +27,7 @@ Sessions 0-7 deliver v1 (Phase 1). Sessions 8-9 deliver Phases 2-3. Session 10 i
 | 8 | Poller & notify | `poll`, Notifier, positions, call overlay | **Phase 2 gate** |
 | 9 | Backtest engine | `research/backtest.py`, exit sweep | **Phase 3 gate — complete, passed** |
 | 10 | Forward path store and derived label layer | Path table, reconciled label layer, new label families | Reconciliation against Session 9 labels passes with zero unexplained differences; tests and documentation complete |
+| 11 | Statistical primitives and self-validation | Wilson CI, standard error on n_eff, Benjamini-Hochberg, baselines, n_eff correction, `rho_era`, self-validation gate | **Session 11 gate — complete, passed.** Null test 2 of 480 cells at `q < 0.05` = 0.42%; recovery test 0.039 pp; broken variant caught at 11.67%. This is the session gate, **not** the Phase 4 gate — that one is in `TESTS.md` §10 and needs four more things Sessions 12 and 13 build. See `RESULTS.md` Phase 4 — Statistics layer |
 
 Sessions 0-2 can run back to back in one sitting. Session 7 is mostly waiting.
 

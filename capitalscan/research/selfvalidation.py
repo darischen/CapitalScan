@@ -115,6 +115,18 @@ RECOVERY_TARGET = 0.02
 _SIGNAL_TYPE = "SYNTHETIC_NULL"
 _ERA = "synthetic"
 
+# Event generation draws from `seed + _EVENT_SEED_OFFSET`. The offset is
+# large because `single_factor_bars` derives ticker `i` from `seed + 1 + i`:
+# at the old offset of 1, the event generator and ticker SYN000's
+# idiosyncratic returns opened the *same* generator state. Nothing read a
+# price either way — `test_event_generation_never_reads_a_price` pins that by
+# scrambling the panel — but a null test whose entire claim is independence
+# by construction should not have its event placement and one ticker's price
+# path derived from one bit stream. 500,000 clears the 50-ticker span with
+# room and stays clear of the 1,000-per-replication spacing in
+# `run_null_test`.
+_EVENT_SEED_OFFSET = 500_000
+
 
 @dataclass(frozen=True)
 class NullTestResult:
@@ -214,7 +226,7 @@ def synthetic_events(
     catch it. Per-day assignment gives 1.70 and eight rejections out of 48.
     The realistic construction is also the one with teeth.
     """
-    rng = np.random.default_rng(seed + 1)
+    rng = np.random.default_rng(seed + _EVENT_SEED_OFFSET)
     calendar = np.array(sorted(pd.to_datetime(bars["ts"].unique())))
     tickers = np.array(sorted(bars["ticker"].unique()))
 
@@ -302,9 +314,7 @@ def cell_statistics(
                 continue
             z = (p_hit - baseline) / se
             p_value = float(2.0 * scipy_stats.norm.sf(abs(z)))
-            lower, upper = wilson_ci(
-                int(round(p_hit * n_eff)), max(int(round(n_eff)), 1), sp.fdr_alpha
-            )
+            lower, upper = wilson_ci(p_hit * n_eff, n_eff, sp.fdr_alpha)
 
             rows.append(
                 {
@@ -381,7 +391,9 @@ def run_null_test(
 
     Seeds are `seed + 1000 * r`, spaced widely enough that no two
     replications share a ticker's price path (`single_factor_bars` derives
-    ticker `i` from `seed + 1 + i` over at most 50 tickers).
+    ticker `i` from `seed + 1 + i` over at most 50 tickers) and that no
+    replication's event draw (`seed + _EVENT_SEED_OFFSET`) lands on another
+    replication's price stream.
     """
     sp = sp or StatsParams()
     if replications < 1:

@@ -1224,6 +1224,61 @@ def stats_self_validate_cmd(
         raise typer.Exit(code=1)
 
 
+@stats_app.command("rho")
+def stats_rho_cmd(
+    config_hash: str = typer.Option(
+        ...,
+        "--config-hash",
+        help="events.config_hash to measure. One rho_era row per era of that config",
+    ),
+) -> None:
+    """Session 11.3: measure `rho_bar` per era and write `rho_era` (ADR 098).
+
+    Session 12 cannot interpret a single `cell_stats` row without the
+    `rho_era` row sharing its `config_hash` — `n_eff` is computed from the
+    stored `rho_empirical`, so this is a prerequisite, not a report.
+
+    Additive and re-runnable: the write upserts on `(era, config_hash)`, so
+    a second config adds rows rather than replacing the first's, and a rerun
+    against the same config refreshes its own rows and nothing else.
+    """
+    from capitalscan.jobs import db_io, ingest
+    from capitalscan.jobs.provenance import git_sha
+    from capitalscan.research.rho import run_rho_eras
+
+    engine = db_io.get_engine()
+    with ingest.run_job(engine, "rho", {"config_hash": config_hash}) as job:
+        report = run_rho_eras(engine, config_hash, job.run_id, git_sha())
+        job.rows_written = report.rows_written
+
+    if report.n_events == 0:
+        console.print(f"[red]no events for config_hash={config_hash}[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"rho: config_hash={config_hash} run_id={report.run_id} "
+        f"events={report.n_events} tickers={report.n_tickers} "
+        f"rows_written={report.rows_written}"
+    )
+    for e in report.estimates:
+        if e.rho_empirical is None:
+            console.print(f"  {e.era}: [yellow]no measurable co-firing, no row written[/yellow]")
+            continue
+        factor = "null" if e.rho_factor_implied is None else f"{e.rho_factor_implied:.4f}"
+        gap = "null" if e.rho_gap is None else f"{e.rho_gap:+.4f}"
+        beta = "null" if e.mean_beta is None else f"{e.mean_beta:.3f}"
+        console.print(
+            f"  {e.era}: rho_empirical={e.rho_empirical:.4f} rho_factor_implied={factor} "
+            f"rho_gap={gap} n_pairs={e.n_pairs} n_cofire_days={e.n_cofire_days} "
+            f"mean_beta={beta}"
+        )
+    # An era measured but not written leaves every cell_stats row for that
+    # era uninterpretable, so it is called out rather than left to the
+    # reader to notice a missing line.
+    if report.skipped_eras:
+        console.print(f"[yellow]eras written with no rho_empirical: {report.skipped_eras}[/yellow]")
+
+
 app.add_typer(stats_app, name="stats")
 
 

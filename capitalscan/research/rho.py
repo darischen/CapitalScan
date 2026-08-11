@@ -49,8 +49,10 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import Engine, text
 
+from capitalscan.core.config import DEFAULT_BASELINE, DEFAULT_RHO
 from capitalscan.core.returns import forward_returns
 from capitalscan.jobs import db_io
+from capitalscan.research.baselines import load_adj_close_panel
 
 RHO_ERA_COLUMNS = [
     "era",
@@ -82,7 +84,7 @@ class RhoEstimate:
 
 def overlapping_horizon_returns(
     bars: pd.DataFrame,
-    horizon_days: int = 5,
+    horizon_days: int = DEFAULT_BASELINE.horizon_days,
 ) -> pd.DataFrame:
     """Wide frame of `horizon_days` forward returns, one row per trading day.
 
@@ -134,6 +136,30 @@ def cofire_pair_days(events: pd.DataFrame) -> Counter[tuple[str, str]]:
     return counts
 
 
+def cofire_days(events: pd.DataFrame) -> int:
+    """Distinct calendar days on which two or more tickers fired together.
+
+    `rho_era.n_cofire_days` is this number, not the sum of every pair's
+    co-fire count. The two differ by a large factor and in the direction
+    that flatters the measurement: a day with `k` co-firing names produces
+    `C(k, 2)` pairs, so at the ~10 names/day the synthetic null exercises,
+    a pair-day total reads roughly 47x the number of days it claims to
+    count. Anyone reading the stored column as "how many days did this
+    measurement see" would be off by that factor.
+
+    Same grain as `cofire_pair_days`: a ticker firing several entry kinds on
+    one date counts once, and two tickers firing *different* signal types on
+    the same date are not co-firing. A date qualifies when any one of its
+    `(signal_date, signal_type)` groups holds at least two distinct tickers.
+    """
+    keys = ["signal_date", "signal_type"] if "signal_type" in events.columns else ["signal_date"]
+    qualifying = set()
+    for key, group in events.groupby(keys, sort=False):
+        if group["ticker"].nunique() >= 2:
+            qualifying.add(key[0] if isinstance(key, tuple) else key)
+    return len(qualifying)
+
+
 def _weighted_mean(values: np.ndarray, weights: np.ndarray) -> float | None:
     usable = ~np.isnan(values)
     if not usable.any() or weights[usable].sum() == 0:
@@ -144,7 +170,7 @@ def _weighted_mean(values: np.ndarray, weights: np.ndarray) -> float | None:
 def empirical_rho_bar(
     returns_wide: pd.DataFrame,
     pair_days: Counter[tuple[str, str]],
-    min_overlap: int = 30,
+    min_overlap: int = DEFAULT_RHO.min_pair_overlap,
 ) -> tuple[float | None, np.ndarray, np.ndarray, list[tuple[str, str]]]:
     """Co-fire-weighted mean pairwise correlation over the co-firing pairs.
 
@@ -178,7 +204,7 @@ def empirical_rho_bar(
 def factor_betas(
     returns_wide: pd.DataFrame,
     market_returns: pd.Series,
-    min_overlap: int = 30,
+    min_overlap: int = DEFAULT_RHO.min_pair_overlap,
 ) -> pd.DataFrame:
     """`beta_i` and `sigma_i` per ticker against one market factor.
 
@@ -189,27 +215,46 @@ def factor_betas(
     `sigma_m` rides along as a column rather than a second return value:
     every consumer needs it alongside the betas, and the alternative is a
     tuple whose second element is a scalar repeated for every row.
+
+    **Every quantity comes from the sample it was measured in.** `beta_i`,
+    `sigma_i`, and `sigma_m` all read ticker `i`'s own joint sample with the
+    market, which is why `sigma_m` varies by row rather than being one
+    scalar broadcast across the frame. The earlier version measured `beta_i`
+    and `sigma_i` on that per-ticker subset while taking `sigma_m` from the
+    full index, so `rho_ij = beta_i beta_j sigma_m^2 / (sigma_i sigma_j)`
+    combined quantities from three different samples. On the synthetic
+    panels those samples coincide and nothing showed; on real `bars`, where
+    tickers list and delist mid-era, they do not, and the error lands in
+    `rho_gap` — the one number ADR 099 says to read the "is one factor
+    enough" decision off.
+
+    Restricting instead to the days where *every* ticker is observed was the
+    other candidate and is worse: one ticker listing mid-era would truncate
+    the sample for all 500 others, and a single ticker with no overlap would
+    empty it entirely.
+
+    `beta_i * sigma_m_i` is a ticker's systematic volatility, and that
+    product is what `factor_implied_rho_bar` multiplies pairwise. It is
+    algebraically identical to ADR 098's formula whenever the two tickers
+    share a sample, which is the case the ADR was written against.
     """
     aligned_market = market_returns.reindex(returns_wide.index)
-    var_m = float(aligned_market.var(ddof=1))
     rows = []
     for ticker in returns_wide.columns:
-        series = returns_wide[ticker]
-        joint = pd.concat([series, aligned_market], axis=1).dropna()
+        joint = pd.concat([returns_wide[ticker], aligned_market], axis=1).dropna()
+        var_m = float(joint.iloc[:, 1].var(ddof=1)) if len(joint) >= min_overlap else 0.0
         if len(joint) < min_overlap or var_m == 0.0:
-            rows.append({"ticker": ticker, "beta": np.nan, "sigma": np.nan})
+            rows.append({"ticker": ticker, "beta": np.nan, "sigma": np.nan, "sigma_m": np.nan})
             continue
-        cov = float(joint.iloc[:, 0].cov(joint.iloc[:, 1]))
         rows.append(
             {
                 "ticker": ticker,
-                "beta": cov / float(joint.iloc[:, 1].var(ddof=1)),
+                "beta": float(joint.iloc[:, 0].cov(joint.iloc[:, 1])) / var_m,
                 "sigma": float(joint.iloc[:, 0].std(ddof=1)),
+                "sigma_m": float(np.sqrt(var_m)),
             }
         )
-    frame = pd.DataFrame(rows).set_index("ticker")
-    frame["sigma_m"] = float(np.sqrt(var_m)) if var_m > 0 else np.nan
-    return frame
+    return pd.DataFrame(rows, columns=["ticker", "beta", "sigma", "sigma_m"]).set_index("ticker")
 
 
 def factor_implied_rho_bar(
@@ -222,27 +267,31 @@ def factor_implied_rho_bar(
     Returns `(rho_factor_implied, mean_beta)`. The pair set and weights are
     the empirical estimate's, passed in rather than recomputed, so `rho_gap`
     measures the difference between two estimators over one population.
+
+    Written as `(beta_i sigma_m_i)(beta_j sigma_m_j) / (sigma_i sigma_j)`,
+    the product of the two tickers' systematic volatilities. That is ADR
+    098's formula exactly whenever both tickers were measured on the same
+    days, and it stays coherent when they were not — see `factor_betas` on
+    why `sigma_m` is per-ticker rather than one scalar.
     """
     if not pairs or betas.empty:
         return None, None
-
-    sigma_m_values = betas["sigma_m"].dropna()
-    if sigma_m_values.empty:
+    if betas["sigma_m"].dropna().empty:
         return None, None
-    sigma_m = float(sigma_m_values.iloc[0])
 
     beta_of = {str(k): float(v) for k, v in betas["beta"].items()}
     sigma_of = {str(k): float(v) for k, v in betas["sigma"].items()}
+    sigma_m_of = {str(k): float(v) for k, v in betas["sigma_m"].items()}
 
     values = np.full(len(pairs), np.nan)
     for idx, (a, b) in enumerate(pairs):
         if a not in beta_of or b not in beta_of:
             continue
-        beta_a, sigma_a = beta_of[a], sigma_of[a]
-        beta_b, sigma_b = beta_of[b], sigma_of[b]
+        beta_a, sigma_a, sigma_m_a = beta_of[a], sigma_of[a], sigma_m_of[a]
+        beta_b, sigma_b, sigma_m_b = beta_of[b], sigma_of[b], sigma_m_of[b]
         if np.isnan(beta_a) or np.isnan(beta_b) or sigma_a == 0.0 or sigma_b == 0.0:
             continue
-        values[idx] = (beta_a * beta_b * sigma_m**2) / (sigma_a * sigma_b)
+        values[idx] = ((beta_a * sigma_m_a) * (beta_b * sigma_m_b)) / (sigma_a * sigma_b)
 
     used_tickers = {t for pair in pairs for t in pair} & set(betas.index)
     mean_beta_value = betas.loc[sorted(used_tickers), "beta"].mean()
@@ -255,7 +304,7 @@ def rho_for_era(
     events: pd.DataFrame,
     returns_wide: pd.DataFrame,
     market_returns: pd.Series | None = None,
-    min_overlap: int = 30,
+    min_overlap: int = DEFAULT_RHO.min_pair_overlap,
 ) -> RhoEstimate:
     """Both estimates for one era's event population.
 
@@ -280,7 +329,7 @@ def rho_for_era(
         rho_factor_implied=rho_factor,
         rho_gap=gap,
         n_pairs=len(pairs),
-        n_cofire_days=int(sum(pair_days.values())),
+        n_cofire_days=cofire_days(events),
         mean_beta=mean_beta,
     )
 
@@ -289,7 +338,7 @@ def compute_rho_eras(
     events: pd.DataFrame,
     returns_wide: pd.DataFrame,
     market_returns: pd.Series | None = None,
-    min_overlap: int = 30,
+    min_overlap: int = DEFAULT_RHO.min_pair_overlap,
 ) -> list[RhoEstimate]:
     """One `RhoEstimate` per era present in `events`.
 
@@ -332,8 +381,19 @@ def rho_era_rows(
     builder so two runs over identical data can be compared column by column
     (11.3 acceptance: "Two runs against identical data write identical
     values ignoring `run_id` and `computed_at`").
+
+    **An era with no measurable `rho_empirical` writes no row.** That is the
+    rule `rho_era`'s migration states, and this is where it is enforced:
+    the column is `NOT NULL` precisely because a null there would read as
+    "computed and found nothing", which is a different claim from "not
+    computed". `rho_for_era` returns `None` when an era has no co-firing
+    pairs at all, or when every pair falls under `min_overlap`, and passing
+    that through produced an `IntegrityError` at write time rather than the
+    documented skip. Dropped estimates are still visible: the caller sees
+    fewer rows than it passed estimates.
     """
     stamp = computed_at or datetime.now(timezone.utc)
+    estimates = [e for e in estimates if e.rho_empirical is not None]
     rows = [
         {
             "era": e.era,
@@ -371,7 +431,7 @@ def write_rho_era(engine: Engine, rows: pd.DataFrame) -> int:
 
 def load_market_horizon_returns(
     engine: Engine,
-    horizon_days: int = 5,
+    horizon_days: int = DEFAULT_BASELINE.horizon_days,
 ) -> pd.Series:
     """S&P `horizon_days` forward returns from `market_days.spx_close`.
 
@@ -390,3 +450,110 @@ def load_market_horizon_returns(
         index=pd.to_datetime(frame["ts"].to_numpy()),
     )
     return forward_returns(close, [horizon_days])[f"fwd_ret_{horizon_days}d"]
+
+
+def load_config_events(engine: Engine, config_hash: str) -> pd.DataFrame:
+    """The co-firing skeleton of one config's event population.
+
+    Four columns, distinct: `ticker`, `signal_date`, `signal_type`, `era`.
+    Nothing else is needed to measure `rho_bar`, and `DISTINCT` collapses the
+    per-`entry_kind` fan-out for the same reason `add_cofire_count` counts
+    distinct tickers — one ticker firing four entry kinds on a date is one
+    co-firing name, not four.
+
+    **Live events are excluded** by `era IS NOT NULL`. An event whose
+    `signal_date` sits past the last era boundary carries a null era
+    (`research.enrich._era`), and there is no era row for it to inform.
+    Including them would silently pool the live tail into whichever era
+    `groupby` happened to place it in.
+    """
+    sql = """
+        SELECT DISTINCT ticker, signal_date, signal_type, era
+        FROM events
+        WHERE config_hash = :config_hash AND era IS NOT NULL
+        ORDER BY era, signal_date, ticker
+    """
+    with engine.connect() as conn:
+        frame = pd.read_sql(text(sql), conn, params={"config_hash": config_hash})
+    frame["signal_date"] = pd.to_datetime(frame["signal_date"])
+    return frame
+
+
+@dataclass(frozen=True)
+class RhoRunReport:
+    """What one `cscan stats rho` run measured and wrote."""
+
+    config_hash: str
+    run_id: str
+    estimates: list[RhoEstimate]
+    rows_written: int
+    n_events: int
+    n_tickers: int
+
+    @property
+    def skipped_eras(self) -> list[str]:
+        """Eras measured but not written: no `rho_empirical` to store.
+
+        Visible rather than silent — a missing era row means every
+        `cell_stats` row for that era is uninterpretable (ADR 098's
+        consequences), so the caller has to be able to say which.
+        """
+        return [e.era for e in self.estimates if e.rho_empirical is None]
+
+
+def run_rho_eras(
+    engine: Engine,
+    config_hash: str,
+    run_id: str,
+    git_sha: str,
+    horizon_days: int = DEFAULT_BASELINE.horizon_days,
+    min_overlap: int = DEFAULT_RHO.min_pair_overlap,
+    computed_at: datetime | None = None,
+) -> RhoRunReport:
+    """Measure `rho_bar` per era for one config and write `rho_era`.
+
+    The whole ADR 098 path in one call: read the config's events, read the
+    total-return panel for exactly the tickers those events name, build
+    overlapping `horizon_days` forward returns, measure both estimates per
+    era, and upsert on `(era, config_hash)`.
+
+    The bars read is bounded by the tickers and dates the events actually
+    span. Pulling the full `bars` table instead would be several million
+    rows for a measurement that only ever looks at co-firing names.
+
+    Session 12 reads the rows this writes. A `cell_stats` row is only
+    interpretable next to the `rho_era` row sharing its `config_hash`, which
+    is why `run_id` and `git_sha` are required arguments rather than
+    defaulted: a row without provenance cannot explain why two runs against
+    one config disagree (ADR 034, ADR 098).
+    """
+    events = load_config_events(engine, config_hash)
+    if events.empty:
+        return RhoRunReport(config_hash, run_id, [], 0, 0, 0)
+
+    tickers = sorted(events["ticker"].astype(str).unique())
+    bars = load_adj_close_panel(
+        engine,
+        tickers=tickers,
+        start=str(events["signal_date"].min().date()),
+        # The forward window opens on the last signal day and closes
+        # `horizon_days` sessions later, so the panel has to run past the
+        # last event or every late event's return is NaN. Calendar days,
+        # generously converted, since `bars` is filtered by date not by
+        # session count.
+        end=str((events["signal_date"].max() + pd.Timedelta(days=2 * horizon_days + 7)).date()),
+    )
+    returns_wide = overlapping_horizon_returns(bars, horizon_days)
+    market = load_market_horizon_returns(engine, horizon_days)
+
+    estimates = compute_rho_eras(events, returns_wide, market, min_overlap)
+    rows = rho_era_rows(estimates, run_id, config_hash, git_sha, computed_at)
+    written = write_rho_era(engine, rows)
+    return RhoRunReport(
+        config_hash=config_hash,
+        run_id=run_id,
+        estimates=estimates,
+        rows_written=written,
+        n_events=int(len(events)),
+        n_tickers=len(tickers),
+    )

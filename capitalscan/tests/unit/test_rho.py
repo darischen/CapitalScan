@@ -25,6 +25,7 @@ import pytest
 from capitalscan.core.stats import effective_sample_size, rho_bar_for_correction
 from capitalscan.research.rho import (
     RHO_ERA_COLUMNS,
+    cofire_days,
     cofire_pair_days,
     compute_rho_eras,
     empirical_rho_bar,
@@ -94,6 +95,37 @@ class TestCofirePairDays:
 
     def test_solo_days_produce_no_pairs(self):
         assert cofire_pair_days(_events([("AAA", 0), ("BBB", 1)])) == {}
+
+
+class TestCofireDays:
+    """`n_cofire_days` counts days, not pair-days."""
+
+    def test_a_broad_day_counts_once(self):
+        # Five names firing together is one co-firing day and ten pairs.
+        # Storing the pair total in a column named `n_cofire_days` reads as
+        # ten days of evidence where there is one.
+        events = _events([(t, 0) for t in ("AAA", "BBB", "CCC", "DDD", "EEE")])
+        assert cofire_days(events) == 1
+        assert sum(cofire_pair_days(events).values()) == 10
+
+    def test_solo_days_do_not_count(self):
+        assert cofire_days(_events([("AAA", 0), ("BBB", 1)])) == 0
+
+    def test_entry_kind_fan_out_collapses(self):
+        events = _events([("AAA", 0), ("AAA", 0), ("BBB", 0), ("BBB", 0)])
+        assert cofire_days(events) == 1
+
+    def test_different_signal_types_are_not_co_firing(self):
+        events = _events([("AAA", 0), ("BBB", 0)])
+        events.loc[1, "signal_type"] = "CONFLUENCE_HIGH"
+        assert cofire_days(events) == 0
+
+    def test_counts_each_calendar_day_once_across_signal_types(self):
+        # Two signal types both co-firing on one date is one day, not two.
+        events = _events([("AAA", 0), ("BBB", 0), ("CCC", 0), ("DDD", 0)])
+        events.loc[[2, 3], "signal_type"] = "CONFLUENCE_HIGH"
+        assert cofire_days(events) == 1
+        assert cofire_days(_events([("AAA", 0), ("BBB", 0), ("AAA", 1), ("BBB", 1)])) == 2
 
 
 class TestEmpiricalRhoBar:
@@ -238,6 +270,44 @@ class TestFactorImplied:
         for ticker, expected in zip(returns.columns, self.BETAS):
             assert float(betas.at[ticker, "beta"]) == pytest.approx(expected, abs=0.10)
 
+    def test_every_quantity_comes_from_one_sample(self):
+        """A ticker observed on half the days must not borrow the other
+        half's market variance.
+
+        `rho_ij = beta_i beta_j sigma_m^2 / (sigma_i sigma_j)` is only a
+        correlation if all four quantities describe one sample. Measuring
+        `sigma_m` on the full index while `beta_i` and `sigma_i` come from a
+        ticker's own observed days mixes three samples, and on real `bars` —
+        where names list and delist mid-era — the three genuinely differ.
+        Here SYN000 is observed only where the market is calm, so a
+        full-index `sigma_m` overstates its systematic share and pushes its
+        implied correlations up.
+        """
+        returns, market = self._panel(resid_rho=0.0)
+        calm = market.abs() < market.abs().median()
+        partial = returns.copy()
+        partial.loc[~calm, partial.columns[0]] = np.nan
+
+        betas = factor_betas(partial, market)
+        # sigma_m is per ticker, and the truncated one genuinely differs.
+        sigma_m = betas["sigma_m"]
+        assert sigma_m.iloc[0] < sigma_m.iloc[1]
+        assert sigma_m.iloc[1:].std() == pytest.approx(0.0, abs=1e-12)
+
+        # And the implied correlation stays a correlation despite the mix.
+        pairs, weights = self._all_pairs(partial)
+        rho_factor, _ = factor_implied_rho_bar(betas, pairs, weights)
+        assert rho_factor is not None
+        assert -1.0 <= rho_factor <= 1.0
+
+    def test_a_ticker_below_min_overlap_drops_out_rather_than_poisoning(self):
+        returns, market = self._panel(resid_rho=0.0)
+        partial = returns.copy()
+        partial.iloc[10:, 0] = np.nan  # ten observations, well under the floor
+        betas = factor_betas(partial, market)
+        assert np.isnan(betas["beta"].iloc[0])
+        assert not betas["beta"].iloc[1:].isna().any()
+
     def test_correlated_residuals_make_rho_gap_positive(self):
         # ADR 098's stated direction: the factor version assumes residual
         # independence, so sector co-movement lands entirely in the
@@ -367,3 +437,27 @@ class TestEraAggregation:
 
     def test_empty_estimates_keep_the_shape(self):
         assert list(rho_era_rows([], "r", "h", "s").columns) == RHO_ERA_COLUMNS
+
+    def test_an_era_with_no_measurable_rho_writes_no_row(self):
+        """`rho_era.rho_empirical` is NOT NULL, and this is what enforces it.
+
+        An era whose pairs all fall under `min_overlap` measures `None`.
+        Passing that through raised an IntegrityError at write time instead
+        of the skip the migration documents, and a null in that column would
+        anyway read as "computed and found nothing", which is a different
+        claim from "not computed".
+        """
+        events = self._era_events()
+        # Two co-firing days: real pairs, nowhere near `min_overlap`
+        # observations, so the correlation is not estimable.
+        thin = _events([("AAA", 0), ("BBB", 0), ("AAA", 1), ("BBB", 1)])
+        thin["era"] = "2024+"
+        estimates = compute_rho_eras(
+            pd.concat([events, thin], ignore_index=True), _correlated_returns()
+        )
+        assert [e.era for e in estimates] == ["2015-2019", "2020-2023", "2024+"]
+        assert estimates[-1].rho_empirical is None
+
+        rows = rho_era_rows(estimates, "r", "h", "s")
+        assert list(rows["era"]) == ["2015-2019", "2020-2023"]
+        assert rows["rho_empirical"].notna().all()

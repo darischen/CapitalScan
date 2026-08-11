@@ -20,72 +20,115 @@ class TestWilsonCI:
     def test_wilson_reference_cases(self):
         """Match published reference values across parameter space."""
         # Reference case 1: p=0.5, n=100 (from Wilson 1927 table)
-        lower, upper = wilson_ci(successes=50, trials=100, alpha=0.05)
+        lower, upper = wilson_ci(successes=50, n_eff=100, alpha=0.05)
         assert 0.40 <= lower <= 0.42
         assert 0.58 <= upper <= 0.60
 
         # Reference case 2: p near 0 (small success rate)
         # k=1, n=100: boundary case
-        lower, upper = wilson_ci(successes=1, trials=100, alpha=0.05)
+        lower, upper = wilson_ci(successes=1, n_eff=100, alpha=0.05)
         assert 0.0 <= lower <= 0.01
         assert 0.04 <= upper <= 0.06
 
         # Reference case 3: p near 1 (high success rate)
         # k=99, n=100: boundary case
-        lower, upper = wilson_ci(successes=99, trials=100, alpha=0.05)
+        lower, upper = wilson_ci(successes=99, n_eff=100, alpha=0.05)
         assert 0.94 <= lower <= 0.96
         assert 0.99 <= upper <= 1.0
 
         # Reference case 4: small n, edge case
         # k=0, n=10
-        lower, upper = wilson_ci(successes=0, trials=10, alpha=0.05)
+        lower, upper = wilson_ci(successes=0, n_eff=10, alpha=0.05)
         assert lower == 0.0
         assert 0.0 <= upper <= 0.30
 
         # Reference case 5: small n, all successes
         # k=10, n=10
-        lower, upper = wilson_ci(successes=10, trials=10, alpha=0.05)
+        lower, upper = wilson_ci(successes=10, n_eff=10, alpha=0.05)
         assert 0.70 <= lower <= 1.0
         assert upper == 1.0
 
         # Reference case 6: moderate n, p=0.03 (the normal approximation failure case)
         # k=1, n=35
-        lower, upper = wilson_ci(successes=1, trials=35, alpha=0.05)
+        lower, upper = wilson_ci(successes=1, n_eff=35, alpha=0.05)
         assert lower >= 0.0  # Normal would go negative
         assert upper <= 1.0
 
     @given(
         successes=st.integers(min_value=0, max_value=1000),
-        trials=st.integers(min_value=1, max_value=1000),
+        n_eff=st.integers(min_value=1, max_value=1000),
     )
-    def test_wilson_bounds_in_valid_range(self, successes, trials):
+    def test_wilson_bounds_in_valid_range(self, successes, n_eff):
         """Property test: bounds always lie in [0, 1]."""
-        if successes <= trials:
-            lower, upper = wilson_ci(successes, trials, alpha=0.05)
+        if successes <= n_eff:
+            lower, upper = wilson_ci(successes, n_eff, alpha=0.05)
             assert 0.0 <= lower <= 1.0
             assert 0.0 <= upper <= 1.0
             assert lower <= upper
 
+    @given(
+        p=st.floats(min_value=0.0, max_value=1.0),
+        n_eff=st.floats(min_value=0.5, max_value=5000.0),
+    )
+    def test_wilson_accepts_a_fractional_n_eff(self, p, n_eff):
+        """`n_eff` is a float and is used as one.
+
+        The ADR 098 correction produces `n / (1 + (k_bar - 1) * rho_bar)`,
+        which is almost never integral. Rounding it before building the
+        interval discards precision the formula never needed: Wilson is
+        continuous in the sample size.
+        """
+        lower, upper = wilson_ci(p * n_eff, n_eff, alpha=0.05)
+        assert 0.0 <= lower <= upper <= 1.0
+
+    def test_wilson_narrows_as_n_eff_grows(self):
+        """The clustering correction has to be able to widen the interval.
+
+        Same hit rate, a third of the effective sample: the interval must
+        get wider. If it did not, `n_eff` would be decorative and the whole
+        ADR 098 correction would cost nothing at the point it is published.
+        """
+        tight = wilson_ci(30.0, 60.0, alpha=0.05)
+        loose = wilson_ci(10.0, 20.0, alpha=0.05)
+        assert (loose[1] - loose[0]) > (tight[1] - tight[0])
+
     def test_wilson_zero_and_one(self):
         """Edge cases: k=0 and k=n."""
         # All failures
-        lower, upper = wilson_ci(successes=0, trials=50, alpha=0.05)
+        lower, upper = wilson_ci(successes=0, n_eff=50, alpha=0.05)
         assert lower == 0.0
         assert 0.0 < upper < 0.1
 
         # All successes
-        lower, upper = wilson_ci(successes=50, trials=50, alpha=0.05)
+        lower, upper = wilson_ci(successes=50, n_eff=50, alpha=0.05)
         assert 0.9 < lower < 1.0
         assert upper == 1.0
 
     def test_wilson_error_handling(self):
         """Reject invalid inputs."""
         with pytest.raises(ValueError):
-            wilson_ci(successes=-1, trials=100)
+            wilson_ci(successes=-1, n_eff=100)
         with pytest.raises(ValueError):
-            wilson_ci(successes=101, trials=100)
+            wilson_ci(successes=101, n_eff=100)
         with pytest.raises(ValueError):
-            wilson_ci(successes=50, trials=0)
+            wilson_ci(successes=50, n_eff=0)
+
+    def test_wilson_sample_size_parameter_is_n_eff(self):
+        """Structural, not a comment (11.1 acceptance 6).
+
+        Invariant 8: every published probability carries `n_eff` and an
+        interval. An interval sized on a raw event count is too narrow by
+        `sqrt(1 + (k_bar - 1) * rho_bar)`, which is exactly the bug the
+        Session 11.4 null test catches. The parameter name is the thing
+        stopping a caller from passing `n`, so the name is pinned here
+        alongside `standard_error_n_eff`'s.
+        """
+        import inspect
+
+        names = list(inspect.signature(wilson_ci).parameters)
+        assert "n_eff" in names
+        assert "trials" not in names
+        assert "n" not in names
 
 
 class TestStandardErrorNEff:
