@@ -1650,8 +1650,8 @@ only, long side, restricted to the trade universe on the signal date.
 
 | Split | Window | Trading days | Tickers | Signal entries | `run_id` |
 |---|---|---|---|---|---|
-| train | 2010-03-31 to 2021-12-31 | 2,960 | 252 | 7,163 | `benchmarks_20260813T161520_e1266a36` |
-| validate | 2022-01-03 to 2023-12-29 | 501 | 214 | 2,254 | `benchmarks_20260813T162457_de8433d7` |
+| train | 2010-03-31 to 2021-12-31 | 2,960 | 252 | 7,163 | `benchmarks_20260813T172347_f421521b` |
+| validate | 2022-01-03 to 2023-12-29 | 501 | 214 | 2,254 | `benchmarks_20260813T173059_efceeadc` |
 
 409 rows per split: 8 pooled arms, 200 pooled null replications, 3 subset arms, 200 subset
 null replications. All ten gate items pass.
@@ -1676,9 +1676,9 @@ published as measured.
 
 | Arm | total_ret | ann_ret | Sharpe | max_dd | deployed | cap_eff | win | n | post_tax |
 |---|---|---|---|---|---|---|---|---|---|
-| `buy_hold` | +383.66% | 14.36% | 0.769 | 34.13% | **100.00%** | 3.837 | 53.95% | 784 | +239.22% |
+| `buy_hold` | +383.66% | 14.36% | 0.769 | 34.13% | **100.00%** | 3.837 | 53.95% | 784 | +291.40% |
 | `signal` | +108.37% | 6.45% | 0.348 | 27.31% | 92.94% | 1.166 | 55.02% | 7,163 | −7.78% |
-| `trim` | +202.39% | 9.88% | 0.756 | 22.45% | 100.00% | 2.024 | 53.95% | 7,059 | +131.55% |
+| `trim` | +202.39% | 9.88% | 0.756 | 22.45% | 100.00% | 2.024 | 53.95% | 7,059 | +155.93% |
 | `dca_fixed` | +366.01% | 13.99% | — | 34.13% | 100.00% | 3.660 | — | 12 | +366.01% |
 | `dca_signal` | +139.15% | 7.70% | — | 30.43% | 99.97% | 1.392 | — | 1,970 | +139.15% |
 | `dca_hybrid` | +391.58% | 14.51% | — | 34.13% | 100.00% | 3.916 | — | 8 | +391.58% |
@@ -1812,11 +1812,11 @@ underfiring path is exercised by fixture instead.
 
 | Split | Arm | Pre-tax | Post-tax | Wash sales flagged |
 |---|---|---|---|---|
-| train | `buy_hold` | +383.66% | +239.22% | no |
-| train | `trim` | +202.39% | +131.55% | no |
+| train | `buy_hold` | +383.66% | **+291.40%** | no |
+| train | `trim` | +202.39% | **+155.93%** | no |
 | train | `signal` | +108.37% | **−7.78%** | yes |
 | train | `random` (mean) | +90.65% | −14.07% | yes |
-| validate | `buy_hold` | −3.69% | −10.24% | no |
+| validate | `buy_hold` | −3.69% | **−9.09%** | no |
 | validate | `signal` | −10.10% | −38.38% | yes |
 
 **Short-term tax eliminates the signal arm's entire return.** +108.37% pre-tax becomes
@@ -1828,26 +1828,55 @@ Wash sales flag on the entry arms and not on the holding arms, which is the expe
 shape: only high-turnover sleeve trading repurchases a name within 30 days of taking a
 loss in it.
 
-**One bias, stated with its direction.** Buy-and-hold's stints average roughly four and a
-half years and would be taxed at long-term rates in reality, not the 37% short-term rate
-applied here. ADR 032 specifies a short-term rate for sleeve gains and names no long-term
-rate, so none was invented. The effect **overstates buy-and-hold's tax and therefore
-flatters the signal arm's relative post-tax standing**. The signal arm loses anyway, so
-correcting it would widen the gap rather than close it. This is the first thing to fix if
-ADR 032 is ever promoted out of Provisional.
+**Holding period decides the rate,** per the 2026-08-13 amendment to ADR 032. Positions
+held more than a year pay 20%, everything else 37%. This was measured as a defect first
+and fixed second: the initial run taxed every arm at 37%, which reported buy-and-hold at
+`post_tax_ret = +239.22%` and trim at `+131.55%`. Their stints average roughly four and a
+half years.
 
-The other stated gaps are in DESIGN §8.8: deferred losses outstanding in the final year
-are lost, `post_tax_ret` ignores the compounding cost of paying tax early, rebalance
-partial disposals are untaxed, and dividend reinvestment is not a separate purchase.
+| Arm | Stints | Avg hold | Rate | Post-tax before | Post-tax after |
+|---|---|---|---|---|---|
+| `buy_hold` | 784 | ~4.5 yr | 20% | +239.22% | **+291.40%** |
+| `trim` | 7,059 trims / 784 stints | ~4.5 yr | 20% | +131.55% | **+155.93%** |
+| `signal` | 7,163 | ≤5 days | 37% | −7.78% | **−7.78%** |
+
+**The correction moves the benchmarks and leaves the signal arm exactly where it was**,
+which is the point: the signal arm's positions are genuinely short-term, so 37% was always
+right for it. The post-tax gap against buy-and-hold widens from 247.0 points to **299.18
+points**, wider than the 275.29-point pre-tax gap. Taxing everything at 37% had been
+flattering the signal arm.
+
+A pre-fix linear estimate put corrected buy-and-hold near +305%; the measured value is
++291.40%. The estimate scaled the whole tax bill by `20/37`, which ignores the per-year
+netting, so it overshot by about 14 points. Recorded because the estimate was published
+before the re-run.
+
+The other stated gaps are in DESIGN §8.8 and are unchanged: deferred losses outstanding in
+the final year are lost, `post_tax_ret` ignores the compounding cost of paying tax early,
+rebalance partial disposals are untaxed, a deferred wash-sale loss keeps its own character
+rather than inheriting the replacement lot's, and dividend reinvestment is not a separate
+purchase.
 
 ### A second defect worth recording: the tax model
 
-The first implementation pooled the whole window into one net figure and treated a
-wash-sale disallowance as permanent. That produced **`post_tax_ret = −354%` against
-`pre_tax_ret = +109%`** — a tax bill several times the account. Two things were wrong:
-a 2021 loss cannot offset a 2011 gain, and a disallowed loss is deferred into the
-replacement lot's basis rather than destroyed. Taxation is now per calendar year with
-one-year deferral, and both rules carry their own tests.
+The tax model was wrong twice, in two rounds, and both were found by running it rather
+than by reading it.
+
+**Round one.** The first implementation pooled the whole window into one net figure and
+treated a wash-sale disallowance as permanent. That produced **`post_tax_ret = −354%`
+against `pre_tax_ret = +109%`** — a tax bill several times the account. Two things were
+wrong: a 2021 loss cannot offset a 2011 gain, and a disallowed loss is deferred into the
+replacement lot's basis rather than destroyed. Taxation became per calendar year with
+one-year deferral.
+
+**Round two.** With that fixed, every arm was still taxed at 37%, including benchmarks
+holding for years. That understated buy-and-hold by 52 points and trim by 24, and it ran
+**in the signal arm's favor**. ADR 032 named no long-term rate, so the fix was an
+amendment to the ADR rather than a code change alone.
+
+Both rounds carry their own tests. The pattern is worth naming: a tax number is plausible
+across a wide range, so neither round announced itself, and both survived a passing test
+suite until the arms were run against twelve years of real trades.
 
 ### The high-breadth subset (ADR 099) — the market-timing test
 

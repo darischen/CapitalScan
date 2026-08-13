@@ -2080,7 +2080,9 @@ Per ADR 032, backtest output reports pre-tax and after-tax results separately. S
 
 This is a modeling assumption for evaluation, not tax advice. Rates and rules vary by situation.
 
-**Implemented 2026-08-13 (Session 13).** `core.arms.tax_summary`. Two rules decide the number, and the naive reading of the paragraph above is badly wrong on a multi-year window:
+**Implemented 2026-08-13 (Session 13).** `core.arms.tax_summary`. Three rules decide the number, and the naive reading of the paragraph above is badly wrong on a multi-year window:
+
+0. **Holding period decides the rate** (ADR 032 amendment, same date). A position held **more than** `long_term_holding_days` (365, strictly greater, since the statutory rule is "more than one year") is taxed at `long_term_tax_rate` (20%), everything else at `short_term_tax_rate` (37%). The two buckets net within themselves first and against each other only when one is negative; two positive buckets each pay their own rate. Taxing the benchmark arms at 37% overstated buy-and-hold's tax by roughly 66 points of return on the train split, because its stints average about four and a half years — and it flattered every high-turnover arm measured against it. The signal and random arms hold five days or fewer, so their rate is unchanged.
 
 1. **Taxed per calendar year.** Pooling the whole window into one net figure would let a 2021 loss offset a 2011 gain, which no tax year permits. Each year nets its own gains against its own allowed losses and pays on the excess; a net-loss year owes nothing and is not refunded, since no loss carry-forward is modeled.
 
@@ -2088,7 +2090,7 @@ This is a modeling assumption for evaluation, not tax advice. Rates and rules va
 
 The purchase set is the core position **plus the arm's own other entries**. ADR 032 says "including the core position," not "only" — the sleeve buying back a name it just took a loss in is the textbook wash sale. Each trade's own entry is excluded, or a five-day hold would flag every losing trade in the system, which would be a statement about the holding period.
 
-**Stated gaps, all one-directional.** Deferred losses still outstanding in the final year are lost rather than carried past the window. `post_tax_ret` subtracts nominal cumulative tax over `initial_capital`, so it ignores the compounding cost of paying tax early and understates the drag. Rebalance-driven partial disposals of a retained name are not taxable events here. Federal short-term rates only: no state tax, no NIIT, no bracket progression. Dividend reinvestment is not a separate purchase, because the total-return series compounds distributions into the price rather than buying shares on the ex-date, so there is no reinvestment date to place — which understates flagging.
+**Stated gaps, all one-directional.** Deferred losses still outstanding in the final year are lost rather than carried past the window. `post_tax_ret` subtracts nominal cumulative tax over `initial_capital`, so it ignores the compounding cost of paying tax early and understates the drag. Rebalance-driven partial disposals of a retained name are not taxable events here. Federal rates only: no state tax, no NIIT (`long_term_tax_rate = 0.238` adds it), no bracket progression. A deferred wash-sale loss keeps its short-term or long-term character into the next year rather than inheriting the replacement lot's, which is a simplification of the basis rule. Dividend reinvestment is not a separate purchase, because the total-return series compounds distributions into the price rather than buying shares on the ex-date, so there is no reinvestment date to place — which understates flagging.
 
 ADR 032 is Provisional and stays Provisional.
 

@@ -8,7 +8,7 @@ plausible number rather than an exception.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -713,6 +713,113 @@ def test_deferral_still_costs_when_it_lands_in_a_lossmaking_year():
     assert washed[2] is True
     # 400 taxable becomes 1,000 taxable: 180 more tax on 10,000 of capital.
     assert clean[1] - washed[1] == pytest.approx(0.018)
+
+
+def test_a_gain_held_past_the_holding_period_is_taxed_at_the_long_term_rate():
+    """ADR 032 amendment, 2026-08-13. A benchmark arm holding a name for
+    years pays long-term rates, and taxing it at the short-term rate
+    overstates its tax and flatters every high-turnover arm compared to it."""
+    trades = [_trade("AAA", date(2020, 1, 1), date(2022, 1, 1), 1000.0)]
+    bm = BenchmarkParams(
+        initial_capital=10_000.0, short_term_tax_rate=0.37, long_term_tax_rate=0.20
+    )
+    _, post, _ = arms.tax_summary(trades, [], 0.10, bm)
+    assert post == pytest.approx(0.10 - 0.02)
+
+
+def test_the_same_gain_held_briefly_is_taxed_at_the_short_term_rate():
+    """The control for the test above. Same P&L, same capital, different
+    holding period, different bill."""
+    trades = [_trade("AAA", date(2020, 1, 1), date(2020, 3, 1), 1000.0)]
+    bm = BenchmarkParams(
+        initial_capital=10_000.0, short_term_tax_rate=0.37, long_term_tax_rate=0.20
+    )
+    _, post, _ = arms.tax_summary(trades, [], 0.10, bm)
+    assert post == pytest.approx(0.10 - 0.037)
+
+
+def test_the_holding_period_boundary_is_more_than_one_year():
+    """The US rule is "more than one year", so 365 days is short-term and
+    366 is long. An off-by-one here silently reclassifies every position
+    held for exactly a year."""
+    bm = BenchmarkParams(
+        initial_capital=10_000.0, short_term_tax_rate=0.37, long_term_tax_rate=0.20
+    )
+    entry = date(2021, 1, 1)
+    at_365 = _trade("AAA", entry, entry + timedelta(days=365), 1000.0)
+    at_366 = _trade("AAA", entry, entry + timedelta(days=366), 1000.0)
+    assert arms.tax_summary([at_365], [], 0.10, bm)[1] == pytest.approx(0.10 - 0.037)
+    assert arms.tax_summary([at_366], [], 0.10, bm)[1] == pytest.approx(0.10 - 0.02)
+
+
+def test_short_and_long_gains_are_each_taxed_at_their_own_rate():
+    """Both buckets positive: no netting between them, each pays its own
+    rate. Pooling them into one number would tax the whole thing at
+    whichever rate happened to be applied."""
+    trades = [
+        _trade("AAA", date(2020, 1, 1), date(2020, 3, 1), 1000.0),
+        _trade("BBB", date(2018, 1, 1), date(2020, 3, 1), 1000.0),
+    ]
+    bm = BenchmarkParams(
+        initial_capital=10_000.0, short_term_tax_rate=0.37, long_term_tax_rate=0.20
+    )
+    _, post, _ = arms.tax_summary(trades, [], 0.20, bm)
+    assert post == pytest.approx(0.20 - 0.037 - 0.02)
+
+
+def test_a_long_term_loss_offsets_a_short_term_gain():
+    """One bucket negative: the two net against each other before any rate
+    applies, which is the actual netting rule."""
+    trades = [
+        _trade("AAA", date(2020, 1, 1), date(2020, 3, 1), 1000.0),
+        _trade("BBB", date(2018, 1, 1), date(2020, 3, 1), -400.0),
+    ]
+    bm = BenchmarkParams(
+        initial_capital=10_000.0, short_term_tax_rate=0.37, long_term_tax_rate=0.20
+    )
+    _, post, _ = arms.tax_summary(trades, [], 0.06, bm)
+    # 600 of net short-term gain at 37%.
+    assert post == pytest.approx(0.06 - 0.0222)
+
+
+def test_a_short_term_loss_larger_than_the_long_term_gain_owes_nothing():
+    trades = [
+        _trade("AAA", date(2020, 1, 1), date(2020, 3, 1), -1500.0),
+        _trade("BBB", date(2018, 1, 1), date(2020, 3, 1), 1000.0),
+    ]
+    bm = BenchmarkParams(
+        initial_capital=10_000.0, short_term_tax_rate=0.37, long_term_tax_rate=0.20
+    )
+    pre, post, _ = arms.tax_summary(trades, [], -0.05, bm)
+    assert post == pytest.approx(pre)
+
+
+def test_a_long_hold_book_pays_less_than_the_identical_book_traded_short():
+    """The measurement this amendment exists to correct. Same dollars of
+    gain, same capital, same year — a buy-and-hold-shaped book pays
+    materially less than a sleeve-shaped one."""
+    bm = BenchmarkParams(
+        initial_capital=10_000.0, short_term_tax_rate=0.37, long_term_tax_rate=0.20
+    )
+    held = [_trade(f"T{i}", date(2016, 1, 1), date(2020, 6, 1), 500.0) for i in range(4)]
+    churned = [_trade(f"T{i}", date(2020, 1, 1), date(2020, 1, 6), 500.0) for i in range(4)]
+    assert arms.tax_summary(held, [], 0.20, bm)[1] > arms.tax_summary(churned, [], 0.20, bm)[1]
+
+
+def test_a_deferred_wash_sale_loss_keeps_its_character_into_the_next_year():
+    """A disallowed short-term loss returns as a short-term loss, so it
+    offsets short-term gains first. Letting it change character would move
+    the rate it shelters."""
+    trades = [
+        _trade("AAA", date(2020, 1, 1), date(2020, 6, 1), -1000.0),
+        _trade("AAA", date(2021, 3, 1), date(2021, 6, 1), 1000.0),
+    ]
+    bm = BenchmarkParams(
+        initial_capital=10_000.0, short_term_tax_rate=0.37, long_term_tax_rate=0.20
+    )
+    washed = arms.tax_summary(trades, [("AAA", date(2020, 6, 11))], 0.0, bm)
+    assert washed[2] is True
+    assert washed[1] == pytest.approx(0.0)
 
 
 def test_a_net_loss_arm_owes_no_tax_and_reports_equal_returns():

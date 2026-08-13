@@ -1059,35 +1059,75 @@ def tax_summary(
     lost rather than carried past the window. `post_tax_ret` subtracts
     nominal cumulative tax over `initial_capital`, so it ignores the
     compounding cost of paying tax early — an understatement of the drag, in
-    a stated direction. Federal short-term rates only: no state tax, no
-    NIIT, no bracket progression.
+    a stated direction. Federal rates only: no state tax, no NIIT (set
+    `long_term_tax_rate = 0.238` for it), no bracket progression.
+
+    **Short-term and long-term are separated** (ADR 032 amendment,
+    2026-08-13). A position held more than `long_term_holding_days` is
+    long-term. The two buckets net within themselves first and against each
+    other only when one is negative, which is the actual rule. Taxing
+    everything at the short-term rate overstated buy-and-hold's tax by
+    roughly 66 points of return on the train split, because its holding
+    stints average about four and a half years — and it flattered every
+    high-turnover arm measured against it. A deferred wash-sale loss keeps
+    its character into the next year, so a short-term loss returns to
+    shelter short-term gains.
 
     **This is a modeling assumption for evaluation, not tax advice.** ADR 032
     is Provisional and stays Provisional.
     """
     flags, any_flag = wash_sale_flags(trades, purchases, bm)
 
-    gains: dict[int, float] = {}
-    allowed: dict[int, float] = {}
-    deferred: dict[int, float] = {}
+    # `[short, long]` per year, so one loop fills both buckets.
+    gains: dict[int, list[float]] = {}
+    allowed: dict[int, list[float]] = {}
+    deferred: dict[int, list[float]] = {}
+
+    def _slot(book: dict[int, list[float]], year: int) -> list[float]:
+        return book.setdefault(year, [0.0, 0.0])
+
     for trade, flagged in zip(trades, flags):
-        if trade.exit_date is None or np.isnan(trade.pnl):
+        if trade.exit_date is None or trade.entry_date is None or np.isnan(trade.pnl):
             continue
         year = trade.exit_date.year
+        # "More than one year," so exactly 365 days is still short-term.
+        long_term = (trade.exit_date - trade.entry_date).days > bm.long_term_holding_days
+        k = 1 if long_term else 0
         if trade.pnl > 0:
-            gains[year] = gains.get(year, 0.0) + trade.pnl
+            _slot(gains, year)[k] += trade.pnl
         elif trade.pnl < 0:
-            bucket = deferred if flagged else allowed
-            bucket[year] = bucket.get(year, 0.0) + (-trade.pnl)
+            _slot(deferred if flagged else allowed, year)[k] += -trade.pnl
 
     tax = 0.0
-    carried = 0.0
+    carried = [0.0, 0.0]
     for year in sorted(set(gains) | set(allowed) | set(deferred)):
-        offset = allowed.get(year, 0.0) + carried
-        tax += max(0.0, gains.get(year, 0.0) - offset) * bm.short_term_tax_rate
-        carried = deferred.get(year, 0.0)
+        year_gains = gains.get(year, [0.0, 0.0])
+        year_allowed = allowed.get(year, [0.0, 0.0])
+        short_net = year_gains[0] - year_allowed[0] - carried[0]
+        long_net = year_gains[1] - year_allowed[1] - carried[1]
+        tax += _net_tax(short_net, long_net, bm)
+        carried = deferred.get(year, [0.0, 0.0])
 
     return float(pre_tax_ret), float(pre_tax_ret - tax / bm.initial_capital), bool(any_flag)
+
+
+def _net_tax(short_net: float, long_net: float, bm: BenchmarkParams) -> float:
+    """Tax on one year's netted short-term and long-term positions.
+
+    The netting rule, in order: each bucket nets within itself, and the two
+    net against each other **only** when one of them is negative. Two
+    positive buckets each pay their own rate; a loss in one reduces the
+    other and the survivor's rate applies to what is left. An overall net
+    loss owes nothing and is not refunded, since no carry-forward is
+    modeled.
+    """
+    if short_net > 0 and long_net > 0:
+        return short_net * bm.short_term_tax_rate + long_net * bm.long_term_tax_rate
+    combined = short_net + long_net
+    if combined <= 0:
+        return 0.0
+    rate = bm.short_term_tax_rate if short_net > 0 else bm.long_term_tax_rate
+    return combined * rate
 
 
 # --------------------------------------------------------------------------

@@ -614,13 +614,30 @@ Rationale. Free, one series, and it separates single-name dips from market-wide 
 
 ## 032. Tax reported pre and post
 
-Status: Provisional
+Status: Provisional. Amended 2026-08-13 to add a long-term rate — see the dated note below. Still Provisional.
 
 Decision. Backtest reports pre-tax and after-tax results separately. Sleeve gains taxed at short-term ordinary rates. Wash-sale interaction flagged.
 
 Rationale. The core-plus-sleeve structure trades the same tickers held long term. Selling a sleeve position at a loss triggers wash-sale disallowance if the ticker was bought within 30 days either side, including the core position and dividend reinvestment. This is a real accounting cost of the strategy, not a footnote.
 
 Note. This is a modeling assumption for evaluation, not tax advice. Rates and rules vary by situation.
+
+**Amended 2026-08-13 (Session 13): a long-term rate is added, and holding period decides which applies.**
+
+The decision text above names only a short-term rate, correctly, because it describes the **sleeve**. Session 13 taxes something the ADR never contemplated: the benchmark arms. Buy-and-hold and trim-and-redeploy hold their positions for years, and taxing them at 37% was measurably wrong.
+
+Measured on the train split before the amendment, buy-and-hold reported `post_tax_ret = +239.22%` against `pre_tax_ret = +383.66%`. Its 784 holding stints average roughly four and a half years and would be taxed near 20%, not 37%. The error ran in one direction: it **overstated the benchmark's tax and flattered every high-turnover arm measured against it**, including the signal arm the comparison exists to judge.
+
+The amendment:
+
+- `BenchmarkParams.long_term_tax_rate` defaults to 20%, the top US federal long-term bracket, pairing with the existing 37% top ordinary bracket. Neither carries state tax, NIIT, or bracket progression. `0.238` adds NIIT and is a one-field change.
+- `BenchmarkParams.long_term_holding_days` is 365, and the comparison is **strictly greater than**. The statutory rule is "more than one year," so a position held exactly a year stays short-term.
+- The two buckets net within themselves first and against each other only when one is negative, which is the actual netting rule. Two positive buckets each pay their own rate.
+- A deferred wash-sale loss keeps its character into the following year, so a short-term loss returns to shelter short-term gains.
+
+**Nothing about the sleeve changes.** The signal and random arms hold positions for five days or fewer, so 37% was and remains correct for them. This amendment moves the benchmarks only, and it moves them **against** the signal arm's relative standing.
+
+The status stays Provisional. The gaps listed in DESIGN §8.8 are unchanged: no carry-forward past the window, nominal tax rather than compounded, rebalance partial disposals untaxed, and dividend reinvestment not modeled as a purchase.
 
 ---
 

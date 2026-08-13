@@ -39,9 +39,10 @@ Sessions 0-2 can run back to back in one sitting. Session 7 is mostly waiting.
 migration: `benchmarks` was already in `db/schema.sql` and had never been written to.
 Rollback is `DELETE FROM benchmarks WHERE run_id = '...'`.
 
-Runs of record: `benchmarks_20260813T161520_e1266a36` (train) and
-`benchmarks_20260813T162457_de8433d7` (validate), both `config_hash = 1835688bf7d760ba`,
-409 rows each, 6m14s per split.
+Runs of record: `benchmarks_20260813T172347_f421521b` (train) and
+`benchmarks_20260813T173059_efceeadc` (validate), both `config_hash = 1835688bf7d760ba`,
+409 rows each, ~6m15s per split. ADR 032 was amended mid-session to add a long-term rate,
+so these supersede the earlier pair; the pre-tax numbers are identical either way.
 
 Four findings carry into Session 14:
 
@@ -53,18 +54,20 @@ Four findings carry into Session 14:
    q-value of 0.769.
 2. **Short-term tax removes the entire pre-tax return.** The signal arm's +108.37% becomes
    −7.78% after 7,163 short-term round trips at 37%. The randomization null shows the same
-   pattern, so it is a property of the turnover, not of the signal. One stated bias runs
-   the other way and is recorded in `RESULTS.md`: buy-and-hold is taxed at short-term
-   rates too, which overstates its tax and flatters the signal arm.
+   pattern, so it is a property of the turnover, not of the signal. ADR 032 was amended
+   2026-08-13 to add a 20% long-term rate above a 365-day holding period, which moves the
+   benchmarks only: buy-and-hold's post-tax return rises from +239.22% to +291.40% and the
+   signal arm is unchanged, widening the post-tax gap to 299 points.
 3. **The edge concentrates at high breadth**, DESIGN §6.11's market-timing reading. The
    subset arm's capital efficiency is 3.762 against the pooled 1.166 on a third of the
    deployment — and it is still below its own subset null (+126.04% against +248.70%).
-4. **Two comparability defects were found and fixed by measurement, not by review.** The
+4. **Three comparability defects were found and fixed by measurement, not by review.** The
    trim arm initially held a different book than buy-and-hold (+725% against +413%,
-   entirely artifact), and the tax model treated wash-sale losses as permanently
-   disallowed (`post_tax_ret = −354%` against `pre_tax_ret = +109%`). Both passed their
-   original unit tests. `RESULTS.md` records both, and both now have regression tests that
-   would have caught them.
+   entirely artifact); the tax model treated wash-sale losses as permanently disallowed
+   (`post_tax_ret = −354%` against `pre_tax_ret = +109%`); and it then taxed multi-year
+   benchmark holds at the short-term rate, understating buy-and-hold by 52 points in the
+   signal arm's favor. All three passed their original unit tests. `RESULTS.md` records
+   each, and each now has a regression test that would have caught it.
 
 **Session 12 is complete.** Tasks 12.1-12.6 all closed, all ten gate items pass.
 Migrations `e3c7f5a91d24` (`cell_stats.arm`, `v_screen` config/arm predicates) and

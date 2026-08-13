@@ -642,11 +642,28 @@ class BenchmarkParams:
     than `dca_tranches` months, `dca_fixed` exhausts C early and converges
     toward `dca_lump`.
 
-    **`short_term_tax_rate` and `wash_sale_window_days`.** ADR 032, which is
-    Provisional and stays Provisional. 37% is the top US federal ordinary
-    bracket; no state tax, no NIIT, no bracket progression, and no
-    loss carry-forward is modeled. 30 days is the statutory wash-sale
-    window, and it is **calendar** days on both sides of the disposal.
+    **The tax fields.** ADR 032, which is Provisional and stays Provisional.
+    37% is the top US federal ordinary bracket and 20% the top long-term
+    capital gains bracket; no state tax, no NIIT, and no bracket
+    progression. Setting `long_term_tax_rate = 0.238` adds the 3.8% net
+    investment income tax, which is the one-field change if you want it.
+
+    `long_term_holding_days` is 365 and the comparison is **strictly
+    greater than**, because the US rule is "more than one year." A position
+    held for exactly a year is short-term, and an off-by-one here silently
+    reclassifies every one-year hold.
+
+    **Why a long-term rate exists at all** (added 2026-08-13, amending
+    ADR 032): the ADR named only a short-term rate, because it describes
+    the *sleeve*. Session 13 also taxes the benchmark arms, whose holding
+    stints average roughly four and a half years. Taxing those at 37%
+    overstated buy-and-hold's tax by about 66 points of return on the train
+    split and flattered every high-turnover arm measured against it. The
+    signal arm's own rate is unaffected: its positions are held five days
+    or fewer and are genuinely short-term.
+
+    30 days is the statutory wash-sale window, and it is **calendar** days
+    on both sides of the disposal.
 
     **`irr_*`.** The bisection bracket and tolerance for the DCA arms' XIRR.
     `irr_days_per_year` is 365, not 252: IRR discounts calendar time, so a
@@ -663,6 +680,8 @@ class BenchmarkParams:
     dca_tranches: int = 12
 
     short_term_tax_rate: float = 0.37
+    long_term_tax_rate: float = 0.20
+    long_term_holding_days: int = 365
     wash_sale_window_days: int = 30
 
     irr_days_per_year: float = 365.0

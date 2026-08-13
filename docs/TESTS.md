@@ -707,6 +707,11 @@ Pure `core/arms.py`, no database, no fixtures on disk. 58 tests.
 - **The disallowance moves the number, not only the flag.** A flag with no numeric consequence would pass a careless test
 - **A loss cannot offset a gain from a different tax year.** Pooling the window into one net figure would let a 2021 loss cancel a 2011 gain, which no tax year permits
 - **A wash-sale loss is deferred into the next year, not destroyed.** The rule adds it to the replacement lot's basis. Treating it as permanent produced `post_tax_ret = −354%` against `pre_tax_ret = +109%` on the train split — a tax bill several times the account, from twelve years of losses discarded one year at a time. The deferral still costs when it lands in a year with no gains to offset, which is what keeps the flag testable
+- **Holding period decides the rate** (ADR 032 amendment). The same 1,000 of gain costs 370 held two months and 200 held two years
+- **The boundary is "more than one year":** 365 days is short-term, 366 is long. An off-by-one silently reclassifies every one-year hold
+- **Two positive buckets each pay their own rate**, and a loss in one nets against the other before any rate applies. Pooling them would tax everything at whichever rate got applied
+- **A long-hold book pays less than the identical book traded short.** Same dollars, same capital, same year — the measurement the amendment exists to correct
+- A deferred wash-sale loss keeps its short-term or long-term character into the next year
 - A net-loss arm owes nothing and is not refunded — no carry-forward is modeled
 
 **The null percentile**
