@@ -1314,6 +1314,59 @@ def stats_rho_cmd(
         console.print(f"[yellow]eras written with no rho_empirical: {report.skipped_eras}[/yellow]")
 
 
+@stats_app.command("cells")
+def stats_cells_cmd(
+    config_hash: str = typer.Option(
+        ..., "--config-hash", help="events.config_hash to measure the headline grid against"
+    ),
+    split_key: str = typer.Option("train", help="train | validate | holdout"),
+    write: bool = typer.Option(True, help="Write to cell_stats. --no-write measures only"),
+) -> None:
+    """Session 12's headline grid (DESIGN §6.7-§6.11, ADR 102).
+
+    **Added 2026-08-13.** `research.cell_stats.run_cell_stats` shipped in
+    Session 12 with no entry point and no caller outside its tests, so the
+    published twelve-cell table was produced ad hoc and could not be
+    reproduced by anyone reading the CLI. Found while re-measuring under a
+    new `config_hash`.
+
+    Requires `cscan stats rho --config-hash <same>` first: `n_eff` is
+    computed from the stored `rho_empirical`, so this is a prerequisite
+    rather than a report. A missing `rho_era` row makes every cell
+    uninterpretable.
+
+    Additive and re-runnable. The write upserts on `(cell_id, config_hash)`
+    — ADR 096's composite key — so a second config adds rows rather than
+    replacing the first's, and a rerun refreshes its own rows and nothing
+    else.
+    """
+    from capitalscan.jobs import db_io, ingest
+    from capitalscan.jobs.provenance import git_sha
+    from capitalscan.research.cell_stats import run_cell_stats
+
+    config = _resolve_config_or_exit()
+    engine = db_io.get_engine()
+
+    with ingest.run_job(
+        engine, "cell_stats", {"config_hash": config_hash, "split_key": split_key}
+    ) as job:
+        rows, report = run_cell_stats(
+            engine,
+            config_hash,
+            split_key,
+            cfg=config,
+            run_id=job.run_id,
+            git_sha=git_sha(),
+            write=write,
+        )
+        job.rows_written = report.n_written
+
+    console.print(report.summary())
+    if rows.empty:
+        console.print("[red]no cells measured — check that events exist for this config[/red]")
+        raise typer.Exit(code=1)
+
+
 @stats_app.command("benchmarks")
 def stats_benchmarks_cmd(
     config_hash: str = typer.Option(
