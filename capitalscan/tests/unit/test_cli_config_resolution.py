@@ -77,8 +77,23 @@ def test_default_config_hash_is_pinned():
     2026-08-03), and the new `SignalParams.stoch_source` field (defaults
     to `"k_full"`, same detection behavior as before the field existed,
     but the field's presence still changes the hashed shape). Old value:
-    `3e598c59e7d71eae`. New value: `1835688bf7d760ba`."""
-    assert config_hash(Config()) == "1835688bf7d760ba"
+    `3e598c59e7d71eae`. New value: `1835688bf7d760ba`.
+
+    Updated 2026-08-13 for ADR 108's `SignalParams.enabled_signal_types`.
+    Same mechanism as `stoch_source` above — a new `Config` field changes
+    the hashed shape whatever its value — but here the move is the *point*
+    rather than a side effect. `signal_strength` counts concurrent types, so
+    enabling `BEAR_CLOSE_ABOVE_UPPER` shifts it on every day that fires; the
+    field exists so the new signal set gets its own identity instead of
+    overwriting the 626,977 events Sessions 12 and 13 published against.
+    Old value: `1835688bf7d760ba`. New value: `697f3ae71428d392`.
+
+    **The Postgres GUC must not move until a backtest has written events
+    under the new hash.** `v_screen` and `compute.scan` both read
+    `capitalscan.default_config_hash`, and pointing them at a config with no
+    rows yet returns an empty screener rather than an error (invariant 5b's
+    deliberate behaviour). Set it after the backtest, not before."""
+    assert config_hash(Config()) == "697f3ae71428d392"
 
 
 # ---------------------------------------------------------------------------

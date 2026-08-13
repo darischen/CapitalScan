@@ -140,6 +140,23 @@ def _get(row: pd.Series | Bands, field: str) -> float:
     return float(value) if value is not None else float("nan")
 
 
+def enabled_types(sp: SignalParams) -> frozenset[SignalType]:
+    """Resolve `sp.enabled_signal_types` to `SignalType` members.
+
+    Raises on an unknown name rather than ignoring it. A typo would
+    otherwise silently disable a real signal *and* mint a `config_hash` for
+    a config nobody intended — two failures that both look like a clean run.
+    """
+    known = {s.value: s for s in SignalType}
+    unknown = [name for name in sp.enabled_signal_types if name not in known]
+    if unknown:
+        raise ValueError(
+            f"unknown signal type(s) in enabled_signal_types: {sorted(unknown)}. "
+            f"Valid values: {sorted(known)}"
+        )
+    return frozenset(known[name] for name in sp.enabled_signal_types)
+
+
 def _types_fired(
     low: float,
     high: float,
@@ -173,6 +190,7 @@ def _types_fired(
     agrees = _fast_agrees(ind, sp)
 
     fired: dict[Side, list[SignalType]] = {Side.LONG: [], Side.SHORT: []}
+    allowed = enabled_types(sp)
     if lower_touch and oversold and agrees:
         fired[Side.LONG].append(SignalType.CONFLUENCE_LOW)
     if lower_touch:
@@ -187,7 +205,11 @@ def _types_fired(
         fired[Side.SHORT].append(SignalType.BB_UPPER_TOUCH)
     if overbought:
         fired[Side.SHORT].append(SignalType.STOCH_OVERBOUGHT)
-    return fired
+
+    # Applied here rather than in `detect`, so `breach_live` inherits it:
+    # the live and backtest paths must agree on which signals exist, or the
+    # poller fires on types the backtest never measured (ADR 006).
+    return {side: [t for t in types if t in allowed] for side, types in fired.items()}
 
 
 def _bar_ticker(bar: pd.Series) -> str:

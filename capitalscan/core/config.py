@@ -59,6 +59,40 @@ class SignalParams:
     # No `config.toml` needed/created — the env var is read directly and
     # leaves no repo state behind once the shell session ends.
     stoch_source: str = "k_full"  # "k_full" | "k_fast"
+    # Which `SignalType` values may fire (ADR 108, added 2026-08-13).
+    #
+    # **This field exists to make the signal set part of `config_hash`.**
+    # ADR 108 states that adding `BEAR_CLOSE_ABOVE_UPPER` forces a new hash,
+    # because `signal_strength` counts concurrent types and therefore shifts
+    # on every day it fires. That does not happen on its own:
+    # `jobs.config.config_hash` hashes `dataclasses.asdict(Config)`, and an
+    # enum member is not a `Config` field. Adding the type alone left the
+    # hash at `1835688bf7d760ba` — the identity Sessions 12 and 13 published
+    # against — so a backtest would have overwritten 626,977 event rows in
+    # place, silently, and those results would have stopped reproducing.
+    #
+    # Naming the set here fixes that at the root: the enabled signals are
+    # genuinely a config dimension, the same way ADR 060 treats a universe
+    # threshold as one. It also gives DESIGN §3.10 what it asks for — an
+    # ablated criterion becomes a config change rather than a code change —
+    # and makes the pre-ADR-108 hash *reconstructible* rather than merely
+    # abandoned, which is what keeps every published Session 12/13 number
+    # derivable from a config instead of only from a database snapshot.
+    #
+    # Strings rather than `SignalType` members because this dataclass is
+    # frozen and its sole import is `dataclasses` (invariant 10).
+    # `core.signals.enabled_types` resolves and validates them; an unknown
+    # name raises rather than silently disabling a real signal and minting a
+    # hash for a config nobody intended.
+    enabled_signal_types: tuple[str, ...] = (
+        "bb_lower_touch",
+        "bb_upper_touch",
+        "stoch_oversold",
+        "stoch_overbought",
+        "confluence_low",
+        "confluence_high",
+        "bear_close_above_upper",
+    )
 
 
 @dataclass(frozen=True)

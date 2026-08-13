@@ -242,10 +242,16 @@ class TestRunEventsBackwardCompatibility:
         pinned at `3e598c59e7d71eae`. Two Session 10 changes (2026-08-05),
         both genuine fields of `Config`, move it again (ADR 060):
         `UniverseParams.min_mcap_usd` 100e9 -> 30e9 (user's decision,
-        2026-08-03) and the new `SignalParams.stoch_source` field. New
-        value: `1835688bf7d760ba` — a Postgres GUC is set from this
-        literal value."""
-        assert jobs_config_hash(Config()) == "1835688bf7d760ba"
+        2026-08-03) and the new `SignalParams.stoch_source` field, giving
+        `1835688bf7d760ba`.
+
+        Moved again 2026-08-13 by ADR 108's
+        `SignalParams.enabled_signal_types`, which exists precisely to give
+        the new signal set its own identity rather than overwriting the
+        events Sessions 12 and 13 published against. New value:
+        `697f3ae71428d392` — a Postgres GUC is set from this literal, and
+        must not be moved until a backtest has written rows under it."""
+        assert jobs_config_hash(Config()) == "697f3ae71428d392"
 
     def test_sp_only_caller_still_works_and_matches_config_signals_default(
         self, stub_events_reads, captured_events_upsert
@@ -266,8 +272,8 @@ class TestRunEventsBackwardCompatibility:
         events_calls = [c for c in captured_events_upsert if c["table_name"] == "events"]
         row = events_calls[0]["data"][0]
         assert (
-            row["config_hash"] == "1835688bf7d760ba"
-        )  # Session 10: min_mcap_usd 100e9->30e9, new stoch_source field
+            row["config_hash"] == "697f3ae71428d392"
+        )  # ADR 108: enabled_signal_types field (was 1835688bf7d760ba)
         assert row["split_key"] == "holdout"  # 2026-07-30 is past the default validate_end
 
     def test_sp_and_config_disagreeing_raises_rather_than_silently_picking_one(
