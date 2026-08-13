@@ -765,7 +765,7 @@ Pure `core/arms.py`, no database, no fixtures on disk. 58 tests.
 - The null has a real distribution: over 100 distinct values and non-zero standard deviation
 - `load_null_distribution` returns exactly the stored values, so the percentile is provably computed from the table
 - The signal arm's position against the 97.5th percentile resolves to a real boolean. **The gate is that the number is computed and recorded, not that the signal wins**
-- The null's median lands near buy-and-hold scaled by `frac_deployed`. A construction check with a deliberately wide band, not a precision claim
+- **The null is on the same footing as the signal arm:** every replication opens exactly the same number of positions, with median deployment and win rate within 10 points. This *replaces* the brief's construction check, which asked that the null's median land near buy-and-hold scaled by `frac_deployed`. That heuristic predicts +371% against a measured +84% — and predicts +357% for the **signal arm**, which returned +108% on identical exit machinery. A 4% target with a 5-day hold truncates every winner, so the heuristic measures the exit rules and fails for both arms together. A companion test asserts it fails for the signal arm too, so if it ever starts predicting correctly the replacement gets revisited
 - Buy-and-hold's `frac_deployed` is 1.0; `capital_efficiency` is finite on every row and equals `total_ret / frac_deployed`
 - Every DCA variant reports `capital_undeployed` and an IRR; lump sum leaves nothing undeployed and carries zero cash drag
 - **Lump sum and buy-and-hold agree on terminal value** on the real multi-ticker basket

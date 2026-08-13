@@ -62,6 +62,33 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture(scope="module")
+def live_data() -> None:
+    """Skip unless this database holds bars and events for the live config.
+
+    **CI's slow tier runs this file against a freshly-migrated, empty
+    Postgres service container.** `_db_reachable` is true there, so every
+    test in this module is collected and run. The row-reading tests skip via
+    `gate_run`, but `run_benchmarks` reads `bars` directly and raises
+    `ValueError: no daily bars ...` on an empty database — a hard failure in
+    CI for a missing fixture rather than a defect.
+    """
+    engine = db_io.get_engine()
+    with engine.connect() as conn:
+        has_bars = conn.execute(
+            text("SELECT EXISTS (SELECT 1 FROM bars WHERE interval = '1d')")
+        ).scalar()
+        has_events = conn.execute(
+            text("SELECT EXISTS (SELECT 1 FROM events WHERE config_hash = :c)"),
+            {"c": LIVE_CONFIG_HASH},
+        ).scalar()
+    if not has_bars or not has_events:
+        pytest.skip(
+            f"this database holds no bars/events for config_hash={LIVE_CONFIG_HASH}. "
+            "Expected on a fresh CI container; the arms need an ingested universe."
+        )
+
+
+@pytest.fixture(scope="module")
 def gate_run() -> str:
     """The most recent `benchmarks` run for the live config's train split.
 
@@ -368,7 +395,7 @@ def test_the_subset_buy_and_hold_matches_the_pooled_one(rows):
     assert a == pytest.approx(b)
 
 
-def test_the_subset_event_count_matches_the_top_breadth_tercile(rows):
+def test_the_subset_event_count_matches_the_top_breadth_tercile(live_data, rows):
     """13.6 acceptance. Recomputed from `events` through the same
     `assign_breadth_tercile` Session 12 used, so a change to the tercile cut
     shows up here rather than silently changing which days the subset
@@ -394,7 +421,7 @@ def test_the_subset_event_count_matches_the_top_breadth_tercile(rows):
 # --------------------------------------------------------------------------
 
 
-def test_two_runs_produce_identical_output_ignoring_run_identifiers():
+def test_two_runs_produce_identical_output_ignoring_run_identifiers(live_data):
     """Gate item 9, on the smaller `validate` split with `write=False`.
 
     Determinism is a property of the seeding and the simulator, not of the
