@@ -61,6 +61,7 @@ def _one_ticker(
     bars: pd.DataFrame,
     targets: tuple[float, ...],
     bp: BaselineParams,
+    direction: int = 1,
 ) -> list[dict]:
     """Every (year, target) row for a single ticker's sorted daily panel."""
     frame = bars.sort_values("ts")
@@ -71,8 +72,13 @@ def _one_ticker(
     ts = pd.to_datetime(frame["ts"].to_numpy())
     ticker = str(frame["ticker"].iloc[0])
 
-    fwd = forward_returns(close, [bp.horizon_days])[f"fwd_ret_{bp.horizon_days}d"]
-    drift_vol = trailing_drift_vol(close.pct_change(), bp)
+    # A short position's return is the negation of the price return, exactly:
+    # `(entry - exit) / entry` is `-((exit - entry) / entry)`. Negating the
+    # series before the formulas run therefore needs no change in
+    # `core/baselines.py` — the drift flips sign, the dispersion does not,
+    # and `P(R_h >= target)` becomes `P(price falls target)`.
+    fwd = forward_returns(close, [bp.horizon_days])[f"fwd_ret_{bp.horizon_days}d"] * direction
+    drift_vol = trailing_drift_vol(close.pct_change() * direction, bp)
 
     years = pd.Series(ts.year, index=close.index)
     rows: list[dict] = []
@@ -119,6 +125,7 @@ def ticker_year_baselines(
     bars: pd.DataFrame,
     targets: tuple[float, ...],
     bp: BaselineParams,
+    direction: int = 1,
 ) -> pd.DataFrame:
     """Both baselines for every (ticker, year, target) in `bars`.
 
@@ -131,16 +138,26 @@ def ticker_year_baselines(
     diagnostic. Null propagates in both: a ticker-year without a full
     trailing window carries a null parametric baseline and a null
     disagreement flag, never a shortened window and never a False.
+
+    `direction` is `1` for a long baseline, `-1` for a short one (Session
+    12.3, ADR 106). Six of the twelve headline cells are short, and a short
+    event hits when the price *falls* — `path_labels` builds `touched_*`
+    from `reach["favorable"]`. Measuring those cells against
+    `P(R_h >= target)` would subtract the probability of a long winning
+    from the probability of a short winning and call the difference an
+    edge. `direction=1` reproduces Session 11's numbers unchanged.
     """
     missing = {"ticker", "ts", "adj_close"} - set(bars.columns)
     if missing:
         raise ValueError(f"bars is missing required columns: {sorted(missing)}")
     if not targets:
         raise ValueError("targets must not be empty")
+    if direction not in (1, -1):
+        raise ValueError(f"direction must be 1 (long) or -1 (short), got {direction}")
 
     rows: list[dict] = []
     for _, group in bars.groupby("ticker", sort=True):
-        rows.extend(_one_ticker(group, targets, bp))
+        rows.extend(_one_ticker(group, targets, bp, direction))
 
     if not rows:
         return pd.DataFrame(columns=TICKER_YEAR_COLUMNS)

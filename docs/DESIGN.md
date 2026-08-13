@@ -2,9 +2,9 @@
 
 System design for `CapitalScan`.
 
-This document describes **what the system is**. `DECISIONS.md` records **why each choice was made** and holds 87 numbered ADRs. Where this document states a rule, the ADR reference is given. If the two ever disagree, `DECISIONS.md` wins and this file is stale.
+This document describes **what the system is**. `DECISIONS.md` records **why each choice was made** and holds 106 numbered ADRs. Where this document states a rule, the ADR reference is given. If the two ever disagree, `DECISIONS.md` wins and this file is stale.
 
-Last updated: 2026-07-30
+Last updated: 2026-08-11
 
 ---
 
@@ -437,7 +437,7 @@ class ExitParams:
     exit_on_upper_band: bool = True
     exit_on_stoch_80: bool = True
     exit_stoch_threshold: float = 80.0  # long exit, exit policy
-    exit_stoch_threshold_short: float = 20.0  # short exit, independent (ADR 016)
+    exit_stoch_threshold_short: float = 20.0  # short exit, independent (ADR 016, 092)
     exit_on_mid_band: bool = False  # ADR 046
 
 
@@ -1058,7 +1058,7 @@ For each forward bar `i ∈ {t+1 … t+5}`, in this order:
 3. **`ambiguous` is set only when stop and target both breach on the same bar.** Stop wins by rule (ADR 010). The flag makes the frequency measurable; above 10% triggers hourly escalation.
 4. **The stochastic exit is close-based and evaluated last,** because a close-triggered exit cannot preempt an intraday fill that already happened.
 
-**Long and short thresholds are independent fields, never derived from each other.** The long exit reads `ep.exit_stoch_threshold`; the short exit reads `ep.exit_stoch_threshold_short`. A `100 - threshold` derivation reaches only the diagonal of the sweep space (4 of 16 combinations on a 4x4 grid) and assumes exactly the symmetry ADR 016 was written to reject.
+**Long and short thresholds are independent fields, never derived from each other.** The long exit reads `ep.exit_stoch_threshold`; the short exit reads `ep.exit_stoch_threshold_short`. A `100 - threshold` derivation reaches only the diagonal of the sweep space (4 of 16 combinations on a 4x4 grid) and assumes exactly the symmetry ADR 016 was written to reject. (ADR 016 is superseded by ADR 106 on the *entry* side — short entries use the same universe and criteria as long — but its rejection of long/short symmetry in the *exit* policy stands, and these two fields are why.)
 
 **No bare literals in the exit path.** The threshold comes from `ep.exit_stoch_threshold`, never from `80.0` inline. `SignalParams.stoch_overbought` is sweepable; a hardcoded exit threshold would let entry and exit disagree about what "overbought" means inside a single backtest, and every resulting number would look reasonable. The two parameters are independent by design — one is signal detection, the other exit policy — but they default to the same value.
 
@@ -1328,9 +1328,11 @@ ADR 017 makes trimming, not shorting, the primary use of the upper-band signal. 
 
 Reported: terminal value, Sharpe, max drawdown, number of round trips, average days in cash, and terminal value versus never trimming.
 
-Carries no borrow cost, no gap risk, no wash-sale interaction, and no undefined loss, which is why it is expected to beat the regime-filtered short on risk-adjusted terms (ADR 016, 017).
+Carries no borrow cost, no gap risk, no wash-sale interaction, and no undefined loss, which is why it is expected to beat the short on risk-adjusted terms (ADR 017).
 
-**Expected ranking:** trim-and-redeploy > regime-filtered short > naive always-short, with the last likely showing negative edge from band walking.
+**Expected ranking:** trim-and-redeploy > unfiltered short, with the short possibly showing negative edge from band walking.
+
+Amended 2026-08-11 by ADR 106. The original ranking read `trim-and-redeploy > regime-filtered short > naive always-short`. ADR 016's regime filter is superseded — short entries now use the same universe and criteria as long — so the middle term no longer names a distinct category and the comparison is two-way. ADR 016's band-walking prediction is retained and is measured directly in §6.11's short cells: if it holds, they show low `p_hit`, high `mean_mae`, and an `exit_mix` dominated by `timeout` and `stop`.
 
 ### 6.6 DCA comparison
 
@@ -1347,20 +1349,48 @@ Same total capital, same window, no exits, positions accumulate and hold. Report
 
 ### 6.7 Headline grid
 
-Twelve cells maximum (ADR 011). Fixed composition:
+Twelve cells (ADR 102, superseding ADR 011's composition). Fixed:
 
 | Dimension | Levels |
 |---|---|
-| Signal | `CONFLUENCE_LOW`, `BB_LOWER_TOUCH` |
-| Drawdown bucket | 0-10%, 10-20%, 20-35%, >35% |
+| Side | `long`, `short` |
+| Signal | band touch, stochastic extreme, confluence |
+| Drawdown bucket | 0-10%, 10-20% (ADR 101) |
 
-8 cells for the long side, plus 4 from a secondary cut on `signal_strength` (1 vs 2) within `CONFLUENCE_LOW`.
+`2 × 3 × 2 = 12`. Signal type pairs with side: a long cell reads `BB_LOWER_TOUCH` and its short counterpart reads `BB_UPPER_TOUCH`, so the grid is twelve cells rather than thirty-six. Both sides are `arm = 'signal'` (ADR 105, ADR 106); short entries use the same universe and criteria as long.
 
-Everything else stays continuous and feeds the model. Bandwidth regime, trend, VIX percentile, and days-to-earnings are features, not cells.
+Cells are computed **pooled across eras** on the train split (ADR 103).
 
-Why not the full grid: `3 × 3 × 2 × 4 × 2 = 144` cells against ~2,000 effective events gives an average of 14 per cell, and clustering means ~20 cells hold 90% of events while the rest hold 0-3. A hit rate on 3 events is noise wearing a percentage sign.
+Everything else stays continuous and feeds the model. Bandwidth regime, trend, VIX percentile, days-to-earnings, and breadth are features, not cells.
 
-**Suppression:** `n_eff < 30` returns `suppressed` with a reason. No number renders.
+**`signal_strength` is not a dimension.** `core/signals.py` sets it to `len(signal_types_all)`, so every confluence event is 3 and every single-type event is 1. There is no 1-vs-2 split to cut, and ADR 011's four strength cells described something the detector cannot produce.
+
+**Drawdown past 20% is measured and permanently suppressed** (ADR 101). Across 59 measured cells, `20-35` and `35+` cleared the floor zero times: deep-drawdown events are scarce *and* unusually clustered (`k̄` of 21-122 against 8-42 in the shallow buckets), so the correction bites hardest where the counts are thinnest. Those events are still detected, labelled, stored, and available to the model layer. They do not render as headline cells.
+
+Why not the full grid: `3 × 3 × 2 × 4 × 2 = 144` cells against a few thousand effective events gives an average of ~14 per cell, and clustering means ~20 cells hold 90% of events while the rest hold 0-3. A hit rate on 3 events is noise wearing a percentage sign.
+
+**Suppression:** `n_eff < StatsParams.min_n_eff` returns `suppressed` with a reason. No number renders.
+
+Measured `n_eff` under `config_hash = 1835688bf7d760ba`, train split, pooled across eras (2026-08-11). Ten of twelve render:
+
+| Side | Signal | Bucket | n | k̄ | ρ̄ | n_eff | |
+|---|---|---|---|---|---|---|---|
+| short | `bb_upper_touch` | 0-10 | 4,116 | 12.6 | 0.410 | 717 | renders |
+| long | `bb_lower_touch` | 0-10 | 3,593 | 22.4 | 0.408 | 369 | renders |
+| short | `stoch_overbought` | 0-10 | 5,266 | 38.4 | 0.411 | 322 | renders |
+| short | `confluence_high` | 0-10 | 2,986 | 32.1 | 0.414 | 215 | renders |
+| long | `stoch_oversold` | 0-10 | 1,444 | 22.7 | 0.408 | 147 | renders |
+| long | `bb_lower_touch` | 10-20 | 775 | 23.9 | 0.417 | 74 | renders |
+| long | `confluence_low` | 0-10 | 725 | 30.3 | 0.408 | 56 | renders |
+| long | `stoch_oversold` | 10-20 | 900 | 42.1 | 0.409 | 51 | renders |
+| short | `bb_upper_touch` | 10-20 | 432 | 20.0 | 0.423 | 48 | renders |
+| long | `confluence_low` | 10-20 | 620 | 36.6 | 0.406 | 40 | renders |
+| short | `stoch_overbought` | 10-20 | 371 | 60.5 | 0.418 | 14 | suppressed |
+| short | `confluence_high` | 10-20 | 139 | 64.6 | 0.421 | 5 | suppressed |
+
+`CONFLUENCE_LOW` is why pooling is not optional: split by era it suppresses in two of three, and it suppresses in every bucket on the validate split.
+
+Null `dd_bucket` events are excluded from the grid explicitly and the excluded count is reported. `cell_key()` coalesces null to `'all'`, so an unfiltered null would silently merge into an aggregate cell rather than dropping.
 
 ### 6.8 Multiple testing
 
@@ -1409,11 +1439,23 @@ The primary key is `(cell_id, config_hash)`, amended 2026-08-06 by ADR 096.
 It was `cell_id` alone, which held one statistics snapshot at a time and made
 each Phase 4 run overwrite the previous. Session 9's sweep wrote 18 distinct
 `config_hash` values into `events`, so the composite key is what lets those 18
-be compared without re-running Phase 4 once per config. `cell_key()` takes
-`config_hash` as an input; `cell_id` itself is unchanged and still derived from
-its component columns only.
+be compared without re-running Phase 4 once per config. `config_hash` is a
+**separate primary key column**, not an input to `cell_key()`: the function's
+nine parameters do not include it, and `cell_id` is unchanged and still derived
+from its component columns only. (Corrected 2026-08-11 by ADR 100. This
+paragraph previously said `cell_key()` took `config_hash` as an input, which
+contradicted both the function and migration `b2e5d81a4c76`.)
+
+`cell_stats` also carries `arm text NOT NULL DEFAULT 'signal'`, constrained to
+`signal`, `control`, or `benchmark` (ADR 105). Phase 4 measures populations it
+will never recommend — a random-entry null, DCA variants, ADR 017's naive-short
+control — and a row holding `p_hit = 0.61` looks identical whether it describes
+a signal or a control. `v_screen` selects `arm = 'signal'` only, so nothing
+labelled otherwise reaches a surface a person would read as advice.
 
 `exit_mix` (fraction by exit reason) is the diagnostic that separates "a few large winners carrying many small losses" from "consistently positive." A cell where 70% of exits are stops tells a different story from one where 70% are targets, even at identical mean return.
+
+`exit_mix` describes the signal **under a specific exit policy** (ADR 100). It reads `events.exit_reason`, which the backtest writes using `ExitParams`, so moving the stop from 3% to 5% changes `exit_mix` while the signal is unchanged. Comparing it across cells is only meaningful within one `config_hash`.
 
 ### 6.10 Benchmarks table
 
@@ -1449,13 +1491,31 @@ CREATE INDEX benchmarks_lookup ON benchmarks (run_id, arm, split_key);
 
 The `replication` column is what makes the 200-replication randomization null a queryable distribution rather than a summary statistic. The significance test in §6.4 reads it directly.
 
-### 6.11 Era and per-ticker reporting
+### 6.11 Era, breadth, and per-ticker reporting
 
-Every headline cell is also reported by era: 2010-14, 2015-19, 2020-23, 2024-26 (ADR 042).
+Every headline cell is additionally reported by era, by breadth tercile, and by per-ticker concentration. All three are **descriptive splits on cells already tested pooled**. None is a tested family, none carries a `q_value`, and none enters the Benjamini-Hochberg correction in §6.8.
 
-**Stability criterion:** an edge appearing in one era and absent in three is a regime artifact regardless of pooled significance. Report era-level edges side by side; no formal test, since four eras with modest n will not reach individual significance.
+**Era.** Reported for 2010-14, 2015-19, and 2020-23 (ADR 042, ADR 103). Era 2024+ is excluded: it is *exactly* the holdout split, both beginning 2024-01-01, so reporting a headline cell for it would report on holdout and contradict the firewall in §8.
 
-Per-ticker contribution is capped in pooled reporting: if one ticker supplies more than 15% of a cell's events, report the cell with and without it. NVDA over 2020-2024 is the obvious risk.
+Era is reporting only, never a tested dimension (ADR 103). Split by era, 10 of 45 measured cells cleared the floor; pooled, 10 of 12 did. 2010-2014 is the binding constraint at `k̄ = 63.95` and `k_max = 266` — real market behaviour, the risk-on/risk-off regime when cross-sectional correlation reached historic highs, not a data defect. Multiplying the test family by four while dividing the effective sample by more than four is a strictly losing trade.
+
+`rho_era`'s 2024+ row is retained and is **not** a firewall breach: `ρ̄` is a nuisance parameter measured from co-firing tickers' return correlations, never from event outcomes, and `n_eff` needs it before any outcome is read. Stated explicitly because it is the first thing in the system to touch holdout dates.
+
+**Stability criterion:** an edge appearing in one era and absent in the others is a regime artifact regardless of pooled significance. Report era-level edges side by side; no formal test, since three eras with modest n will not reach individual significance.
+
+**Breadth.** The fraction of the **train** universe firing the same signal type on the same day (ADR 099, denominator amended by ADR 104). The numerator is `events.cofire_count`, which `research/backtest.py` computes over the event population — the train universe of up to 750 names — so the denominator is the count of distinct tickers with any event in that quarter. ADR 099 originally specified the trade universe (~62 names/quarter); numerator and denominator came from different populations, the ratio could exceed 1, and events in quarters with too few `in_trade` names dropped out entirely.
+
+Terciles are cut on the empirical distribution per era, since firing rates differ across regimes. Three readings:
+
+| Pattern | Reading |
+|---|---|
+| Edge concentrates at **low** breadth | The signal finds stock-specific dislocation. The most useful result |
+| Edge flat across terciles | The signal works independently of market context |
+| Edge concentrates at **high** breadth | The apparent edge is substantially market timing |
+
+The third is why the split exists. A signal whose edge lives on broad-selloff days fires precisely when buy-and-hold is also buying cheaply, and §6.4's comparison would flatter it for the wrong reason. §6.4's three-arm comparison is additionally run on the high-breadth subset alone, which answers it directly rather than by inference.
+
+**Per-ticker.** Contribution is capped in pooled reporting: if one ticker supplies more than 15% of a cell's events, report the cell with and without it. NVDA over 2020-2024 is the obvious risk, and 2015-2019 holds 140,288 event rows across only 196 distinct tickers, so the cap is likely to bind.
 
 ### 6.12 Reachability targets
 

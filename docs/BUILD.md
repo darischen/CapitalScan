@@ -29,7 +29,36 @@ Sessions 0-7 deliver v1 (Phase 1). Sessions 8-9 deliver Phases 2-3. Session 10 i
 | 10 | Forward path store and derived label layer | Path table, reconciled label layer, new label families | Reconciliation against Session 9 labels passes with zero unexplained differences; tests and documentation complete |
 | 11 | Statistical primitives and self-validation | Wilson CI, standard error on n_eff, Benjamini-Hochberg, baselines, n_eff correction, `rho_era`, self-validation gate | **Session 11 gate — complete, passed.** Null test 2 of 480 cells at `q < 0.05` = 0.42%; recovery test 0.039 pp; broken variant caught at 11.67%. This is the session gate, **not** the Phase 4 gate — that one is in `TESTS.md` §10 and needs four more things Sessions 12 and 13 build. See `RESULTS.md` Phase 4 — Statistics layer |
 
+| 12 | Cell grid and `cell_stats` | Twelve-cell grid (ADR 102), `cell_key` parity, `cell_stats` writer, era/breadth/concentration reporting, `arm` migration, `v_screen` predicates | **Session 12 gate — complete, passed on all 10 items.** Twelve cells enumerated, ten rendered, two suppressed at `n_eff` 14.3 and 5.0 exactly as ADR 102 predicts; measured `n_eff` reproduces the ADR 102 table within ±2. **No cell survives FDR: minimum q-value 0.769 across the 48-test family.** See `RESULTS.md` Session 12 |
+
 Sessions 0-2 can run back to back in one sitting. Session 7 is mostly waiting.
+
+**Session 12 is complete.** Tasks 12.1-12.6 all closed, all ten gate items pass.
+Migrations `e3c7f5a91d24` (`cell_stats.arm`, `v_screen` config/arm predicates) and
+`f1a8d3b62c07` (ADR 107, strength pooling).
+
+One task-level item could not be delivered as specified: 12.4's breadth split is
+described as "three rows per cell", but `cell_stats` has no breadth column and
+`cell_key()` has no breadth parameter, so those rows have nowhere to go. The terciles
+are measured and recorded in `RESULTS.md` instead, which is what gate item 7 asks for.
+Storing them would need a schema change and a tenth `cell_key` parameter, and the tenth
+parameter would change every existing `cell_id`.
+
+Three findings carry into Session 13:
+
+1. **Nothing is significant after correction.** The minimum q-value over 12 cells x 4
+   targets is 0.769, and the single sub-0.05 raw p-value (short `bb_upper_touch` 0-10 at
+   the 2% target, edge +2.5 points, p = 0.039) is one test out of 48. Session 13's
+   benchmark arms are what turn this into a kill-criterion reading.
+2. **`v_screen`'s `signal_strength` join — found and fixed.** The view joined on a
+   dimension ADR 102 removed, so no Session 12 statistic could reach the screener.
+   Decided as ADR 107 and fixed by migration `f1a8d3b62c07`: the view now pins
+   `c.signal_strength IS NULL`, matching how it already pins `c.era IS NULL`. The
+   remaining zero is `c.split_key = 'validate'` against a train-split measurement,
+   which is invariant 5b working as designed.
+3. **Long `stoch_oversold` 10-20 nearly doubles its hit rate in the high-breadth
+   tercile** (0.2135 / 0.2085 / 0.4035), which is DESIGN §6.11's market-timing reading.
+   Session 13's three-arm comparison on the high-breadth subset answers it.
 
 **Session 9 is complete.** Phase 3 gate passed on all five criteria — see
 `docs/RESULTS.md` (Phase 3 — Engine validation) for the run of record

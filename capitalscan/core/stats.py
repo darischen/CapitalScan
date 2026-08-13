@@ -167,6 +167,45 @@ def rho_bar_for_correction(rho_measured: float) -> float:
     return float(max(rho_measured, 0.0))
 
 
+def one_sided_p_value(
+    p_hit: float | None,
+    baseline: float | None,
+    n_eff: float,
+) -> float | None:
+    """`P(hit rate >= observed | true rate == baseline)`, on `n_eff`.
+
+    The parametric p-value DESIGN §6.8 stores alongside each headline cell.
+    A normal approximation to the binomial, which is what "parametric"
+    names here — `p_value_randomization` is a separate column and comes
+    from Session 13's 200 replications, not from this function.
+
+    **One-sided, in the direction the system claims.** A cell whose hit
+    rate falls *below* its baseline is not evidence for the signal, and a
+    two-sided test would hand it a small p-value for failing.
+
+    **The denominator is `n_eff`.** A cell of 4,116 events with `n_eff` of
+    717 is judged on 717 (ADR 098). Passing the raw count is the failure
+    that makes every downstream q-value too small to believe, and nothing
+    about the output looks wrong when it happens.
+
+    Null in, null out (invariant 4). A baseline of exactly 0 or 1 also
+    yields null: the standard error is zero there, so the z-score is
+    undefined rather than infinite.
+    """
+    if n_eff <= 0:
+        raise ValueError(f"n_eff must be positive, got {n_eff}")
+    if p_hit is None or baseline is None:
+        return None
+    if np.isnan(p_hit) or np.isnan(baseline):
+        return None
+    if baseline <= 0.0 or baseline >= 1.0:
+        return None
+
+    se = standard_error_n_eff(baseline, n_eff)
+    z = (p_hit - baseline) / se
+    return float(stats.norm.sf(z))
+
+
 def benjamini_hochberg(
     p_values: np.ndarray,
     alpha: float = 0.05,

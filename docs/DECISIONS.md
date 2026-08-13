@@ -4,7 +4,7 @@ Architecture decision record for `CapitalScan`.
 
 Format: each entry states the decision, why, and what it costs. Status is one of Pinned, Provisional, or Superseded. Never delete an entry. Mark it Superseded and add the replacement below it.
 
-Last updated: 2026-08-10
+Last updated: 2026-08-11
 
 Recent structural changes: ADR 097 added 2026-08-08 and reverted 2026-08-09
 without ever taking effect (its window emptied the train and validate splits
@@ -15,7 +15,13 @@ Superseded; the "Phase gates" block rewritten to the seven-phase numbering
 and 093-094 had drifted outside the ordered run; ADRs 098-100 added 2026-08-10
 opening Phase 4 (098 defines rho-bar and therefore every confidence interval
 in the statistics layer, 100 records a `v_screen` defect ADR 096 created and
-left dormant until `cell_stats` holds two configs).
+left dormant until `cell_stats` holds two configs); ADRs 101-106 added
+2026-08-11 from the first real `n_eff` measurement, which redesigned the
+headline grid against measured clustering rather than an assumed sample size
+(101-103 shrink and repurpose the grid's dimensions, 104 amends ADR 099's
+breadth denominator, 105 adds `cell_stats.arm`, 106 supersedes ADR 016 and
+removes the short side's regime filter). ADR 011 is superseded in part by 102
+and ADR 016 by 106.
 
 ---
 
@@ -33,13 +39,13 @@ left dormant until `cell_stats` holds two configs).
 | 008 | Stop scaled to ATR, fixed 3% as control | Pinned |
 | 009 | Target swept over 3% to 5% | Pinned |
 | 010 | Intrabar ordering resolved conservatively | Pinned |
-| 011 | Continuous features, headline grid capped at 12 cells | Pinned |
+| 011 | Continuous features, headline grid capped at 12 cells | Superseded in part by 102 (the cap survives as a number; the reasoning does not) |
 | 012 | Benchmark is three arms plus DCA comparison | Pinned |
 | 013 | Baseline computed per ticker-year | Pinned |
 | 014 | Health filter is causal and re-evaluated quarterly | Pinned |
 | 015 | Drawdown from 52-week high is a first-class dimension | Pinned |
-| 016 | Short side restricted to failed-health regime | Pinned |
-| 017 | Upper-band signal drives trim, not naive short | Pinned |
+| 016 | Short side restricted to failed-health regime | Superseded by 106 |
+| 017 | Upper-band signal drives trim, not naive short | Pinned. Expected ranking amended by 106 |
 | 018 | Options deferred to Phase 7 | Pinned |
 | 019 | Train, validate, holdout splits by date | Pinned |
 | 020 | FDR correction on the cell grid | Pinned |
@@ -123,6 +129,13 @@ left dormant until `cell_stats` holds two configs).
 | 098 | Effective sample size: overlapping windows, co-fire weighting, stored per-era table, factor-implied diagnostic | Pinned |
 | 099 | Market breadth as a reporting split, not a grid dimension | Pinned |
 | 100 | Three Phase 4 contract corrections: v_screen config scope, cell_key wording, exit_mix semantics | Pinned |
+| 101 | Drawdown buckets reduced from four to two; 20%+ measured and permanently suppressed | Pinned |
+| 102 | Headline grid is 2 sides x 3 signals x 2 buckets, pooled across eras | Pinned. Supersedes ADR 011's grid composition |
+| 103 | Era is reporting only, never a tested family; era 2024+ is the holdout | Pinned |
+| 104 | Breadth denominator is the train universe, not the trade universe | Pinned. Amends ADR 099 |
+| 105 | `cell_stats.arm` separates measured populations from recommended ones | Pinned |
+| 106 | Short entries use the same universe and criteria as long | Pinned. Supersedes ADR 016 |
+| 107 | `v_screen` selects the cell pooled over `signal_strength` | Pinned |
 
 ---
 
@@ -291,7 +304,7 @@ Escalation. Log ambiguity frequency. Above 10% of events, pull hourly bars for t
 
 ## 011. Continuous features, headline grid capped at 12 cells
 
-Status: Pinned
+Status: Superseded in part by 102, 2026-08-11. The twelve-cell cap survives as a number by coincidence; the composition and the reasoning behind it do not. The `signal_strength` cut this entry assumed cannot exist (`signal_strength` is constant per signal type), a third signal type was omitted, and the "~2,000 effective events" figure was an assumption that the first `n_eff` measurement replaced. The principle that most conditioning stays continuous and feeds the model is unchanged and still governs.
 
 Decision. Store %B, %K, bandwidth percentile, drawdown, and SMA slope as continuous numbers. The empirical headline table holds at most 12 cells. Interactions get found by the model in Phase 3, not by pre-binning.
 
@@ -377,7 +390,7 @@ Hypothesis under test. Edge is positive and stable in the first two buckets and 
 
 ## 016. Short side restricted to failed-health regime
 
-Status: Pinned
+Status: Superseded by 106, 2026-08-11. Retained in full deliberately: this entry made a falsifiable prediction (band walking) before any measurement existed, and Session 12 measures exactly the quantities that settle it. A prediction on record from before the result is worth more than one reconstructed after. The regime filter it specifies was never implemented in code.
 
 Decision. Short entries require at least one of: close below the 200-day SMA, 200-day slope negative, or drawdown past 20%. Naive always-short on upper-band confluence is run only as a control.
 
@@ -395,7 +408,7 @@ Coherence. The long trades dips inside uptrends. The short trades rips inside do
 
 ## 017. Upper-band signal drives trim, not naive short
 
-Status: Pinned
+Status: Pinned. Expected ranking amended by 106, 2026-08-11: "regime-filtered short" no longer exists as a category, so the comparison is trim-and-redeploy against unfiltered short. Everything else in this entry stands, and trim-and-redeploy remains a Session 13 arm.
 
 Decision. Primary use of the upper-band and %K-above-80 signal is trimming a held core position, with redeployment on the next lower-band signal. Backtested directly against buy-and-hold on the same names.
 
@@ -2143,6 +2156,617 @@ Correction 1 requires a view migration in session 12 and a test asserting one ro
 Corrections 2 and 3 are documentation only. Neither changes behavior, and both prevent a wrong belief about behavior, which is the class of defect session 10's audit found most of.
 
 The shared cause is worth naming. ADR 096 was a correct decision whose downstream consumers were not enumerated. Any future change to a primary key or a shared identifier should list every view, join, and document referencing it before the migration is written, not after.
+
+---
+
+## 101. Drawdown buckets reduced from four to two
+
+**Status.** Pinned, 2026-08-11.
+
+**Context.**
+
+`StatsParams.dd_buckets` cuts drawdown at 10%, 20%, and 35%, giving four
+buckets. DESIGN §6.7 crosses those four against signal type to build the
+headline grid. Nothing had ever measured whether the resulting cells carry
+enough effective sample to render.
+
+The first measurement, against `config_hash = 1835688bf7d760ba` on the train
+split with `rho_era` supplying `rho_bar`, covered 59 cells across three eras,
+two splits, and both sides.
+
+**Decision.**
+
+The headline grid uses `0-10` and `10-20` only. Events in `20-35`, `35+`, and
+the null bucket are still detected, still labelled, still stored, and still
+available to the model layer. They do not appear as headline cells.
+
+The suppression is recorded as a measured fact with its numbers, not as an
+absence.
+
+**Rationale.**
+
+Across all 59 measured cells, `20-35` and `35+` cleared `min_n_eff = 30`
+exactly zero times.
+
+| Bucket | Best `n_eff` observed | Cells clearing 30 |
+|---|---|---|
+| 0-10 | 716.8 | most |
+| 10-20 | 73.5 | most |
+| 20-35 | 13.6 | 0 |
+| 35+ | 1.7 | 0 |
+| null | 7.8 | 0 |
+
+Two mechanisms compound, and they push the same way.
+
+Deep-drawdown events are scarce. A mega-cap down 35% from its 52-week high is
+uncommon by construction, and the trade universe's health criteria make it
+more so.
+
+Deep-drawdown events are unusually clustered. `k_bar` in those buckets runs 21
+to 122 against 8 to 42 in the shallow ones, because a 30% drawdown across many
+names at once is a market event by definition. The clustering correction
+therefore hits hardest exactly where the raw counts are already thinnest.
+
+Merging `20-35` and `35+` into a single `20+` bucket was tested arithmetically
+and does not rescue them. The best combined case, `stoch_oversold` in
+2015-2019, holds 71 events at `k_bar` near 11.9 and yields `n_eff` of 14.4.
+Pooling across eras does not rescue them either, since `k_bar` rises with the
+pool.
+
+**Consequences.**
+
+`StatsParams.dd_buckets` is unchanged. The boundaries still assign
+`events.dd_bucket` for every event, and the model layer still sees the full
+four-way split as a continuous conditioning variable. Only the headline grid
+narrows, which is a reporting decision rather than a detection one.
+
+Phase 4 reporting must state the exclusion with its measurement rather than
+silently omitting the rows. A reader seeing two buckets where DESIGN once
+described four should find the reason in `RESULTS.md`, not infer a bug.
+
+Should the trade universe widen or the drawdown boundaries move, this is
+re-measurable in one query. The decision is contingent on the numbers, and the
+numbers are recorded so a future session can check whether they still hold.
+
+**Alternatives rejected.**
+
+Merge `20-35` and `35+` into `20+`. Arithmetically insufficient, shown above.
+
+Lower `min_n_eff` for deep buckets. A floor that moves per cell is not a floor.
+The whole purpose of `min_n_eff` is that it is the same everywhere.
+
+Report deep buckets with a wide interval instead of suppressing. An interval on
+`n_eff` of 3 spans nearly the whole unit range and communicates nothing, while
+still presenting a number that invites reading.
+
+---
+
+## 102. Headline grid is two sides, three signals, two buckets
+
+**Status.** Pinned, 2026-08-11. Supersedes ADR 011's grid composition.
+
+**Context.**
+
+DESIGN §6.7 specifies twelve headline cells: two signal types crossed with four
+drawdown buckets on the long side, plus four more from a secondary cut on
+`signal_strength` (1 versus 2) within `CONFLUENCE_LOW`. ADR 011 caps the grid
+at twelve against an assumed population of roughly 2,000 effective events.
+
+Three of those specifications turned out not to describe the system as built.
+
+**The `signal_strength` cut cannot exist.** `core/signals.py:242` sets
+`signal_strength = len(types)` where `types` is `signal_types_all`, the list of
+concurrent signal types at that bar. A `confluence_low` hit carries
+`[confluence_low, bb_lower_touch, stoch_oversold]`, so its strength is always
+3. A `bb_lower_touch` or `stoch_oversold` hit carries one type, so its strength
+is always 1. There is no 1-versus-2 split available, and four of the twelve
+cells describe something the detector cannot produce.
+
+**A third signal type is present and was never in the grid.** §6.7 names
+`CONFLUENCE_LOW` and `BB_LOWER_TOUCH`. `stoch_oversold` fires 1,444 long
+train-split events in the `0-10` bucket alone and produces two of the strongest
+surviving cells. Its absence from §6.7 was an omission rather than an exclusion.
+
+**The population is larger than assumed, and `n_eff` smaller.** ADR 011's
+reasoning assumed roughly 2,000 effective events. The train split holds far
+more raw events than that, but `k_bar` between 8 and 122 against `rho_bar`
+between 0.36 and 0.47 divides `n_eff` by 5 to 50.
+
+**Decision.**
+
+The headline grid is `2 sides x 3 signal types x 2 drawdown buckets` = **12
+cells**.
+
+| Dimension | Levels |
+|---|---|
+| Side | `long`, `short` |
+| Signal type | `bb_lower_touch` / `bb_upper_touch`, `stoch_oversold` / `stoch_overbought`, `confluence_low` / `confluence_high` |
+| Drawdown bucket | `0-10`, `10-20` (ADR 101) |
+
+Signal type pairs with side: a long cell reads `bb_lower_touch` and its short
+counterpart reads `bb_upper_touch`. The grid is twelve cells, not thirty-six.
+
+`signal_strength` is removed as a grid dimension. It remains stored on every
+event and available to the model layer, where a constant-per-signal-type value
+is harmless.
+
+Cells are computed **pooled across eras** on the train split. See ADR 103.
+
+**Rationale.**
+
+Ten of the twelve render at `min_n_eff = 30`. Two suppress with a reason, which
+is what suppression is for.
+
+Long side, pooled across the three train eras:
+
+| Signal | Bucket | n | `k_bar` | `rho` | `n_eff` |
+|---|---|---|---|---|---|
+| `bb_lower_touch` | 0-10 | 3,593 | 22.4 | 0.408 | 369 |
+| `stoch_oversold` | 0-10 | 1,444 | 22.7 | 0.408 | 147 |
+| `bb_lower_touch` | 10-20 | 775 | 23.9 | 0.417 | 74 |
+| `confluence_low` | 0-10 | 725 | 30.3 | 0.408 | 56 |
+| `stoch_oversold` | 10-20 | 900 | 42.1 | 0.409 | 51 |
+| `confluence_low` | 10-20 | 620 | 36.6 | 0.406 | 40 |
+
+Short side, pooled:
+
+| Signal | Bucket | n | `k_bar` | `rho` | `n_eff` | |
+|---|---|---|---|---|---|---|
+| `bb_upper_touch` | 0-10 | 4,116 | 12.57 | 0.410 | 717 | renders |
+| `stoch_overbought` | 0-10 | 5,266 | 38.37 | 0.411 | 322 | renders |
+| `confluence_high` | 0-10 | 2,986 | 32.12 | 0.414 | 215 | renders |
+| `bb_upper_touch` | 10-20 | 432 | 20.02 | 0.423 | 48 | renders |
+| `stoch_overbought` | 10-20 | 371 | 60.53 | 0.418 | 14 | suppressed |
+| `confluence_high` | 10-20 | 139 | 64.61 | 0.421 | 5 | suppressed |
+
+`confluence_low` is the reason pooling matters. It suppresses in every bucket
+on the validate split and in two of three train eras measured separately. Only
+pooled does the signal this system was built around become measurable at all.
+
+**Consequences.**
+
+The Benjamini-Hochberg family is twelve cells across four ladder targets, 48
+tests, replacing the twelve-times-four the old grid implied. Per DESIGN §6.8
+the family is one config's headline cells across all targets, and that
+definition is unchanged.
+
+`cell_key()`'s nine-parameter signature is unchanged. `p_strength` is still an
+argument and is still coalesced to `'all'` when null. Session 12 passes null
+for it in every headline cell, which is the existing mechanism for a dimension
+not being cut. No migration.
+
+ADR 011's twelve-cell cap survives as a number by coincidence. Its reasoning
+does not, and the reasoning is what mattered. ADR 011 is marked superseded in
+part.
+
+Null `dd_bucket` events exist, three on the long side and roughly 90 on the
+short. `cell_key()` coalesces null to `'all'`, so they would silently merge
+into an aggregate cell. Session 12 excludes null `dd_bucket` from the headline
+grid explicitly and reports the excluded count.
+
+**Alternatives rejected.**
+
+Keep `signal_strength` as a dimension. It cannot be cut. Retaining it would
+produce four cells that are either empty or duplicates of their parents.
+
+Exclude `stoch_oversold` to preserve §6.7's two-signal shape. It contributes
+two of the six strongest long cells and 5,266 short events. Excluding a signal
+because a document predates it is the wrong direction of fit.
+
+Long-only grid, shorts deferred to Session 14. Loses the asymmetry measurement
+ADR 093 built short events to provide, and gains nothing: the short cells cost
+one `arm` column and no additional computation.
+
+---
+
+## 103. Era is reporting only, never a tested family
+
+**Status.** Pinned, 2026-08-11.
+
+**Context.**
+
+DESIGN §6.11 says every headline cell is additionally reported by era.
+`StatsParams.era_bounds` cuts at 2014-12-31, 2019-12-31, and 2023-12-31.
+`SplitParams` cuts train at 2021-12-31 and validate at 2023-12-31.
+
+Two problems surfaced on the first measurement, and the second is the serious
+one.
+
+**Splitting by era destroys the grid.** Measured per era on the train split,
+10 of 45 cells clear `min_n_eff`. Pooled, 10 of 12 clear. The 2010-2014 era is
+the binding constraint: `k_bar` of 63.95 with `k_max` of 266 means a cell
+holding 300 events carries roughly 13 effective. That is not a data defect. It
+is the risk-on/risk-off regime, when cross-sectional equity correlation reached
+historic highs and 266 names fired one signal on a single day.
+
+**Era 2024+ is exactly the holdout split.** Both begin 2024-01-01 and run to
+the present. Reporting a headline cell for era 2024+ is reporting on holdout.
+DESIGN §6.11 and `test_holdout_firewall.py` therefore contradict each other,
+and nobody noticed because no cell had ever been computed.
+
+**Decision.**
+
+Headline cells are computed pooled across eras. Era breakdowns are descriptive
+reporting on cells already tested pooled, never a tested family of their own.
+Era rows carry no `q_value` and enter no Benjamini-Hochberg family.
+
+Era 2024+ is excluded from all Phase 4 reporting on the same terms as the
+holdout split. Phase 4 reports eras 2010-2014, 2015-2019, and 2020-2023 only.
+
+`rho_era`'s 2024+ row stays and is not a firewall breach. `rho_bar` is a
+nuisance parameter measured from co-firing tickers' return correlations, never
+from event outcomes, and `n_eff` requires it before any outcome is read.
+Recording that explicitly because it is the first thing in the system to touch
+holdout dates, and an implicit exemption is the kind that gets widened later.
+
+**Rationale.**
+
+This is the treatment ADR 099 already gave breadth, for the same reason: a
+dimension worth seeing is not automatically a dimension worth testing.
+Multiplying the test family by four while dividing the effective sample by more
+than four is a strictly losing trade.
+
+Descriptive era rows keep everything the breakdown was for. If an effect lives
+only in 2010-2014, the era rows show it and a reader can judge. What they no
+longer do is claim significance on 13 effective events.
+
+**Consequences.**
+
+`cell_stats.era` stays nullable and keeps its existing meaning: null for the
+pooled row, populated for a descriptive row. `cell_key()`'s `p_era` parameter
+already coalesces null to `'pooled'`. No schema change.
+
+`v_screen`'s join already pins `c.era IS NULL`, so it selects the pooled row
+and needs no change on this account. It does need the `config_hash` fix from
+ADR 100.
+
+A future session widening the train split past 2023 inherits this decision and
+should re-measure rather than assume. If a later era's clustering falls enough,
+era-level testing becomes affordable and this ADR should be revisited with
+numbers.
+
+**Alternatives rejected.**
+
+Test eras and accept widespread suppression. Produces mostly empty cells and
+loses the pooled result that does work.
+
+Test eras with a lower floor. Same objection as ADR 101: a floor that varies is
+not a floor.
+
+Report era 2024+ as a headline cell. Breaks the holdout firewall, which exists
+so the final evaluation means something.
+
+---
+
+## 104. Breadth denominator is the train universe
+
+**Status.** Pinned, 2026-08-11. Amends ADR 099.
+
+**Context.**
+
+ADR 099 defines breadth as the fraction of the **trade** universe firing the
+same signal type on the same day, with `events.cofire_count` as the numerator.
+
+The two come from different populations. `research/backtest.py:741` computes
+`cofire_count` as
+`groupby(["signal_date", "signal_type"])["ticker"].transform("nunique")` over
+the event population, which is the **train** universe of up to 750 names. The
+trade universe holds roughly 62 names per quarter: 4,099 `in_trade` rows across
+66 quarters from 2010-03-31 to 2026-06-30.
+
+Two symptoms confirmed it. The ratio reached exactly 1.0000 in 2010-2014, the
+boundary a genuine fraction should not brush. And 1,531 train-split events in
+2010-2014 dropped out of the breadth query entirely because their quarter had
+too few `in_trade` names to form a denominator.
+
+**Decision.**
+
+Breadth is the fraction of the **train** universe firing the same signal type
+on the same day. The denominator is the count of distinct tickers with any
+event in that quarter, matching the numerator's existing scope.
+
+ADR 099's decision text is amended in place with a dated note. Everything else
+in it stands: terciles cut on the empirical distribution per era, breadth
+reported as a split rather than a grid dimension, and Session 13's three-arm
+comparison run additionally on the high-breadth subset.
+
+**Rationale.**
+
+Two ways to fix a mismatched numerator and denominator, and only one is cheap.
+
+Restricting the numerator to trade-universe names is correct by ADR 099's
+original wording, but `cofire_count` is written once at backtest time and
+invariant 5 forbids re-deriving it at query time. It would need a new column, a
+migration, and a full backtest rerun measured at 2h48m.
+
+Widening the denominator needs neither. It also measures the better thing. ADR
+099's stated intent is whether the signal went market-wide, and 750 observable
+names answer that more informatively than 62 tradeable ones. The trade universe
+is a liquidity and health filter, not a measure of market breadth.
+
+**Consequences.**
+
+Breadth is now defined for every event from the first event onward, with no
+dependence on `universe.as_of` coverage. The 1,531 events dropped by the old
+definition return.
+
+Breadth values shift downward across the board, since the denominator grew by
+roughly an order of magnitude. The tercile boundaries in `RESULTS.md` measured
+under the old definition are superseded and must be re-measured before Session
+12 uses them.
+
+ADR 099's reading table is unchanged in substance. Near-zero `rho_gap` still
+reads as a market effect and a clearly positive gap still reads as
+within-industry clustering. Those are statements about correlation, not about
+the breadth denominator.
+
+**Alternatives rejected.**
+
+New `cofire_count_trade` column. Correct but costs a migration plus a 2h48m
+rerun for a measure whose purpose the cheaper definition serves better.
+
+Clip breadth at 1.0. Hides the mismatch rather than fixing it, and a value
+pinned at exactly 1.0 would be indistinguishable from a genuine full-universe
+firing.
+
+`cofire_count` over a fixed constant. Removes the universe-size drift the
+fraction exists to normalize away.
+
+---
+
+## 105. `cell_stats.arm` separates measured from recommended
+
+**Status.** Pinned, 2026-08-11.
+
+**Context.**
+
+Phase 4 measures populations it will never recommend. Session 13's benchmark
+arms include a random-entry null across 200 replications, a naive always-short
+control, and DCA variants, none of which are signals. ADR 102 adds six short
+headline cells, and Session 13 adds trim-and-redeploy per ADR 017.
+
+`cell_stats` currently has no way to say which is which. A row holding
+`p_hit = 0.61` looks identical whether it describes a signal or a control.
+
+**Decision.**
+
+`cell_stats` gains `arm text NOT NULL DEFAULT 'signal'`, with permitted values
+`signal`, `control`, and `benchmark`. `benchmarks` gains nothing, since its
+`arm` column already exists.
+
+`v_screen` selects `arm = 'signal'` only. Nothing labelled `control` or
+`benchmark` reaches the screener, a notification, or any surface a person would
+read as advice.
+
+**Rationale.**
+
+The distinction is a property of the row and belongs on the row. Encoding it in
+`cell_id`'s string, or inferring it from `split_key`, or maintaining it in a
+consumer's WHERE clause are all ways of storing the same fact somewhere it can
+drift from the data it describes.
+
+`NOT NULL DEFAULT 'signal'` means an existing writer that never heard of this
+column produces correct rows. A nullable column would let an unlabelled row
+reach a consumer that filters on `arm = 'signal'` and silently vanish, or reach
+one that does not filter and silently appear.
+
+**Consequences.**
+
+Session 12 writes `arm = 'signal'` for all twelve headline cells, including the
+short ones. Per ADR 106 the short side is a signal population, not a control.
+
+Session 13's benchmark arms write `arm = 'benchmark'`. ADR 017's naive-short
+control, if computed, writes `arm = 'control'`.
+
+`v_screen` needs the `arm` predicate in the same migration as ADR 100's
+`config_hash` predicate. Both are one-line additions to one view, and doing
+them together avoids two view rebuilds.
+
+A test must assert `v_screen` returns nothing for a `control` or `benchmark`
+row. A test asserting only that `signal` rows appear would pass on a view with
+no predicate at all.
+
+---
+
+## 106. Short entries use the same universe and criteria as long
+
+**Status.** Pinned, 2026-08-11. Supersedes ADR 016.
+
+**Context.**
+
+ADR 016 required short entries to satisfy at least one of: close below the
+200-day SMA, negative 200-day slope, or drawdown past 20%. It called naive
+always-short a control.
+
+That filter was never implemented. Nothing in `core/signals.py` or the event
+pipeline applies it, and the only code referencing ADR 016 is `ExitParams`
+keeping long and short exit thresholds independent, which is unrelated. The
+database holds 4,116 unfiltered `bb_upper_touch` events in the `0-10` bucket
+on the train split alone.
+
+The first measurement showed the filter would have been self-defeating.
+
+| Cell | n | Passing ADR 016 | % |
+|---|---|---|---|
+| `bb_upper_touch` 0-10 | 4,116 | 43 | 1.0% |
+| `confluence_high` 0-10 | 2,986 | 19 | 0.6% |
+| `stoch_overbought` 0-10 | 5,266 | 104 | 2.0% |
+| `bb_upper_touch` 10-20 | 432 | 111 | 25.7% |
+| all `20-35` and `35+` | 3 to 69 | all | 100% |
+
+Overbought means near highs means healthy, and healthy fails the filter. Every
+short cell clearing `min_n_eff` is one ADR 016 forbade. Every short cell ADR
+016 permitted is suppressed. Filtering `bb_upper_touch` 0-10 to its 43
+permitted events drops `n_eff` to roughly 7.5.
+
+The user's intent from the outset was to run shorts and puts on the same names
+as longs and calls, driven by the same signals on the same universe. ADR 016
+recorded a more cautious position than the one actually held.
+
+**Decision.**
+
+Short entries use the same universe and the same selection criteria as long
+entries. No regime filter. The universe criteria in ADR 014 and
+`UniverseParams` are the entire entry gate for both sides.
+
+Both sides are measured as `arm = 'signal'` under ADR 105.
+
+ADR 016's original text stays in the file, marked superseded 2026-08-11, for
+the reason in the consequences below.
+
+**Rationale.**
+
+Three arguments were made in ADR 016 and they are not equally strong.
+
+*Drift against the position*, roughly a point of hit rate on a name compounding
+at 25%. Real, small, and directly measurable in Session 12's long-versus-short
+comparison. It is a magnitude to quantify, not a reason to exclude a
+population.
+
+*Loss geometry*, that a losing short grows as a share of capital while a losing
+long shrinks. Real, and a position sizing concern. CapitalScan has no execution
+path and sizes nothing. This argues for how a person sizes a short, not for
+whether the system may measure one.
+
+*Band walking* is the serious one, and it survives. During strong advances price
+rides the upper band for weeks while %K stays pinned above 80, printing touches
+nearly daily, so the upper signal fires most often when a short bleeds worst.
+Fear-driven selloffs resolve in days while greed-driven advances grind for
+months, and there is no lower-band equivalent.
+
+Band walking is a testable claim, not a policy. Session 12 measures exactly the
+quantities that settle it: `p_hit`, `mae`, and `exit_mix` on the six short
+cells. If it holds, those cells show low `p_hit`, high `mae`, and an `exit_mix`
+dominated by `timeout` and `stop`. Superseding ADR 016 does not dismiss the
+hypothesis. It replaces a filter derived from the hypothesis with a measurement
+of it.
+
+The signal counts already hint at the mechanism: `bb_upper_touch` fires 4,116
+times in `0-10` against `bb_lower_touch`'s 3,593. The upper band does fire more
+often, in healthier names, as ADR 016 predicted.
+
+**Consequences.**
+
+No code change and no backtest rerun. The filter was never built.
+
+ADR 016's text is retained deliberately. It made a falsifiable prediction
+before the measurement existed, and a prediction on record from before the
+result is worth more than one reconstructed after. If Session 12's short cells
+show the band-walking signature, ADR 016 was right on the mechanism and wrong
+only about what to do with it, and that distinction is only visible if the
+original text survives.
+
+ADR 017 stands unchanged. Trim-and-redeploy remains the primary use of the
+upper-band signal and remains a Session 13 arm. Its expected ranking placed
+trim-and-redeploy above regime-filtered short above naive short; the middle
+term no longer exists, and the comparison becomes trim-and-redeploy against
+unfiltered short. ADR 017 gains a one-line note to that effect.
+
+Session 12's long-versus-short asymmetry becomes a headline result rather than
+a Session 14 afterthought. ADR 016's own reasoning gives it three specific
+predictions to check against, which is a better test than an open-ended
+comparison.
+
+Nothing here recommends a short to anyone. Every decision remains with the
+people reading the output, and the measurement exists so those decisions rest
+on observed outcomes rather than on a filter nobody validated.
+
+**Alternatives rejected.**
+
+Keep ADR 016 and label short cells `control`. Preserves a filter that was never
+implemented, never validated, and that the measurement shows would suppress
+every cell it permits.
+
+Make the filter provisional pending Session 12. A provisional filter still has
+to be implemented to be provisional about, and implementing a filter in order
+to measure whether to remove it is work in the wrong direction.
+
+Drop ADR 016 from the file. Loses the band-walking prediction at exactly the
+moment it becomes checkable.
+
+---
+
+## 107. `v_screen` selects the cell pooled over `signal_strength`
+
+**Status.** Pinned, 2026-08-13. Migration `f1a8d3b62c07`.
+
+**Context.**
+
+`v_screen` was built by `6d86bf1f668e` under ADR 011's grid, where
+`signal_strength` was a real dimension — the 1-versus-2 cut inside
+`CONFLUENCE_LOW`. Its join therefore carried `c.signal_strength =
+e.signal_strength`.
+
+ADR 102 established that cut cannot exist. `core/signals.py:242` sets
+`signal_strength = len(signal_types_all)`, and `confluence_*` fires exactly
+when both primitives fire, so the value goes 1 to 3 with no 2 reachable.
+Session 12 accordingly writes `signal_strength = NULL` on every `cell_stats`
+row, meaning pooled over strength.
+
+`NULL = 1` is never true. **No Session 12 statistic could reach the
+screener.** Measured 2026-08-11: `v_screen` returned 683,653 rows with zero
+non-null `cell_id`. The view worked, returned rows, raised nothing, and
+showed no numbers.
+
+Confirmed against all 626,791 events under `1835688bf7d760ba`: strength is a
+pure function of `signal_type`, six combinations, no exceptions.
+
+| `signal_types_all` | `signal_strength` |
+|---|---|
+| `bb_lower_touch` / `bb_upper_touch` / `stoch_oversold` / `stoch_overbought` | 1 |
+| `confluence_low + bb_lower_touch + stoch_oversold` | 3 |
+| `confluence_high + bb_upper_touch + stoch_overbought` | 3 |
+
+**Decision.**
+
+`v_screen` pins `c.signal_strength IS NULL`, the exact parallel of the
+`c.era IS NULL` line two rows below it. Both say the same thing: select the
+pooled row, not a split one. `era` pins it for time, `signal_strength` for
+strength.
+
+ADR 102 is **not** amended. It removed strength as a *cut* — a dimension
+splitting one cell into several — and that claim holds. Reinstating strength
+as a dimension would not produce one additional cell, because every cell's
+events share a single strength value. This entry fixes the view that was
+never updated to match, which is a different thing.
+
+**Rationale.**
+
+*Why not drop the condition entirely.* `cell_id` embeds the strength slot,
+so a strength-split row and a pooled row are two distinct rows describing
+one cell. A view with no strength condition matches both and duplicates
+every screener row — the ADR 100 fan-out arriving through a different
+column. `IS NULL` keeps the guard.
+
+*Why not populate the column instead.* Writing `3 if confluence else 1`
+satisfies the old equality join with no migration, and the claim would be
+true today. It bakes today's arithmetic into the writer. More trigger
+families are planned beyond Bollinger and stochastic, and a fourth primitive
+outside the confluence definition makes strength 2 reachable: a
+`bb_lower_touch` event would carry 1 or 2 depending on whether the new
+trigger also fired. A cell then holds mixed strengths and the derived value
+stamps it with one of them, silently. `IS NULL` describes how the cell was
+constructed rather than what it happens to contain, so it stays true at any
+number of triggers.
+
+*What this does not fix.* Session 12's rows remain invisible to `v_screen`
+because the view pins `c.split_key = 'validate'` and Session 12 measured
+train. That is invariant 5b working as designed, not a defect. With the
+strength predicate corrected, the join matches 35,281 events under a train
+split, measured — so the remaining zero is the split filter alone.
+
+**Alternatives rejected.**
+
+Amend ADR 102 to reinstate `signal_strength` as a grid dimension. Records a
+1-versus-2 split the detector cannot produce, and yields the same twelve
+cells.
+
+Populate `cell_stats.signal_strength` with the derived value. Covered above:
+correct today, silently wrong at the first new trigger family.
+
+Write both a pooled and a strength-split row per cell. Stores one
+measurement under two identities, doubles the Benjamini-Hochberg family from
+48 tests to 96 for no gain, and leaves the fan-out hazard live.
 
 ---
 

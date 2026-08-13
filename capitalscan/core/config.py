@@ -274,6 +274,33 @@ class BaselineParams:
     disagreement_pct: float = 0.10
 
 
+@dataclass(frozen=True)
+class ReportingParams:
+    """DESIGN §6.11's descriptive splits (Session 12.4, ADR 099, ADR 103).
+
+    Standalone for the same reason as `BaselineParams` above, and the
+    reason matters more here than anywhere else: `StatsParams` *is* a
+    `Config` field, so adding `max_ticker_share` there would move
+    `config_hash` for every config already written to `events` — including
+    the live poller's — and the poller's same-day duplicate check keys on
+    that hash. A reporting threshold is not a backtest parameter and must
+    not behave like one.
+
+    `max_ticker_share` is the pooled-reporting cap: above it, the cell is
+    reported with and without its largest contributor. NVDA over 2020-2024
+    is the obvious risk, and 2015-2019 holds 140,288 event rows across only
+    196 distinct tickers, so the cap is expected to bind.
+
+    `breadth_quantiles` is the number of breadth buckets, cut on the
+    empirical distribution **per era** because firing rates differ across
+    regimes. Three is the tercile split DESIGN §6.11 describes; the field
+    exists so the split is named rather than written into a `qcut` call.
+    """
+
+    max_ticker_share: float = 0.15
+    breadth_quantiles: int = 3
+
+
 DEFAULT_BASELINE = BaselineParams()
 
 

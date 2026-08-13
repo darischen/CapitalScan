@@ -1463,6 +1463,186 @@ No real ticker-year baseline has been computed yet; Session 12 writes the first.
 
 ---
 
+## Session 12 — Cell grid and `cell_stats` (tasks 12.1-12.4)
+
+Run 2026-08-11. `config_hash = 1835688bf7d760ba`, train split, `entry_kind = next_open`,
+cluster heads only, forward window closed. 22,387 events in, 21,367 after exclusions:
+217 null `dd_bucket`, 802 deep `dd_bucket` (ADR 101), 1 open forward window.
+
+All six tasks complete. 12.5's migration is `e3c7f5a91d24`.
+
+### The population filter, recovered by measurement
+
+ADR 102 publishes `n`, `k_bar`, and `n_eff` but does not state the filter that produced
+them. It is `is_cluster_head AND entry_kind = 'next_open'` with `fwd_window_days >= 6`.
+Both filters are load-bearing and neither was written down: dropping the cluster-head
+filter multiplies every `n` by roughly four, and dropping the entry-kind filter
+multiplies it by four again. They are now named in `research/cell_stats.py` as
+`GRID_CLUSTER_HEADS_ONLY` and `GRID_ENTRY_KIND`, and pinned by
+`tests/integration/test_cell_grid_measured.py`.
+
+### The twelve cells, at target 3%
+
+`n`, `k_bar`, and `n_eff` reproduce ADR 102's table. `n` matches exactly on all twelve;
+`k_bar` to within 0.05; `n_eff` to within 1 unit on three cells (74→73, 51→50, 40→39),
+which is ADR 102 having reused its own rounded `k_bar` and `rho` rather than a
+disagreement. The test tolerance is ±2 and is deliberately too tight to absorb a wrong
+filter.
+
+| Side | Signal | Bucket | n | n_eff | `p_hit` | base_emp | edge | CI | p | q |
+|---|---|---|---|---|---|---|---|---|---|---|
+| short | `bb_upper_touch` | 0-10 | 4,116 | 717 | 0.1288 | 0.1141 | +0.0147 | 0.106-0.155 | 0.109 | 0.769 |
+| long | `bb_lower_touch` | 0-10 | 3,593 | 369 | 0.1887 | 0.1735 | +0.0152 | 0.152-0.232 | 0.220 | 0.769 |
+| short | `stoch_overbought` | 0-10 | 5,266 | 322 | 0.1217 | 0.1213 | +0.0004 | 0.090-0.162 | 0.490 | 0.769 |
+| short | `confluence_high` | 0-10 | 2,986 | 215 | 0.1045 | 0.1209 | −0.0164 | 0.070-0.153 | 0.770 | 0.805 |
+| long | `stoch_oversold` | 0-10 | 1,444 | 147 | 0.1517 | 0.1654 | −0.0138 | 0.103-0.219 | 0.673 | 0.769 |
+| long | `bb_lower_touch` | 10-20 | 775 | 73 | 0.2619 | 0.2167 | +0.0452 | 0.175-0.373 | 0.173 | 0.769 |
+| long | `confluence_low` | 0-10 | 725 | 56 | 0.1738 | 0.1598 | +0.0140 | 0.096-0.293 | 0.388 | 0.769 |
+| long | `stoch_oversold` | 10-20 | 900 | 50 | 0.2722 | 0.2169 | +0.0553 | 0.168-0.409 | 0.172 | 0.769 |
+| short | `bb_upper_touch` | 10-20 | 432 | 48 | 0.1667 | 0.1778 | −0.0111 | 0.087-0.296 | 0.579 | 0.769 |
+| long | `confluence_low` | 10-20 | 620 | 39 | 0.2484 | 0.2085 | +0.0399 | 0.140-0.402 | 0.269 | 0.769 |
+| short | `stoch_overbought` | 10-20 | 371 | 14 | — | — | — | — | — | — |
+| short | `confluence_high` | 10-20 | 139 | 5 | — | — | — | — | — | — |
+
+Two cells suppressed, exactly the two ADR 102 predicts, at `n_eff` 14.3 and 5.0 against
+a floor of 30. Neither is near the floor.
+
+### Nothing survives multiple-testing correction
+
+**The headline result of Session 12.** Across the 48-test family (12 cells x 4 targets),
+the minimum q-value is **0.769**. One test reaches a raw p-value below 0.05: short
+`bb_upper_touch` 0-10 at the 2% target, `p_hit` 0.2014 against a 0.1763 baseline, edge
++2.5 points, p = 0.039. It does not survive correction and is one test out of 48.
+
+Every edge in the table above is inside its own confidence interval's width of zero. The
+largest, +5.5 points on long `stoch_oversold` 10-20, sits on `n_eff` of 50 with an
+interval spanning 0.168 to 0.409.
+
+This is a train-split result under one config. It is not a kill-criterion trigger on its
+own — the criterion reads "no cell beats baseline at sufficient `n_eff` after FDR", and
+Session 13's benchmark arms are what put "sufficient" and "beats" on a footing. It
+should be read now rather than after Session 13 makes it easier to explain away.
+
+### Breadth terciles under ADR 104
+
+Denominator re-measured as the **train** universe per quarter, superseding the
+trade-universe values. 48 quarters, 7 to 496 distinct tickers, median 46. Breadth ratio
+now runs 0.0020 to 1.0000 with **zero** values above 1, which is the boundary ADR 099's
+denominator crossed.
+
+Cut points, per era, on the empirical distribution:
+
+| Era | low | mid | high |
+|---|---|---|---|
+| 2010-2014 | 0.0020-0.1149 | 0.1190-0.2581 | 0.2632-1.0000 |
+| 2015-2019 | 0.0098-0.0986 | 0.0988-0.2105 | 0.2113-0.8732 |
+| 2020-2023 | 0.0072-0.0928 | 0.0942-0.1884 | 0.1892-0.8866 |
+
+`p_hit` at target 3% by tercile, the three cells where the split is most pronounced:
+
+| Side | Signal | Bucket | low | mid | high |
+|---|---|---|---|---|---|
+| long | `stoch_oversold` | 10-20 | 0.2135 | 0.2085 | **0.4035** |
+| long | `bb_lower_touch` | 0-10 | 0.1520 | 0.2096 | 0.2146 |
+| short | `bb_upper_touch` | 0-10 | 0.1451 | 0.1116 | 0.0989 |
+
+Long `stoch_oversold` 10-20 is the cell to watch, and not favourably. Its hit rate nearly
+doubles in the high-breadth tercile, which is DESIGN §6.11's third reading: an apparent
+edge concentrated on broad-selloff days is substantially market timing, and it fires
+precisely when buy-and-hold is also buying cheaply. Session 13's three-arm comparison on
+the high-breadth subset is what answers it.
+
+### Per-ticker concentration: the cap does not bind
+
+Measured for all twelve cells. **No cell exceeds the 15% threshold**, and none comes
+close: the largest single-ticker share anywhere in the grid is ILMN at 3.6% of the short
+`confluence_high` 10-20 cell (139 events across 103 tickers). HD is the most frequent
+top contributor, never above 2.3%.
+
+Session 12's brief expected the cap to bind, reasoning from 2015-2019 holding 140,288
+event rows across 196 tickers. It does not, because the headline cells draw on 103 to 470
+distinct tickers each after the cluster-head filter. The recomputed-without-top-ticker
+statistics are therefore not reported for any cell, there being no cell that qualifies.
+The NVDA-over-2020-2024 risk DESIGN §6.7 names is real in principle and absent here.
+
+### Breadth rows cannot be stored, and are not
+
+`cell_stats` has no breadth column and `cell_key()` has no breadth parameter, so the
+"three rows per cell" the session brief describes for breadth have nowhere to go. They
+are reported here as a measurement. Storing them would need a schema change and a tenth
+`cell_key` parameter, neither of which is in Session 12's scope, and the tenth parameter
+would change every existing `cell_id`.
+
+### Rows written
+
+192 rows under `config_hash = 1835688bf7d760ba`: 48 pooled (12 cells x 4 targets) and 144
+era rows (12 x 4 x 3 eras). Era rows carry null `q_value`, asserted. No row carries era
+2024+, asserted. Two runs over identical data produce identical values ignoring `run_id`
+and `computed_at`.
+
+`arm` is not written by the writer. The column arrived with 12.5 carrying
+`DEFAULT 'signal'`, and all 192 rows took that value with no backfill, confirmed by
+query.
+
+### 12.5 — `arm` column and `v_screen` predicates
+
+Migration `e3c7f5a91d24`, applied 2026-08-11. Research database only; serving was skipped
+visibly (`DATABASE_URL_SERVING not set`).
+
+`cell_stats.arm text NOT NULL DEFAULT 'signal'` with `cell_stats_arm_check` permitting
+`signal`, `control`, `benchmark`. `v_screen` rebuilt via `CREATE OR REPLACE` (the output
+column list is unchanged, so no drop window and no cascade) gaining two **`ON`-clause**
+predicates:
+
+```sql
+AND c.config_hash = current_setting('capitalscan.default_config_hash', true)
+AND c.arm         = 'signal'
+```
+
+They are in the `ON` clause, not `WHERE`. `cell_stats` is LEFT JOINed, so moving either
+to `WHERE` converts it to an inner join and empties the screener. `v_screen` returns
+683,653 rows before and after, which is the check that caught this being worth stating.
+
+Reversibility verified by running it, not by reading `downgrade()`: `cscan db rollback
+--yes` dropped the column and constraint and restored the original view body with the row
+count unchanged and no orphaned objects, then `cscan db migrate` reapplied it.
+`db/schema.sql` regenerated; `test_schema_drift.py` runs and passes; the holdout firewall
+still passes.
+
+### `v_screen` and `signal_strength` — found, decided, fixed
+
+**Found 2026-08-11.** No `cell_stats` row Session 12 wrote could reach `v_screen`. The
+view joined `c.signal_strength = e.signal_strength`, and ADR 102 removed
+`signal_strength` as a grid dimension, so every Session 12 row carries NULL there and
+`NULL = 1` is never true. Measured: 683,653 rows, **zero** non-null `cell_id`. The view
+worked, returned rows, raised nothing, and showed no numbers.
+
+Confirmed across all 626,791 events that strength is a pure function of `signal_type` —
+six combinations, no exceptions, no strength-2 reachable — so the dimension ADR 011
+assumed genuinely does not exist.
+
+**Decided as ADR 107, fixed by migration `f1a8d3b62c07`.** The view now pins
+`c.signal_strength IS NULL`, the exact parallel of the `c.era IS NULL` line below it.
+Both select the pooled row. Dropping the condition outright was rejected because
+`cell_id` embeds the strength slot, so a pooled row and a split row are distinct rows for
+one cell and a condition-free view would match both and duplicate every screener row.
+Populating the column with `3 if confluence else 1` was rejected because more trigger
+families are planned, and a fourth primitive outside the confluence definition makes
+strength 2 reachable, at which point a cell holds mixed strengths and the derived value
+stamps it with one of them silently.
+
+**Remaining, and by design.** `v_screen` still shows zero statistics, now for one reason
+only: it pins `c.split_key = 'validate'` and Session 12 measured train. That is invariant
+5b working. With the strength predicate corrected, the same join matches **35,281
+events** under a train split, measured directly, so the split filter is the only thing
+left holding it at zero.
+
+ADR 102 was not amended. It removed strength as a *cut*, and that claim holds:
+reinstating it would yield the same twelve cells, since every cell's events share one
+strength value.
+
+---
+
 ## Holdout
 
 **Evaluated once. Published whatever it says.**

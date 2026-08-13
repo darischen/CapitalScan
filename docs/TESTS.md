@@ -487,6 +487,159 @@ Run by the fast tier. `capitalscan/tests/acceptance/` is **not** collected by th
 
 ---
 
+## Session 12: Cell Grid, `cell_stats`, and Serving Predicates
+
+Four of these files sit in `capitalscan/tests/integration/`, which the fast tier does **not** collect. Three of the four are `SELECT`-only and safe to run beside a live job; `test_v_screen_predicates.py` writes, but only rows it generates and deletes. None of them truncates anything.
+
+### Unit Tests (capitalscan/tests/unit/test_cells.py)
+
+**`cell_key` String Construction**
+- Oracle strings read out of Postgres 18 by hand, never derived by reasoning about what `concat_ws` and `to_char` ought to do. The 2026-08-09 peak-label defect is the reason for that ordering
+- All four coalescing paths: null `dd_bucket` to `'all'`, null `strength` to `'all'`, null `era` to `'pooled'`
+- The Session 12 call shape pinned specifically: null strength *and* null era together, which is every headline cell and therefore the shape most likely to rot unnoticed
+- Target formatting at each `StatsParams.reach_targets` value, plus a guard asserting those four values are what the parametrization covers
+- `FM990.999` quirks: `1.0` renders `1.` (the pattern's `.` prints even when `FM` strips the zeros), and rounding is half **away from zero**, so `0.1235` gives `0.124` where Python's `round` gives `0.123`
+- `concat_ws` **drop** paths, which are not coalescing paths: a null in any non-coalesced slot yields a *shorter* key rather than an empty field. A collision hazard, reproduced deliberately
+
+**Grid Enumeration (ADR 102)**
+- Exactly twelve cells, checked against the ADR 102 table as a set
+- Signal type pairs with side rather than crossing it: twelve cells, not thirty-six
+- `20-35` and `35+` never enter the grid (ADR 101)
+- Buckets and floor both derive from `StatsParams`, asserted by editing the params and watching the grid follow
+- Enumeration order stable; the twelve `cell_id` values distinct
+
+**Suppression**
+- Below the floor returns a reason string naming both numbers; at and above the floor returns `None`
+- The floor's source is `StatsParams.min_n_eff`, pinned by varying it
+
+### Unit Tests (capitalscan/tests/unit/test_stats_pvalue.py)
+
+**`one_sided_p_value`**
+- Hit rate equal to baseline gives 0.5; above gives a small value; below gives a large one. One-sided in the direction the system claims, so a cell underperforming its baseline is not handed a small p-value for failing
+- `n_eff`, not `n`, is what moves it — the ADR 098 failure that makes every downstream q-value too small to believe
+- Null propagates; a baseline of exactly 0 or 1 yields null rather than an infinite z-score; non-positive `n_eff` raises
+
+### Unit Tests (capitalscan/tests/unit/test_baselines_direction.py)
+
+**Direction-Aware Ticker-Year Baselines (ADR 106)**
+- Six of the twelve headline cells are short, and a short hits when the price *falls*. Measuring them against `P(R_h >= target)` would subtract the probability of a long winning from the probability of a short winning and call the difference an edge
+- A monotonically rising ticker has a long baseline of 1 and a short baseline of 0; a falling one reverses both
+- Direction flips drift and leaves volatility alone, asserted separately. A `direction` that flipped sigma too would be a sign error visible only as a slightly wrong parametric baseline
+- `direction=1` reproduces Session 11's frames exactly, asserted by frame equality against the default call
+- `direction=0` and other values raise: a silent zero would report `P(0 >= target)`, which is 0 for every positive target and looks like a measurement
+
+### Unit Tests (capitalscan/tests/unit/test_cell_stats.py)
+
+**Pooled `rho_bar`**
+- Weighted by each era's **event count**, not a plain mean over `rho_era` rows. A plain mean weights a 300-event era the same as a 140,000-event one
+- A missing `rho_era` row raises rather than defaulting to zero, which would set the correction to nothing and hand back `n_eff == n`
+
+**Effective Sample Size**
+- Matches `n / (1 + (k_bar - 1) * rho_bar)`; no co-firing leaves `n` untouched; a negative measured rho is clamped at the point of use, never producing `n_eff > n`
+
+**Side-Aware Hit Flags**
+- A long hits on a rise, a short on a fall, matching how `path_labels` builds `touched_*` from `reach["favorable"]`
+- A mixed-side frame raises: side is a grid dimension, so a cell is single-sided by construction
+- A null forward return stays null rather than counting as a miss, which would deflate `p_hit` by the null rate silently
+
+**Grid Event Selection**
+- Null `dd_bucket` excluded and counted, with a fixture built so inclusion would move the cell's `n`. `cell_key` coalesces null to `'all'`, so an unfiltered null merges into an aggregate cell rather than dropping
+- Deep buckets excluded and counted; open forward windows excluded (today's live events are exactly this case); null `fwd_window_days` excluded
+- Exclusions appear in a summary string rather than being silent
+
+**`exit_mix`**
+- Fractions sum to 1 and match a hand count; absent reasons omitted rather than zeroed
+- Tied counts break deterministically, ordered by descending share then name. `value_counts` does not order ties stably, and two runs over identical data produced `timeout` and `stop` in different orders where both landed on 0.3125 (`confluence_high|short|10-20`, 2015-2019). Nothing stored was affected, since `jsonb` normalizes key order, but a frame differing run to run makes the determinism check report a difference that is not one
+
+**Holdout Era Refused Structurally (ADR 103)**
+- `compute_grid` **raises** on the holdout era rather than relying on the caller's `eras` argument. 12.4's acceptance requires a test that fails if the exclusion is removed, and an exclusion living only at a call site has nothing to remove
+- A reported era is accepted, which is the control: a `compute_grid` refusing every era would pass the test above
+- `era_labels` and `reported_eras` derive from `StatsParams.era_bounds` and `SplitParams.event_start`, mirroring `research.enrich._era`, which stamps `events.era`. A label built differently would match nothing and return empty era rows, a failure that reads as "no events in that era" rather than as a bug
+- A structural test asserts `SplitParams.validate_end` equals the last `era_bounds` entry. `reported_eras` drops the final era on the reasoning that it coincides with holdout; move one without the other and dropping it becomes wrong while keeping it becomes a firewall breach
+
+**Benjamini-Hochberg Family Construction (DESIGN §6.8)**
+- The family is 48 tests: twelve cells across four ladder targets, for one config
+- `q >= p` throughout; q-values monotone in sorted p-value order
+- Suppressed cells carry no q-value **and do not enlarge the family**, asserted by comparing against the same data with the suppressed rows removed. Including them would inflate `m` and weaken every q-value
+- Era rows carry null `q_value` and enter no family (ADR 103, ADR 099)
+
+**Suppressed Cell Rows**
+- Nulls for `p_hit`, `edge`, `ci_low`, `ci_high`; counts retained, because `n_events` and `n_eff` are how a reader sees *why* it suppressed
+
+### Unit Tests (capitalscan/tests/unit/test_cell_reporting.py)
+
+**Breadth Denominator (ADR 104)**
+- Denominator is distinct tickers with any event that quarter — the train universe, not the trade universe
+- Ratio never exceeds 1, the boundary ADR 099's denominator crossed. A companion test pins the failure mode itself, so the bound test cannot quietly stop proving anything
+- Null `cofire_count` propagates rather than reading as "fired alone"
+
+**Terciles**
+- Cut within era, not pooled: firing rates differ across regimes, and a pooled cut measures the era rather than the breadth. Asserted with disjoint per-era breadth ranges
+- Bucket count comes from `ReportingParams`
+
+**Per-Ticker Concentration**
+- Largest contributor and its share; threshold read from `ReportingParams.max_ticker_share`, not a literal
+- Empty cell reports no contributor rather than a zero share
+
+### Integration Tests (capitalscan/tests/integration/test_cell_key_sql.py) — read-only
+
+**Executed Parity**
+- The Python `cell_key` diffed against the **executed** Postgres function across the full parameter cross-product, 96 combinations built from the headline grid rather than a hand-written list, so a grid change widens the check
+- A separate test asserts all four coalescing paths are actually exercised. A parity test that never passes a null proves nothing about the coalescing branches and would still be green
+- `provolatile = 'i'`: a `VOLATILE` function cannot back an index or generated column, and nothing warns at the point of use
+- `proisstrict = false`: `RETURNS NULL ON NULL INPUT` would make every coalescing branch dead code
+- `pronargs = 9`: a tenth parameter (`config_hash` is the recurring proposal) would change every existing `cell_id` silently
+
+### Integration Tests (capitalscan/tests/integration/test_cell_grid_measured.py) — read-only
+
+**The load-bearing test of Session 12.** The only thing connecting the code to the measurement the grid design rests on.
+
+- All twelve cells' `n` matched against ADR 102 **exactly**, no tolerance. `n` is a count, and a mismatch means the population filter changed
+- `k_bar` within 0.05; `n_eff` within ±2, a tolerance covering ADR 102's rounded intermediates and deliberately too tight to absorb a wrong filter, which would move `n` by a factor of four
+- The population filter is `is_cluster_head AND entry_kind = 'next_open'` with a closed forward window. **Not stated in ADR 102**, recovered by measurement on 2026-08-11, and pinned here
+- Exactly two cells suppress, and they are the two ADR 102 predicts. A third suppressing, or either of these rendering, means something changed
+- The two suppressed cells asserted to be nowhere near the floor, which is what makes "lower the floor" visibly a bad trade rather than a near miss
+- `rho_era` prerequisite checked first, so a missing row fails clearly instead of failing twelve cells at once
+
+### Integration Tests (capitalscan/tests/integration/test_cell_stats_write.py) — scoped writes
+
+**ADR 096's composite key, exercised for the first time.** Nothing previously wrote two configs and checked both survived, so a `cell_id`-only key would have passed the whole suite while silently keeping one snapshot at a time.
+
+- A second `config_hash` adds rows rather than replacing the first's, asserted on the *values*: the first config still reads 0.41 after the second writes 0.62
+- A guard test asserts the two configs share `cell_id` values. If the fixtures produced distinct ids, both writes would insert cleanly under a `cell_id`-only key and nothing would have been proven
+- Re-writing one config updates in place rather than duplicating, which is the other half of `ON CONFLICT`
+- Written rows carry `arm = 'signal'` from the column default, since the writer does not set it
+- `exit_mix` round-trips as `jsonb`; an empty frame writes nothing
+
+### Integration Tests (capitalscan/tests/integration/test_v_screen_predicates.py) — scoped writes
+
+**`config_hash` Predicate (ADR 100)**
+- A signal row under the default config reaches the screen, asserted first so every negative assertion below is non-vacuous
+- A second config holding the same cell adds no duplicate row
+- **The same data with the predicate removed returns 2.** This is what proves the test above is not passing for an unrelated reason; if it ever returns 1, the fixture has stopped reproducing the defect
+- An unset GUC nulls the statistics but keeps the event. `current_setting(..., true)` returns NULL and `c.config_hash = NULL` is never true, so an unconfigured database serves events without numbers rather than an empty screener
+- A non-default config does not leak its statistics
+
+**`arm` Predicate (ADR 105)**
+- `control` and `benchmark` rows never reach the screen, asserted as a negative. Asserting only that `signal` rows appear would pass on a view with no predicate at all
+- The identical row with `arm` flipped to `signal` does reach it, which is the control for the two tests above
+- The check constraint rejects an unknown value, so a typo fails at write time rather than vanishing from the screener
+- `arm` defaults to `'signal'`, so every row written before the column existed reads correctly with no backfill
+
+**Strength Pooling (ADR 107)**
+- A pooled row (`signal_strength` NULL, production shape) matches. Before ADR 107 the view joined `c.signal_strength = e.signal_strength`, so this row could never match and every Session 12 statistic was invisible
+- A strength-conditioned row does **not** match. `IS NULL` has to reject a populated row, or the view is not selecting the pooled cell, it is selecting whichever cell happens to exist
+- A pooled row and a split row present together yield exactly one screener row, and it is the pooled one. `cell_id` embeds the strength slot, so both exist as distinct rows for one cell; a condition-free view would match both and duplicate every row, which is the ADR 100 fan-out through a different column
+
+### Migration and Schema
+
+- `test_schema_drift.py` **must run, not skip.** It is read-only (`pg_dump --schema-only`) and safe against the live instance. A stopped Docker container turns the guard off silently
+- `test_holdout_firewall.py` still passes after the view rebuild
+- Migration `e3c7f5a91d24` applies and reverses cleanly, verified by an actual `cscan db rollback --yes` followed by re-application: column dropped, constraint dropped, view restored, row count unchanged, no orphaned objects
+- Migration `f1a8d3b62c07` (ADR 107) likewise. Its rollback removes only the strength predicate and leaves ADR 105's `arm` predicate intact, which is what proves the two revisions compose rather than overwrite each other
+
+---
+
 ## 6. Statistical verification
 
 Two tests catching a category no unit test can (ADR 087).

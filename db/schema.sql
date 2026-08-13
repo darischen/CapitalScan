@@ -226,7 +226,9 @@ CREATE TABLE public.cell_stats (
     suppressed boolean,
     suppress_reason text,
     computed_at timestamp with time zone,
-    git_sha text
+    git_sha text,
+    arm text DEFAULT 'signal'::text NOT NULL,
+    CONSTRAINT cell_stats_arm_check CHECK ((arm = ANY (ARRAY['signal'::text, 'control'::text, 'benchmark'::text])))
 );
 
 
@@ -1091,7 +1093,7 @@ CREATE VIEW public.v_screen AS
     p.p_adverse_3,
     p.model_version
    FROM ((public.events e
-     LEFT JOIN public.cell_stats c ON (((c.signal_type = e.signal_type) AND (c.side = e.side) AND (c.dd_bucket = e.dd_bucket) AND (c.signal_strength = e.signal_strength) AND (c.entry_kind = e.entry_kind) AND (c.split_key = 'validate'::text) AND (c.era IS NULL) AND (c.horizon_days = 5) AND (c.target_pct = 0.03))))
+     LEFT JOIN public.cell_stats c ON (((c.signal_type = e.signal_type) AND (c.side = e.side) AND (c.dd_bucket = e.dd_bucket) AND (c.signal_strength IS NULL) AND (c.entry_kind = e.entry_kind) AND (c.split_key = 'validate'::text) AND (c.era IS NULL) AND (c.horizon_days = 5) AND (c.target_pct = 0.03) AND (c.config_hash = current_setting('capitalscan.default_config_hash'::text, true)) AND (c.arm = 'signal'::text))))
      LEFT JOIN public.predictions p ON (((p.ticker = e.ticker) AND (p.as_of = e.signal_date))))
   WHERE (e.is_cluster_head AND (e.entry_kind = 'next_open'::text));
 
