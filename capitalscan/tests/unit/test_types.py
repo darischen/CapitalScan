@@ -34,6 +34,9 @@ def test_bound_values():
 
 
 def test_signal_type_values():
+    """These strings are stored in `events.signal_type` and read back by
+    every downstream query, so the set is pinned rather than derived. A
+    rename is a data migration, not an edit."""
     assert {s.value for s in SignalType} == {
         "bb_lower_touch",
         "bb_upper_touch",
@@ -41,6 +44,8 @@ def test_signal_type_values():
         "stoch_overbought",
         "confluence_low",
         "confluence_high",
+        # ADR 108, the only close-confirmed member.
+        "bear_close_above_upper",
     }
 
 

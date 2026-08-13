@@ -49,6 +49,11 @@ from capitalscan.core.types import Side, SignalHit
 # missing one (invariant 4 — never fill, never partially trust).
 _REQUIRED_INDICATOR_FIELDS = ("bb_lower", "bb_upper", "k_full")
 
+# ADR 108's allowlist. Imported from `core/`, never restated: `jobs.compute
+# .run_events` runs detection too, and the two callers drifting apart on
+# which fields cross from row t is the failure the allowlist guards.
+CLOSE_CONFIRMED_FIELDS = core_signals.CLOSE_CONFIRMED_FIELDS
+
 _CANDIDATE_COLUMNS = [
     "ticker",
     "signal_date",
@@ -115,6 +120,21 @@ def scan_candidates(
                     }
                 )
                 continue
+
+            # ADR 108: attach bar t's close-confirmed flags to the bar
+            # itself. This is the one place a value from row t crosses into
+            # detection, and `CLOSE_CONFIRMED_FIELDS` is the whole of what
+            # may cross. `own_ind` is looked up by date, so a ticker missing
+            # its own indicator row yields the `.get` default of False
+            # rather than raising or inheriting a neighbour's flag.
+            own_ind = ind_group.loc[bar_date] if bar_date in ind_group.index else None
+            for field in CLOSE_CONFIRMED_FIELDS:
+                value = None if own_ind is None else own_ind.get(field)
+                # NULL through warmup stays False (invariant 4): "no band
+                # yet" is not "did not fire". `core.signals._bear_close_flag`
+                # repeats this guard, deliberately — neither layer may
+                # assume the other sanitized it.
+                bar[field] = False if value is None or pd.isna(value) else bool(value)
 
             for hit in core_signals.detect(bar, prior_ind, sp):
                 rows.append(
