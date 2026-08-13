@@ -33,7 +33,7 @@ and ADR 016 by 106.
 | 002 | Ten years of history, 2015 forward | Superseded by 035 and 040 |
 | 003 | Compute indicators in-house | Pinned |
 | 004 | Indicator parameters pinned once | Pinned |
-| 005 | Signal fires on intraday touch, not close | Pinned |
+| 005 | Signal fires on intraday touch, not close | Pinned. Scope narrowed by 108 |
 | 006 | One signal implementation, shared by backtest and live | Pinned |
 | 007 | Five exit conditions, measured separately | Pinned |
 | 008 | Stop scaled to ATR, fixed 3% as control | Pinned |
@@ -60,7 +60,7 @@ and ADR 016 by 106.
 | 029 | Forward log is immutable | Pinned |
 | 030 | Model promotion gated on calibration | Superseded by 067 |
 | 031 | VIX stored as a daily column | Pinned |
-| 032 | Tax reported pre and post | Provisional |
+| 032 | Tax reported pre and post | Provisional. Amended 2026-08-13: long-term rate added |
 | 033 | Kill criteria fixed in advance | Pinned |
 | 034 | Provenance on every generated row | Pinned |
 | 035 | Union universe, 2010 start, ADRs only | Pinned |
@@ -85,8 +85,8 @@ and ADR 016 by 106.
 | 054 | Notifier protocol, three channels | Pinned |
 | 055 | Frozen universe CSV committed to the repo | Pinned |
 | 056 | Cluster tagging replaces position blocking | Pinned |
-| 057 | Multi-signal emits one row with strength | Pinned |
-| 058 | Both sides computed, only long surfaced | Pinned |
+| 057 | Multi-signal emits one row with strength | Pinned. Short ranking extended by 108 |
+| 058 | Both sides computed, only long surfaced | Pinned. Surfacing clause superseded 2026-08-13 |
 | 059 | Default config validated before sweeping | Pinned |
 | 060 | Backtest is deterministic, config-hashed | Pinned |
 | 061 | Randomization null over parametric tests | Pinned |
@@ -136,6 +136,7 @@ and ADR 016 by 106.
 | 105 | `cell_stats.arm` separates measured populations from recommended ones | Pinned |
 | 106 | Short entries use the same universe and criteria as long | Pinned. Supersedes ADR 016 |
 | 107 | `v_screen` selects the cell pooled over `signal_strength` | Pinned |
+| 108 | Close-confirmed detection, alongside intraday touch | Pinned. Amends 005's scope and 057's ranking |
 
 ---
 
@@ -214,13 +215,15 @@ All returns use adjusted close. All indicator inputs use adjusted OHLC. Unadjust
 
 ## 005. Signal fires on intraday touch, not close
 
-Status: Pinned
+Status: Pinned. Scope narrowed 2026-08-13 by ADR 108 — see the dated note below.
 
 Decision. A band breach registers when the intraday high or low crosses the band level, not when the close does.
 
 Rationale. Matches the live rule, where a 5-minute poll compares the current price against bands fixed at the prior close. Also roughly triples event count. Close-based breach runs 4 to 6% of days. Intraday breach runs 12 to 18%, and confluence with a Stochastic extreme lands near 3 to 6%.
 
 Cost. Entry price is uncertain within the poll window. ADR 007 handles this by measuring four entry timings.
+
+**Scope note, 2026-08-13 (ADR 108).** This entry describes the **band-touch family** — `BB_LOWER_TOUCH`, `BB_UPPER_TOUCH`, and the confluence types built on them — and stands unchanged for all of them. It is no longer a claim about every signal in the system: ADR 108 adds a close-confirmed model beside it, where the condition is a statement about where the bar finished relative to where it opened and therefore cannot be expressed as an intraday touch. Both models date their events to D and fill `next_open` at D+1; the 4-to-6% figure above is the argument against making the *band breach itself* close-based, not against close-confirmed detection generally.
 
 ---
 
@@ -972,7 +975,7 @@ Note. Portfolio-level pyramiding needs position sizing and lands after Phase 4. 
 
 ## 057. Multi-signal emits one row with strength
 
-Status: Pinned
+Status: Pinned. Short-side ranking extended 2026-08-13 by ADR 108 — see the dated note below.
 
 Decision. Multiple signals firing on the same ticker within the same trading day emit one event row.
 
@@ -985,6 +988,12 @@ signal_strength   int        -- count of distinct concurrent signals
 Specificity ranking, fixed: `CONFLUENCE_LOW` > `BB_LOWER_TOUCH` > `STOCH_OVERSOLD`, mirrored for the high side. `signal_strength` becomes both a model feature and a headline grid dimension.
 
 Rationale. The strategy operates on a days-to-months horizon, so sub-day granularity is noise. Two indicators firing hours apart is one alignment event, and the advisory action is identical either way. Emitting separate rows would double-count in pooled statistics. Whether strength 2 outperforms strength 1 becomes measurable rather than assumed.
+
+**Ranking extended 2026-08-13 (ADR 108).** The short side becomes `BEAR_CLOSE_ABOVE_UPPER` > `CONFLUENCE_HIGH` > `BB_UPPER_TOUCH` > `STOCH_OVERBOUGHT`. The new type ranks first because it requires a band breach *and* a close-confirmed rejection of it, which is strictly more specific than a band touch plus a stochastic extreme.
+
+**The two sides are no longer mirrors,** and the "mirrored for the high side" phrasing above no longer describes the ranking. That is deliberate rather than an oversight: ADR 106 already rejected long/short symmetry as an assumption, and no bullish counterpart to this pattern was requested. The long side stands at `CONFLUENCE_LOW` > `BB_LOWER_TOUCH` > `STOCH_OVERSOLD`.
+
+**`signal_strength` shifts for existing events on days the new type fires,** which is what forces a new `config_hash` rather than an in-place backfill.
 
 ---
 
@@ -2798,6 +2807,60 @@ correct today, silently wrong at the first new trigger family.
 Write both a pooled and a strength-split row per cell. Stores one
 measurement under two identities, doubles the Benjamini-Hochberg family from
 48 tests to 96 for no gain, and leaves the fan-out hazard live.
+
+---
+
+## 108. Close-confirmed detection, alongside intraday touch
+
+**Status.** Pinned, 2026-08-13. Amends ADR 005's scope and ADR 057's specificity ranking.
+
+**Context.**
+
+Every signal in the system is an *intraday touch*: `detect(bar_t, ind_{t-1})` compares bar `t`'s `low` and `high` against bar `t-1`'s bands. ADR 005 pins that deliberately, and `tests/unit/test_signature_guarantee.py` enforces it structurally — `detect` may read only `low`, `high`, `ts`, and `ticker` from the bar. CLAUDE.md calls that probe "the real guarantee" and says never to widen it.
+
+A new signal was requested (user's decision, 2026-08-13): **a down bar closing at or above the upper band**, `open > close AND close >= bb_upper`. It is a rejection pattern — the price pushed through the band and gave it back by the close — and it cannot be expressed as an intraday touch, because it is a statement about where the bar *finished* relative to where it *opened*.
+
+Two implementations were tried and the first was rejected.
+
+**The rejected version: route it through the indicator row.** Compute the boolean in `core/indicators.py`, and let `detect` read it off the `ind` row it already receives. This keeps `PERMITTED_ON_BAR` untouched and needs no ADR. It was built, tested, and committed (`6be3cae`) before the flaw was traced.
+
+Indicator rows are read at **t-1**. So a pattern completing at the close of day D produces an event dated **D+1**, and a `next_open` entry filling **D+2**. Every existing signal is dated D and fills D+1. The signal would have been measured as a strategy one full session slower than the one a person would actually run, for no reason other than where the condition was evaluated.
+
+**Decision.**
+
+The system carries **two detection models**, named and separated:
+
+| Model | Condition reads | Fires | ADR |
+|---|---|---|---|
+| Intraday touch | bar `t`'s `low`/`high` vs `ind_{t-1}` bands | during session D | 005 |
+| Close-confirmed | bar `t`'s close-derived boolean vs `ind_{t-1}` bands | at close of D | 108 |
+
+Both are dated **D** and fill `next_open` at **D+1**. A close-confirmed signal is not surfaced by the poller until the session closes, which is a real difference in *when a person learns of it*, not in how it is measured.
+
+`PERMITTED_ON_BAR` gains exactly one field: `bear_close_above_upper`, the precomputed boolean. **Raw `open` and `close` remain forbidden on the bar.** This is the load-bearing part of the decision. The probe's purpose is not to keep `detect` ignorant of the close for its own sake — it is to make an intraday condition written against the close *impossible to express*. A precomputed, close-confirmed boolean cannot be misused that way: it carries its own causality in its name and in its dtype. Handing `detect` raw `close` would restore the hazard in full.
+
+The pattern itself is still computed in `core/indicators.py`, against `bb_upper[t-1]`. Today's band is a 20-day mean and standard deviation *ending at today's close*, so testing today's close against today's band is circular — the close helps set the level it is measured against. The shift is what makes the flag a statement about a level fixed before the bar opened. Invariant 3 is untouched.
+
+**`BEAR_CLOSE_ABOVE_UPPER` ranks first on the short side**, above `CONFLUENCE_HIGH`: it requires a band breach *and* a close-confirmed rejection of it, which is strictly more specific than a band touch plus a stochastic extreme. ADR 057's ranking becomes `BEAR_CLOSE_ABOVE_UPPER > CONFLUENCE_HIGH > BB_UPPER_TOUCH > STOCH_OVERBOUGHT`. The long side is unchanged and deliberately **not** mirrored — ADR 016's symmetry assumption is already rejected by ADR 106, and no bullish counterpart was requested.
+
+**Entry kinds: `next_open` only.** `touch`, `touch_5m`, and `touch_30m` fill at an intraday band level, and this signal has no such level — the pattern is not confirmed until the close, so there is nothing to fill against during the session. This costs nothing where it matters: ADR 102's measured population is already `entry_kind = 'next_open'` (`GRID_ENTRY_KIND`), which is the filter Sessions 12 and 13 both read, so the signal lands directly in the population the statistics measure. A `close` entry kind filling at D's close is a coherent future addition and is deliberately not built now, since no current analysis reads one.
+
+**Rationale.**
+
+The alternative to a second detection model is refusing the signal, and the signal is well-motivated: ADR 017 makes the upper-band signal drive *trimming* a held position, and a close-confirmed rejection is a stronger trim trigger than a bare touch, precisely because the touch was given back.
+
+The alternative to widening the probe by one field is the D+2 delay, which measures a strategy nobody would run. Between "the probe names one exception" and "every statistic describes a slower strategy than the real one," the exception is plainly the smaller cost.
+
+**Consequences.**
+
+- **A new `config_hash`.** `signal_strength` counts concurrent types, so every event on a day this fires shifts. Sessions 12 and 13's measurements under `1835688bf7d760ba` remain valid measurements *of that config* — ADR 096's composite key means a second config adds rows rather than replacing them — but the new config needs its own run of `rho`, `cell_stats`, and `benchmarks` to be described.
+- **A full backtest**, roughly 2h48m including the harness.
+- **`max_warmup()` moves 272 to 273**, which widens the indicators job's read window. Load-bearing rather than cosmetic: an unchanged 272 leaves the first flagged bar of every window null.
+- **`indicators` gains a boolean column**, and `events` inherits the new `signal_type` value. One migration.
+- **A structural guarantee worth recording.** `bars_check1` enforces `close <= high`, so `close >= bb_upper[t-1]` implies `high >= bb_upper[t-1]`. Every bar this flags necessarily also fires `BB_UPPER_TOUCH`, so the new type refines an existing population rather than creating a disjoint one. That is what makes its cell directly comparable to the `bb_upper_touch` cell beside it.
+- **The signature probe must keep failing on raw `open`/`close`.** A test asserting only that the new field is permitted would pass on a probe with no restrictions at all, so the negative assertions are the ones that carry the guarantee.
+
+**Amends ADR 005.** That ADR's decision text describes the band-touch family and stands unchanged for it. It is no longer a claim about every signal in the system.
 
 ---
 

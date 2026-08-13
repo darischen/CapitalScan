@@ -100,6 +100,10 @@ def test_detect_cannot_reach_bar_t_indicators():
 
 The `TrackingSeries` probe is the load-bearing part. If someone later adds `bar.close` to a band comparison, this fails immediately rather than silently introducing look-ahead.
 
+**Amended 2026-08-13 (ADR 108).** `PERMITTED_ON_BAR` gains one field, `bear_close_above_upper` — a precomputed boolean, not a price. Raw `open` and `close` remain forbidden, and **the negative assertions are what carry the guarantee**: a test asserting only that the new field is permitted would pass on a probe with no restrictions at all. `FORBIDDEN_ON_BAR` and `test_detect_never_reads_close_from_the_bar` therefore stay exactly as they are.
+
+The distinction the probe now enforces is between *knowing the close happened* and *having the close to compute with*. A boolean named for its own causality cannot be repurposed into an intraday condition; a raw `close` can. That is the whole reason the flag is computed in `core/indicators.py` and handed over pre-resolved.
+
 ### 3.2 Signal path parity — ADR 006 enforcement
 
 ```python

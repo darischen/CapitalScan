@@ -498,6 +498,7 @@ class SignalType(str, Enum):
     STOCH_OVERBOUGHT = "stoch_overbought"
     CONFLUENCE_LOW = "confluence_low"
     CONFLUENCE_HIGH = "confluence_high"
+    BEAR_CLOSE_ABOVE_UPPER = "bear_close_above_upper"  # ADR 108
 
 
 class ExitReason(str, Enum):
@@ -642,7 +643,30 @@ CONFLUENCE_HIGH(t) ⟺  high_t ≥ bb_upper_{t−1}  ∧  %K_full_{t−1} ≥ 80
 
 `require_fast_agreement` optionally adds `|%K_fast_{t−1} − %K_full_{t−1}| ≤ 5.0` (ADR 044).
 
-**Multi-signal (ADR 057).** Multiple signals on the same ticker on the same trading day emit **one** hit. `signal_type` carries the most specific; `signal_types_all` carries every concurrent one; `signal_strength` counts them. Specificity ranking, fixed: `CONFLUENCE_LOW` > `BB_LOWER_TOUCH` > `STOCH_OVERSOLD`, mirrored high.
+**Multi-signal (ADR 057).** Multiple signals on the same ticker on the same trading day emit **one** hit. `signal_type` carries the most specific; `signal_types_all` carries every concurrent one; `signal_strength` counts them. Specificity ranking, fixed:
+
+```
+long : CONFLUENCE_LOW > BB_LOWER_TOUCH > STOCH_OVERSOLD
+short: BEAR_CLOSE_ABOVE_UPPER > CONFLUENCE_HIGH > BB_UPPER_TOUCH > STOCH_OVERBOUGHT
+```
+
+The two sides are **not** mirrors (ADR 108, amending ADR 057's "mirrored high"). ADR 106 already rejected long/short symmetry as an assumption, and no bullish counterpart to the close-confirmed pattern was requested.
+
+**Close-confirmed detection (ADR 108).** A second detection model beside the intraday touch:
+
+```
+BEAR_CLOSE_ABOVE_UPPER(t) ⟺ open_t > close_t ∧ close_t ≥ bb_upper_{t−1}
+```
+
+A down bar closing at or above the prior upper band — the price pushed through and gave it back. It cannot be expressed as an intraday touch, because it compares where the bar finished against where it opened.
+
+The condition is computed in `core/indicators.py` (against the **t−1** band, since today's band embeds today's close) and reaches `detect` as a precomputed boolean **on the bar**. `PERMITTED_ON_BAR` therefore gains exactly one field, `bear_close_above_upper`; raw `open` and `close` stay forbidden, so an intraday condition written against the close remains impossible to express. That is what the probe is actually for.
+
+Both models date their event to **D** and fill `next_open` at **D+1**. The rejected alternative — reading the flag off the t−1 *indicator* row instead of the bar — dated the event D+1 and filled D+2, measuring a strategy one session slower than the one anyone would run.
+
+Entry kinds: `next_open` only. There is no intraday level to fill at, and ADR 102's measured population is already `entry_kind = 'next_open'`.
+
+**Structural guarantee.** `bars_check1` enforces `close <= high`, so `close ≥ bb_upper_{t−1}` implies `high ≥ bb_upper_{t−1}`: every bar this flags necessarily also fires `BB_UPPER_TOUCH`. The new type refines an existing population rather than creating a disjoint one.
 
 **Crossover (ADR 045).** `k_cross_up` and `k_cross_down` are computed, stored, displayed, and available as model features. They never enter `detect()` and never affect a recommendation.
 
