@@ -592,3 +592,88 @@ class MonitoringThresholds:
 
 
 DEFAULT_MONITORING = MonitoringThresholds()
+
+
+@dataclass(frozen=True)
+class BenchmarkParams:
+    """Session 13's benchmark arms (DESIGN §6.4-§6.6, ADRs 012, 017, 032, 061).
+
+    Standalone, same rationale as `BaselineParams` and `ReportingParams`
+    above: `jobs.config.config_hash` hashes `dataclasses.asdict(config)`, and
+    nothing here varies a signal, an exit, or a cost. Folding these into
+    `Config` would move `config_hash` for every config already written to
+    `events` — including the live poller's, whose same-day duplicate check
+    keys on that hash — in order to name constants that only ever describe
+    how capital is simulated *after* the events exist.
+
+    Invariant 9 still binds: `core/arms.py` and `research/benchmarks.py`
+    hold no literals, and the 13.3 brief calls out that ADR 092's pattern
+    "has already escaped once into `v_positions`."
+
+    **`initial_capital`.** A scale, not a claim. Every reported quantity is
+    a ratio (`total_ret`, `sharpe`, `max_drawdown`, `capital_efficiency`)
+    except `terminal_value` and the tax numbers, and those are linear in it,
+    so the value only fixes the units the `benchmarks` rows are read in.
+
+    **`risk_free_annual`.** A flat 2%, the rate `sharpe` subtracts and the
+    rate idle cash accrues at between a trim and its redeploy (DESIGN §6.5).
+    It is deliberately a constant rather than a series: the arms are read
+    against each other, and threading a daily T-bill series through eight
+    simulations adds an ingestion dependency the session does not have.
+    2% is roughly the 2010-2023 average 3-month T-bill yield, which spent
+    most of that window near zero and finished above 5%. **The limit is
+    real and one-directional:** a flat rate understates the cash return in
+    2023 and overstates it in 2015, so the trim arm's idle-cash leg is
+    mis-stated in both eras, in opposite directions. It is sweepable
+    precisely so the sensitivity is measurable rather than assumed.
+
+    **`trim_fraction` and `trim_stoch_threshold`.** DESIGN §6.5's "sell 20%
+    on `CONFLUENCE_HIGH` or `%K_full >= 80`." The threshold is *not*
+    `ExitParams.exit_stoch_threshold` even though both default to 80: that
+    one is exit policy for an open sleeve position, this one decides whether
+    to trim a held core position, and an exit-rule sweep must not silently
+    move the trim rule with it. Same reasoning ADR 092 applies to the
+    signal/exit pair.
+
+    **`dca_tranches`.** DESIGN §6.6's "buy C/12 on the first trading day of
+    each month." Named rather than written as 12 so the fixed-schedule arm's
+    ramp length is visible. Note the consequence, which is a property of the
+    specified rule rather than of this implementation: over a window longer
+    than `dca_tranches` months, `dca_fixed` exhausts C early and converges
+    toward `dca_lump`.
+
+    **`short_term_tax_rate` and `wash_sale_window_days`.** ADR 032, which is
+    Provisional and stays Provisional. 37% is the top US federal ordinary
+    bracket; no state tax, no NIIT, no bracket progression, and no
+    loss carry-forward is modeled. 30 days is the statutory wash-sale
+    window, and it is **calendar** days on both sides of the disposal.
+
+    **`irr_*`.** The bisection bracket and tolerance for the DCA arms' XIRR.
+    `irr_days_per_year` is 365, not 252: IRR discounts calendar time, so a
+    trading-day divisor would inflate every rate by roughly 45%.
+    """
+
+    initial_capital: float = 1_000_000.0
+    risk_free_annual: float = 0.02
+    trading_days_per_year: int = 252
+
+    trim_fraction: float = 0.20
+    trim_stoch_threshold: float = 80.0
+
+    dca_tranches: int = 12
+
+    short_term_tax_rate: float = 0.37
+    wash_sale_window_days: int = 30
+
+    irr_days_per_year: float = 365.0
+    irr_max_rate: float = 100.0
+    irr_tolerance: float = 1e-10
+    irr_max_iterations: int = 500
+
+    # ADR 061's significance criterion. A field rather than a literal so a
+    # one-sided 95% read and this one are two named settings instead of one
+    # edited number.
+    null_percentile: float = 97.5
+
+
+DEFAULT_BENCHMARK = BenchmarkParams()

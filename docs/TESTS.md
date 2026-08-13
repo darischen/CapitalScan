@@ -640,6 +640,145 @@ Four of these files sit in `capitalscan/tests/integration/`, which the fast tier
 
 ---
 
+## Session 13: Benchmark Arms
+
+Session 12 aggregated events that already existed. Session 13 simulates capital, and every failure mode it has produces a plausible number rather than an exception. The suite is split accordingly: `test_arms.py` proves the arithmetic on hand-computable cases, `test_benchmarks_arms.py` proves the windowing on in-memory frames, and `test_benchmarks_measured.py` proves the *stored* result against the live database.
+
+### Unit Tests (capitalscan/tests/unit/test_arms.py)
+
+Pure `core/arms.py`, no database, no fixtures on disk. 58 tests.
+
+**Metrics**
+- `max_drawdown` is a **positive** fraction, matching `core.indicators.drawdown_from_high` and `StatsParams.dd_buckets`. A sign flip here inverts every drawdown comparison in Session 14's slice
+- `annualized_return` over exactly one year returns the total return, and 69% over two years annualizes to 30% (`1.30² = 1.69`)
+- `sharpe` returns **None** on a constant series, never `inf` and never a substituted value. A flat stretch would otherwise make an arm look decisive
+- Two risk-free rates on one return series give different Sharpes, which is what proves `risk_free_annual` is read rather than ignored. 13.1's "documented risk-free rate from config, not a literal"
+- `capital_efficiency` is 0.0 when nothing was deployed (13.1 acceptance), not a divide-by-zero
+
+**Position return paths**
+- On a dividend-free series the path reproduces the price path exactly; with a dividend it picks up the `adj_close` stream. This is the only place the two price series meet
+- A short is the exact negation
+- The path compounds to the realized return, so the daily decomposition and the round-trip number cannot disagree
+
+**Portfolio simulation**
+- A single position drives the curve, and the days around it earn the risk-free rate
+- Two opposing positions on one day net to flat, which is the equal-weight rule
+- An empty arm earns `rf` and reports `frac_deployed = 0.0`
+- **Trade `pnl` sums to the curve's total move.** Attribution has to close, and a position's weight changes every time another opens beside it, so `pnl` is accumulated daily rather than derived from the realized return
+- `win_rate` is **None** with no trades. 0.0 reads as "never won," a different claim
+- Identical inputs give an identical curve
+
+**Buy and hold and the share book**
+- **`frac_deployed` is 1.0 by construction** (13.1 acceptance, gate item 5). Structural, not measured
+- Members are equal-weighted; a departing member is sold at the **next rebalance**, so its move on the day after it leaves is excluded
+- The book **re-weights to equal on a membership change**: a name that doubles alone and then shares the book with a new member only moves half of it on the next doubling. DESIGN §6.4's "equal-weight, rebalance quarterly on universe changes"
+- A name that stops printing bars is **held at its last observed price** until the next rebalance sells it. Dropping it from the valuation instead would book its whole value as a loss on the day the bars stopped
+- A member with no price at all drops out of the weighting rather than poisoning the mean (invariant 4)
+- **Stint `pnl` sums to the curve.** Without dollar P&L on a stint, the buy-and-hold arm reports `post_tax_ret == pre_tax_ret` for the wrong reason: not because it owed nothing, but because it had no numbers to owe on
+
+**Trim and redeploy**
+- **Never trimming reproduces buy-and-hold under *changing* membership.** The static-membership version of this test passes even when the two arms hold different books, which is exactly what happened: the first implementation gave trim a fixed slice of every ticker bought at first appearance while buy-and-hold rebalanced to current members, and it measured **+725% against +413%** on the train split. One simulator now runs both arms and the regression test varies membership
+- A trim moves `trim_fraction` into cash; a **second** trim takes the fraction of what *remains*, leaving 0.64 invested rather than 0.60. The rule is stated and tested, per the 13.3 brief
+- **Two trims plus one redeploy is one round trip, not two.** `n_trims` and `n_round_trips` are separate numbers and a test distinguishes them
+- Days in cash run from the **first unredeployed** trim
+- A trim with no following redeploy stays in cash and is reported in `n_open_cash_positions`, never force-closed
+- Idle cash accrues at `rf` over a fixture spanning a known 10 days
+- **Never trimming reproduces buy-and-hold.** ADR 017's comparison only means something if the no-trim case is the same curve
+
+**DCA**
+- All four variants deploy exactly `C`, asserted to the cent
+- Underfiring reports non-zero `capital_undeployed` and the final-day sweep still closes the gap
+- **Lump sum agrees with buy-and-hold on a single ticker** — the cross-arm consistency check. A disagreement means one of the two simulators is wrong
+- `avg_cost_basis` is capital-weighted; `cash_drag` is zero for lump sum and positive for a laggard
+- **`frac_deployed` and `max_drawdown` are measured off each variant's own curve, not assumed.** A signal-triggered variant holding cash until its first signal is not fully deployed, and cash does not fall with the basket, so its drawdown is shallower than the index's
+
+**IRR**
+- A hand-computed three-flow case. At annual spacing the discount factor solves `220x² − 100x − 100 = 0`, giving `r = 6.53%`; the test asserts NPV ≈ 0 at the measured rate and sanity-checks the rate itself
+- A doubling over exactly 365 days is 100%
+- **None** when the flows carry no sign change. Returning a bracket endpoint would put a number in `benchmarks.irr` that no cash flow implies
+
+**Tax and wash sales (ADR 032)**
+- **29 days flags and 31 days does not, on both sides of the disposal.** Testing only the earlier direction would pass a one-sided implementation
+- The window is **calendar** days: 2020-03-31 is inside a 30-day window from 2020-03-01 and 2020-04-01 is not. The 13.5 brief names this as the most likely place to be quietly wrong
+- A trade's **own entry never flags it**. A five-day hold would otherwise flag every losing trade, which is a statement about the holding period rather than a wash sale
+- A core-position purchase alone triggers the flag where the sleeve alone would not
+- A different ticker never flags; a winning trade is never a wash sale
+- `post_tax_ret <= pre_tax_ret` for any arm with net gains
+- **The disallowance moves the number, not only the flag.** A flag with no numeric consequence would pass a careless test
+- **A loss cannot offset a gain from a different tax year.** Pooling the window into one net figure would let a 2021 loss cancel a 2011 gain, which no tax year permits
+- **A wash-sale loss is deferred into the next year, not destroyed.** The rule adds it to the replacement lot's basis. Treating it as permanent produced `post_tax_ret = −354%` against `pre_tax_ret = +109%` on the train split — a tax bill several times the account, from twelve years of losses discarded one year at a time. The deferral still costs when it lands in a year with no gains to offset, which is what keeps the flag testable
+- A net-loss arm owes nothing and is not refunded — no carry-forward is modeled
+
+**The null percentile**
+- The percentile matches `numpy` on 200 stored values
+- A value inside the null's range but below its upper tail does **not** clear the criterion. Beating the median is not the test
+- An empty null returns None from both `null_percentile` and `exceeds_null`. "No distribution" is not "did not clear it"
+
+### Unit Tests (capitalscan/tests/unit/test_benchmarks_arms.py)
+
+`research/benchmarks.py` on in-memory frames. 41 tests, no database.
+
+**Window and universe**
+- Train and validate bounds do not overlap; an unknown split raises
+- An event outside the trade universe **that day** is dropped. ADR 012: the signal arm has to trade the names buy-and-hold holds, or the comparison is between two universes rather than two entry rules
+
+**Entries**
+- An entry fills at the **next open**, not the signal bar. Resolving off the signal bar shifts every exit in the arm by one bar
+- A signal on the last bar never fills and is dropped, never fabricated
+- A flat series times out at exactly `max_hold_days`
+- **`build_positions` calls `resolve_exit_for_entry`**, asserted by spy rather than by comparing outputs. 13.2's acceptance is worded that way because comparing outputs would pass on two implementations that happen to agree on the fixture
+- The exit cache does not change the answer
+- A missing interior bar is padded with a **0.0** return so the position still spans the shared calendar. No bar means no observed price change; filling from a neighbour would invent one
+
+**The null (ADR 061)**
+- **Two draws at one `config_hash` are identical, verified on all 200 replications, not a sample**
+- Two different `config_hash` values produce different nulls on all 20 tested replications. A fixed constant seed makes every config share one null and runs without complaint
+- Two replications of one config differ. A null whose replications are identical has no distribution and its 97.5th percentile is its median
+- **Firing-rate matching per ticker-year**, on a fixture where a uniform rate would give a visibly different count: AAA fires 12 times in 2018 and 3 in 2019, and a uniform rate over three ticker-years would give ~5 each
+- A ticker-year that never fired draws nothing
+- A pool smaller than the firing count draws the whole pool, never with replacement — that would enter the same day twice
+- Eligible days exclude the window's last two bars, where no exit could resolve, and days outside the trade universe
+
+**Trim signals**
+- `CONFLUENCE_HIGH` trims regardless of `%K`; a high `%K` trims without confluence
+- **The `%K` threshold comes from `BenchmarkParams`**, not a literal and not `ExitParams.exit_stoch_threshold`. Both default to 80, so a test moving one and asserting the other did not follow is the only thing that catches the coupling ADR 092 warns about
+- Only `CONFLUENCE_LOW` is a redeploy; a plain oversold event is not
+- A signal outside the calendar is dropped
+
+**DCA schedules and purchases**
+- Month starts are the first trading day of each month
+- **Signal days are distinct calendar days, not events.** Six names firing on one day is one deployment day; counting events would make `N` the event count and shrink every tranche
+- A core purchase is recorded each time a ticker joins the universe, including a rejoin — one purchase would understate a name that left and came back
+- **The arm's own re-entry counts as a wash-sale purchase.** ADR 032 says "including the core position," not "only." The sleeve buying back a name it just took a loss in is the textbook case, and the self-exclusion is what stops a trade flagging itself
+
+**Row shaping**
+- Every row carries `run_id` and `git_sha` (invariant 6)
+- `replication` is null on every arm but the random one. A populated value elsewhere pulls rows into the null's distribution query that are not part of it
+- Subset rows carry a distinguishable `era` marker and **share** the pooled `split_key`. The subset narrows the entry population, not the dates, and overloading `split_key` would make the firewall query ambiguous
+
+### Integration Tests (capitalscan/tests/integration/test_benchmarks_measured.py) — read-only
+
+**The session gate, checked against what was actually written.** The gate is stated in terms of rows in `benchmarks`, and reading them back is the only version that catches a writer dropping a replication or a percentile computed off an in-memory list. `SELECT`-only plus one `write=False` re-run; nothing is inserted, deleted, or truncated.
+
+- All eight arms present, one `config_hash`, one `split_key`, `run_id` and `git_sha` on every row
+- **The null holds exactly 200 rows with `replication` 1 through 200, no gaps and no duplicates**
+- The null has a real distribution: over 100 distinct values and non-zero standard deviation
+- `load_null_distribution` returns exactly the stored values, so the percentile is provably computed from the table
+- The signal arm's position against the 97.5th percentile resolves to a real boolean. **The gate is that the number is computed and recorded, not that the signal wins**
+- The null's median lands near buy-and-hold scaled by `frac_deployed`. A construction check with a deliberately wide band, not a precision claim
+- Buy-and-hold's `frac_deployed` is 1.0; `capital_efficiency` is finite on every row and equals `total_ret / frac_deployed`
+- Every DCA variant reports `capital_undeployed` and an IRR; lump sum leaves nothing undeployed and carries zero cash drag
+- **Lump sum and buy-and-hold agree on terminal value** on the real multi-ticker basket
+- `post_tax_ret <= pre_tax_ret` everywhere; `wash_sale_flagged` populated on every row
+- The high-breadth subset runs all three arms, is reported **alongside** the pooled result rather than instead of it, shares the pooled `split_key`, and its buy-and-hold matches the pooled one exactly — same dates, same universe, same number
+- **Determinism:** two `run_benchmarks` calls on `validate` produce identical frames once `run_id`, `computed_at`, and `git_sha` are dropped
+
+### Fixture Guard Fix (carried from the Session 13 prerequisites)
+
+`test_cell_grid_measured.py` crashed with 42 collection errors rather than skipping when `rho_era` was empty: its module fixture calls `cell_n_eff` before `test_rho_era_prerequisite_is_populated` could run, so the test that existed to "fail first with a clear signal" could not. The emptiness check now lives **in the fixture**, which `pytest.skip`s with the exact `cscan stats rho` command to run. The named test stays as the assertion of the prerequisite, so a future refactor that drops the guard fails there.
+
+---
+
 ## 6. Statistical verification
 
 Two tests catching a category no unit test can (ADR 087).
@@ -835,11 +974,11 @@ other than the engine:
 
 ### Phase 4
 
-- Three-arm comparison produces a chart
-- Random-entry null spans 200 replications
-- Every headline cell reports `n_eff`, CI, baseline, and q-value
-- Drawdown slice renders
-- Random-walk null test passes on the full pipeline
+- Three-arm comparison produces a chart — **open, Session 14.** The three arms and their equity curves exist as of Session 13; the chart does not
+- Random-entry null spans 200 replications — **closed, Session 13.** 200 rows in `benchmarks` with `replication` 1-200, reproducible within a `config_hash` and different across configs
+- Every headline cell reports `n_eff`, CI, baseline, and q-value — **closed, Session 12**
+- Drawdown slice renders — **open, Session 14.** `max_drawdown` is stored per arm as of Session 13
+- Random-walk null test passes on the full pipeline — **closed, Session 11.4**
 
 ### Phase 5
 

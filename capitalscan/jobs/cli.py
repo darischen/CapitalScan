@@ -1279,6 +1279,87 @@ def stats_rho_cmd(
         console.print(f"[yellow]eras written with no rho_empirical: {report.skipped_eras}[/yellow]")
 
 
+@stats_app.command("benchmarks")
+def stats_benchmarks_cmd(
+    config_hash: str = typer.Option(
+        ..., "--config-hash", help="events.config_hash to measure the arms against"
+    ),
+    split_key: str = typer.Option("train", help="train | validate | holdout"),
+    replications: Optional[int] = typer.Option(
+        None,
+        help="Random-entry replications. Defaults to StatsParams.n_replications_default (200). "
+        "Use 50 during sweeps where ranking rather than significance is the goal (ADR 061)",
+    ),
+    write: bool = typer.Option(True, help="Write to benchmarks. --no-write measures only"),
+) -> None:
+    """Session 13: the eight benchmark arms (DESIGN §6.4-§6.6, ADR 012).
+
+    Buy-and-hold, signal entry, a 200-replication random-entry null,
+    trim-and-redeploy, four DCA variants, and ADR 099's high-breadth subset
+    re-run of the three-arm comparison. All on one universe and one date
+    range, which is the entire basis of the comparison (ADR 012).
+
+    Additive and reversible: every row carries this invocation's `run_id`,
+    and `DELETE FROM benchmarks WHERE run_id = '...'` reverses the run
+    completely. Nothing else is written and no existing table is touched.
+
+    The signal arm's position against the 97.5th percentile of the null is
+    reported whichever way it falls. A gate that requires a favorable result
+    is not a gate.
+    """
+    from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn
+
+    from capitalscan.jobs import db_io, ingest
+    from capitalscan.jobs.provenance import git_sha
+    from capitalscan.research.benchmarks import run_benchmarks
+
+    config = _resolve_config_or_exit()
+    engine = db_io.get_engine()
+    n_reps = config.stats.n_replications_default if replications is None else replications
+
+    # Two passes over the replications (pooled, then the high-breadth
+    # subset), so the bar's total is doubled rather than resetting halfway.
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeRemainingColumn(),
+        console=console,
+    ) as bar:
+        task = bar.add_task("null replications", total=max(2 * n_reps, 1))
+
+        def _tick(done: int, total: int) -> None:
+            bar.update(task, advance=1)
+
+        with ingest.run_job(
+            engine,
+            "benchmarks",
+            {"config_hash": config_hash, "split_key": split_key, "replications": n_reps},
+        ) as job:
+            _rows, report = run_benchmarks(
+                engine,
+                config_hash,
+                split_key,
+                cfg=config,
+                replications=n_reps,
+                run_id=job.run_id,
+                git_sha=git_sha(),
+                write=write,
+                progress=_tick,
+            )
+            job.rows_written = report.rows_written
+
+    console.print(report.summary())
+    for note in report.notes:
+        console.print(f"  {note}")
+    if report.signal_exceeds_null is None:
+        console.print("[yellow]no stored null to test against[/yellow]")
+    elif report.signal_exceeds_null:
+        console.print("[green]signal arm is above the null's 97.5th percentile[/green]")
+    else:
+        console.print("[yellow]signal arm is at or below the null's 97.5th percentile[/yellow]")
+
+
 app.add_typer(stats_app, name="stats")
 
 

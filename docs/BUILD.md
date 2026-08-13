@@ -31,7 +31,40 @@ Sessions 0-7 deliver v1 (Phase 1). Sessions 8-9 deliver Phases 2-3. Session 10 i
 
 | 12 | Cell grid and `cell_stats` | Twelve-cell grid (ADR 102), `cell_key` parity, `cell_stats` writer, era/breadth/concentration reporting, `arm` migration, `v_screen` predicates | **Session 12 gate — complete, passed on all 10 items.** Twelve cells enumerated, ten rendered, two suppressed at `n_eff` 14.3 and 5.0 exactly as ADR 102 predicts; measured `n_eff` reproduces the ADR 102 table within ±2. **No cell survives FDR: minimum q-value 0.769 across the 48-test family.** See `RESULTS.md` Session 12 |
 
+| 13 | Benchmark arms | Buy-and-hold, signal, 200-replication random-entry null, trim-and-redeploy, four DCA variants, pre/post-tax and wash-sale flagging, ADR 099's high-breadth subset | **Session 13 gate — complete, passed on all 10 items.** Eight arms on one universe and one date range; the null holds exactly 200 rows with `replication` 1-200 and reproduces identically within a `config_hash`. **The signal arm is below the null's 97.5th percentile on both train and validate, and below buy-and-hold on both.** See `RESULTS.md` Session 13 |
+
 Sessions 0-2 can run back to back in one sitting. Session 7 is mostly waiting.
+
+**Session 13 is complete.** Tasks 13.1-13.7 all closed, all ten gate items pass. No
+migration: `benchmarks` was already in `db/schema.sql` and had never been written to.
+Rollback is `DELETE FROM benchmarks WHERE run_id = '...'`.
+
+Runs of record: `benchmarks_20260813T161520_e1266a36` (train) and
+`benchmarks_20260813T162457_de8433d7` (validate), both `config_hash = 1835688bf7d760ba`,
+409 rows each, 6m14s per split.
+
+Four findings carry into Session 14:
+
+1. **The signal arm loses to both benchmarks on both splits.** Train: +108.37% against
+   buy-and-hold's +383.66% and a null 97.5th percentile of +205.77%. Validate: −10.10%
+   against −3.69% and +3.02%. It clears the null's *median* on train (+108% against +84%)
+   and not on validate, so entry timing is marginally better than random at best. This is
+   the second independent measurement pointing the same way as Session 12's minimum
+   q-value of 0.769.
+2. **Short-term tax removes the entire pre-tax return.** The signal arm's +108.37% becomes
+   −7.78% after 7,163 short-term round trips at 37%. The randomization null shows the same
+   pattern, so it is a property of the turnover, not of the signal. One stated bias runs
+   the other way and is recorded in `RESULTS.md`: buy-and-hold is taxed at short-term
+   rates too, which overstates its tax and flatters the signal arm.
+3. **The edge concentrates at high breadth**, DESIGN §6.11's market-timing reading. The
+   subset arm's capital efficiency is 3.762 against the pooled 1.166 on a third of the
+   deployment — and it is still below its own subset null (+126.04% against +248.70%).
+4. **Two comparability defects were found and fixed by measurement, not by review.** The
+   trim arm initially held a different book than buy-and-hold (+725% against +413%,
+   entirely artifact), and the tax model treated wash-sale losses as permanently
+   disallowed (`post_tax_ret = −354%` against `pre_tax_ret = +109%`). Both passed their
+   original unit tests. `RESULTS.md` records both, and both now have regression tests that
+   would have caught them.
 
 **Session 12 is complete.** Tasks 12.1-12.6 all closed, all ten gate items pass.
 Migrations `e3c7f5a91d24` (`cell_stats.arm`, `v_screen` config/arm predicates) and

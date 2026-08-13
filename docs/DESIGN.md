@@ -1315,6 +1315,20 @@ Capital efficiency = total return / fraction of time deployed
 
 Arm 1 is hard to beat by construction: a signal firing on 4% of days with a 5-day hold sits in the market ~20% of the time, needing roughly 5× the annualized rate while deployed to match a name compounding at 30%.
 
+**Implemented 2026-08-13 (Session 13).** Five rules this section left open, resolved in `core/arms.py` and `research/benchmarks.py`:
+
+1. **Two models, one for entry arms and one for holding arms.** The signal and random arms use a *position* model: on each day capital is split equally across the positions open that day, and a day with none sits in cash at `BenchmarkParams.risk_free_annual`. The buy-and-hold and trim arms use a *share book*: equal weight across current members, share counts fixed between rebalances, re-weighted on every membership change. Both carry no slippage or commission — `core/costs.py` already applied those to `events.net_ret`, and charging them twice would make the signal arm look worse than the run that produced its entries.
+
+2. **The signal arm is the long side.** ADR 058 computes both sides and surfaces only long, and ADR 017 makes the upper-band and overbought signals drive the trim arm. The short side's role in this session is `arm = 'trim'`. No naive-short control is written.
+
+3. **The ~20% deployment figure above is per ticker, and does not survive pooling.** Across a ~62-name trade universe the signal fires often enough that the arm is deployed on the large majority of days, so capital efficiency and total return are close to the same number and the "5× the annualized rate while deployed" argument does not apply as written. That is a real property of a multi-name universe, not a defect, and it means the pooled signal-versus-buy-and-hold comparison is close to a straight return comparison.
+
+4. **Delisted and untraded names.** A name that stops printing bars is valued at its **last observed price** — no gain, no loss — and sold at the next rebalance. `tickers.delisted_on` exists and a position in a delisted name must resolve rather than silently persist; dropping it from the valuation instead would book its entire value as a loss on the day the bars stopped. Nothing is filled or interpolated (invariant 4). A name that leaves the trade universe is likewise sold at the **next rebalance**, since `universe.as_of` is forward-filled to daily membership.
+
+5. **The universe restriction binds both ways.** A signal event on a ticker not `in_trade` that day is dropped from the signal arm, because otherwise the comparison is between two universes rather than two entry rules.
+
+6. **The window opens on the first day the trade universe has members.** The train split starts 2010-01-01 and the first `universe.as_of` is 2010-03-31, so without the clip every arm sits in cash for ~60 trading days and buy-and-hold's `frac_deployed` measures 0.98 rather than the 1.0 that is supposed to be structural. An arm cannot hold a universe that does not exist yet, and a stretch where every arm is identically in cash adds nothing to a comparison between arms. All arms still share one calendar, so the identical-dates rule is untouched.
+
 ### 6.5 Trim-and-redeploy variant
 
 ADR 017 makes trimming, not shorting, the primary use of the upper-band signal. It is measured as a strategy variant against buy-and-hold on the same names.
@@ -1334,6 +1348,17 @@ Carries no borrow cost, no gap risk, no wash-sale interaction, and no undefined 
 
 Amended 2026-08-11 by ADR 106. The original ranking read `trim-and-redeploy > regime-filtered short > naive always-short`. ADR 016's regime filter is superseded — short entries now use the same universe and criteria as long — so the middle term no longer names a distinct category and the comparison is two-way. ADR 016's band-walking prediction is retained and is measured directly in §6.11's short cells: if it holds, they show low `p_hit`, high `mean_mae`, and an `exit_mix` dominated by `timeout` and `stop`.
 
+**Implemented 2026-08-13 (Session 13).** Four rules resolved:
+
+1. **A second trim before a redeploy takes 20% of what remains,** not 20% of the original. Two trims leave 0.64 of the position invested, not 0.60.
+2. **A redeploy closes the whole outstanding cash position** however many trims opened it, so two trims followed by one redeploy is **one** round trip. `n_trims` is reported separately in the run log, which is what distinguishes the two counts; `benchmarks.n_trades` holds the trim count and `benchmarks.n_round_trips` the pair count.
+3. **Days in cash run from the first unredeployed trim,** counted in trading days off the shared calendar. A trim never redeployed by the window's end stays in cash and is counted, never force-closed.
+4. **Trim is an overlay on the buy-and-hold share book, not a second simulator.** `core.arms.simulate_holdings` runs both arms; the trim arm is that function with the overlay switched on, so the no-trim case *is* buy-and-hold, exactly. This is what ADR 017's "measured against buy-and-hold on the same names" requires, and it was not free: the first implementation gave trim a static book of every ticker bought at first appearance while buy-and-hold rebalanced to current members, which measured **+725% against +413%** on the train split — a 312-point gap that was entirely the two arms holding different books. A static-membership unit test passed the whole time. The regression test now uses changing membership.
+
+5. **The trim arm is taxed on its full holding-stint disposals,** the same ones buy-and-hold books, so the two post-tax numbers are comparable. **Stated gap:** the trims themselves are partial disposals and are not modeled as taxable events, which understates the trim arm's tax in a known direction. ADR 032 is Provisional and partial-lot accounting is outside this session's scope.
+
+Both the 20% fraction and the `%K` threshold live in `BenchmarkParams`, deliberately **not** reusing `ExitParams.exit_stoch_threshold` even though both default to 80. One is exit policy for an open sleeve position, the other is a trim rule for a held core position, and an exit-rule sweep must not silently move the trim rule (ADR 092's pattern).
+
 ### 6.6 DCA comparison
 
 Separate from the arms, and closer to actual use.
@@ -1346,6 +1371,18 @@ Separate from the arms, and closer to actual use.
 | Lump sum | Deploy C on day one |
 
 Same total capital, same window, no exits, positions accumulate and hold. Reported: terminal value, IRR, average cost basis, cash drag. `N` comes from the historical firing rate; leftover capital deploys on the final day, and underfiring is reported explicitly since idle capital has a real cost.
+
+**Implemented 2026-08-13 (Session 13).** Five rules resolved:
+
+1. **All four variants accumulate units of one basket index** — the buy-and-hold arm's own equity curve. That is what makes lump sum and buy-and-hold agree on terminal value by construction rather than by coincidence, which is the cross-arm consistency check that catches an error in either simulator.
+2. **Idle DCA cash earns nothing.** §6.5 puts the risk-free rate on the trim arm's idle cash and this section does not, deliberately: `cash_drag` is the quantity being measured, and crediting the cash would net out part of it.
+3. **`cash_drag` is defined against lump sum** — `lump_total_ret − variant_total_ret` — so all four are computed together. Computing lump separately is how the two would drift.
+4. **`avg_cost_basis` is `capital_deployed / units_acquired`** on the basket index, capital-weighted. A raw average purchase price across many tickers is not a meaningful number.
+5. **Fixed-schedule converges toward lump sum over a long window.** The rule is `C / 12` per month, so over a window longer than 12 months the capital is exhausted in year one and the rest of the window is fully invested. This is a property of the rule as specified, not of the implementation, and `BenchmarkParams.dca_tranches` names the ramp length so it is visible. The four variants stay informative over a one-year window and compress over a fourteen-year one; read them accordingly.
+
+6. **`N` is the train split's signal-day rate scaled to the window's length,** not the measured window's own realized count. Taking it from the window itself would deploy `C/N` exactly `N` times and make `capital_undeployed` zero on every split **by construction** — a number that cannot report anything. On the train split the two coincide by definition, since the window that defines the rate realizes it, so underfiring is observable on validate and holdout only. Reading a train firing *rate* from a holdout run is not a firewall breach: ADR 088's rule is about attaching statistics to events, and no outcome is read.
+
+`capital_undeployed` is measured **immediately before** the final-day sweep, so every variant still deploys exactly `C` and underfiring shows up as a number rather than as a smaller total.
 
 ### 6.7 Headline grid
 
@@ -2042,6 +2079,18 @@ Nightly, after indicators and events.
 Per ADR 032, backtest output reports pre-tax and after-tax results separately. Sleeve gains are taxed at short-term ordinary rates. The wash-sale interaction is flagged: the core-plus-sleeve structure trades tickers held long term, so selling a sleeve position at a loss triggers disallowance if the ticker was bought within 30 days either side, including the core position and dividend reinvestment.
 
 This is a modeling assumption for evaluation, not tax advice. Rates and rules vary by situation.
+
+**Implemented 2026-08-13 (Session 13).** `core.arms.tax_summary`. Two rules decide the number, and the naive reading of the paragraph above is badly wrong on a multi-year window:
+
+1. **Taxed per calendar year.** Pooling the whole window into one net figure would let a 2021 loss offset a 2011 gain, which no tax year permits. Each year nets its own gains against its own allowed losses and pays on the excess; a net-loss year owes nothing and is not refunded, since no loss carry-forward is modeled.
+
+2. **A wash-sale loss is deferred, not destroyed.** The rule adds the disallowed loss to the replacement lot's basis, so it comes back when that lot closes. The first implementation treated the disallowance as permanent, which produced `post_tax_ret = −354%` against `pre_tax_ret = +109%` on the train split — a tax bill several times the account, from twelve years of losses being discarded one year at a time. A flagged loss now moves into the **next** year's allowed pool. The flag still carries a real numeric consequence, which is what makes it testable: deferring a loss out of a profitable year into one with no gains means it never offsets anything.
+
+The purchase set is the core position **plus the arm's own other entries**. ADR 032 says "including the core position," not "only" — the sleeve buying back a name it just took a loss in is the textbook wash sale. Each trade's own entry is excluded, or a five-day hold would flag every losing trade in the system, which would be a statement about the holding period.
+
+**Stated gaps, all one-directional.** Deferred losses still outstanding in the final year are lost rather than carried past the window. `post_tax_ret` subtracts nominal cumulative tax over `initial_capital`, so it ignores the compounding cost of paying tax early and understates the drag. Rebalance-driven partial disposals of a retained name are not taxable events here. Federal short-term rates only: no state tax, no NIIT, no bracket progression. Dividend reinvestment is not a separate purchase, because the total-return series compounds distributions into the price rather than buying shares on the ex-date, so there is no reinvestment date to place — which understates flagging.
+
+ADR 032 is Provisional and stays Provisional.
 
 ---
 
