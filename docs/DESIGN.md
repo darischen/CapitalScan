@@ -849,6 +849,12 @@ def run(tickers, target_start, target_end, run_id):
 
 The read window and write window differ **by design**. That asymmetry is the whole point, and `max_warmup()` comes from the registry so adding a longer indicator adapts the job automatically (ADR 051).
 
+**`max_warmup()` is 273 as of 2026-08-13** (ADR 108). `bear_close_above_upper` reads `bollinger`'s 272-bar output shifted back one bar, so it needs one more than the `rv_pct_252d` chain that previously set the ceiling. That number is load-bearing rather than cosmetic: it drives the read-window expansion above, and an unchanged 272 leaves the first flagged bar of every window null.
+
+**One boolean column among numerics.** `bear_close_above_upper` is `boolean`, nullable, and NULL through warmup — "no band yet" is not "did not fire" (invariant 4). Migration `a9d3c04f7b15` adds it with no default, which in Postgres 11+ is a catalog-only change: no table rewrite, and the ACCESS EXCLUSIVE lock is held for microseconds rather than for a full scan.
+
+Measured 2026-08-13 over the full universe: 612 tickers, 43,701 flagged bars. Verified by a lag join against the **prior** bar's band, with zero discrepancies on four checks — none flagged without being a down bar, none flagged with a close below the prior band, none flagged whose high failed to touch it (the `bars_check1` subset guarantee), and none missed.
+
 Parallelism: `ProcessPoolExecutor(max_workers=14)`, leaving two threads for Postgres and the OS.
 
 Merge step: `days_to_earnings` needs the `earnings` table; `spx_ret_1d` and VIX need `market_days`. Join after per-ticker computation in a single vectorized pass, since neither is ticker-parallel.
@@ -898,6 +904,18 @@ every 300 s:
          write quotes_live + event, emit notification, store signal report
 16:00  stop; write poller_sessions row
 ```
+
+**ADR 108's live tag** (added 2026-08-13). `fetch_quotes` carries `day_open` from Yahoo's `regularMarketOpen`, and `poll.is_bear_reversal` evaluates the intraday analogue of the stored flag:
+
+```
+price ≥ bb_upper_{t−1}  ∧  price < day_open
+```
+
+It is deliberately **not** the same predicate as `core.indicators.bear_close_above_upper`. The stored flag is close-confirmed and cannot be decided mid-session, so the current quote stands in for the close. At the close the two are the same comparison on the same numbers — a test verifies that across four cases, because a drift there means the poller highlights a pattern the backtest never measured (ADR 006's failure mode).
+
+The tag is displayed only where the reversal coincides with `CONFLUENCE_HIGH` (user's decision, 2026-08-13), and it is a **tag on an existing notification, never its own event row**. Writing a `bear_close_above_upper` event intraday would put a row in `events` that tonight's `run_events` could legitimately disagree with, which is the same reason `breach_live` never returns the type.
+
+A quote missing `regularMarketOpen` keeps its row with `day_open` NaN rather than being dropped: the band signals never read the field, and dropping the quote would blind the poller to an ordinary breach — a strictly worse failure than the tag going unevaluated.
 
 Bands are read once at open and never recomputed intraday. The loop is two float comparisons per ticker per tick, so compute is not the constraint at any interval. The real constraints are the yfinance rate limit and quote staleness (up to 15 minutes on some symbols), which is why 5 minutes rather than 1 (ADR 024).
 

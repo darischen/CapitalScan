@@ -788,6 +788,60 @@ Pure `core/arms.py`, no database, no fixtures on disk. 58 tests.
 
 ---
 
+## ADR 108: The Close-Confirmed Signal
+
+Added 2026-08-13. Five files, 41 tests. The pattern worth noting: **three of the four defects this work uncovered were found by running things, not by reading them**, and each had a passing test suite at the moment it was wrong.
+
+### Unit Tests (capitalscan/tests/unit/test_indicators.py)
+
+- The flag needs **both** halves: `open > close` alone does not fire it, and a close above the band on an up bar does not either
+- **The band compared against is bar t−1's**, asserted against a manually-shifted series rather than by inspection. Today's band embeds today's close, so testing today's close against it is circular
+- **NULL through warmup, never False.** A `False` there is a measured negative that never happened
+- **Every flagged bar also touched the upper band.** Structural, from `bars_check1` (`close <= high`): a close at or above the band implies the high was too. This is what lets the new type refine an existing population rather than create a disjoint one
+- `max_warmup()` moves 272 → 273, with both contributing registrations pinned. It drives the indicators job's read window, so a stale 272 leaves the first flagged bar of every window null
+
+### Unit Tests (capitalscan/tests/unit/test_signals.py)
+
+- Fires from the bar's precomputed boolean; **absent, NULL, and False all read as "did not fire"**. NULL matters most — `bool(float("nan"))` is `True` in Python, so a bare `bool()` would have fired on every warmup bar in the corpus
+- **Ranks above `confluence_high`** and raises `signal_strength` by one when it co-fires, which is exactly why it forces a new `config_hash`
+- Short-side only, and the **full four-way ranking is pinned** — a partial assertion would pass with two entries swapped
+- **`breach_live` never returns it.** The live path has no close to confirm against, so a poller able to emit it would fire intraday, before the bar defining it exists
+
+### Unit Tests (capitalscan/tests/unit/test_signature_guarantee.py)
+
+`PERMITTED_ON_BAR` gains one field. **The negative assertions are what carry the guarantee**, and they are unchanged: `FORBIDDEN_PRICES_ON_BAR` is new and pins that `open`, `close`, `adj_close`, and `volume` are never read. A test asserting only that the new field is permitted would pass on a probe with no restrictions at all.
+
+### Unit Tests (capitalscan/tests/unit/test_backtest_candidates.py)
+
+The allowlist that holds the invariant-3 line. `CLOSE_CONFIRMED_FIELDS` names the only fields a caller may take from bar t's own indicator row.
+
+**The load-bearing test is behavioral, not structural.** Row t is given a wildly oversold `k_full` of 5.0 against t−1's neutral 50.0, and `stoch_oversold` must not fire — while the close-confirmed flag from that *same row* still arrives. Every other test in the file would pass on an implementation that read the whole of row t and happened to use one field.
+
+### Unit Tests (capitalscan/tests/unit/test_enabled_signals.py)
+
+**The defect that would have destroyed reproducibility.** ADR 108 says the new type forces a new `config_hash`; it did not, because `config_hash` hashes `Config` fields and an enum member is not one. A backtest would have rewritten all 626,977 events under `1835688bf7d760ba` in place, and Sessions 12/13's published tables would have stopped reproducing — silently. Found by printing the hash before launching the run.
+
+- Ablating the type restores the prior `signal_type` **and** `signal_strength`, so the switch reproduces the old answer exactly rather than merely dropping an entry
+- `breach_live` respects the set too, or the poller fires on types the backtest never measured
+- An unknown name **raises**: a typo would otherwise disable a real signal *and* mint a hash for a config nobody intended
+- **The old hash is not reconstructible, asserted in that direction.** Adding any `Config` field changes every hash, so `1835688bf7d760ba` predates the field and no current config produces it. A hash colliding across schema versions would claim two different configs are the same one
+- The tuple is order-sensitive, matching `UniverseParams.required_criteria` since ADR 014. The convention is enum declaration order, and a test pins the default to it
+
+### Unit Tests (capitalscan/tests/unit/test_poll_bear_reversal.py)
+
+- Above the band **and** below the open. Up bars, lost bands, and dojis all fail it
+- At the band counts (`>=`, matching the stored flag); at the open does not (`<`, strict)
+- A missing `regularMarketOpen` is not a fire — "cannot evaluate" is not "did not happen", and without the explicit guard NaN comparisons would return False for the wrong reason
+- **The live and stored predicates agree at the close**, verified across four cases rather than asserted in prose
+
+### Unit Tests (capitalscan/tests/unit/test_scan_signal_filters.py)
+
+**A silent regression, caught while writing the new flag.** `--confluence-only` filtered on `signal_type`, which holds only the most specific type. Since the new type outranks `confluence_high`, a bar firing both reports the new one — so the filter would have started hiding exactly the rows this work set out to surface, with no error and no symptom beyond a smaller result.
+
+Both filters now read `signal_types_all`. `test_filtering_on_signal_type_would_have_dropped_it` keeps the reasoning honest by asserting the naive form still fails.
+
+---
+
 ## 6. Statistical verification
 
 Two tests catching a category no unit test can (ADR 087).
