@@ -434,20 +434,52 @@ def _bear_frames():
     reading the wrong row gets a visibly different answer."""
     bars = _bars(
         [
-            {"ticker": "AAA", "ts": "2026-01-05", "open": 100.0, "high": 101.0,
-             "low": 99.0, "close": 100.0},
-            {"ticker": "AAA", "ts": "2026-01-06", "open": 110.0, "high": 111.0,
-             "low": 104.0, "close": 106.0},
+            {
+                "ticker": "AAA",
+                "ts": "2026-01-05",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+            },
+            {
+                "ticker": "AAA",
+                "ts": "2026-01-06",
+                "open": 110.0,
+                "high": 111.0,
+                "low": 104.0,
+                "close": 106.0,
+            },
         ]
     )
     inds = _indicators(
         [
-            {"ticker": "AAA", "ts": "2026-01-05", "bb_lower": 90.0, "bb_upper": 105.0,
-             "bb_mid": 97.5, "bb_pctb": 0.5, "k_full": 50.0, "d_full": 50.0,
-             "k_fast": 50.0, "atr_14": 2.0, "bear_close_above_upper": False},
-            {"ticker": "AAA", "ts": "2026-01-06", "bb_lower": 91.0, "bb_upper": 200.0,
-             "bb_mid": 145.0, "bb_pctb": 0.5, "k_full": 50.0, "d_full": 50.0,
-             "k_fast": 50.0, "atr_14": 2.0, "bear_close_above_upper": True},
+            {
+                "ticker": "AAA",
+                "ts": "2026-01-05",
+                "bb_lower": 90.0,
+                "bb_upper": 105.0,
+                "bb_mid": 97.5,
+                "bb_pctb": 0.5,
+                "k_full": 50.0,
+                "d_full": 50.0,
+                "k_fast": 50.0,
+                "atr_14": 2.0,
+                "bear_close_above_upper": False,
+            },
+            {
+                "ticker": "AAA",
+                "ts": "2026-01-06",
+                "bb_lower": 91.0,
+                "bb_upper": 200.0,
+                "bb_mid": 145.0,
+                "bb_pctb": 0.5,
+                "k_full": 50.0,
+                "d_full": 50.0,
+                "k_fast": 50.0,
+                "atr_14": 2.0,
+                "bear_close_above_upper": True,
+            },
         ]
     )
     return bars, inds

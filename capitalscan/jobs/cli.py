@@ -751,6 +751,7 @@ SIGNAL_TYPE_LABELS = {
     "stoch_overbought": "Stochastic Overbought",
     "confluence_low": "Confluence Low",
     "confluence_high": "Confluence High",
+    "bear_close_above_upper": "Bear Reversal Above Upper Band",
 }
 
 SIDE_LABELS = {
@@ -808,8 +809,19 @@ def scan(
     confluence_only: bool = typer.Option(
         False, help="Show only confluence signals (both Bollinger and stochastic agree)"
     ),
+    bear_close_only: bool = typer.Option(
+        False,
+        "--bear-close-only",
+        help="Show only ADR 108 close-confirmed reversals: the day opened above where it "
+        "closed, and the close still held at or above the prior upper band",
+    ),
 ) -> None:
-    """Query detected events (ADR 049)."""
+    """Query detected events (ADR 049).
+
+    `--confluence-only` and `--bear-close-only` compose: passing both shows
+    the intersection, which is the population the poller's live tag
+    highlights.
+    """
     from datetime import date as date_cls
 
     from capitalscan.jobs import compute
@@ -824,10 +836,33 @@ def scan(
         console.print("[yellow]no events found[/yellow]")
         raise typer.Exit(code=0)
 
+    # Both filters read `signal_types_all`, never `signal_type`.
+    #
+    # `signal_type` holds only the *most specific* type that fired (ADR 057),
+    # and ADR 108 ranks `bear_close_above_upper` above `confluence_high`. A
+    # bar firing both therefore reports `signal_type = bear_close_above_upper`,
+    # so the original `signal_type.isin([...])` form silently stopped
+    # matching confluences the moment the new type shipped — it would have
+    # dropped exactly the rows this session set out to surface. Filtering on
+    # the full concurrent set is both the fix and the correct question:
+    # "did this fire" rather than "did this outrank everything else".
+    def _fired(row, wanted: set[str]) -> bool:
+        return bool(wanted & set(row or []))
+
     if confluence_only:
-        result = result[result["signal_type"].isin(["confluence_low", "confluence_high"])]
+        keep = result["signal_types_all"].map(
+            lambda t: _fired(t, {"confluence_low", "confluence_high"})
+        )
+        result = result[keep]
         if result.empty:
             console.print("[yellow]no confluence events found[/yellow]")
+            raise typer.Exit(code=0)
+
+    if bear_close_only:
+        keep = result["signal_types_all"].map(lambda t: _fired(t, {"bear_close_above_upper"}))
+        result = result[keep]
+        if result.empty:
+            console.print("[yellow]no close-confirmed reversal events found[/yellow]")
             raise typer.Exit(code=0)
 
     console.print(result.to_string(index=False))

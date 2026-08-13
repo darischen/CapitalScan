@@ -45,7 +45,12 @@ _BARS_COLUMNS = [
 ]
 _HOURLY_COLUMNS = ["ticker", "ts", "open", "high", "low", "close", "volume"]
 _ACTIONS_COLUMNS = ["ticker", "ts", "action_type", "value"]
-_QUOTE_COLUMNS = ["ticker", "ts", "price"]
+# `day_open` is ADR 108's live half: the poller compares the current price
+# against today's open, which no other consumer needs. It is nullable — a
+# quote without `regularMarketOpen` yields NaN rather than dropping the
+# quote, because the band signals do not need it and dropping would blind
+# the poller to an ordinary breach over a missing field it never uses.
+_QUOTE_COLUMNS = ["ticker", "ts", "price", "day_open"]
 
 
 def _empty_bars_frame() -> pd.DataFrame:
@@ -352,7 +357,18 @@ def fetch_quotes(tickers: list[str], *, now: pd.Timestamp | None = None) -> pd.D
             ts = pd.to_datetime(quoted_at, unit="s", utc=True)
             if (now - ts).total_seconds() > QUOTE_MAX_AGE_SECONDS:
                 continue
-            rows.append({"ticker": quote.get("symbol"), "ts": ts, "price": float(price)})
+            day_open = quote.get("regularMarketOpen")
+            rows.append(
+                {
+                    "ticker": quote.get("symbol"),
+                    "ts": ts,
+                    "price": float(price),
+                    # Invariant 4: absent stays absent. NaN propagates to
+                    # `_is_bear_reversal`, which treats it as "cannot
+                    # evaluate" rather than as a passing comparison.
+                    "day_open": float(day_open) if day_open is not None else float("nan"),
+                }
+            )
     return pd.DataFrame(rows, columns=_QUOTE_COLUMNS)
 
 
