@@ -67,8 +67,15 @@ def test_registry_contains_expected_indicators():
 
 
 def test_max_warmup_matches_longest_chain():
-    # DESIGN §2.7: rv_pct_252d (252 + 20 = 272) is the longest chain.
-    assert ind.max_warmup() == 272
+    # DESIGN §2.7: rv_pct_252d (252 + 20 = 272) was the longest chain.
+    # ADR 108's `bear_close_above_upper` extends it by exactly one bar: it
+    # reads `bollinger`'s 272-bar output shifted back one, so it needs 273.
+    # `max_warmup()` drives the indicators job's read-window expansion, so
+    # this number is load-bearing rather than cosmetic — an unchanged 272
+    # would leave the first flagged bar of every window null.
+    assert ind.max_warmup() == 273
+    assert ind.registry()["bear_close_above_upper"].warmup == 273
+    assert ind.registry()["realized_vol"].warmup == 272
 
 
 def test_register_rejects_duplicate_name():
@@ -349,3 +356,102 @@ def test_compute_all_never_fills_warmup_nulls():
     # Before max_warmup, at least one column must still be null - proves
     # nothing silently forward-filled or interpolated (core/ null policy).
     assert out.iloc[: ind.max_warmup() - 1].isna().any(axis=None)
+
+
+# --------------------------------------------------------------------------
+# bear_close_above_upper (ADR 108) — the close-confirmed reversal flag
+# --------------------------------------------------------------------------
+
+
+def _bear_bars(n=40, seed=7):
+    """A gently rising series, so `bb_upper` is well-defined and finite."""
+    rng = np.random.default_rng(seed)
+    close = 100.0 + np.cumsum(rng.normal(0.15, 0.6, n))
+    return pd.DataFrame(
+        {
+            "ts": pd.date_range("2020-01-01", periods=n, freq="B"),
+            "open": close + 0.5,
+            "high": close + 1.5,
+            "low": close - 1.5,
+            "close": close,
+            "adj_close": close,
+            "volume": np.full(n, 1_000_000),
+        }
+    )
+
+
+def test_the_flag_needs_a_down_bar_and_a_close_at_or_above_the_band():
+    """ADR 108's rule, both halves. `open > close` alone is not it, and a
+    close above the band on an up bar is not it either."""
+    p = IndicatorParams(bb_window=5)
+    bars = _bear_bars(n=30)
+    # Force bar 20 to be a down bar closing far above its prior band.
+    bars.loc[20, "close"] = float(bars.loc[19, "close"]) + 20.0
+    bars.loc[20, "open"] = float(bars.loc[20, "close"]) + 5.0
+    bars.loc[20, "high"] = float(bars.loc[20, "open"]) + 1.0
+    out = ind.bear_close_above_upper(bars, p)
+    assert bool(out["bear_close_above_upper"].iloc[20])
+
+
+def test_an_up_bar_closing_above_the_band_does_not_flag():
+    p = IndicatorParams(bb_window=5)
+    bars = _bear_bars(n=30)
+    bars.loc[20, "close"] = float(bars.loc[19, "close"]) + 20.0
+    bars.loc[20, "open"] = float(bars.loc[20, "close"]) - 5.0  # green bar
+    bars.loc[20, "high"] = float(bars.loc[20, "close"]) + 1.0
+    out = ind.bear_close_above_upper(bars, p)
+    assert not bool(out["bear_close_above_upper"].iloc[20])
+
+
+def test_a_down_bar_closing_below_the_band_does_not_flag():
+    p = IndicatorParams(bb_window=5)
+    bars = _bear_bars(n=30)
+    bars.loc[20, "close"] = float(bars.loc[19, "close"]) - 5.0
+    bars.loc[20, "open"] = float(bars.loc[20, "close"]) + 2.0
+    out = ind.bear_close_above_upper(bars, p)
+    assert not bool(out["bear_close_above_upper"].iloc[20])
+
+
+def test_the_band_compared_against_is_the_prior_bar_s():
+    """Invariant 3. Today's band embeds today's close, so comparing today's
+    close against it is circular — the close would help set the level it is
+    being tested against. The shift is what makes the flag a statement about
+    a level fixed before the bar opened."""
+    p = IndicatorParams(bb_window=5)
+    bars = _bear_bars(n=30)
+    upper = ind.bollinger(bars, p)["bb_upper"]
+    flagged = ind.bear_close_above_upper(bars, p)["bear_close_above_upper"]
+    manual = (bars["open"] > bars["close"]) & (bars["close"] >= upper.shift(1))
+    pd.testing.assert_series_equal(
+        flagged.fillna(False).astype(bool),
+        manual.fillna(False).astype(bool),
+        check_names=False,
+    )
+
+
+def test_the_flag_is_null_through_warmup_never_false():
+    """Invariant 4: no band yet is not "did not fire". A False there would
+    read as a measured negative."""
+    p = IndicatorParams(bb_window=5)
+    out = ind.bear_close_above_upper(_bear_bars(n=30), p)
+    assert out["bear_close_above_upper"].iloc[:5].isna().all()
+
+
+def test_a_flagged_bar_always_also_touched_the_upper_band():
+    """The subset guarantee, and it is structural: `bars_check1` enforces
+    `close <= high`, so a close at or above the band implies the high was
+    too. Every flagged bar therefore already carries a `bb_upper_touch`
+    event, which is what lets the flag be measured against an existing
+    population rather than a new one."""
+    p = IndicatorParams(bb_window=5)
+    bars = _bear_bars(n=60)
+    upper = ind.bollinger(bars, p)["bb_upper"].shift(1)
+    flagged = ind.bear_close_above_upper(bars, p)["bear_close_above_upper"].fillna(False)
+    touched = bars["high"] >= upper
+    assert not (flagged.astype(bool) & ~touched.fillna(False)).any()
+
+
+def test_the_flag_is_registered_and_carried_by_compute_all():
+    out = ind.compute_all(_bear_bars(n=300), IndicatorParams())
+    assert "bear_close_above_upper" in out.columns
+    assert "bear_close_above_upper" in ind.registry()

@@ -205,6 +205,64 @@ def drawdown_from_high(bars: pd.DataFrame, p: IndicatorParams) -> pd.DataFrame:
     return pd.DataFrame({"dd_52w": dd_52w}, index=bars.index)
 
 
+@register("bear_close_above_upper", deps=["open", "close"], warmup=273, dtype="boolean")
+def bear_close_above_upper(bars: pd.DataFrame, p: IndicatorParams) -> pd.DataFrame:
+    """A down bar closing at or above the prior upper band (ADR 108).
+
+    ```
+    open > close  AND  close >= bb_upper[t-1]
+    ```
+
+    **Why this lives in the indicator registry rather than in
+    `core/signals.py`.** `detect` may read only `low`, `high`, `ts`, and
+    `ticker` from the bar — the signature probe in
+    `tests/unit/test_signature_guarantee.py` asserts it, and CLAUDE.md calls
+    that probe "the real guarantee." This condition needs `open` and
+    `close`, so evaluating it inside `detect` would mean widening the one
+    thing the project pins hardest. Computing it here instead puts the
+    answer on the indicator row, which `detect` already receives.
+
+    **The band is bar t-1's, not bar t's** (invariant 3, and the `.shift(1)`
+    below is what enforces it). Today's band is a 20-day mean and standard
+    deviation *ending at today's close*, so testing today's close against it
+    is circular: the close helps set the level it is being measured against.
+    Shifting makes the flag a statement about a level fixed before the bar
+    opened. Warmup is `bollinger`'s 272 plus the one bar the shift consumes.
+
+    **The comparison is "at or above," matching `core.signals._breach`'s
+    `price_tolerance = 0.0` convention** ("at or beyond, exact"). It routes
+    through `_breach` for exactly the reason invariant 2 exists: a second
+    inline band comparison in this repo is how the two would drift apart.
+
+    Null through warmup, never False (invariant 4). "No band yet" is not
+    "did not fire," and a False there would read as a measured negative.
+
+    **Structural consequence, and it is load-bearing.** `bars_check1`
+    enforces `close <= high`, so `close >= bb_upper[t-1]` implies
+    `high >= bb_upper[t-1]` — every flagged bar necessarily also fired
+    `BB_UPPER_TOUCH`. The flag therefore refines an existing population
+    rather than creating a new one, which is what makes it measurable
+    against events that already exist.
+    """
+    from capitalscan.core.signals import _breach
+    from capitalscan.core.types import Bound
+
+    upper_prior = bollinger(bars, p)["bb_upper"].shift(1)
+    close = bars["close"]
+    at_or_above = pd.Series(
+        [
+            _breach(float(c), float(u), Bound.UPPER)
+            for c, u in zip(close.to_numpy(), upper_prior.to_numpy())
+        ],
+        index=bars.index,
+    )
+    flag = (bars["open"] > close) & at_or_above
+    return pd.DataFrame(
+        {"bear_close_above_upper": flag.where(upper_prior.notna())},
+        index=bars.index,
+    )
+
+
 @register("sma_slope", deps=["close"], warmup=260, dtype="numeric(12,6)")
 def sma_slope(bars: pd.DataFrame, p: IndicatorParams) -> pd.DataFrame:
     """200-day SMA and its 60-day trailing slope, split-adjusted close."""

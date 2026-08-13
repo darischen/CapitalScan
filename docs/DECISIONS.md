@@ -990,11 +990,25 @@ Rationale. The strategy operates on a days-to-months horizon, so sub-day granula
 
 ## 058. Both sides computed, only long surfaced
 
-Status: Pinned
+Status: Pinned. Surfacing clause superseded 2026-08-13 — see the dated note below. The both-sides-computed clause stands unchanged.
 
 Decision. The engine constructs short events alongside long ones from the first run, at the cost of a sign flip and borrow accounting. Only long events surface in v1's UI and notifications.
 
 Rationale. Zero marginal cost, and it gives the statistics layer long-versus-short asymmetry data immediately. ADR 016's band-walking hypothesis becomes testable before any short is ever recommended.
+
+**Amended 2026-08-13: both sides surface, and have all along.**
+
+The "only long events surface" clause was never implemented. `jobs/poll.py` loops over both sides and sends a notification for each, with no side filter anywhere in the path, and `v_screen` joins `c.side = e.side` rather than pinning `side = 'long'`. Found by reading the code against this ADR while scoping a new short-side signal, and confirmed against a live poller session: `reports/poller_session_2026_08_13_083548.csv` holds 21 `confluence_high` short rows, all notified.
+
+The code is amended into the ADR rather than the reverse, for three reasons:
+
+1. **ADR 106 removed the premise.** Short entries now use the same universe and criteria as long, so "before any short is ever recommended" describes a gate the project no longer has.
+2. **ADR 017 makes the upper-band signal actionable.** Trimming a held position on `CONFLUENCE_HIGH` is the primary use, and a trim signal a person never sees is inert.
+3. **v1 is over.** The project is past Session 9, past the Phase 3 gate, and past Sessions 10 through 13. The package version moves to 0.2.0 on this commit to mark the line, so "in v1" stops being a live constraint that reads as current.
+
+One asymmetry is retained and is deliberate: `jobs/poll.py` builds a call overlay for long signals only (ADR 050). That is about the option chain, not about surfacing.
+
+Nothing about advisory-only changes. ADR 043 and invariant 7 stand: a surfaced short signal states what fired and what historically followed, exactly as a long one does, and recommends no action.
 
 ---
 
