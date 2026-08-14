@@ -33,6 +33,27 @@ class IndicatorParams:
     rv_pct_window: int = 252
     vol_z_window: int = 20
     dd_window: int = 252
+    # How many bars back the close-confirmed band is read from (ADR 109).
+    #
+    # 0 means bar t's own band, which is what every charting platform draws
+    # and what "closed above the upper band" universally means. 1 restores
+    # ADR 108's original shifted rule.
+    #
+    # **This field exists so the band choice is part of `config_hash`.** ADR
+    # 109 changed a formula in `core/indicators.py`, and `config_hash` hashes
+    # `dataclasses.asdict(Config)` — a formula is not a `Config` field, so the
+    # hash did not move and a backtest would have silently overwritten the
+    # measurements taken under the superseded rule. That is the same defect
+    # `SignalParams.enabled_signal_types` was added to close one day earlier,
+    # reached by a different route.
+    #
+    # Naming it also makes the superseded rule *reproducible* rather than
+    # merely abandoned: `bear_close_band_lag=1` reconstructs ADR 108's
+    # population, which is what lets the 55%-fewer-firings comparison be
+    # re-derived from a config instead of only from a database snapshot.
+    # DESIGN §3.10 wants an ablated rule to be a config change, not a code
+    # change.
+    bear_close_band_lag: int = 0
 
 
 @dataclass(frozen=True)

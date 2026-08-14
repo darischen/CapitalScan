@@ -264,7 +264,11 @@ def bear_close_above_upper(bars: pd.DataFrame, p: IndicatorParams) -> pd.DataFra
     from capitalscan.core.signals import _breach
     from capitalscan.core.types import Bound
 
+    # `bear_close_band_lag` is 0 (bar t's own band, ADR 109) and exists so the
+    # choice lives in `config_hash`; 1 restores ADR 108's shifted rule.
     upper = bollinger(bars, p)["bb_upper"]
+    if p.bear_close_band_lag:
+        upper = upper.shift(p.bear_close_band_lag)
     close = bars["close"]
     at_or_above = pd.Series(
         [
