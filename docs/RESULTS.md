@@ -1988,8 +1988,97 @@ upper band has usually been running hot, so `%K` is already extreme by then.
 
 ### Backtest and statistics
 
-Backtest under `697f3ae71428d392` in progress at the time of writing; cell and arm numbers
-land here when `stats rho`, `stats cells`, and `stats benchmarks` complete.
+Run 2026-08-14. Backtest `backtest_20260813T233051_a64c5401`, 627,380 rows, 590/616
+tickers, **4h55m wall clock** (write phase 35m50s, harness ~4h19m — see the CLAUDE.md
+correction, the documented 2h48m is 1.75x optimistic).
+
+**All five harness checks pass**, `no_lookahead` among them. That one carries the load
+here: ADR 108 widened the signature probe by one field and opened invariant 3's door by
+one allowlisted column, and the independent shift-ladder check confirms neither
+introduced look-ahead.
+
+### The fourteen cells, train split, target 3%
+
+| Side | Signal | Bucket | n | n_eff | `p_hit` | base | edge | q |
+|---|---|---|---|---|---|---|---|---|
+| short | `bb_upper_touch` | 0-10 | 4,006 | 719 | 0.1278 | 0.1138 | +0.0140 | 0.790 |
+| long | `bb_lower_touch` | 0-10 | 3,593 | 369 | 0.1887 | 0.1735 | +0.0152 | 0.790 |
+| short | `stoch_overbought` | 0-10 | 5,266 | 322 | 0.1217 | 0.1213 | +0.0004 | 0.790 |
+| short | `confluence_high` | 0-10 | 2,710 | 202 | 0.1033 | 0.1208 | −0.0175 | 0.792 |
+| **short** | **`bear_close_above_upper`** | **0-10** | **386** | **152** | **0.1295** | **0.1224** | **+0.0071** | **0.790** |
+| long | `stoch_oversold` | 0-10 | 1,444 | 147 | 0.1517 | 0.1654 | −0.0137 | 0.792 |
+| long | `bb_lower_touch` | 10-20 | 775 | 73 | 0.2619 | 0.2167 | +0.0452 | 0.790 |
+| long | `confluence_low` | 0-10 | 725 | 56 | 0.1738 | 0.1598 | +0.0140 | 0.790 |
+| long | `stoch_oversold` | 10-20 | 900 | 50 | 0.2722 | 0.2169 | +0.0553 | 0.790 |
+| short | `bb_upper_touch` | 10-20 | 420 | 47 | 0.1667 | 0.1785 | −0.0118 | 0.790 |
+| long | `confluence_low` | 10-20 | 620 | 39 | 0.2484 | 0.2085 | +0.0399 | 0.790 |
+| short | `stoch_overbought` | 10-20 | 371 | 14 | — | — | — | — |
+| **short** | **`bear_close_above_upper`** | **10-20** | **20** | **6** | — | — | — | — |
+| short | `confluence_high` | 10-20 | 131 | 5 | — | — | — | — |
+
+**The new signal's 0-10 cell renders** at `n_eff` 152, fifth highest of the fourteen and
+well clear of the 30 floor. Its 10-20 cell suppresses at 20 events, which is the honest
+outcome for a rare pattern inside a deep drawdown rather than a defect.
+
+**Nothing survives FDR correction. Minimum q-value 0.790 across 56 tests**, and the new
+signal's +0.71-point edge is comfortably inside noise. Session 12 measured q >= 0.769
+across 48 tests; widening the family to 56 moved the correction slightly and changed the
+conclusion not at all. This is the third independent measurement pointing the same way,
+alongside Session 13's arms.
+
+### Continuity predictions, verified exactly
+
+ADR 102's amendment predicted the confluence reallocation *before* the run. Both landed
+on the number:
+
+| Cell | Session 12 | Predicted | Measured | Verdict |
+|---|---|---|---|---|
+| `confluence_high` 0-10 | 2,986 | ~2,710 | **2,710** | renders, `n_eff` 215 -> 202 |
+| `confluence_high` 10-20 | 139 | ~131 | **131** | suppressed, unchanged |
+
+### The arms under the new config
+
+Runs `benchmarks_20260814T095544_04711f43` (train) and
+`benchmarks_20260814T100207_764b175c` (validate), 409 rows each.
+
+| Split | Buy and hold | Signal | Null median | Null 97.5th | Verdict |
+|---|---|---|---|---|---|
+| train | **+383.66%** | +108.37% | +84.44% | **+199.05%** | below |
+| validate | **−3.69%** | −10.10% | −14.12% | **+5.58%** | below |
+
+**Identical to Session 13's conclusion.** The signal arm sits below its own randomization
+null's 97.5th percentile on both splits and below buy-and-hold on both. Every arm's
+numbers are unchanged from `1835688bf7d760ba` to the digit, which is the expected result:
+ADR 108 added a short-side *signal type*, and the three-arm comparison runs the long side
+(ADR 058, ADR 017). The null threshold moved slightly (+205.77% -> +199.05%) because it is
+reseeded from `config_hash`, which is exactly what ADR 061 specifies.
+
+### `rho_era` under the new config
+
+| Era | `rho_empirical` | `rho_factor_implied` | gap | pairs |
+|---|---|---|---|---|
+| 2010-2014 | 0.4259 | 0.4119 | +0.0140 | 127,383 |
+| 2015-2019 | 0.3601 | 0.3340 | +0.0261 | 10,238 |
+| 2020-2023 | 0.4707 | 0.4296 | +0.0411 | 20,581 |
+| 2024+ | 0.2477 | 0.1615 | +0.0862 | 30,955 |
+
+### The screener came back
+
+`v_screen` returned 721,136 rows with **zero** statistics immediately after the GUC moved,
+then 679,285 with statistics once `cell_stats` ran on the **validate** split. That gap is
+invariant 5b working as designed — the view pins `c.split_key = 'validate'` and never
+inherits an event's own split — and it is recorded because a zero there looks identical to
+ADR 107's defect and is not it.
+
+### A process finding worth keeping
+
+`cscan path backfill` reprocesses every ticker on every run (`incomplete_only=False`),
+while `cscan path capture` selects only tickers with incomplete events. For a fresh
+`config_hash`, where every `fwd_window_days` is NULL, capture does exactly the needed work:
+**7m31s against a projected three hours**, 2,210,695 path rows. The first attempt was run
+as `backfill`, was killed by a tool timeout at 200/590 tickers, and on restart began
+re-walking the 201 already-complete tickers from the top. `backfill` is not resumable in
+practice even though its inner query supports it.
 
 ---
 
