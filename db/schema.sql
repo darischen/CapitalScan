@@ -402,7 +402,8 @@ CREATE TABLE public.indicators (
     dd_52w numeric(12,6),
     days_to_earnings integer,
     computed_at timestamp with time zone DEFAULT now() NOT NULL,
-    run_id text
+    run_id text,
+    bear_close_above_upper boolean
 );
 
 
@@ -671,7 +672,7 @@ CREATE TABLE public.runs (
     status text,
     rows_written bigint,
     notes text,
-    CONSTRAINT runs_status_check CHECK ((status = ANY (ARRAY['running'::text, 'ok'::text, 'failed'::text])))
+    CONSTRAINT runs_status_check CHECK ((status = ANY (ARRAY['running'::text, 'ok'::text, 'failed'::text, 'interrupted'::text])))
 );
 
 

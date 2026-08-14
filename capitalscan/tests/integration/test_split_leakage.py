@@ -63,7 +63,27 @@ EVENT_START = date.fromisoformat(SPLITS.event_start)
 
 @pytest.fixture(scope="module")
 def engine():
-    return db_io.get_engine()
+    """Skip the module when `events` is empty, rather than failing.
+
+    CI's slow tier runs against a freshly-migrated container with no rows in
+    it. Every assertion below is a count-equals-zero, so most would pass
+    vacuously there while the two non-vacuity guards fail — reporting a
+    defect where there is only an empty table.
+
+    This is the same shape as `test_cell_grid_measured.py`'s prerequisite
+    fixture, and it is here because the first version of this file did not
+    have it and CI caught that on its first slow-tier run.
+    """
+    eng = db_io.get_engine()
+    with eng.connect() as conn:
+        n = conn.execute(text("SELECT count(*) FROM events")).scalar() or 0
+    if n < 100_000:
+        pytest.skip(
+            f"`events` holds {n} rows; this module asserts a property over a populated "
+            "table and proves nothing against an empty or seeded one. Expected on a "
+            "fresh CI container."
+        )
+    return eng
 
 
 def test_no_train_event_is_dated_after_train_end(engine):
