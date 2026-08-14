@@ -130,7 +130,7 @@ and ADR 016 by 106.
 | 099 | Market breadth as a reporting split, not a grid dimension | Pinned |
 | 100 | Three Phase 4 contract corrections: v_screen config scope, cell_key wording, exit_mix semantics | Pinned |
 | 101 | Drawdown buckets reduced from four to two; 20%+ measured and permanently suppressed | Pinned |
-| 102 | Headline grid is 2 sides x 3 signals x 2 buckets, pooled across eras | Pinned. Supersedes ADR 011's grid composition |
+| 102 | Headline grid is 2 sides x 3 signals x 2 buckets, pooled across eras | Pinned. Supersedes ADR 011's grid composition. Amended by 108: fourteen cells |
 | 103 | Era is reporting only, never a tested family; era 2024+ is the holdout | Pinned |
 | 104 | Breadth denominator is the train universe, not the trade universe | Pinned. Amends ADR 099 |
 | 105 | `cell_stats.arm` separates measured populations from recommended ones | Pinned |
@@ -2283,7 +2283,7 @@ still presenting a number that invites reading.
 
 ## 102. Headline grid is two sides, three signals, two buckets
 
-**Status.** Pinned, 2026-08-11. Supersedes ADR 011's grid composition.
+**Status.** Pinned, 2026-08-11. Supersedes ADR 011's grid composition. **Amended 2026-08-13 by ADR 108: the grid is fourteen cells, not twelve** — see the dated note at the end of this entry.
 
 **Context.**
 
@@ -2396,6 +2396,24 @@ because a document predates it is the wrong direction of fit.
 Long-only grid, shorts deferred to Session 14. Loses the asymmetry measurement
 ADR 093 built short events to provide, and gains nothing: the short cells cost
 one `arm` column and no additional computation.
+
+---
+
+**Amended 2026-08-13 (ADR 108): fourteen cells.**
+
+`BEAR_CLOSE_ABOVE_UPPER` joins the short side, giving `3×2 + 4×2 = 14`. The Benjamini-Hochberg family in DESIGN §6.8 grows from 48 tests to 56.
+
+Three things this entry asserted that no longer hold verbatim:
+
+1. **The grid is not a clean cross product.** "Two sides × three families × two buckets" becomes three long families and four short ones. `LONG_SIGNALS` and `SHORT_SIGNALS` were positionally paired — index *i* of each was the same family from the opposite side — and they are not any more. `headline_grid` never zipped them, so the code already tolerated it, but the pairing was load-bearing documentation.
+
+2. **The sides are deliberately asymmetric.** No bullish counterpart to the close-confirmed pattern was requested, and ADR 106 already rejects long/short symmetry as an assumption rather than a default. Inventing one to preserve the shape would add two cells measuring something nobody asked for.
+
+3. **The confluence cells lose events to the new one.** ADR 057 emits one row per ticker-day carrying the most specific type, and ADR 108 ranks the reversal above confluence. On the train split, 409 bars fire the new signal and 286 (70%) also fire `confluence_high`; those 286 count in the new cell. `confluence_high` 0-10 goes 2,986 → ~2,710 and 10-20 goes 139 → ~131, and **neither changes its render/suppress verdict**. `signal_types_all` still carries both types on every affected row, so nothing is lost — only the cell assignment moves.
+
+**Why the ranking is not reversed to protect continuity.** Ranking the new type *below* confluence would leave Session 12's cells byte-identical, at the cost of the new cell holding only the 123 bars where confluence did **not** fire. After clustering, that lands `n_eff` under the 30 floor, so the cell would suppress and measure nothing. Preserving a published number by making a new one unmeasurable is the wrong trade, and ADR 057's more-specific-wins rule already decides it.
+
+**What this entry's core claim still holds.** ADR 102 removed `signal_strength` as a *cut* and capped the grid against roughly 2,000 effective events. Both stand: fourteen cells against that event budget is the same order of magnitude as twelve, and strength is still not a dimension.
 
 ---
 

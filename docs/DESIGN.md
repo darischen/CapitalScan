@@ -1428,15 +1428,20 @@ Same total capital, same window, no exits, positions accumulate and hold. Report
 
 ### 6.7 Headline grid
 
-Twelve cells (ADR 102, superseding ADR 011's composition). Fixed:
+**Fourteen cells** (ADR 102 as amended by ADR 108, superseding ADR 011's composition):
 
-| Dimension | Levels |
-|---|---|
-| Side | `long`, `short` |
-| Signal | band touch, stochastic extreme, confluence |
-| Drawdown bucket | 0-10%, 10-20% (ADR 101) |
+| Side | Signal families | Buckets | Cells |
+|---|---|---|---|
+| `long` | band touch, stochastic extreme, confluence | 0-10%, 10-20% | 6 |
+| `short` | band touch, stochastic extreme, confluence, **close-confirmed reversal** | 0-10%, 10-20% | 8 |
 
-`2 × 3 × 2 = 12`. Signal type pairs with side: a long cell reads `BB_LOWER_TOUCH` and its short counterpart reads `BB_UPPER_TOUCH`, so the grid is twelve cells rather than thirty-six. Both sides are `arm = 'signal'` (ADR 105, ADR 106); short entries use the same universe and criteria as long.
+`3×2 + 4×2 = 14`. Signal type pairs with side: a long cell reads `BB_LOWER_TOUCH` and its short counterpart reads `BB_UPPER_TOUCH`, so the grid is fourteen cells rather than forty-two. Both sides are `arm = 'signal'` (ADR 105, ADR 106); short entries use the same universe and criteria as long.
+
+**The sides are no longer symmetric** (ADR 108, 2026-08-13). `BEAR_CLOSE_ABOVE_UPPER` is short-side only — no bullish counterpart was requested, and ADR 106 already rejects long/short symmetry as an assumption rather than treating it as the default. `LONG_SIGNALS` and `SHORT_SIGNALS` were previously positionally paired, index for index; they are not any more, and `headline_grid` iterates them independently rather than zipping them.
+
+**The new cell takes events from `confluence_high`, and that is the ranking working as designed.** ADR 057 emits one row per ticker-day carrying the most specific type, and ADR 108 ranks the close-confirmed reversal above confluence. Measured on the train split: 409 bars fire the new signal and 286 of them (70%) also fire `confluence_high`, so those 286 count in the new cell instead. The overlap is real correlation, not a defect — a bar closing above the upper band has usually been running hot, so `%K` is already extreme. `signal_types_all` still lists both types on every such row; only the cell assignment moves.
+
+Consequence for continuity: `confluence_high` 0-10 goes from 2,986 events to roughly 2,710, and 10-20 from 139 to 131. **Neither changes its render/suppress verdict** — `n_eff` stays far above the floor on the first and far below it on the second. A reader comparing to Session 12's published table should expect this difference and not read it as drift.
 
 Cells are computed **pooled across eras** on the train split (ADR 103).
 
@@ -1478,6 +1483,8 @@ Benjamini-Hochberg across all tested cells within a run (ADR 020). Both `p_value
 Procedure: sort *m* p-values ascending, find the largest *k* with `p₍ₖ₎ ≤ (k/m)·α`, reject 1..k. The q-value is `min_{j≥i}( (m/j)·p₍ⱼ₎ )`, read as the FDR accepted by calling that result significant.
 
 The test family is defined explicitly: all headline-grid cells across all ladder targets, for one config. **The sweep does not multiply the family**, because sweeping is parameter selection on the training split, not hypothesis testing. Validation gets its own family; holdout gets a single test.
+
+**The family is 56 tests as of 2026-08-13**, up from 48: ADR 108 adds two cells (14 × 4 targets). The family size is derived from `headline_grid()` rather than written down, so this number follows the grid automatically — but it is recorded here because it changes the correction's severity, and a q-value is only interpretable against a stated family.
 
 ### 6.9 Output contract
 

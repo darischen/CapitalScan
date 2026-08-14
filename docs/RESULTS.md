@@ -1919,6 +1919,80 @@ settles it. **Holdout has not been touched.**
 
 ---
 
+## ADR 108 — the close-confirmed reversal signal
+
+Added 2026-08-13. `open > close AND close >= bb_upper[t-1]`: a down bar closing at or
+above the **prior** upper band. Short side only.
+
+**A new `config_hash`: `697f3ae71428d392`**, superseding `1835688bf7d760ba`. The old hash
+is not retired — every Session 12 and Session 13 number above remains a valid measurement
+of that config, and ADR 096's composite key on `cell_stats` means the two coexist rather
+than one replacing the other.
+
+### Why the hash had to move, and how close it came to not moving
+
+ADR 108 states the new type forces a new `config_hash`, because `signal_strength` counts
+concurrent types and shifts on every day the signal fires. **That did not happen on its
+own.** `config_hash` hashes `dataclasses.asdict(Config)`, and a `SignalType` enum member
+is not a `Config` field, so the hash stayed at `1835688bf7d760ba`.
+
+`_RUN_BACKTEST_UPDATE_COLUMNS` includes `signal_types_all`, `signal_strength`, and
+`cluster_id`. A backtest under the unchanged hash would have rewritten all 626,977 events
+in place, and every table above — the twelve cells, the eight arms, the 200-replication
+null — would have stopped reproducing from the database with nothing raising.
+
+Caught by printing the hash before launching the run, not by review.
+`SignalParams.enabled_signal_types` now names the enabled set, which makes the signal
+selection a genuine config dimension and doubles as the ablation switch DESIGN §3.10 asks
+for.
+
+### Measured incidence
+
+Full universe recompute, 20m08s at 8 workers, 612 tickers:
+
+| Quantity | Value |
+|---|---|
+| Flagged bars, all history | **43,701** |
+| Flagged bars, train split (short, cluster heads, `next_open`) | 409 |
+| ...that also fire `confluence_high` | **286 (70%)** |
+| ...that fire the reversal alone | 123 (30%) |
+
+Verified by a lag join against the **prior** bar's band, with zero discrepancies on four
+checks: none flagged without being a down bar, none flagged with a close below the prior
+band, none flagged whose high failed to touch that band, and **none missed**. The third
+check is the `bars_check1` subset guarantee — `close <= high` means a close at or above
+the band implies the high was too, so every flagged bar necessarily also fires
+`BB_UPPER_TOUCH`.
+
+An earlier version of that query compared row *t*'s band rather than *t−1*'s and appeared
+to show violations. The lag join is the correct check; the apparent violations were the
+query's error, not the data's.
+
+### Continuity: the confluence cells change, and why that is not drift
+
+The grid goes from twelve cells to fourteen (ADR 102 as amended). The new cell takes the
+286 overlapping events, because ADR 057 emits one row per ticker-day carrying the most
+specific type and ADR 108 ranks the reversal above confluence.
+
+| Cell | Session 12 `n` | Under the new hash | `n_eff` | Verdict |
+|---|---|---|---|---|
+| short `confluence_high` 0-10 | 2,986 | ~2,710 | ~195 vs 215 | renders, unchanged |
+| short `confluence_high` 10-20 | 139 | ~131 | ~5 | suppressed, unchanged |
+
+**Neither cell changes its render/suppress verdict.** `signal_types_all` still lists both
+types on every affected row, so no event is lost — only the cell counting it moves. A
+reader comparing the two tables should expect this difference.
+
+The 70% overlap is real correlation rather than redundancy: a bar that *closes* above the
+upper band has usually been running hot, so `%K` is already extreme by then.
+
+### Backtest and statistics
+
+Backtest under `697f3ae71428d392` in progress at the time of writing; cell and arm numbers
+land here when `stats rho`, `stats cells`, and `stats benchmarks` complete.
+
+---
+
 ## Holdout
 
 **Evaluated once. Published whatever it says.**
