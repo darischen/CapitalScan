@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 900" width="1040" height="900">
+<rect x="0" y="0" width="1040" height="900" fill="#ffffff"/>
+<text x="70" y="32" font-size="20" font-weight="bold" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">Drawdown slice -- edge vs. drawdown bucket (ADR 015)</text>
+<text x="70" y="54" font-size="13" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">config_hash=697f3ae71428d392  split=train  target_pct=0.03  horizon_days=5</text>
+<text x="70" y="80" font-size="12" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">ADR 015 hypothesis: edge is positive and stable in the 0-10% and 10-20% drawdown buckets, and turns negative</text>
+<text x="70" y="95" font-size="12" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">past 35% drawdown -- because a deep mega-cap drawdown is usually a thesis break, not a routine dip. If it</text>
+<text x="70" y="110" font-size="12" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">holds, the rule is: trade shallow dips, stand down on deep ones.</text>
+<text x="70" y="129" font-size="12" font-weight="bold" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">Measured answer: MEASURED, MIXED: of 11 rendered 0-10/10-20 cells, 0 have an edge interval entirely above</text>
+<text x="70" y="144" font-size="12" font-weight="bold" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">zero, 0 entirely below, 11 cross it. The shallow half of the hypothesis is not uniformly confirmed. The deep</text>
+<text x="70" y="159" font-size="12" font-weight="bold" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">half (20-35/35+ turning negative) is UNTESTABLE under this grid: ADR 101 measured that population directly</text>
+<text x="70" y="174" font-size="12" font-weight="bold" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">and every such cell fell short of min_n_eff=30.</text>
+<rect x="70" y="210" width="930" height="430" fill="none" stroke="#dddddd"/>
+<line x1="70" y1="483.39" x2="1000" y2="483.39" stroke="#333333" stroke-width="1.5"/>
+<text x="1004" y="487.39" font-size="11" fill="#333333" style="font-family:'DejaVu Sans Mono','Consolas',monospace">0</text>
+<line x1="70" y1="640.00" x2="1000" y2="640.00" stroke="#dddddd" stroke-dasharray="2,2"/>
+<text x="64" y="644.00" font-size="10" text-anchor="end" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">-0.135</text>
+<line x1="70" y1="532.50" x2="1000" y2="532.50" stroke="#dddddd" stroke-dasharray="2,2"/>
+<text x="64" y="536.50" font-size="10" text-anchor="end" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">-0.042</text>
+<line x1="70" y1="425.00" x2="1000" y2="425.00" stroke="#dddddd" stroke-dasharray="2,2"/>
+<text x="64" y="429.00" font-size="10" text-anchor="end" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">0.050</text>
+<line x1="70" y1="317.50" x2="1000" y2="317.50" stroke="#dddddd" stroke-dasharray="2,2"/>
+<text x="64" y="321.50" font-size="10" text-anchor="end" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">0.143</text>
+<line x1="70" y1="210.00" x2="1000" y2="210.00" stroke="#dddddd" stroke-dasharray="2,2"/>
+<text x="64" y="214.00" font-size="10" text-anchor="end" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">0.236</text>
+<line x1="105.13" y1="508.12" x2="105.13" y2="415.81" stroke="#1f6f43" stroke-width="2"/>
+<circle cx="105.13" cy="465.73" r="4.0" fill="#1f6f43"/>
+<line x1="138.20" y1="531.71" x2="138.20" y2="302.97" stroke="#5a9c78" stroke-width="2"/>
+<circle cx="138.20" cy="431.02" r="4.0" fill="#5a9c78"/>
+<text x="121.67" y="656" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">bb_lower_touch</text>
+<text x="121.67" y="667" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">(long)</text>
+<line x1="208.47" y1="556.14" x2="208.47" y2="421.79" stroke="#1f6f43" stroke-width="2"/>
+<circle cx="208.47" cy="499.31" r="4.0" fill="#1f6f43"/>
+<line x1="241.53" y1="539.71" x2="241.53" y2="261.17" stroke="#5a9c78" stroke-width="2"/>
+<circle cx="241.53" cy="419.35" r="4.0" fill="#5a9c78"/>
+<text x="225.00" y="656" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">stoch_oversold</text>
+<text x="225.00" y="667" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">(long)</text>
+<line x1="311.80" y1="556.81" x2="311.80" y2="328.88" stroke="#1f6f43" stroke-width="2"/>
+<circle cx="311.80" cy="467.17" r="4.0" fill="#1f6f43"/>
+<line x1="344.87" y1="562.83" x2="344.87" y2="259.62" stroke="#5a9c78" stroke-width="2"/>
+<circle cx="344.87" cy="437.18" r="4.0" fill="#5a9c78"/>
+<text x="328.33" y="656" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">confluence_low</text>
+<text x="328.33" y="667" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">(long)</text>
+<line x1="415.13" y1="493.17" x2="415.13" y2="436.65" stroke="#8a2e2e" stroke-width="2"/>
+<circle cx="415.13" cy="467.21" r="4.0" fill="#8a2e2e"/>
+<line x1="448.20" y1="590.38" x2="448.20" y2="344.85" stroke="#bf7070" stroke-width="2"/>
+<circle cx="448.20" cy="497.07" r="4.0" fill="#bf7070"/>
+<text x="431.67" y="656" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">bb_upper_touch</text>
+<text x="431.67" y="667" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">(short)</text>
+<line x1="518.47" y1="519.15" x2="518.47" y2="436.23" stroke="#8a2e2e" stroke-width="2"/>
+<circle cx="518.47" cy="482.87" r="4.0" fill="#8a2e2e"/>
+<text x="551.53" y="475.39" font-size="14" text-anchor="middle" fill="#8a8a8a" style="font-family:'DejaVu Sans Mono','Consolas',monospace">&#215;</text>
+<text x="551.53" y="501.39" font-size="8" text-anchor="middle" fill="#8a8a8a" style="font-family:'DejaVu Sans Mono','Consolas',monospace" transform="rotate(90 551.53 501.39)">suppressed n_eff=14.0</text>
+<text x="535.00" y="656" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">stoch_overbought</text>
+<text x="535.00" y="667" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">(short)</text>
+<line x1="621.80" y1="544.01" x2="621.80" y2="446.26" stroke="#8a2e2e" stroke-width="2"/>
+<circle cx="621.80" cy="503.68" r="4.0" fill="#8a2e2e"/>
+<text x="654.87" y="475.39" font-size="14" text-anchor="middle" fill="#8a8a8a" style="font-family:'DejaVu Sans Mono','Consolas',monospace">&#215;</text>
+<text x="654.87" y="501.39" font-size="8" text-anchor="middle" fill="#8a8a8a" style="font-family:'DejaVu Sans Mono','Consolas',monospace" transform="rotate(90 654.87 501.39)">suppressed n_eff=5.0</text>
+<text x="638.33" y="656" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">confluence_high</text>
+<text x="638.33" y="667" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">(short)</text>
+<line x1="725.13" y1="526.46" x2="725.13" y2="402.65" stroke="#8a2e2e" stroke-width="2"/>
+<circle cx="725.13" cy="475.11" r="4.0" fill="#8a2e2e"/>
+<text x="758.20" y="475.39" font-size="14" text-anchor="middle" fill="#8a8a8a" style="font-family:'DejaVu Sans Mono','Consolas',monospace">&#215;</text>
+<text x="758.20" y="501.39" font-size="8" text-anchor="middle" fill="#8a8a8a" style="font-family:'DejaVu Sans Mono','Consolas',monospace" transform="rotate(90 758.20 501.39)">suppressed n_eff=6.0</text>
+<text x="741.67" y="656" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">bear_close_above_upper</text>
+<text x="741.67" y="667" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">(short)</text>
+<rect x="803.67" y="210" width="82.67" height="430" fill="#f2f2f2" stroke="#dddddd" stroke-dasharray="4,3"/>
+<text x="845.00" y="415.00" font-size="12" font-weight="bold" text-anchor="middle" fill="#8a8a8a" style="font-family:'DejaVu Sans Mono','Consolas',monospace">SUPPRESSED</text>
+<text x="845.00" y="433.00" font-size="10" text-anchor="middle" fill="#8a8a8a" style="font-family:'DejaVu Sans Mono','Consolas',monospace">(ADR 101)</text>
+<text x="845.00" y="451.00" font-size="9" text-anchor="middle" fill="#8a8a8a" style="font-family:'DejaVu Sans Mono','Consolas',monospace">best n_eff=13.6</text>
+<text x="845.00" y="465.00" font-size="9" text-anchor="middle" fill="#8a8a8a" style="font-family:'DejaVu Sans Mono','Consolas',monospace">0/59 cells cleared floor</text>
+<text x="845.00" y="656" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">20-35</text>
+<rect x="907.00" y="210" width="82.67" height="430" fill="#f2f2f2" stroke="#dddddd" stroke-dasharray="4,3"/>
+<text x="948.33" y="415.00" font-size="12" font-weight="bold" text-anchor="middle" fill="#8a8a8a" style="font-family:'DejaVu Sans Mono','Consolas',monospace">SUPPRESSED</text>
+<text x="948.33" y="433.00" font-size="10" text-anchor="middle" fill="#8a8a8a" style="font-family:'DejaVu Sans Mono','Consolas',monospace">(ADR 101)</text>
+<text x="948.33" y="451.00" font-size="9" text-anchor="middle" fill="#8a8a8a" style="font-family:'DejaVu Sans Mono','Consolas',monospace">best n_eff=1.7</text>
+<text x="948.33" y="465.00" font-size="9" text-anchor="middle" fill="#8a8a8a" style="font-family:'DejaVu Sans Mono','Consolas',monospace">0/59 cells cleared floor</text>
+<text x="948.33" y="656" font-size="9" text-anchor="middle" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">35+</text>
+<circle cx="75" cy="194" r="4" fill="#1f6f43"/>
+<text x="84" y="198" font-size="10" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">long 0-10</text>
+<circle cx="185" cy="194" r="4" fill="#5a9c78"/>
+<text x="194" y="198" font-size="10" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">long 10-20</text>
+<circle cx="295" cy="194" r="4" fill="#8a2e2e"/>
+<text x="304" y="198" font-size="10" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">short 0-10</text>
+<circle cx="405" cy="194" r="4" fill="#bf7070"/>
+<text x="414" y="198" font-size="10" fill="#111111" style="font-family:'DejaVu Sans Mono','Consolas',monospace">short 10-20</text>
+<text x="70" y="888" font-size="9" fill="#666666" style="font-family:'DejaVu Sans Mono','Consolas',monospace">edge_ci_low/edge_ci_high = stored cell_stats.ci_low/ci_high minus stored baseline_empirical</text>
+</svg>

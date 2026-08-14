@@ -542,15 +542,27 @@ def test_the_exit_threshold_is_independent_of_signal_params():
 
 
 def test_exits_module_contains_no_bare_stochastic_literal():
+    """ADR 092's enforcement, replaced (Session 14 task 14.5).
+
+    The substring check this replaced (`"80.0" not in body and "20.0" not
+    in body`) covered one module and two exact float spellings — ADR 095
+    found it blind to `db/schema.sql`'s `(s.k_full >= (80)::numeric)`, which
+    is neither substring. `capitalscan.jobs.threshold_lint` is the real
+    matcher: a numeric literal on either side of a comparison operator
+    against a threshold-bearing column (`core/config.py::THRESHOLD_COLUMNS`
+    equivalent, named once in `threshold_lint.THRESHOLD_COLUMNS`). See
+    `test_threshold_lint.py` for the matcher's own test suite, including the
+    regression test proving it catches the ADR 095 SQL spelling this
+    substring check missed.
+    """
     import inspect
+    from pathlib import Path
+
+    from capitalscan.jobs import threshold_lint
 
     source = inspect.getsource(exits)
-    body = "\n".join(
-        line
-        for line in source.splitlines()
-        if not line.strip().startswith("#") and "exit_stoch_threshold" not in line
-    )
-    assert "80.0" not in body and "20.0" not in body
+    findings = threshold_lint.scan_python_source(source, path=Path(exits.__file__))
+    assert findings == []
 
 
 def test_long_stoch_exit_fires_exactly_at_the_configured_level():

@@ -842,6 +842,56 @@ Both filters now read `signal_types_all`. `test_filtering_on_signal_type_would_h
 
 ---
 
+## Session 14: Phase 4's Artifacts
+
+Sessions 11-13 produced numbers checkable against a formula. Session 14 produces
+**pictures**, and a chart that is subtly wrong looks exactly like one that is right. The
+defense is that every chart writes a CSV beside it and every rendered number is asserted
+against the `benchmarks` or `cell_stats` row it came from.
+
+### Unit Tests (capitalscan/tests/unit/test_curves.py)
+
+- Curve endpoints reproduce `benchmarks.total_ret` to **1e-16** against a 1e-9 requirement
+- **The base is implicit.** Row *i* is equity at the end of day *i*, so `total_ret = last - 1`, never `last / first - 1`. The wrong form agrees on `buy_hold` (nothing is held on day 0, so its first row genuinely is 1.0) and diverges on `signal`. Checking one arm and trusting the other is how this misleads, and it did — the CSV header now states the convention
+- Two runs produce byte-identical CSVs ignoring the timestamp comment
+- `curves.py` shapes only: it calls no `simulate_*`, `build_positions`, or `load_window`, so ADR 012's identical-universe-and-dates orchestration is not duplicated
+
+### Unit Tests (capitalscan/tests/unit/test_chart_arms.py)
+
+- SVG parses as XML with exactly three `<polyline>` and one band `<path>`
+- Summary-table numbers read from `benchmarks`, never recomputed — a chart that recomputes can disagree with the table beside it, and the chart is what people look at
+- Log value axis, so a 383% arm does not render a 108% arm invisible
+- Deterministic: two runs, identical bytes
+
+### Unit Tests (capitalscan/tests/unit/test_threshold_lint.py)
+
+**ADR 092's matcher, replaced.** The old enforcement was `assert "80.0" not in body` over one module. `db/schema.sql` spells the same threshold `(s.k_full >= (80)::numeric)`, which that assertion cannot see even pointed at the file.
+
+- Catches `80`, `80.0`, `80.00`, `int(80)` in a Python comparison, and the SQL spelling
+- Does **not** flag `ExitParams.exit_stoch_threshold = 80.0` — that is the definition, not a use
+- Threshold-bearing columns named in one constant, not scattered
+- **Two tests call `scan_repo(apply_known_exceptions=False)`** so the matcher cannot go blind while reading green. The two live hits are ADR 095's `v_positions` defect, deferred to Phase 5 by that ADR rather than fixed here
+- Excludes its own source: quoting the defect text verbatim in a docstring is indistinguishable from a real hit by pattern alone
+
+### Unit Tests (capitalscan/tests/unit/test_scaled_reachability.py)
+
+- `sigma_5d` reuses `horizon_drift_vol_array`'s scale factor rather than restating it, so a horizon change cannot leave a stale divisor
+- Double volatility gives double the absolute target
+- Null `rv_20d` yields a null target, never a substituted one (invariant 4)
+- **The scaled ladder never enters the Benjamini-Hochberg input**, asserted twice: no `p_value`/`q_value` column in the output, plus a source-inspection guard
+
+### Integration Tests (capitalscan/tests/integration/test_split_leakage.py) — read-only
+
+**Closes a gap the Sessions 11-14 audit found.** CLAUDE.md names five tests carrying the correctness load; the fifth was only half implemented. `split_key_for`'s boundaries were unit-tested, which proves the *function* labels a date correctly and never asserts the property over the *table*. Those are different claims: the function can be right while a row carries a `split_key` contradicting its `signal_date`, through a backfill, a manual UPDATE, or a migration.
+
+- Each boundary checked separately, plus a whole-mapping check that every distinct `(split_key, signal_date)` pair agrees with `split_key_for`
+- A non-vacuity guard, because every other assertion is a count-equals-zero and would pass on an empty table or a mistyped column
+- Measured: **zero violations across 5.5M rows**, both live configs
+
+The purged-fold half of §3.5 stays absent. Purged walk-forward CV is Phase 6; there are no folds to check yet.
+
+---
+
 ## 6. Statistical verification
 
 Two tests catching a category no unit test can (ADR 087).
@@ -1037,11 +1087,20 @@ other than the engine:
 
 ### Phase 4
 
-- Three-arm comparison produces a chart — **open, Session 14.** The three arms and their equity curves exist as of Session 13; the chart does not
+**All five closed as of 2026-08-14.**
+
+- Three-arm comparison produces a chart — **closed, Session 14.2.** `reports/phase4/three_arms_697f3ae71428d392_{train,validate}.svg`: three polylines, one 2.5th-97.5th band, summary table read from `benchmarks`, and the verdict stated in words on the chart
 - Random-entry null spans 200 replications — **closed, Session 13.** 200 rows in `benchmarks` with `replication` 1-200, reproducible within a `config_hash` and different across configs
-- Every headline cell reports `n_eff`, CI, baseline, and q-value — **closed, Session 12**
-- Drawdown slice renders — **open, Session 14.** `max_drawdown` is stored per arm as of Session 13
+- Every headline cell reports `n_eff`, CI, baseline, and q-value — **closed, Session 12**, extended to fourteen cells by ADR 108
+- Drawdown slice renders — **closed, Session 14.3.** `reports/phase4/drawdown_slice_697f3ae71428d392_{train,validate}.svg` plus its CSV; intervals read from stored `cell_stats`, suppressed buckets rendered with `n_eff` rather than omitted
 - Random-walk null test passes on the full pipeline — **closed, Session 11.4**
+
+**What the gate does not assert.** Every one of these is a criterion about the *machinery*
+being complete and correct, not about the strategy working. It passes with a minimum
+q-value of 0.790 across 56 tests, a signal arm below its own null on both splits, and
+every drawdown-slice interval crossing zero. That is the gate behaving as designed: ADR
+033 fixed the kill criteria in advance precisely so a negative result would be reportable
+rather than a reason to move the bar.
 
 ### Phase 5
 
