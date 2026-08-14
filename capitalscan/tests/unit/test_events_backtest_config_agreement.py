@@ -250,8 +250,14 @@ class TestRunEventsBackwardCompatibility:
         the new signal set its own identity rather than overwriting the
         events Sessions 12 and 13 published against. New value:
         `697f3ae71428d392` — a Postgres GUC is set from this literal, and
-        must not be moved until a backtest has written rows under it."""
-        assert jobs_config_hash(Config()) == "697f3ae71428d392"
+        must not be moved until a backtest has written rows under it.
+
+        Moved again 2026-08-14 by ADR 109's
+        `IndicatorParams.bear_close_band_lag`. The close-confirmed band is
+        read from bar t rather than t-1, which is a formula change and so
+        would not have moved the hash by itself; the field exists to make it
+        move. New value: `541f84a384b07ba2`."""
+        assert jobs_config_hash(Config()) == "541f84a384b07ba2"
 
     def test_sp_only_caller_still_works_and_matches_config_signals_default(
         self, stub_events_reads, captured_events_upsert
@@ -272,8 +278,8 @@ class TestRunEventsBackwardCompatibility:
         events_calls = [c for c in captured_events_upsert if c["table_name"] == "events"]
         row = events_calls[0]["data"][0]
         assert (
-            row["config_hash"] == "697f3ae71428d392"
-        )  # ADR 108: enabled_signal_types field (was 1835688bf7d760ba)
+            row["config_hash"] == "541f84a384b07ba2"
+        )  # ADR 109: bear_close_band_lag field (was 697f3ae71428d392)
         assert row["split_key"] == "holdout"  # 2026-07-30 is past the default validate_end
 
     def test_sp_and_config_disagreeing_raises_rather_than_silently_picking_one(
