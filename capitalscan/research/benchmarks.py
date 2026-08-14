@@ -827,6 +827,32 @@ def signal_day_indices(positions: Sequence[Position]) -> tuple[int, ...]:
 # ==========================================================================
 
 
+@dataclass(frozen=True)
+class ArmCurves:
+    """Equity curves already computed inside `run_benchmarks`, for 14.1.
+
+    Populated only when `run_benchmarks(collect_curves=True)`. This carries
+    exactly the `ArmSimulation.equity` series `run_benchmarks` built for the
+    pooled buy-and-hold, signal, and null-replication arms — nothing here is
+    re-derived. `research/curves.py` may only shape these series (percentile
+    band, tidy frame, CSV); reconstructing them from `load_window` /
+    `build_positions` / `simulate_*` in a second module would be a second
+    simulation of the same thing, which is exactly the invariant 2 violation
+    this dataclass exists to avoid.
+
+    `dates` is `window.dates` (`n_days` entries). Each `equity` series has
+    `n_days + 1` points: index 0 is the pre-window baseline of 1.0
+    (`core.arms.simulate_portfolio`'s docstring), and `equity[i + 1]` is the
+    value after day `i`'s return, so it is `equity[i + 1]` that pairs with
+    `dates[i]`.
+    """
+
+    dates: tuple[date, ...]
+    buy_hold: pd.Series
+    signal: pd.Series
+    random: tuple[pd.Series, ...]
+
+
 @dataclass
 class BenchmarkReport:
     """What one `run_benchmarks` call measured and wrote."""
@@ -852,6 +878,10 @@ class BenchmarkReport:
     # integration tests, and `RESULTS.md` all read one table instead of
     # three re-derivations of it.
     arm_rows: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # 14.1: the pooled buy-hold / signal / null equity curves, set only when
+    # `collect_curves=True`. `None` on the default path, which is what keeps
+    # that path byte-identical to before this field existed.
+    curves: ArmCurves | None = None
 
     def arm_table(self) -> str:
         """One line per summary arm. `n/a` where a column does not apply to
@@ -921,6 +951,7 @@ def run_benchmarks(
     git_sha: str = "",
     write: bool = True,
     progress: Any = None,
+    collect_curves: bool = False,
 ) -> tuple[pd.DataFrame, BenchmarkReport]:
     """Measure all eight arms on one config and split, and write them.
 
@@ -930,6 +961,13 @@ def run_benchmarks(
     basket, then the tax pass over every arm's trade list, then 13.6's
     high-breadth subset re-running the same three arm functions on a
     filtered entry list.
+
+    `collect_curves=True` (14.1) additionally sets `report.curves` to the
+    pooled buy-hold, signal, and 200-replication null `ArmSimulation.equity`
+    series already computed below — no extra simulation runs. Default is
+    `False` and that path is byte-identical to before this parameter
+    existed: the only difference under `True` is appending each already-built
+    equity series to a list as it is produced.
     """
     cfg = cfg or Config()
     bm = bm or BenchmarkParams()
@@ -994,6 +1032,7 @@ def run_benchmarks(
 
     # --- 13.2 random-entry null -------------------------------------------
     pools = eligible_days(panels, window, cfg)
+    null_equities: list[pd.Series] = []
     for replication in range(1, replications + 1):
         entries = random_entries(signal_entries, pools, config_hash, replication)
         positions = build_positions(entries, panels, window, cfg, Side.LONG, cache)
@@ -1009,6 +1048,8 @@ def run_benchmarks(
                 replication=replication,
             )
         )
+        if collect_curves:
+            null_equities.append(sim.equity)
         if progress is not None:
             progress(replication, replications)
 
@@ -1122,6 +1163,14 @@ def run_benchmarks(
     report.rows_written = write_benchmarks(engine, frame) if write else 0
     report.arm_rows = frame.loc[frame["replication"].isna()].reset_index(drop=True)
     report.null_percentile = bm.null_percentile
+
+    if collect_curves:
+        report.curves = ArmCurves(
+            dates=window.dates,
+            buy_hold=hold.equity,
+            signal=signal_sim.equity,
+            random=tuple(null_equities),
+        )
 
     # The percentile is read back off the **stored** rows (13.2 acceptance),
     # not off the in-memory list that produced them. An in-memory read would

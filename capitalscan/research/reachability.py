@@ -96,6 +96,9 @@ def _level_suffix(level: float) -> str:
     return f"{level:.1f}"
 
 
+_DEFAULT_SIGMA_LEVELS: tuple[float, ...] = (0.5, 1.0, 1.5)
+
+
 def attach_scaled_targets(
     events: pd.DataFrame,
     bp: BaselineParams,
@@ -202,6 +205,27 @@ def combined_reachability_table(
     stored rows, computed and corrected there; this table never touches
     the Benjamini-Hochberg family and reports fractions only.
     """
+    # `attach_scaled_targets` must already have run: the scaled half reads
+    # `reached_<level>sigma` columns this function does not create.
+    #
+    # Raised rather than silently attached. This function has no
+    # `BaselineParams` to attach *with*, and the sigma scaling is exactly
+    # where a wrong horizon divisor hides (`core.baselines.horizon_drift_vol`),
+    # so guessing one here would be the worst kind of convenience. The
+    # end-to-end path missed this call while all fifteen unit tests passed,
+    # because each built its own frame with the columns already present —
+    # a KeyError deep inside a groupby was the only symptom.
+    missing = [
+        f"reached_{_level_suffix(level)}sigma"
+        for level in _DEFAULT_SIGMA_LEVELS
+        if f"reached_{_level_suffix(level)}sigma" not in events_with_targets.columns
+    ]
+    if missing:
+        raise ValueError(
+            f"events frame is missing {missing}; call "
+            f"`attach_scaled_targets(events, bp)` before `combined_reachability_table`"
+        )
+
     headline = headline_grid(sp)
     keep = {(spec.signal_type, spec.side, spec.dd_bucket) for spec in headline}
     key_cols = events_with_targets[list(_GROUP_COLS)].apply(tuple, axis=1)
