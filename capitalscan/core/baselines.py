@@ -104,6 +104,28 @@ def horizon_drift_vol_array(
     return np.asarray(mu_annual, dtype="float64") * fraction, sigma * np.sqrt(fraction)
 
 
+def sigma_5d(rv_20d: np.ndarray, bp: BaselineParams) -> np.ndarray:
+    """DESIGN §6.12's volatility-scaled reachability ladder: sigma at
+    `bp.horizon_days`, scaled off an ANNUALIZED `rv_20d`
+    (`core/indicators.py::realized_vol` multiplies by `sqrt(252)`, so this
+    input is already annual, matching `horizon_drift_vol`'s own
+    `sigma_annual` argument).
+
+    `sigma_5d = rv_20d * sqrt(horizon_days / trading_days_per_year)` —
+    exactly `horizon_drift_vol_array`'s `sigma_h`, reached here with a zero
+    drift. Reused rather than rewritten: the divisor is derived from `bp`
+    in exactly one place, so a horizon change cannot leave this diagnostic
+    on a stale scale factor while `horizon_drift_vol` moves (invariant 9 —
+    no literal `0.1409` or any other baked-in fraction).
+
+    A null `rv_20d` propagates to a null output (invariant 4): `np.sqrt` of
+    NaN is NaN, and nothing here substitutes a value for it.
+    """
+    values = np.asarray(rv_20d, dtype="float64")
+    _, sigma_h = horizon_drift_vol_array(np.zeros_like(values), values, bp)
+    return sigma_h
+
+
 def parametric_baseline(
     target: float,
     mu_annual: float,
