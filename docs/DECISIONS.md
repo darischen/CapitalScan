@@ -136,7 +136,8 @@ and ADR 016 by 106.
 | 105 | `cell_stats.arm` separates measured populations from recommended ones | Pinned |
 | 106 | Short entries use the same universe and criteria as long | Pinned. Supersedes ADR 016 |
 | 107 | `v_screen` selects the cell pooled over `signal_strength` | Pinned |
-| 108 | Close-confirmed detection, alongside intraday touch | Pinned. Amends 005's scope and 057's ranking |
+| 108 | Close-confirmed detection, alongside intraday touch | Pinned. Amends 005's scope and 057's ranking. Band date amended by 109 |
+| 109 | Close-confirmed band is the same day's, not the prior day's | Pinned. Amends 108 |
 
 ---
 
@@ -2879,6 +2880,65 @@ The alternative to widening the probe by one field is the D+2 delay, which measu
 - **The signature probe must keep failing on raw `open`/`close`.** A test asserting only that the new field is permitted would pass on a probe with no restrictions at all, so the negative assertions are the ones that carry the guarantee.
 
 **Amends ADR 005.** That ADR's decision text describes the band-touch family and stands unchanged for it. It is no longer a claim about every signal in the system.
+
+---
+
+## 109. The close-confirmed band is the same day's, not the prior day's
+
+**Status.** Pinned, 2026-08-14. Amends ADR 108.
+
+**Context.**
+
+ADR 108 defines `BEAR_CLOSE_ABOVE_UPPER` as `open > close AND close >= bb_upper[t-1]`, and defends the shift on the grounds that today's band is a 20-day mean and standard deviation *ending at today's close*, so testing one against the other is circular.
+
+The user found the defect by checking a signal against a chart. STT fired on 2026-08-13 with a close of 189.85. The prior band stood at 189.758 and the same-day band at 190.451: the close cleared the older level by nine cents and missed the current one by sixty. On the chart the signal exists to describe, that bar never closed above the band.
+
+**The scale of it, measured over 2010-2026 before deciding.**
+
+| Band | Fires |
+|---|---|
+| `bb_upper[t-1]` (ADR 108) | 44,114 |
+| `bb_upper[t]` (this ADR) | 20,146 |
+| Fire on the shifted band but **not** the same-day band | **24,104 (55%)** |
+| Fire on the same-day band but not the shifted one | 136 |
+
+Bands rise in an uptrend, so `bb_upper[t-1]` sits below `bb_upper[t]` and presents a systematically lower bar. More than half of the signal's history was firing on a level the chart had already moved past.
+
+**Decision.**
+
+The comparison is `close >= bb_upper[t]`. The `.shift(1)` is removed, and `bear_close_above_upper`'s warmup returns from 273 to 272 — the extra bar existed only to feed the shift.
+
+**Rationale.**
+
+*Invariant 3 was over-applied.* It exists to stop the close deciding an **intraday** event: bar t's bands embed bar t's close, so comparing an intraday price against them uses information the moment did not have. Here the event **is** the close. At the closing bell, `bb_upper[t]` is fully computable from information that already exists, so reading it consumes nothing from the future. The resulting position still enters at t+1's open.
+
+*The circularity is conservative, not permissive.* A high close raises the band it is measured against, making the condition **harder** to satisfy — which is the whole reason the shifted version fired twice as often. Circularity that biases against firing is not the hazard invariant 3 guards.
+
+*It is also the universal convention.* Every charting platform computes the band including the current bar. "Closed above the upper band" means today's close against today's band, everywhere. ADR 108's version was the non-standard one, and a detection signal that disagrees with the chart it describes has failed at its only job.
+
+**A property worth recording, because it explains the shape of the change.**
+
+With `bb_window=5`, `bb_std=2`, `ddof=0`, four flat values and one outlier `d`, the algebra collapses exactly:
+
+```
+mean  = c + d/5
+std   = 0.4d
+upper = c + d/5 + 0.8d = c + d = the close
+```
+
+A lone spike lands **precisely on** its own band for any spike size — `d` cancels. So it fires only because `_breach` is "at or beyond"; a strict `>` would never fire on that shape. What actually prevents a fire is a *second* elevated bar, which widens the standard deviation past the close. Both are asserted in `test_indicators.py`.
+
+**Consequences.**
+
+- **A new `config_hash`.** The signal's population changes by more than half, so every event, cell, and arm measured under `697f3ae71428d392` describes the superseded rule. That hash is retained and stays reproducible (ADR 096's composite key); the new one gets its own run.
+- **A full backtest**, roughly five hours including the harness.
+- **`max_warmup()` returns to 272**, which narrows the indicators job's read window back to its pre-ADR-108 value.
+- **The subset guarantee gets stronger.** `bars_check1` enforces `close <= high`, so `close >= bb_upper[t]` implies `high >= bb_upper[t]` — now a statement about the same day's band on both sides rather than across two days.
+- **ADR 108 is not withdrawn.** Its architecture stands entirely: the close-confirmed model, the precomputed boolean crossing to `detect`, the allowlist, the D-to-D+1 dating, and the specificity ranking. Only the band's date changes.
+
+**What this says about the original reasoning.**
+
+ADR 108 reached the wrong answer by applying a correct invariant outside its scope, and the error survived a passing test suite, a clean five-check harness, and a full session gate — because every test asserted the shifted behaviour it was written alongside. It was caught by one person comparing one signal against a chart. That is worth recording: the project's tests verify internal consistency, and internal consistency cannot detect a specification that disagrees with the world.
 
 ---
 
