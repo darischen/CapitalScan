@@ -92,8 +92,10 @@ Order strictly. 14.2 and 14.3 both depend on 14.1.
 
 Rules:
 
-- A new `research/curves.py` calls the existing `run_benchmarks` with `write=False` and returns curves for `buy_hold`, `signal`, and all 200 `random` replications.
-- **Reuse the arm functions.** Never re-simulate with a second implementation — that is invariant 2, and it is exactly how a chart comes to disagree with the table beside it.
+- **`run_benchmarks` does not currently expose the curves.** It returns `(DataFrame, BenchmarkReport)`, and the `equity` series for each arm are local variables inside it. This is the trap in this task: the obvious workaround is to rebuild the arms inside `curves.py`, which is a second simulation of the same thing and precisely the invariant 2 violation that makes a chart disagree with the table beside it.
+
+  Do it by **adding an optional `collect_curves: bool = False` to `run_benchmarks`** that, when set, also returns the already-computed series. One parameter, no duplicated simulation, and the default path is byte-identical to today's. Do **not** re-derive curves from `load_window` / `build_positions` / `simulate_*` in a new module even though those are public — that reproduces the orchestration, and the orchestration is where the arms' comparability lives (identical universe, identical dates, ADR 012).
+- A new `research/curves.py` then only *shapes* what it is handed: percentile band, tidy frame, CSV. No simulation of any kind.
 - The null band is the per-day 2.5th and 97.5th percentile across the 200 replications, plus the median.
 - Output: `reports/phase4/equity_curves_<config_hash>_<split>.csv`, one row per (date, arm, value), with the band as three named series.
 
