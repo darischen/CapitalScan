@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "capitalscan"
-version = "0.1.0"
+version = "0.2.0"
 description = "Bollinger Band + Stochastic Oscillator event-study engine for US mega-cap equities"
 requires-python = ">=3.11"
 authors = [{name = "Daris Chen", email = "arcriumurnior@gmail.com"}]

@@ -82,14 +82,33 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+REQUIRED_ERAS = {"2010-2014", "2015-2019", "2020-2023"}
+
+
 @pytest.fixture(scope="module")
 def measured():
     """`(side, signal_type, dd_bucket) -> (n, k_bar, n_eff)` from the live
-    config's train split."""
+    config's train split.
+
+    **The prerequisite check lives here, not in a test.** `cell_n_eff` calls
+    `pooled_rho`, which raises when `rho_era` is empty — and this fixture
+    calls it before any test body runs, so the intended
+    "`test_rho_era_prerequisite_is_populated` fails first with a clear
+    signal" never happened: the whole file collapsed into 42 collection
+    errors instead. Skipping from inside the fixture is the only place that
+    runs early enough to say what to do about it.
+    """
     engine = db_io.get_engine()
     cfg = Config()
-    events = load_grid_events(engine, LIVE_CONFIG_HASH, "train")
     rho_era = load_rho_era(engine, LIVE_CONFIG_HASH)
+    missing = REQUIRED_ERAS - set(rho_era["era"]) if not rho_era.empty else REQUIRED_ERAS
+    if missing:
+        pytest.skip(
+            f"rho_era has no rows for {sorted(missing)} under config_hash="
+            f"{LIVE_CONFIG_HASH}. `n_eff` cannot be computed without them. Populate with:\n"
+            f"    uv run cscan stats rho --config-hash {LIVE_CONFIG_HASH}"
+        )
+    events = load_grid_events(engine, LIVE_CONFIG_HASH, "train")
     selected, report = select_grid_events(events, cfg.stats, min_fwd_window=min_fwd_window_for(cfg))
 
     out = {}
@@ -106,11 +125,17 @@ def measured():
 
 def test_rho_era_prerequisite_is_populated(measured):
     """The session brief lists four `rho_era` rows under the live config as
-    a prerequisite. `pooled_rho` raises without them, so this failing first
-    is a clearer signal than twelve cells failing together."""
+    a prerequisite.
+
+    The `measured` fixture already skips the whole module with an actionable
+    message when they are missing, so reaching this body means they are
+    present. It stays as the named assertion of the prerequisite rather than
+    being deleted: a reader looking for "where is that checked" should find
+    a test, and a future fixture refactor that drops the guard fails here.
+    """
     engine = db_io.get_engine()
     rho_era = load_rho_era(engine, LIVE_CONFIG_HASH)
-    assert set(rho_era["era"]) >= {"2010-2014", "2015-2019", "2020-2023"}
+    assert set(rho_era["era"]) >= REQUIRED_ERAS
 
 
 def test_exactly_twelve_cells_are_measured(measured):

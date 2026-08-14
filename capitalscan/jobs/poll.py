@@ -29,7 +29,8 @@ from sqlalchemy import Engine, text
 
 from capitalscan.core import signals as core_signals
 from capitalscan.core.config import Config, ExitParams, SignalParams, StatsParams
-from capitalscan.core.types import Bands, Side, SignalType
+from capitalscan.core.signals import _breach, _isnan
+from capitalscan.core.types import Bands, Bound, Side, SignalType
 from capitalscan.jobs import call_overlay, db_io, notify, positions, scheduled_runs
 from capitalscan.jobs.config import config_hash
 from capitalscan.jobs.fetch import yahoo
@@ -264,6 +265,36 @@ def _state_json(band: Bands, ind_row: pd.Series, price: float) -> dict:
     return _json_safe(payload)  # type: ignore[no-any-return]
 
 
+def is_bear_reversal(price: float, day_open: float, bands: Bands) -> bool:
+    """ADR 108's live half: price above the band, but below today's open.
+
+    The intraday analogue of `bear_close_above_upper`, and deliberately
+    **not** the same predicate. The stored flag is close-confirmed —
+    `open > close AND close >= bb_upper[t-1]` — and can only be evaluated
+    once the session ends. Mid-session there is no close, so the current
+    quote stands in for it:
+
+    ```
+    price >= bb_upper  AND  price < day_open
+    ```
+
+    A name satisfying this at the close satisfies the stored flag too, since
+    the closing quote *is* the close. Intraday it is a live estimate that
+    can stop being true before the bell, which is exactly why the poller
+    surfaces it as "currently" rather than as a confirmed pattern.
+
+    `bb_upper` comes from the prior close (the poller's `bands`), matching
+    the stored flag's t-1 band and invariant 3.
+
+    A NaN `day_open` — a quote missing `regularMarketOpen` — returns False.
+    "Cannot evaluate" is not "fired", and `_breach` already treats NaN the
+    same way on the band side.
+    """
+    if _isnan(day_open) or _isnan(price):
+        return False
+    return _breach(price, bands.bb_upper, Bound.UPPER) and price < day_open
+
+
 def _process_tick(
     engine: Engine,
     chash: str,
@@ -298,6 +329,14 @@ def _process_tick(
         fired_types = core_signals.breach_live(price, band, sp)
         if not fired_types:
             continue
+
+        # ADR 108's live half (user's decision, 2026-08-13). Reported as a
+        # tag on an existing signal, never as its own event: the stored
+        # `bear_close_above_upper` type is close-confirmed and cannot be
+        # decided mid-session, so writing one here would put a row in
+        # `events` that tonight's `run_events` might legitimately disagree
+        # with. `breach_live` never returns that type for the same reason.
+        bear_now = is_bear_reversal(price, float(getattr(row, "day_open", float("nan"))), band)
 
         for side, side_types in _fired_by_side(fired_types).items():
             signal_type = side_types[0].value
@@ -353,11 +392,25 @@ def _process_tick(
                 git_sha=git_sha(),
             )
 
-            subject = f"{ticker} {signal_type}"
+            # The display gate the user asked for: surface the reversal tag
+            # only where it coincides with `confluence_high`. The underlying
+            # signal still fires, is still written, and is still notified —
+            # this decides whether the notification *mentions* the reversal,
+            # not whether anything happens.
+            show_reversal = bear_now and SignalType.CONFLUENCE_HIGH in side_types
+            tag = " [bear reversal: above band, below today's open]" if show_reversal else ""
+            subject = f"{ticker} {signal_type}{tag}"
             body = (
                 f"{ticker} fired {signal_type} at {price:.2f} "
                 f"(touch level {event_row['touch_level']}, k_full {ind_row.get('k_full')})."
             )
+            if show_reversal:
+                body += (
+                    f" Currently {price:.2f} against today's open "
+                    f"{float(getattr(row, 'day_open', float('nan'))):.2f} and upper band "
+                    f"{band.bb_upper:.2f} — the intraday shape of "
+                    f"bear_close_above_upper, which only confirms at the close."
+                )
             channels_sent = notify.notify_all(notifiers, subject, body)
 
             db_io.append(

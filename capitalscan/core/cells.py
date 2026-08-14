@@ -26,8 +26,19 @@ from capitalscan.core.config import SplitParams, StatsParams
 from capitalscan.core.types import SignalType
 
 # ADR 102: signal type pairs *with* side rather than crossing it, which is
-# what makes the grid twelve cells instead of thirty-six. Index i of each
-# tuple is the same signal family read from the opposite side.
+# what makes the grid twelve cells instead of thirty-six.
+#
+# **The two tuples are no longer the same length** (ADR 108, 2026-08-13).
+# They used to be positionally paired — index i of each was the same family
+# read from the opposite side — and `BEAR_CLOSE_ABOVE_UPPER` breaks that,
+# because no bullish counterpart was requested and ADR 106 already rejects
+# long/short symmetry as an assumption. `headline_grid` iterates each tuple
+# independently and never zips them, so the asymmetry is expressible; this
+# comment exists because the old pairing was load-bearing documentation and
+# a reader could reasonably still assume it.
+#
+# Grid size is now 3x2 + 4x2 = 14 cells, and the Benjamini-Hochberg family
+# in DESIGN 6.8 grows from 48 tests to 56 (14 cells x 4 targets).
 LONG_SIGNALS: tuple[str, ...] = (
     SignalType.BB_LOWER_TOUCH.value,
     SignalType.STOCH_OVERSOLD.value,
@@ -37,6 +48,7 @@ SHORT_SIGNALS: tuple[str, ...] = (
     SignalType.BB_UPPER_TOUCH.value,
     SignalType.STOCH_OVERBOUGHT.value,
     SignalType.CONFLUENCE_HIGH.value,
+    SignalType.BEAR_CLOSE_ABOVE_UPPER.value,
 )
 
 # The number of leading `dd_buckets` labels the headline grid uses. ADR 101
@@ -175,11 +187,24 @@ def reported_eras(sp: StatsParams, splits: SplitParams) -> tuple[str, ...]:
 
 
 def headline_grid(sp: StatsParams) -> tuple[CellSpec, ...]:
-    """The twelve headline cells of ADR 102, in a stable order.
+    """The fourteen headline cells of ADR 102, in a stable order.
 
-    Two sides, three signal families, two drawdown buckets. Deep-drawdown
-    events are still detected, labelled, stored, and visible to the model
-    layer; they simply never render as a headline cell (ADR 101).
+    Three long families and four short ones, each across two drawdown
+    buckets. Deep-drawdown events are still detected, labelled, stored, and
+    visible to the model layer; they simply never render as a headline cell
+    (ADR 101).
+
+    **Fourteen, not twelve** (ADR 108, amending ADR 102, 2026-08-13).
+    `BEAR_CLOSE_ABOVE_UPPER` is short-side only, so the sides carry
+    different family counts and the grid is 3x2 + 4x2 rather than 2x3x2.
+
+    The new type outranks `CONFLUENCE_HIGH` (ADR 057 specificity), so bars
+    firing both report the new one and are counted in its cell rather than
+    the confluence cell. Measured on the train split: 409 bars fire it, 286
+    of them (70%) also fire `confluence_high`. That overlap is real
+    correlation, not a defect — a bar closing above the upper band has
+    usually been running hot, so %K is already extreme. Neither confluence
+    cell changes its render/suppress verdict as a result.
     """
     buckets = dd_bucket_labels(sp)[:HEADLINE_BUCKET_COUNT]
     return tuple(

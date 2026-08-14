@@ -751,6 +751,7 @@ SIGNAL_TYPE_LABELS = {
     "stoch_overbought": "Stochastic Overbought",
     "confluence_low": "Confluence Low",
     "confluence_high": "Confluence High",
+    "bear_close_above_upper": "Bear Reversal Above Upper Band",
 }
 
 SIDE_LABELS = {
@@ -808,8 +809,19 @@ def scan(
     confluence_only: bool = typer.Option(
         False, help="Show only confluence signals (both Bollinger and stochastic agree)"
     ),
+    bear_close_only: bool = typer.Option(
+        False,
+        "--bear-close-only",
+        help="Show only ADR 108 close-confirmed reversals: the day opened above where it "
+        "closed, and the close still held at or above the prior upper band",
+    ),
 ) -> None:
-    """Query detected events (ADR 049)."""
+    """Query detected events (ADR 049).
+
+    `--confluence-only` and `--bear-close-only` compose: passing both shows
+    the intersection, which is the population the poller's live tag
+    highlights.
+    """
     from datetime import date as date_cls
 
     from capitalscan.jobs import compute
@@ -824,10 +836,33 @@ def scan(
         console.print("[yellow]no events found[/yellow]")
         raise typer.Exit(code=0)
 
+    # Both filters read `signal_types_all`, never `signal_type`.
+    #
+    # `signal_type` holds only the *most specific* type that fired (ADR 057),
+    # and ADR 108 ranks `bear_close_above_upper` above `confluence_high`. A
+    # bar firing both therefore reports `signal_type = bear_close_above_upper`,
+    # so the original `signal_type.isin([...])` form silently stopped
+    # matching confluences the moment the new type shipped — it would have
+    # dropped exactly the rows this session set out to surface. Filtering on
+    # the full concurrent set is both the fix and the correct question:
+    # "did this fire" rather than "did this outrank everything else".
+    def _fired(row, wanted: set[str]) -> bool:
+        return bool(wanted & set(row or []))
+
     if confluence_only:
-        result = result[result["signal_type"].isin(["confluence_low", "confluence_high"])]
+        keep = result["signal_types_all"].map(
+            lambda t: _fired(t, {"confluence_low", "confluence_high"})
+        )
+        result = result[keep]
         if result.empty:
             console.print("[yellow]no confluence events found[/yellow]")
+            raise typer.Exit(code=0)
+
+    if bear_close_only:
+        keep = result["signal_types_all"].map(lambda t: _fired(t, {"bear_close_above_upper"}))
+        result = result[keep]
+        if result.empty:
+            console.print("[yellow]no close-confirmed reversal events found[/yellow]")
             raise typer.Exit(code=0)
 
     console.print(result.to_string(index=False))
@@ -1277,6 +1312,140 @@ def stats_rho_cmd(
     # reader to notice a missing line.
     if report.skipped_eras:
         console.print(f"[yellow]eras written with no rho_empirical: {report.skipped_eras}[/yellow]")
+
+
+@stats_app.command("cells")
+def stats_cells_cmd(
+    config_hash: str = typer.Option(
+        ..., "--config-hash", help="events.config_hash to measure the headline grid against"
+    ),
+    split_key: str = typer.Option("train", help="train | validate | holdout"),
+    write: bool = typer.Option(True, help="Write to cell_stats. --no-write measures only"),
+) -> None:
+    """Session 12's headline grid (DESIGN §6.7-§6.11, ADR 102).
+
+    **Added 2026-08-13.** `research.cell_stats.run_cell_stats` shipped in
+    Session 12 with no entry point and no caller outside its tests, so the
+    published twelve-cell table was produced ad hoc and could not be
+    reproduced by anyone reading the CLI. Found while re-measuring under a
+    new `config_hash`.
+
+    Requires `cscan stats rho --config-hash <same>` first: `n_eff` is
+    computed from the stored `rho_empirical`, so this is a prerequisite
+    rather than a report. A missing `rho_era` row makes every cell
+    uninterpretable.
+
+    Additive and re-runnable. The write upserts on `(cell_id, config_hash)`
+    — ADR 096's composite key — so a second config adds rows rather than
+    replacing the first's, and a rerun refreshes its own rows and nothing
+    else.
+    """
+    from capitalscan.jobs import db_io, ingest
+    from capitalscan.jobs.provenance import git_sha
+    from capitalscan.research.cell_stats import run_cell_stats
+
+    config = _resolve_config_or_exit()
+    engine = db_io.get_engine()
+
+    with ingest.run_job(
+        engine, "cell_stats", {"config_hash": config_hash, "split_key": split_key}
+    ) as job:
+        rows, report = run_cell_stats(
+            engine,
+            config_hash,
+            split_key,
+            cfg=config,
+            run_id=job.run_id,
+            git_sha=git_sha(),
+            write=write,
+        )
+        job.rows_written = report.n_written
+
+    console.print(report.summary())
+    if rows.empty:
+        console.print("[red]no cells measured — check that events exist for this config[/red]")
+        raise typer.Exit(code=1)
+
+
+@stats_app.command("benchmarks")
+def stats_benchmarks_cmd(
+    config_hash: str = typer.Option(
+        ..., "--config-hash", help="events.config_hash to measure the arms against"
+    ),
+    split_key: str = typer.Option("train", help="train | validate | holdout"),
+    replications: Optional[int] = typer.Option(
+        None,
+        help="Random-entry replications. Defaults to StatsParams.n_replications_default (200). "
+        "Use 50 during sweeps where ranking rather than significance is the goal (ADR 061)",
+    ),
+    write: bool = typer.Option(True, help="Write to benchmarks. --no-write measures only"),
+) -> None:
+    """Session 13: the eight benchmark arms (DESIGN §6.4-§6.6, ADR 012).
+
+    Buy-and-hold, signal entry, a 200-replication random-entry null,
+    trim-and-redeploy, four DCA variants, and ADR 099's high-breadth subset
+    re-run of the three-arm comparison. All on one universe and one date
+    range, which is the entire basis of the comparison (ADR 012).
+
+    Additive and reversible: every row carries this invocation's `run_id`,
+    and `DELETE FROM benchmarks WHERE run_id = '...'` reverses the run
+    completely. Nothing else is written and no existing table is touched.
+
+    The signal arm's position against the 97.5th percentile of the null is
+    reported whichever way it falls. A gate that requires a favorable result
+    is not a gate.
+    """
+    from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn
+
+    from capitalscan.jobs import db_io, ingest
+    from capitalscan.jobs.provenance import git_sha
+    from capitalscan.research.benchmarks import run_benchmarks
+
+    config = _resolve_config_or_exit()
+    engine = db_io.get_engine()
+    n_reps = config.stats.n_replications_default if replications is None else replications
+
+    # Two passes over the replications (pooled, then the high-breadth
+    # subset), so the bar's total is doubled rather than resetting halfway.
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeRemainingColumn(),
+        console=console,
+    ) as bar:
+        task = bar.add_task("null replications", total=max(2 * n_reps, 1))
+
+        def _tick(done: int, total: int) -> None:
+            bar.update(task, advance=1)
+
+        with ingest.run_job(
+            engine,
+            "benchmarks",
+            {"config_hash": config_hash, "split_key": split_key, "replications": n_reps},
+        ) as job:
+            _rows, report = run_benchmarks(
+                engine,
+                config_hash,
+                split_key,
+                cfg=config,
+                replications=n_reps,
+                run_id=job.run_id,
+                git_sha=git_sha(),
+                write=write,
+                progress=_tick,
+            )
+            job.rows_written = report.rows_written
+
+    console.print(report.summary())
+    for note in report.notes:
+        console.print(f"  {note}")
+    if report.signal_exceeds_null is None:
+        console.print("[yellow]no stored null to test against[/yellow]")
+    elif report.signal_exceeds_null:
+        console.print("[green]signal arm is above the null's 97.5th percentile[/green]")
+    else:
+        console.print("[yellow]signal arm is at or below the null's 97.5th percentile[/yellow]")
 
 
 app.add_typer(stats_app, name="stats")

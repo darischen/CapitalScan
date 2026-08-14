@@ -1643,6 +1643,445 @@ strength value.
 
 ---
 
+## Session 13 — Benchmark arms (tasks 13.1-13.7)
+
+Run 2026-08-13. `config_hash = 1835688bf7d760ba`, `entry_kind = next_open`, cluster heads
+only, long side, restricted to the trade universe on the signal date.
+
+| Split | Window | Trading days | Tickers | Signal entries | `run_id` |
+|---|---|---|---|---|---|
+| train | 2010-03-31 to 2021-12-31 | 2,960 | 252 | 7,163 | `benchmarks_20260813T172347_f421521b` |
+| validate | 2022-01-03 to 2023-12-29 | 501 | 214 | 2,254 | `benchmarks_20260813T173059_efceeadc` |
+
+409 rows per split: 8 pooled arms, 200 pooled null replications, 3 subset arms, 200 subset
+null replications. All ten gate items pass.
+
+### The headline: the signal arm loses to both benchmarks, on both splits
+
+| Split | Buy and hold | Signal | Null median | Null 97.5th | Verdict |
+|---|---|---|---|---|---|
+| train | **+383.66%** | +108.37% | +83.95% | **+205.77%** | below |
+| validate | **−3.69%** | −10.10% | −13.99% | **+3.02%** | below |
+
+The signal arm is **below the 97.5th percentile of its own randomization null on both
+splits**, and below buy-and-hold on both. On train it does clear the null's *median*
+(+108% against +84%), which is worth stating precisely: entry timing is very slightly
+better than random, and nowhere near the threshold ADR 061 sets. On validate it does not
+even clear the median.
+
+This is the reading gate item 4 exists to record. It is not a favorable result and it is
+published as measured.
+
+### All eight arms, train split
+
+| Arm | total_ret | ann_ret | Sharpe | max_dd | deployed | cap_eff | win | n | post_tax |
+|---|---|---|---|---|---|---|---|---|---|
+| `buy_hold` | +383.66% | 14.36% | 0.769 | 34.13% | **100.00%** | 3.837 | 53.95% | 784 | +291.40% |
+| `signal` | +108.37% | 6.45% | 0.348 | 27.31% | 92.94% | 1.166 | 55.02% | 7,163 | −7.78% |
+| `trim` | +202.39% | 9.88% | 0.756 | 22.45% | 100.00% | 2.024 | 53.95% | 7,059 | +155.93% |
+| `dca_fixed` | +366.01% | 13.99% | — | 34.13% | 100.00% | 3.660 | — | 12 | +366.01% |
+| `dca_signal` | +139.15% | 7.70% | — | 30.43% | 99.97% | 1.392 | — | 1,970 | +139.15% |
+| `dca_hybrid` | +391.58% | 14.51% | — | 34.13% | 100.00% | 3.916 | — | 8 | +391.58% |
+| `dca_lump` | +383.66% | 14.36% | — | 34.13% | 100.00% | 3.837 | — | 1 | +383.66% |
+| `random` (median of 200) | +83.95% | — | — | — | 96.79% | — | 55.58% | 7,163 | — |
+
+`dca_lump` and `buy_hold` agree to the cent on terminal value ($4,836,594.10 on train,
+$963,113.14 on validate), which is
+the cross-arm consistency check 13.4 asks for. They are the same strategy with a dollar
+amount attached, and a disagreement would mean one of the two simulators is wrong.
+
+### The signal arm is deployed 93% of the time, not 20%
+
+DESIGN §6.4's "a signal firing on 4% of days with a 5-day hold sits in the market roughly
+20% of the time" is a **per-ticker** statement. Across a ~62-name trade universe, 7,163
+entries with a 5-day hold average about 12 concurrent positions over 2,960 days, so the
+arm is in the market on 92.94% of them.
+
+The consequence is that capital efficiency and total return are nearly the same number
+for this arm (1.166 against 1.084), and the "needs 5× the annualized rate while deployed"
+argument does not apply as written. The pooled comparison against buy-and-hold is close
+to a straight return comparison, which is a harder test than §6.4 anticipated, not an
+easier one.
+
+### Why the null's median is far below buy-and-hold, and why that is not a bug
+
+The 13.2 brief asks for a check that the null's median lands near buy-and-hold scaled by
+`frac_deployed`. On train that predicts `3.837 × 0.968 = +371%` against a measured
+**+84%**, which looks like a construction failure and is not one.
+
+**The same heuristic predicts +357% for the signal arm, which returned +108%** on
+identical exit machinery. A 4% target with a 5-day maximum hold truncates every winner,
+so no entry arm can compound like a held position regardless of when it enters. The
+heuristic measures the exit rules and fails for both arms together.
+
+The null is verifiably built correctly on the checks that actually discriminate: every
+one of the 200 replications opens **exactly 7,163 positions**, matching the signal arm's
+count; median deployment 96.79% against the signal arm's 92.94%; median win rate 55.58%
+against 55.02%. Only entry timing differs, which is what the null isolates.
+`test_the_brief_heuristic_fails_for_the_signal_arm_too` pins the explanation, so if the
+heuristic ever does start predicting the signal arm, the replacement check gets revisited.
+
+### The null distribution
+
+200 replications, seeded from `config_hash` (ADR 061). Train, pooled:
+
+| Statistic | Value |
+|---|---|
+| min | −15.86% |
+| median | +83.95% |
+| mean | +90.65% |
+| **97.5th percentile** | **+205.77%** |
+| max | +328.55% |
+| distinct values | 200 of 200 |
+
+Two runs against `1835688bf7d760ba` reproduce all 200 replications identically; a
+different `config_hash` produces a different null on all 20 replications tested. Both
+directions are asserted, because a wall-clock seed breaks the first and a fixed constant
+seed breaks the second, and both wrong versions run without complaint.
+
+### Trim-and-redeploy loses to buy-and-hold, as it should in this window
+
+| | Terminal | Sharpe | max_dd | Trims | Round trips | Avg days in cash | Never redeployed |
+|---|---|---|---|---|---|---|---|
+| train | +202.39% | 0.756 | 22.45% | 7,059 | 886 | 85.3 | 99 |
+| validate | −1.34% | −0.148 | 14.58% | 1,526 | 247 | 52.1 | 70 |
+
+Against buy-and-hold's +383.66% on train, trimming cost **181 points of return** and
+bought 11.7 points of drawdown reduction (22.45% against 34.13%) at almost identical
+Sharpe (0.756 against 0.769). Selling 20% into strength across a twelve-year bull market
+is expensive, and the risk-adjusted case for it is a wash rather than a win.
+
+On validate — a flat-to-down window — trimming helps: −1.34% against buy-and-hold's
+−3.69%, with drawdown cut from 20.17% to 14.58%. That asymmetry is the honest summary of
+ADR 017's variant: it is drawdown insurance with a large premium in a rising market.
+
+**ADR 017's prediction is not tested by this.** Its expected ranking is trim-and-redeploy
+above an unfiltered short, and no short arm was computed this session (ADR 058 surfaces
+long only, and the short signal's role here is driving the trim). The ranking against
+buy-and-hold is a separate comparison and ADR 017 never claimed it.
+
+### A defect worth recording: the trim arm was not comparable at first
+
+The first implementation gave the trim arm a static book of every ticker bought at first
+appearance and held forever, while buy-and-hold rebalanced to the ~62 current members. It
+measured **+725% against +413%** — a 312-point gap that was entirely the two arms holding
+different books, and it read as trimming beating buy-and-hold decisively.
+
+A static-membership unit test passed the whole time, because with fixed membership the
+two constructions coincide. Both arms now run through one `core.arms.simulate_holdings`,
+so the no-trim case *is* buy-and-hold, and the regression test varies membership.
+
+### Four DCA variants, train split
+
+| Variant | Terminal | IRR | Avg cost basis | Cash drag | Undeployed | Deployments |
+|---|---|---|---|---|---|---|
+| `dca_lump` | $4,836,600 | 14.36% | 1.0000 | 0.00% | $0 | 1 |
+| `dca_hybrid` | $4,915,800 | 14.77% | 0.9839 | **−7.92%** | $0 | 8 |
+| `dca_fixed` | $4,660,100 | 14.50% | 1.0379 | +17.65% | $0 | 12 |
+| `dca_signal` | $2,392,100 | 15.65% | 2.0224 | +244.51% | $0 | 1,970 |
+
+ADR 012 predicts "signal-timed accumulation beats fixed-schedule accumulation by a small
+real margin, and both lose to lump sum." **Half of that is wrong and half holds.**
+
+- Both schedules do lose to lump sum on terminal value, as predicted.
+- Signal-timed accumulation does **not** beat fixed-schedule: $2.39M against $4.66M, a
+  244-point cash drag against 18. Spreading tranches across twelve years at an average
+  cost basis of 2.02× the day-one index is what a rising market does to any slow
+  accumulation, and the signal fires often enough (1,970 deployment days) that its timing
+  cannot recover the drag.
+- `dca_signal` has the **highest IRR** of the four (15.65%) while having the lowest
+  terminal value. That is not a contradiction: IRR is money-weighted and its capital
+  arrives late, so it is measured against a shorter average holding period. Terminal value
+  on equal total capital is the comparison ADR 012 asks for.
+- `dca_hybrid` slightly **beats lump sum** (+7.92% of drag recovered), the only variant
+  that does. Doubling the tranche on signal days front-loads deployment enough to nearly
+  match lump sum while still averaging in.
+
+Over a fourteen-year window `dca_fixed` deploys `C/12` monthly and is fully invested
+after year one, so it converges toward `dca_lump` by construction. That is a property of
+the rule DESIGN §6.6 specifies, not of this implementation, and it is why the two sit 17
+points apart rather than the wide gap a one-year comparison would show.
+
+**`capital_undeployed` is zero on both splits.** `N` is the train signal-day rate scaled
+to the window (0.6655 deployment days per trading day), and validate realized 334
+deployment days against an expected 333. The signal's firing rate is stable across the two
+splits to within a third of a percent, so there is no underfiring to report. The
+underfiring path is exercised by fixture instead.
+
+### Pre-tax and post-tax (ADR 032, Provisional)
+
+| Split | Arm | Pre-tax | Post-tax | Wash sales flagged |
+|---|---|---|---|---|
+| train | `buy_hold` | +383.66% | **+291.40%** | no |
+| train | `trim` | +202.39% | **+155.93%** | no |
+| train | `signal` | +108.37% | **−7.78%** | yes |
+| train | `random` (mean) | +90.65% | −14.07% | yes |
+| validate | `buy_hold` | −3.69% | **−9.09%** | no |
+| validate | `signal` | −10.10% | −38.38% | yes |
+
+**Short-term tax eliminates the signal arm's entire return.** +108.37% pre-tax becomes
+−7.78% post-tax on train: twelve years of 7,163 short-term round trips at a 37% rate cost
+116 points of the 108 the strategy made. The random-entry null shows the same pattern, so
+this is a property of the turnover rather than of the signal.
+
+Wash sales flag on the entry arms and not on the holding arms, which is the expected
+shape: only high-turnover sleeve trading repurchases a name within 30 days of taking a
+loss in it.
+
+**Holding period decides the rate,** per the 2026-08-13 amendment to ADR 032. Positions
+held more than a year pay 20%, everything else 37%. This was measured as a defect first
+and fixed second: the initial run taxed every arm at 37%, which reported buy-and-hold at
+`post_tax_ret = +239.22%` and trim at `+131.55%`. Their stints average roughly four and a
+half years.
+
+| Arm | Stints | Avg hold | Rate | Post-tax before | Post-tax after |
+|---|---|---|---|---|---|
+| `buy_hold` | 784 | ~4.5 yr | 20% | +239.22% | **+291.40%** |
+| `trim` | 7,059 trims / 784 stints | ~4.5 yr | 20% | +131.55% | **+155.93%** |
+| `signal` | 7,163 | ≤5 days | 37% | −7.78% | **−7.78%** |
+
+**The correction moves the benchmarks and leaves the signal arm exactly where it was**,
+which is the point: the signal arm's positions are genuinely short-term, so 37% was always
+right for it. The post-tax gap against buy-and-hold widens from 247.0 points to **299.18
+points**, wider than the 275.29-point pre-tax gap. Taxing everything at 37% had been
+flattering the signal arm.
+
+A pre-fix linear estimate put corrected buy-and-hold near +305%; the measured value is
++291.40%. The estimate scaled the whole tax bill by `20/37`, which ignores the per-year
+netting, so it overshot by about 14 points. Recorded because the estimate was published
+before the re-run.
+
+The other stated gaps are in DESIGN §8.8 and are unchanged: deferred losses outstanding in
+the final year are lost, `post_tax_ret` ignores the compounding cost of paying tax early,
+rebalance partial disposals are untaxed, a deferred wash-sale loss keeps its own character
+rather than inheriting the replacement lot's, and dividend reinvestment is not a separate
+purchase.
+
+### A second defect worth recording: the tax model
+
+The tax model was wrong twice, in two rounds, and both were found by running it rather
+than by reading it.
+
+**Round one.** The first implementation pooled the whole window into one net figure and
+treated a wash-sale disallowance as permanent. That produced **`post_tax_ret = −354%`
+against `pre_tax_ret = +109%`** — a tax bill several times the account. Two things were
+wrong: a 2021 loss cannot offset a 2011 gain, and a disallowed loss is deferred into the
+replacement lot's basis rather than destroyed. Taxation became per calendar year with
+one-year deferral.
+
+**Round two.** With that fixed, every arm was still taxed at 37%, including benchmarks
+holding for years. That understated buy-and-hold by 52 points and trim by 24, and it ran
+**in the signal arm's favor**. ADR 032 named no long-term rate, so the fix was an
+amendment to the ADR rather than a code change alone.
+
+Both rounds carry their own tests. The pattern is worth naming: a tax number is plausible
+across a wide range, so neither round announced itself, and both survived a passing test
+suite until the arms were run against twelve years of real trades.
+
+### The high-breadth subset (ADR 099) — the market-timing test
+
+The direct test of whether the signal's edge is market timing. If it lives on
+broad-selloff days it fires exactly when buy-and-hold is also buying cheaply.
+
+| Split | Subset events | Buy and hold | Signal (subset) | Null 97.5th (subset) | Deployed |
+|---|---|---|---|---|---|
+| train | 2,346 | +383.66% | +126.04% | +248.70% | **33.50%** |
+| validate | 744 | −3.69% | −7.09% | +19.42% | **44.91%** |
+
+**The high-breadth subset is where the signal arm looks best, and it still loses to its
+own null.** +126.04% against a subset null 97.5th percentile of +248.70% on train, and
+−7.09% against +19.42% on validate. On
+train the subset arm returns +126.04% on 33.50% deployment against the pooled arm's
++108.37% on 92.94% — a capital efficiency of 3.762 against 1.166, and a win rate of
+58.27% against 55.02%. Restricting to broad-selloff days makes every per-unit-of-exposure
+number better.
+
+Read against DESIGN §6.11's three patterns, this is the **third**: the edge concentrates
+at high breadth, which reads as substantially market timing. It is also the outcome that
+carried forward from Session 12, where long `stoch_oversold` 10-20 nearly doubled its hit
+rate in the high-breadth tercile (0.2135 / 0.2085 / 0.4035).
+
+The subset comparison is reported **alongside** the pooled one, never instead of it, and
+its buy-and-hold arm is identical to the pooled one to the last digit — same dates, same
+universe, same number, which is what "restricted to the same dates" requires.
+
+### What this means for the kill criteria
+
+Session 12 found no cell surviving FDR correction (minimum q 0.769 across 48 tests).
+Session 13 adds that the strategy the cells describe loses to buy-and-hold by 275 points
+on train and to its own randomization null's 97.5th percentile on both splits, and that
+short-term tax removes its entire pre-tax return.
+
+These are two independent measurements pointing the same way. ADR 033's first kill
+criterion is stated in terms of cells rather than arms, so this session does not fire it
+by itself — but nothing here argues against it, and the holdout evaluation is what
+settles it. **Holdout has not been touched.**
+
+---
+
+## ADR 108 — the close-confirmed reversal signal
+
+Added 2026-08-13. `open > close AND close >= bb_upper[t-1]`: a down bar closing at or
+above the **prior** upper band. Short side only.
+
+**A new `config_hash`: `697f3ae71428d392`**, superseding `1835688bf7d760ba`. The old hash
+is not retired — every Session 12 and Session 13 number above remains a valid measurement
+of that config, and ADR 096's composite key on `cell_stats` means the two coexist rather
+than one replacing the other.
+
+### Why the hash had to move, and how close it came to not moving
+
+ADR 108 states the new type forces a new `config_hash`, because `signal_strength` counts
+concurrent types and shifts on every day the signal fires. **That did not happen on its
+own.** `config_hash` hashes `dataclasses.asdict(Config)`, and a `SignalType` enum member
+is not a `Config` field, so the hash stayed at `1835688bf7d760ba`.
+
+`_RUN_BACKTEST_UPDATE_COLUMNS` includes `signal_types_all`, `signal_strength`, and
+`cluster_id`. A backtest under the unchanged hash would have rewritten all 626,977 events
+in place, and every table above — the twelve cells, the eight arms, the 200-replication
+null — would have stopped reproducing from the database with nothing raising.
+
+Caught by printing the hash before launching the run, not by review.
+`SignalParams.enabled_signal_types` now names the enabled set, which makes the signal
+selection a genuine config dimension and doubles as the ablation switch DESIGN §3.10 asks
+for.
+
+### Measured incidence
+
+Full universe recompute, 20m08s at 8 workers, 612 tickers:
+
+| Quantity | Value |
+|---|---|
+| Flagged bars, all history | **43,701** |
+| Flagged bars, train split (short, cluster heads, `next_open`) | 409 |
+| ...that also fire `confluence_high` | **286 (70%)** |
+| ...that fire the reversal alone | 123 (30%) |
+
+Verified by a lag join against the **prior** bar's band, with zero discrepancies on four
+checks: none flagged without being a down bar, none flagged with a close below the prior
+band, none flagged whose high failed to touch that band, and **none missed**. The third
+check is the `bars_check1` subset guarantee — `close <= high` means a close at or above
+the band implies the high was too, so every flagged bar necessarily also fires
+`BB_UPPER_TOUCH`.
+
+An earlier version of that query compared row *t*'s band rather than *t−1*'s and appeared
+to show violations. The lag join is the correct check; the apparent violations were the
+query's error, not the data's.
+
+### Continuity: the confluence cells change, and why that is not drift
+
+The grid goes from twelve cells to fourteen (ADR 102 as amended). The new cell takes the
+286 overlapping events, because ADR 057 emits one row per ticker-day carrying the most
+specific type and ADR 108 ranks the reversal above confluence.
+
+| Cell | Session 12 `n` | Under the new hash | `n_eff` | Verdict |
+|---|---|---|---|---|
+| short `confluence_high` 0-10 | 2,986 | ~2,710 | ~195 vs 215 | renders, unchanged |
+| short `confluence_high` 10-20 | 139 | ~131 | ~5 | suppressed, unchanged |
+
+**Neither cell changes its render/suppress verdict.** `signal_types_all` still lists both
+types on every affected row, so no event is lost — only the cell counting it moves. A
+reader comparing the two tables should expect this difference.
+
+The 70% overlap is real correlation rather than redundancy: a bar that *closes* above the
+upper band has usually been running hot, so `%K` is already extreme by then.
+
+### Backtest and statistics
+
+Run 2026-08-14. Backtest `backtest_20260813T233051_a64c5401`, 627,380 rows, 590/616
+tickers, **4h55m wall clock** (write phase 35m50s, harness ~4h19m — see the CLAUDE.md
+correction, the documented 2h48m is 1.75x optimistic).
+
+**All five harness checks pass**, `no_lookahead` among them. That one carries the load
+here: ADR 108 widened the signature probe by one field and opened invariant 3's door by
+one allowlisted column, and the independent shift-ladder check confirms neither
+introduced look-ahead.
+
+### The fourteen cells, train split, target 3%
+
+| Side | Signal | Bucket | n | n_eff | `p_hit` | base | edge | q |
+|---|---|---|---|---|---|---|---|---|
+| short | `bb_upper_touch` | 0-10 | 4,006 | 719 | 0.1278 | 0.1138 | +0.0140 | 0.790 |
+| long | `bb_lower_touch` | 0-10 | 3,593 | 369 | 0.1887 | 0.1735 | +0.0152 | 0.790 |
+| short | `stoch_overbought` | 0-10 | 5,266 | 322 | 0.1217 | 0.1213 | +0.0004 | 0.790 |
+| short | `confluence_high` | 0-10 | 2,710 | 202 | 0.1033 | 0.1208 | −0.0175 | 0.792 |
+| **short** | **`bear_close_above_upper`** | **0-10** | **386** | **152** | **0.1295** | **0.1224** | **+0.0071** | **0.790** |
+| long | `stoch_oversold` | 0-10 | 1,444 | 147 | 0.1517 | 0.1654 | −0.0137 | 0.792 |
+| long | `bb_lower_touch` | 10-20 | 775 | 73 | 0.2619 | 0.2167 | +0.0452 | 0.790 |
+| long | `confluence_low` | 0-10 | 725 | 56 | 0.1738 | 0.1598 | +0.0140 | 0.790 |
+| long | `stoch_oversold` | 10-20 | 900 | 50 | 0.2722 | 0.2169 | +0.0553 | 0.790 |
+| short | `bb_upper_touch` | 10-20 | 420 | 47 | 0.1667 | 0.1785 | −0.0118 | 0.790 |
+| long | `confluence_low` | 10-20 | 620 | 39 | 0.2484 | 0.2085 | +0.0399 | 0.790 |
+| short | `stoch_overbought` | 10-20 | 371 | 14 | — | — | — | — |
+| **short** | **`bear_close_above_upper`** | **10-20** | **20** | **6** | — | — | — | — |
+| short | `confluence_high` | 10-20 | 131 | 5 | — | — | — | — |
+
+**The new signal's 0-10 cell renders** at `n_eff` 152, fifth highest of the fourteen and
+well clear of the 30 floor. Its 10-20 cell suppresses at 20 events, which is the honest
+outcome for a rare pattern inside a deep drawdown rather than a defect.
+
+**Nothing survives FDR correction. Minimum q-value 0.790 across 56 tests**, and the new
+signal's +0.71-point edge is comfortably inside noise. Session 12 measured q >= 0.769
+across 48 tests; widening the family to 56 moved the correction slightly and changed the
+conclusion not at all. This is the third independent measurement pointing the same way,
+alongside Session 13's arms.
+
+### Continuity predictions, verified exactly
+
+ADR 102's amendment predicted the confluence reallocation *before* the run. Both landed
+on the number:
+
+| Cell | Session 12 | Predicted | Measured | Verdict |
+|---|---|---|---|---|
+| `confluence_high` 0-10 | 2,986 | ~2,710 | **2,710** | renders, `n_eff` 215 -> 202 |
+| `confluence_high` 10-20 | 139 | ~131 | **131** | suppressed, unchanged |
+
+### The arms under the new config
+
+Runs `benchmarks_20260814T095544_04711f43` (train) and
+`benchmarks_20260814T100207_764b175c` (validate), 409 rows each.
+
+| Split | Buy and hold | Signal | Null median | Null 97.5th | Verdict |
+|---|---|---|---|---|---|
+| train | **+383.66%** | +108.37% | +84.44% | **+199.05%** | below |
+| validate | **−3.69%** | −10.10% | −14.12% | **+5.58%** | below |
+
+**Identical to Session 13's conclusion.** The signal arm sits below its own randomization
+null's 97.5th percentile on both splits and below buy-and-hold on both. Every arm's
+numbers are unchanged from `1835688bf7d760ba` to the digit, which is the expected result:
+ADR 108 added a short-side *signal type*, and the three-arm comparison runs the long side
+(ADR 058, ADR 017). The null threshold moved slightly (+205.77% -> +199.05%) because it is
+reseeded from `config_hash`, which is exactly what ADR 061 specifies.
+
+### `rho_era` under the new config
+
+| Era | `rho_empirical` | `rho_factor_implied` | gap | pairs |
+|---|---|---|---|---|
+| 2010-2014 | 0.4259 | 0.4119 | +0.0140 | 127,383 |
+| 2015-2019 | 0.3601 | 0.3340 | +0.0261 | 10,238 |
+| 2020-2023 | 0.4707 | 0.4296 | +0.0411 | 20,581 |
+| 2024+ | 0.2477 | 0.1615 | +0.0862 | 30,955 |
+
+### The screener came back
+
+`v_screen` returned 721,136 rows with **zero** statistics immediately after the GUC moved,
+then 679,285 with statistics once `cell_stats` ran on the **validate** split. That gap is
+invariant 5b working as designed — the view pins `c.split_key = 'validate'` and never
+inherits an event's own split — and it is recorded because a zero there looks identical to
+ADR 107's defect and is not it.
+
+### A process finding worth keeping
+
+`cscan path backfill` reprocesses every ticker on every run (`incomplete_only=False`),
+while `cscan path capture` selects only tickers with incomplete events. For a fresh
+`config_hash`, where every `fwd_window_days` is NULL, capture does exactly the needed work:
+**7m31s against a projected three hours**, 2,210,695 path rows. The first attempt was run
+as `backfill`, was killed by a tool timeout at 200/590 tickers, and on restart began
+re-walking the 201 already-complete tickers from the top. `backfill` is not resumable in
+practice even though its inner query supports it.
+
+---
+
 ## Holdout
 
 **Evaluated once. Published whatever it says.**

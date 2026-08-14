@@ -46,7 +46,7 @@ from capitalscan.core.config import (
     UniverseParams,
 )
 from capitalscan.core.returns import entry_price_for
-from capitalscan.core.signals import debounce_key
+from capitalscan.core.signals import CLOSE_CONFIRMED_FIELDS, debounce_key
 from capitalscan.core.types import Bound, EntryKind
 from capitalscan.jobs import db_io
 from capitalscan.jobs.config import config_hash, split_key_for
@@ -73,6 +73,9 @@ INDICATOR_COLUMNS = [
     "rv_pct_252d",
     "vol_z_20d",
     "dd_52w",
+    # ADR 108. Boolean, unlike every column above it, and nullable through
+    # the 273-bar warmup (invariant 4). Migration a9d3c04f7b15.
+    "bear_close_above_upper",
 ]
 DD_BUCKETS = (
     (0.10, "0-10"),
@@ -897,6 +900,16 @@ def run_events(
                 # Step 3: skip if not in the trade universe.
                 if not core_universe.in_trade(universe_flags, ticker, bar_date):
                     continue
+
+                # ADR 108: attach bar t's close-confirmed flags. Mirrors
+                # `research.candidates.scan_candidates` exactly, and shares
+                # its allowlist constant rather than restating the field —
+                # the two detection callers drifting apart on which fields
+                # cross from row t is precisely the failure this guards.
+                own_ind = ind_group.loc[bar_date] if bar_date in ind_group.index else None
+                for field in CLOSE_CONFIRMED_FIELDS:
+                    value = None if own_ind is None else own_ind.get(field)
+                    bar[field] = False if value is None or pd.isna(value) else bool(value)
 
                 for hit in core_signals.detect(bar, prior_ind, sp):
                     key = debounce_key(hit)

@@ -70,13 +70,65 @@ def test_full_universe_stays_inside_the_design_request_budget(calls):
     assert len(out) == 140
 
 
-def test_returns_ticker_ts_and_price_per_symbol(calls):
+def test_returns_ticker_ts_price_and_day_open_per_symbol(calls):
     out = yahoo.fetch_quotes(["SPY", "GOOG"], now=NOW)
 
-    assert list(out.columns) == ["ticker", "ts", "price"]
+    assert list(out.columns) == ["ticker", "ts", "price", "day_open"]
     assert list(out["ticker"]) == ["SPY", "GOOG"]
     assert out["price"].tolist() == [100.0, 100.0]
     assert isinstance(out["ts"].iloc[0], pd.Timestamp)
+
+
+def test_a_quote_without_an_open_keeps_the_row_and_nulls_the_open(monkeypatch):
+    """ADR 108 needs `regularMarketOpen`, and the band signals do not.
+
+    Dropping the quote over a missing field the breach path never reads
+    would blind the poller to an ordinary band breach — a strictly worse
+    failure than the reversal tag going unevaluated. So the row survives
+    and `day_open` is NaN, which `poll.is_bear_reversal` treats as "cannot
+    evaluate" rather than as a passing comparison.
+    """
+
+    def fake_download(symbols):
+        return {
+            "quoteResponse": {
+                "result": [
+                    {
+                        "symbol": "SPY",
+                        "regularMarketPrice": 769.79,
+                        "regularMarketTime": _FRESH_EPOCH,
+                    },  # no regularMarketOpen key
+                ]
+            }
+        }
+
+    monkeypatch.setattr(yahoo, "_download_quotes", fake_download)
+    out = yahoo.fetch_quotes(["SPY"], now=NOW)
+
+    assert list(out["ticker"]) == ["SPY"]
+    assert out["price"].tolist() == [769.79]
+    assert pd.isna(out["day_open"].iloc[0])
+
+
+def test_the_open_is_carried_through_when_present(monkeypatch):
+    def fake_download(symbols):
+        return {
+            "quoteResponse": {
+                "result": [
+                    {
+                        "symbol": "SPY",
+                        "regularMarketPrice": 769.79,
+                        "regularMarketOpen": 775.10,
+                        "regularMarketTime": _FRESH_EPOCH,
+                    },
+                ]
+            }
+        }
+
+    monkeypatch.setattr(yahoo, "_download_quotes", fake_download)
+    out = yahoo.fetch_quotes(["SPY"], now=NOW)
+
+    assert out["day_open"].tolist() == [775.10]
 
 
 def test_symbol_with_no_price_is_dropped_never_defaulted(monkeypatch):
@@ -172,4 +224,4 @@ def test_no_tickers_makes_no_request(calls):
 
     assert calls == []
     assert out.empty
-    assert list(out.columns) == ["ticker", "ts", "price"]
+    assert list(out.columns) == ["ticker", "ts", "price", "day_open"]

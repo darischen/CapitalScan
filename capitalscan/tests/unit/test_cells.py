@@ -142,10 +142,18 @@ class TestDdBucketLabels:
 
 
 class TestHeadlineGrid:
-    """ADR 102: `2 sides x 3 signal families x 2 buckets = 12`."""
+    """ADR 102 as amended by ADR 108: `3 long x 2 + 4 short x 2 = 14`.
 
-    def test_exactly_twelve_cells(self):
-        assert len(headline_grid(StatsParams())) == 12
+    Was `2 sides x 3 families x 2 buckets = 12` until 2026-08-13.
+    `BEAR_CLOSE_ABOVE_UPPER` is short-side only, so the sides carry
+    different family counts and the grid is no longer a clean cross product.
+    """
+
+    def test_exactly_fourteen_cells(self):
+        """The Benjamini-Hochberg family in DESIGN 6.8 is this count times
+        four targets, so a silent change here resizes the correction."""
+        assert len(headline_grid(StatsParams())) == 14
+        assert len(headline_grid(StatsParams())) * len(StatsParams().reach_targets) == 56
 
     def test_matches_the_adr_102_table(self):
         expected = {
@@ -161,26 +169,33 @@ class TestHeadlineGrid:
             ("short", "stoch_overbought", "10-20"),
             ("short", "confluence_high", "0-10"),
             ("short", "confluence_high", "10-20"),
+            # ADR 108. Short-side only: no bullish counterpart was
+            # requested, and ADR 106 rejects long/short symmetry as an
+            # assumption rather than treating it as the default.
+            ("short", "bear_close_above_upper", "0-10"),
+            ("short", "bear_close_above_upper", "10-20"),
         }
         assert {
             (c.side, c.signal_type, c.dd_bucket) for c in headline_grid(StatsParams())
         } == expected
 
     def test_signal_type_pairs_with_side_rather_than_crossing_it(self):
-        """Twelve cells, not thirty-six. A long cell reads `bb_lower_touch`
-        and its short counterpart reads `bb_upper_touch`; no cell pairs a
-        long side with an upper-band touch."""
+        """Fourteen cells, not forty-two. Signal type pairs *with* side: no
+        cell pairs a long side with an upper-band signal, or vice versa.
+
+        Asserted by explicit membership rather than by suffix. The suffix
+        form read `endswith("_high")` for the short side, which
+        `bear_close_above_upper` fails despite being correctly short-side —
+        it would have rejected a valid cell for its spelling.
+        """
+        from capitalscan.core.cells import LONG_SIGNALS, SHORT_SIGNALS
+
         grid = headline_grid(StatsParams())
-        assert all(
-            c.signal_type.endswith(("_lower_touch", "_oversold", "_low"))
-            for c in grid
-            if c.side == "long"
-        )
-        assert all(
-            c.signal_type.endswith(("_upper_touch", "_overbought", "_high"))
-            for c in grid
-            if c.side == "short"
-        )
+        assert all(c.signal_type in LONG_SIGNALS for c in grid if c.side == "long")
+        assert all(c.signal_type in SHORT_SIGNALS for c in grid if c.side == "short")
+        # And the two families stay disjoint, which is what "pairs with side"
+        # actually means.
+        assert not set(LONG_SIGNALS) & set(SHORT_SIGNALS)
 
     def test_deep_drawdown_buckets_are_excluded(self):
         """ADR 101: `20-35` and `35+` are measured and permanently
@@ -204,7 +219,7 @@ class TestHeadlineGrid:
             )
             for c in headline_grid(StatsParams())
         }
-        assert len(ids) == 12
+        assert len(ids) == 14
 
     def test_cell_id_passes_null_strength_and_null_era(self):
         spec = CellSpec(side="long", signal_type="bb_lower_touch", dd_bucket="0-10")

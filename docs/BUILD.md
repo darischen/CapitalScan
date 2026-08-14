@@ -31,7 +31,82 @@ Sessions 0-7 deliver v1 (Phase 1). Sessions 8-9 deliver Phases 2-3. Session 10 i
 
 | 12 | Cell grid and `cell_stats` | Twelve-cell grid (ADR 102), `cell_key` parity, `cell_stats` writer, era/breadth/concentration reporting, `arm` migration, `v_screen` predicates | **Session 12 gate — complete, passed on all 10 items.** Twelve cells enumerated, ten rendered, two suppressed at `n_eff` 14.3 and 5.0 exactly as ADR 102 predicts; measured `n_eff` reproduces the ADR 102 table within ±2. **No cell survives FDR: minimum q-value 0.769 across the 48-test family.** See `RESULTS.md` Session 12 |
 
+| 13 | Benchmark arms | Buy-and-hold, signal, 200-replication random-entry null, trim-and-redeploy, four DCA variants, pre/post-tax and wash-sale flagging, ADR 099's high-breadth subset | **Session 13 gate — complete, passed on all 10 items.** Eight arms on one universe and one date range; the null holds exactly 200 rows with `replication` 1-200 and reproduces identically within a `config_hash`. **The signal arm is below the null's 97.5th percentile on both train and validate, and below buy-and-hold on both.** See `RESULTS.md` Session 13 |
+
 Sessions 0-2 can run back to back in one sitting. Session 7 is mostly waiting.
+
+**Session 13 is complete.** Tasks 13.1-13.7 all closed, all ten gate items pass. No
+migration: `benchmarks` was already in `db/schema.sql` and had never been written to.
+Rollback is `DELETE FROM benchmarks WHERE run_id = '...'`.
+
+Runs of record: `benchmarks_20260813T172347_f421521b` (train) and
+`benchmarks_20260813T173059_efceeadc` (validate), both `config_hash = 1835688bf7d760ba`,
+409 rows each, ~6m15s per split. ADR 032 was amended mid-session to add a long-term rate,
+so these supersede the earlier pair; the pre-tax numbers are identical either way.
+
+Four findings carry into Session 14:
+
+1. **The signal arm loses to both benchmarks on both splits.** Train: +108.37% against
+   buy-and-hold's +383.66% and a null 97.5th percentile of +205.77%. Validate: −10.10%
+   against −3.69% and +3.02%. It clears the null's *median* on train (+108% against +84%)
+   and not on validate, so entry timing is marginally better than random at best. This is
+   the second independent measurement pointing the same way as Session 12's minimum
+   q-value of 0.769.
+2. **Short-term tax removes the entire pre-tax return.** The signal arm's +108.37% becomes
+   −7.78% after 7,163 short-term round trips at 37%. The randomization null shows the same
+   pattern, so it is a property of the turnover, not of the signal. ADR 032 was amended
+   2026-08-13 to add a 20% long-term rate above a 365-day holding period, which moves the
+   benchmarks only: buy-and-hold's post-tax return rises from +239.22% to +291.40% and the
+   signal arm is unchanged, widening the post-tax gap to 299 points.
+3. **The edge concentrates at high breadth**, DESIGN §6.11's market-timing reading. The
+   subset arm's capital efficiency is 3.762 against the pooled 1.166 on a third of the
+   deployment — and it is still below its own subset null (+126.04% against +248.70%).
+4. **Three comparability defects were found and fixed by measurement, not by review.** The
+   trim arm initially held a different book than buy-and-hold (+725% against +413%,
+   entirely artifact); the tax model treated wash-sale losses as permanently disallowed
+   (`post_tax_ret = −354%` against `pre_tax_ret = +109%`); and it then taxed multi-year
+   benchmark holds at the short-term rate, understating buy-and-hold by 52 points in the
+   signal arm's favor. All three passed their original unit tests. `RESULTS.md` records
+   each, and each now has a regression test that would have caught it.
+
+**ADR 108 — the close-confirmed reversal signal (2026-08-13).** Added between
+Session 13 and Session 14, at the user's request, not a numbered session.
+
+`open > close AND close >= bb_upper[t-1]`, short side only. `config_hash` moves
+`1835688bf7d760ba` -> `697f3ae71428d392`. Migration `a9d3c04f7b15` adds
+`indicators.bear_close_above_upper` (boolean, nullable). Grid goes twelve cells to
+fourteen; the Benjamini-Hochberg family goes 48 tests to 56.
+
+Measured: 43,701 flagged bars across 612 tickers, 20,796 event rows under the new hash.
+The new type draws from both `confluence_high` (-16,015) and `bb_upper_touch` (-4,589),
+reconciling to within 192 rows — bars where the reversal fired without a stochastic
+extreme were previously plain band touches. `1835688bf7d760ba` is untouched, so every
+Session 12 and 13 number stays reproducible.
+
+Four defects surfaced, and **three were found by running things rather than reading
+them**, each with a passing test suite at the moment it was wrong:
+
+1. **`config_hash` never moved.** ADR 108 asserted it would; it does not, because
+   `config_hash` hashes `Config` fields and a `SignalType` enum member is not one. Caught
+   by printing the hash before launching the backtest. The run would have rewritten all
+   626,977 events in place and silently broken Sessions 12/13's reproducibility. Fixed by
+   `SignalParams.enabled_signal_types`, which also doubles as DESIGN §3.10's ablation
+   switch.
+2. **`--confluence-only` would have hidden its own target rows.** It filtered on
+   `signal_type`, which carries only the most specific type, and the new type outranks
+   `confluence_high`. Both scan filters now read `signal_types_all`.
+3. **A grid guard rejected a valid cell for its spelling.**
+   `test_signal_type_pairs_with_side_rather_than_crossing_it` asserted the short side via
+   `endswith("_high")`, which `bear_close_above_upper` fails despite being correctly
+   short-side. Rewritten to assert membership plus disjointness.
+4. **`run_cell_stats` had no CLI entry point** and no caller outside its own tests, so
+   Session 12's published table could not be reproduced from the CLI. Added
+   `cscan stats cells`.
+
+Two of my own errors are recorded rather than quietly corrected: a verification query that
+compared row *t*'s band instead of *t-1*'s and appeared to show violations that were the
+query's fault, and a completion monitor that read "`tasklist`: command not found" as "no
+process running" and declared a still-running backtest finished.
 
 **Session 12 is complete.** Tasks 12.1-12.6 all closed, all ten gate items pass.
 Migrations `e3c7f5a91d24` (`cell_stats.arm`, `v_screen` config/arm predicates) and

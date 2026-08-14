@@ -607,3 +607,116 @@ def test_a_stochastic_only_hit_still_has_a_debounce_key():
     resolve, from side rather than from the absent level."""
     (hit,) = sig.detect(_bar(ticker="TSM"), _ind(k_full=15.0), SP)
     assert sig.debounce_key(hit) == ("TSM", pd.Timestamp("2026-07-29").date(), Bound.LOWER)
+
+
+# --------------------------------------------------------------------------
+# BEAR_CLOSE_ABOVE_UPPER (ADR 108) — the close-confirmed model
+# --------------------------------------------------------------------------
+
+
+def _bear_bar(flag=True, **kw):
+    """A bar carrying the precomputed close-confirmed boolean.
+
+    The flag arrives on the **bar**, not the indicator row, which is what
+    dates the event to D rather than D+1 (ADR 108). Raw `open`/`close` are
+    still never read by `detect`.
+    """
+    bar = _bar(**kw)
+    bar["bear_close_above_upper"] = flag
+    return bar
+
+
+def test_the_flag_fires_the_close_confirmed_type():
+    hits = sig.detect(_bear_bar(flag=True, high=106.0), _ind(), SP)
+    short = [h for h in hits if h.side is Side.SHORT]
+    assert short
+    assert SignalType.BEAR_CLOSE_ABOVE_UPPER in short[0].signal_types_all
+
+
+def test_a_false_flag_does_not_fire_it():
+    hits = sig.detect(_bear_bar(flag=False, high=106.0), _ind(), SP)
+    for hit in hits:
+        assert SignalType.BEAR_CLOSE_ABOVE_UPPER not in hit.signal_types_all
+
+
+def test_a_missing_flag_does_not_fire_it():
+    """Every bar predating the indicator column carries no such field. A
+    KeyError here would break the whole existing corpus, and a default of
+    True would fire on all of it."""
+    hits = sig.detect(_bar(high=106.0), _ind(), SP)
+    for hit in hits:
+        assert SignalType.BEAR_CLOSE_ABOVE_UPPER not in hit.signal_types_all
+
+
+def test_a_null_flag_does_not_fire_it():
+    """NULL through warmup (invariant 4) must read as "not fired", never as
+    truthy. `np.nan` is truthy in Python, so this is a real trap."""
+    hits = sig.detect(_bear_bar(flag=np.nan, high=106.0), _ind(), SP)
+    for hit in hits:
+        assert SignalType.BEAR_CLOSE_ABOVE_UPPER not in hit.signal_types_all
+
+
+def test_it_ranks_above_confluence_high():
+    """ADR 108's ranking: a band breach plus a close-confirmed rejection is
+    strictly more specific than a band touch plus a stochastic extreme."""
+    bar = _bear_bar(flag=True, high=106.0)
+    hits = sig.detect(bar, _ind(k_full=85.0), SP)
+    short = [h for h in hits if h.side is Side.SHORT][0]
+    assert short.signal_type is SignalType.BEAR_CLOSE_ABOVE_UPPER
+    assert SignalType.CONFLUENCE_HIGH in short.signal_types_all
+
+
+def test_it_raises_signal_strength_when_it_co_fires():
+    """`signal_strength` counts concurrent types (ADR 057), which is exactly
+    why this signal forces a new `config_hash` rather than a backfill."""
+    plain = sig.detect(_bar(high=106.0), _ind(k_full=85.0), SP)
+    plain_short = [h for h in plain if h.side is Side.SHORT][0]
+    withflag = sig.detect(_bear_bar(flag=True, high=106.0), _ind(k_full=85.0), SP)
+    flag_short = [h for h in withflag if h.side is Side.SHORT][0]
+    assert flag_short.signal_strength == plain_short.signal_strength + 1
+
+
+def test_it_is_short_side_only():
+    """No bullish counterpart was requested, and ADR 106 already rejects
+    long/short symmetry as an assumption."""
+    hits = sig.detect(_bear_bar(flag=True, high=106.0, low=94.0), _ind(), SP)
+    for hit in hits:
+        if hit.side is Side.LONG:
+            assert SignalType.BEAR_CLOSE_ABOVE_UPPER not in hit.signal_types_all
+
+
+def test_the_specificity_order_is_fully_pinned():
+    """All four short types, ranked. A partial assertion would pass on a
+    ranking that got two of them backwards."""
+    assert sig._SPECIFICITY[Side.SHORT] == (
+        SignalType.BEAR_CLOSE_ABOVE_UPPER,
+        SignalType.CONFLUENCE_HIGH,
+        SignalType.BB_UPPER_TOUCH,
+        SignalType.STOCH_OVERBOUGHT,
+    )
+
+
+def test_the_long_side_ranking_is_unchanged():
+    assert sig._SPECIFICITY[Side.LONG] == (
+        SignalType.CONFLUENCE_LOW,
+        SignalType.BB_LOWER_TOUCH,
+        SignalType.STOCH_OVERSOLD,
+    )
+
+
+def test_breach_live_never_returns_the_close_confirmed_type():
+    """The live path walks a session tick by tick and has no close to
+    confirm against. A poller that could emit this type would fire it
+    intraday, before the bar that defines it exists."""
+    for price in (90.0, 100.0, 106.0, 120.0):
+        assert SignalType.BEAR_CLOSE_ABOVE_UPPER not in sig.breach_live(price, _bands(), SP)
+
+
+def test_the_flag_alone_fires_without_any_stochastic_extreme():
+    """It is not gated on %K. The poller gates its *display* on
+    confluence_high (user's decision), but the signal itself stands alone
+    so the backtest can measure both populations."""
+    hits = sig.detect(_bear_bar(flag=True, high=106.0), _ind(k_full=50.0), SP)
+    short = [h for h in hits if h.side is Side.SHORT][0]
+    assert short.signal_type is SignalType.BEAR_CLOSE_ABOVE_UPPER
+    assert SignalType.CONFLUENCE_HIGH not in short.signal_types_all

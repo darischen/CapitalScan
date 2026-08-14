@@ -59,6 +59,40 @@ class SignalParams:
     # No `config.toml` needed/created — the env var is read directly and
     # leaves no repo state behind once the shell session ends.
     stoch_source: str = "k_full"  # "k_full" | "k_fast"
+    # Which `SignalType` values may fire (ADR 108, added 2026-08-13).
+    #
+    # **This field exists to make the signal set part of `config_hash`.**
+    # ADR 108 states that adding `BEAR_CLOSE_ABOVE_UPPER` forces a new hash,
+    # because `signal_strength` counts concurrent types and therefore shifts
+    # on every day it fires. That does not happen on its own:
+    # `jobs.config.config_hash` hashes `dataclasses.asdict(Config)`, and an
+    # enum member is not a `Config` field. Adding the type alone left the
+    # hash at `1835688bf7d760ba` — the identity Sessions 12 and 13 published
+    # against — so a backtest would have overwritten 626,977 event rows in
+    # place, silently, and those results would have stopped reproducing.
+    #
+    # Naming the set here fixes that at the root: the enabled signals are
+    # genuinely a config dimension, the same way ADR 060 treats a universe
+    # threshold as one. It also gives DESIGN §3.10 what it asks for — an
+    # ablated criterion becomes a config change rather than a code change —
+    # and makes the pre-ADR-108 hash *reconstructible* rather than merely
+    # abandoned, which is what keeps every published Session 12/13 number
+    # derivable from a config instead of only from a database snapshot.
+    #
+    # Strings rather than `SignalType` members because this dataclass is
+    # frozen and its sole import is `dataclasses` (invariant 10).
+    # `core.signals.enabled_types` resolves and validates them; an unknown
+    # name raises rather than silently disabling a real signal and minting a
+    # hash for a config nobody intended.
+    enabled_signal_types: tuple[str, ...] = (
+        "bb_lower_touch",
+        "bb_upper_touch",
+        "stoch_oversold",
+        "stoch_overbought",
+        "confluence_low",
+        "confluence_high",
+        "bear_close_above_upper",
+    )
 
 
 @dataclass(frozen=True)
@@ -592,3 +626,107 @@ class MonitoringThresholds:
 
 
 DEFAULT_MONITORING = MonitoringThresholds()
+
+
+@dataclass(frozen=True)
+class BenchmarkParams:
+    """Session 13's benchmark arms (DESIGN §6.4-§6.6, ADRs 012, 017, 032, 061).
+
+    Standalone, same rationale as `BaselineParams` and `ReportingParams`
+    above: `jobs.config.config_hash` hashes `dataclasses.asdict(config)`, and
+    nothing here varies a signal, an exit, or a cost. Folding these into
+    `Config` would move `config_hash` for every config already written to
+    `events` — including the live poller's, whose same-day duplicate check
+    keys on that hash — in order to name constants that only ever describe
+    how capital is simulated *after* the events exist.
+
+    Invariant 9 still binds: `core/arms.py` and `research/benchmarks.py`
+    hold no literals, and the 13.3 brief calls out that ADR 092's pattern
+    "has already escaped once into `v_positions`."
+
+    **`initial_capital`.** A scale, not a claim. Every reported quantity is
+    a ratio (`total_ret`, `sharpe`, `max_drawdown`, `capital_efficiency`)
+    except `terminal_value` and the tax numbers, and those are linear in it,
+    so the value only fixes the units the `benchmarks` rows are read in.
+
+    **`risk_free_annual`.** A flat 2%, the rate `sharpe` subtracts and the
+    rate idle cash accrues at between a trim and its redeploy (DESIGN §6.5).
+    It is deliberately a constant rather than a series: the arms are read
+    against each other, and threading a daily T-bill series through eight
+    simulations adds an ingestion dependency the session does not have.
+    2% is roughly the 2010-2023 average 3-month T-bill yield, which spent
+    most of that window near zero and finished above 5%. **The limit is
+    real and one-directional:** a flat rate understates the cash return in
+    2023 and overstates it in 2015, so the trim arm's idle-cash leg is
+    mis-stated in both eras, in opposite directions. It is sweepable
+    precisely so the sensitivity is measurable rather than assumed.
+
+    **`trim_fraction` and `trim_stoch_threshold`.** DESIGN §6.5's "sell 20%
+    on `CONFLUENCE_HIGH` or `%K_full >= 80`." The threshold is *not*
+    `ExitParams.exit_stoch_threshold` even though both default to 80: that
+    one is exit policy for an open sleeve position, this one decides whether
+    to trim a held core position, and an exit-rule sweep must not silently
+    move the trim rule with it. Same reasoning ADR 092 applies to the
+    signal/exit pair.
+
+    **`dca_tranches`.** DESIGN §6.6's "buy C/12 on the first trading day of
+    each month." Named rather than written as 12 so the fixed-schedule arm's
+    ramp length is visible. Note the consequence, which is a property of the
+    specified rule rather than of this implementation: over a window longer
+    than `dca_tranches` months, `dca_fixed` exhausts C early and converges
+    toward `dca_lump`.
+
+    **The tax fields.** ADR 032, which is Provisional and stays Provisional.
+    37% is the top US federal ordinary bracket and 20% the top long-term
+    capital gains bracket; no state tax, no NIIT, and no bracket
+    progression. Setting `long_term_tax_rate = 0.238` adds the 3.8% net
+    investment income tax, which is the one-field change if you want it.
+
+    `long_term_holding_days` is 365 and the comparison is **strictly
+    greater than**, because the US rule is "more than one year." A position
+    held for exactly a year is short-term, and an off-by-one here silently
+    reclassifies every one-year hold.
+
+    **Why a long-term rate exists at all** (added 2026-08-13, amending
+    ADR 032): the ADR named only a short-term rate, because it describes
+    the *sleeve*. Session 13 also taxes the benchmark arms, whose holding
+    stints average roughly four and a half years. Taxing those at 37%
+    overstated buy-and-hold's tax by about 66 points of return on the train
+    split and flattered every high-turnover arm measured against it. The
+    signal arm's own rate is unaffected: its positions are held five days
+    or fewer and are genuinely short-term.
+
+    30 days is the statutory wash-sale window, and it is **calendar** days
+    on both sides of the disposal.
+
+    **`irr_*`.** The bisection bracket and tolerance for the DCA arms' XIRR.
+    `irr_days_per_year` is 365, not 252: IRR discounts calendar time, so a
+    trading-day divisor would inflate every rate by roughly 45%.
+    """
+
+    initial_capital: float = 1_000_000.0
+    risk_free_annual: float = 0.02
+    trading_days_per_year: int = 252
+
+    trim_fraction: float = 0.20
+    trim_stoch_threshold: float = 80.0
+
+    dca_tranches: int = 12
+
+    short_term_tax_rate: float = 0.37
+    long_term_tax_rate: float = 0.20
+    long_term_holding_days: int = 365
+    wash_sale_window_days: int = 30
+
+    irr_days_per_year: float = 365.0
+    irr_max_rate: float = 100.0
+    irr_tolerance: float = 1e-10
+    irr_max_iterations: int = 500
+
+    # ADR 061's significance criterion. A field rather than a literal so a
+    # one-sided 95% read and this one are two named settings instead of one
+    # edited number.
+    null_percentile: float = 97.5
+
+
+DEFAULT_BENCHMARK = BenchmarkParams()

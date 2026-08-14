@@ -21,6 +21,10 @@ class SignalType(str, Enum):
     STOCH_OVERBOUGHT = "stoch_overbought"
     CONFLUENCE_LOW = "confluence_low"
     CONFLUENCE_HIGH = "confluence_high"
+    # ADR 108. The only close-confirmed type: every other member is an
+    # intraday touch (ADR 005). `breach_live` never returns this one — the
+    # live path has no close to confirm against.
+    BEAR_CLOSE_ABOVE_UPPER = "bear_close_above_upper"
 
 
 class ExitReason(str, Enum):

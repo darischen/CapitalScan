@@ -47,7 +47,18 @@ FORBIDDEN_ON_BAR = (
     "atr_14",
 )
 
-PERMITTED_ON_BAR = {"low", "high", "ts", "ticker"}
+# ADR 108 adds exactly one: a precomputed boolean, not a price. The
+# negative assertions below are what carry the guarantee — a test asserting
+# only that this field is permitted would pass on a probe with no
+# restrictions at all.
+PERMITTED_ON_BAR = {"low", "high", "ts", "ticker", "bear_close_above_upper"}
+
+# Raw prices `detect` must never read. `open` and `close` are the pair ADR
+# 108's flag is derived from, and they stay forbidden precisely because the
+# flag exists: the point of computing it in `core/indicators.py` is that an
+# *intraday* condition written against the close stays impossible to
+# express here.
+FORBIDDEN_PRICES_ON_BAR = ("open", "close", "adj_close", "volume")
 
 
 class TrackingSeries(pd.Series):
@@ -358,3 +369,58 @@ def test_the_import_scan_would_catch_a_violation(tmp_path):
     bad = tmp_path / "bad.py"
     bad.write_text("import os\nfrom pathlib import Path\n")
     assert _imports(bad) & _IO_MODULES == {"os", "pathlib"}
+
+
+# --------------------------------------------------------------------------
+# ADR 108: the one permitted addition, and the wall that stayed up
+# --------------------------------------------------------------------------
+
+
+def test_detect_never_reads_a_raw_price_beyond_low_and_high():
+    """The load-bearing negative. ADR 108 lets `detect` learn *that* the
+    close confirmed a pattern; it must never get the close itself, or an
+    intraday condition written against it becomes expressible again."""
+    probe = _probe()
+    probe["bear_close_above_upper"] = True
+    detect(probe, _ind_row(), SP)
+    assert probe.accessed.isdisjoint(FORBIDDEN_PRICES_ON_BAR)
+
+
+def test_the_permitted_set_did_not_quietly_widen():
+    """Pins the exact membership. A future edit adding `close` "for
+    convenience" changes this set, and this fails before the look-ahead
+    ships rather than after."""
+    assert PERMITTED_ON_BAR == {
+        "low",
+        "high",
+        "ts",
+        "ticker",
+        "bear_close_above_upper",
+    }
+
+
+def test_the_flag_firing_does_not_widen_what_is_read():
+    """The close-confirmed path must not reach for anything extra on its
+    way to producing a hit."""
+    probe = _probe()
+    probe["bear_close_above_upper"] = True
+    detect(probe, _ind_row(bb_lower=1.0, k_full=50.0), SP)
+    assert probe.accessed <= PERMITTED_ON_BAR
+
+
+def test_the_flag_actually_fires_through_the_probe():
+    """A probe that silently swallowed the field would pass every access
+    assertion above while proving nothing about the new type."""
+    probe = _probe()
+    probe["bear_close_above_upper"] = True
+    hits = detect(probe, _ind_row(bb_lower=1.0, k_full=50.0), SP)
+    assert [h.signal_type.value for h in hits] == ["bear_close_above_upper"]
+
+
+def test_a_bar_without_the_field_still_detects_normally():
+    """Every bar predating the indicator column lacks it. Detection on the
+    existing corpus must be unaffected, not merely non-crashing."""
+    probe = _probe()
+    assert "bear_close_above_upper" not in probe.index
+    hits = detect(probe, _ind_row(bb_lower=95.0, k_full=15.0), SP)
+    assert [h.signal_type.value for h in hits] == ["confluence_low"]

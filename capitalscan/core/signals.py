@@ -37,11 +37,44 @@ _SPECIFICITY: dict[Side, tuple[SignalType, ...]] = {
         SignalType.STOCH_OVERSOLD,
     ),
     Side.SHORT: (
+        # ADR 108 ranks the close-confirmed type first: a band breach plus a
+        # confirmed rejection of it is strictly more specific than a band
+        # touch plus a stochastic extreme. The two sides are deliberately
+        # not mirrors — ADR 106 already rejects long/short symmetry as an
+        # assumption, and no bullish counterpart was requested.
+        SignalType.BEAR_CLOSE_ABOVE_UPPER,
         SignalType.CONFLUENCE_HIGH,
         SignalType.BB_UPPER_TOUCH,
         SignalType.STOCH_OVERBOUGHT,
     ),
 }
+
+# The one bar field that is a precomputed signal condition rather than a
+# price (ADR 108). `core/indicators.py` owns the arithmetic; `detect` reads
+# only the resolved boolean, so an intraday condition written against the
+# raw close stays impossible to express.
+BEAR_CLOSE_FIELD = "bear_close_above_upper"
+
+# ADR 108. The **only** fields a caller may read from bar t's own indicator
+# row and attach to the bar. Everything else comes from t-1 (invariant 3).
+#
+# Invariant 3 exists because bar t's bands embed bar t's close: comparing an
+# intraday price against them uses the close to decide something that
+# happened before it. A close-confirmed value is categorically different —
+# it is only *defined* at the close, only acted on after it, and the
+# resulting position enters at t+1's open, so reading it at t consumes no
+# information that did not exist when the decision was made.
+#
+# The danger is that the mechanism is identical, so this tuple is what keeps
+# the door open exactly one inch. A field belongs here only if it cannot be
+# evaluated before the session ends.
+#
+# It lives in `core/` rather than in either caller because **both**
+# `research.candidates.scan_candidates` and `jobs.compute.run_events` run
+# detection, and the two drifting apart on which fields cross from row t is
+# exactly the failure this guards. `jobs/` importing `research/` would also
+# invert the layering CLAUDE.md pins.
+CLOSE_CONFIRMED_FIELDS = (BEAR_CLOSE_FIELD,)
 
 
 def _breach(price: float, level: float, bound: Bound, tol: float = 0.0) -> bool:
@@ -107,11 +140,29 @@ def _get(row: pd.Series | Bands, field: str) -> float:
     return float(value) if value is not None else float("nan")
 
 
+def enabled_types(sp: SignalParams) -> frozenset[SignalType]:
+    """Resolve `sp.enabled_signal_types` to `SignalType` members.
+
+    Raises on an unknown name rather than ignoring it. A typo would
+    otherwise silently disable a real signal *and* mint a `config_hash` for
+    a config nobody intended — two failures that both look like a clean run.
+    """
+    known = {s.value: s for s in SignalType}
+    unknown = [name for name in sp.enabled_signal_types if name not in known]
+    if unknown:
+        raise ValueError(
+            f"unknown signal type(s) in enabled_signal_types: {sorted(unknown)}. "
+            f"Valid values: {sorted(known)}"
+        )
+    return frozenset(known[name] for name in sp.enabled_signal_types)
+
+
 def _types_fired(
     low: float,
     high: float,
     ind: pd.Series | Bands,
     sp: SignalParams,
+    bear_close: bool = False,
 ) -> dict[Side, list[SignalType]]:
     """Evaluate every pinned condition and group the results by side.
 
@@ -119,6 +170,10 @@ def _types_fired(
     The backtest passes the bar's intraday extremes (ADR 005); the live path
     passes the current quote for both. Stochastic conditions read `ind`,
     which is always the t-1 row.
+
+    `bear_close` is ADR 108's close-confirmed condition, already resolved by
+    `core/indicators.py`. It defaults to False so `breach_live` — which has
+    no close to confirm against — cannot emit the type by omission.
     """
     bb_lower = _get(ind, "bb_lower")
     bb_upper = _get(ind, "bb_upper")
@@ -135,19 +190,26 @@ def _types_fired(
     agrees = _fast_agrees(ind, sp)
 
     fired: dict[Side, list[SignalType]] = {Side.LONG: [], Side.SHORT: []}
+    allowed = enabled_types(sp)
     if lower_touch and oversold and agrees:
         fired[Side.LONG].append(SignalType.CONFLUENCE_LOW)
     if lower_touch:
         fired[Side.LONG].append(SignalType.BB_LOWER_TOUCH)
     if oversold:
         fired[Side.LONG].append(SignalType.STOCH_OVERSOLD)
+    if bear_close:
+        fired[Side.SHORT].append(SignalType.BEAR_CLOSE_ABOVE_UPPER)
     if upper_touch and overbought and agrees:
         fired[Side.SHORT].append(SignalType.CONFLUENCE_HIGH)
     if upper_touch:
         fired[Side.SHORT].append(SignalType.BB_UPPER_TOUCH)
     if overbought:
         fired[Side.SHORT].append(SignalType.STOCH_OVERBOUGHT)
-    return fired
+
+    # Applied here rather than in `detect`, so `breach_live` inherits it:
+    # the live and backtest paths must agree on which signals exist, or the
+    # poller fires on types the backtest never measured (ADR 006).
+    return {side: [t for t in types if t in allowed] for side, types in fired.items()}
 
 
 def _bar_ticker(bar: pd.Series) -> str:
@@ -187,6 +249,28 @@ def _bar_date(bar: pd.Series) -> date:
     return pd.Timestamp(label).date()  # type: ignore[arg-type]
 
 
+def _bear_close_flag(bar: pd.Series) -> bool:
+    """ADR 108's precomputed condition off the bar, defaulting to False.
+
+    Three inputs must all read as "did not fire", and each is a real case:
+
+    - **Absent.** Every bar predating the indicator column lacks the field.
+      A `KeyError` here would break the entire existing corpus.
+    - **Null.** The flag is NULL through the 273-bar warmup (invariant 4:
+      "no band yet" is not "did not fire"). `bool(float("nan"))` is `True`
+      in Python, so a bare `bool()` would fire on every warmup bar — the
+      sharpest trap in this function.
+    - **False.** The ordinary negative.
+    """
+    try:
+        value = bar[BEAR_CLOSE_FIELD]
+    except (KeyError, IndexError):
+        return False
+    if value is None or _isnan(value):
+        return False
+    return bool(value)
+
+
 def detect(bar: pd.Series, ind: pd.Series, sp: SignalParams) -> list[SignalHit]:
     """Backtest path. One bar plus its t-1 indicator row.
 
@@ -196,11 +280,19 @@ def detect(bar: pd.Series, ind: pd.Series, sp: SignalParams) -> list[SignalHit]:
 
     **The t-1 guarantee is structural, and this signature is what carries
     it** (TESTS.md §3.1b). `ind` is one row, not a frame, so bar t's
-    indicators are not in scope and no code path can reach them. Only four
-    fields are ever read from `bar`: `low`, `high`, `ts`, and `ticker` —
-    none of them an indicator. Widening either of those is how look-ahead
-    would get reintroduced, so both are asserted by test rather than left
-    to review.
+    indicators are not in scope and no code path can reach them. Five
+    fields are ever read from `bar`: `low`, `high`, `ts`, `ticker`, and
+    `bear_close_above_upper`. Widening that set is how look-ahead would get
+    reintroduced, so it is asserted by test rather than left to review.
+
+    **Why the fifth field is not a hole in that guarantee** (ADR 108). It is
+    a precomputed boolean, not a price: `core/indicators.py` resolved
+    `open > close AND close >= bb_upper[t-1]` before `detect` ever saw the
+    bar. Raw `open` and `close` remain forbidden, which is the property that
+    actually matters — the probe exists to make an *intraday* condition
+    written against the close impossible to express, and a boolean naming
+    its own causality cannot be repurposed that way. Handing `detect` the
+    raw close would restore the hazard in full.
 
     Concurrent signals on one side collapse to a single hit carrying the
     most specific `signal_type`, every concurrent type in `signal_types_all`,
@@ -214,7 +306,9 @@ def detect(bar: pd.Series, ind: pd.Series, sp: SignalParams) -> list[SignalHit]:
         # one "for convenience" must fail loudly, not silently widen access.
         raise TypeError("detect() takes a single indicator row (pd.Series), not a DataFrame")
 
-    fired = _types_fired(_get(bar, "low"), _get(bar, "high"), ind, sp)
+    fired = _types_fired(
+        _get(bar, "low"), _get(bar, "high"), ind, sp, bear_close=_bear_close_flag(bar)
+    )
     if not any(fired.values()):
         return []
 

@@ -422,3 +422,148 @@ class TestDebounce:
         out = debounce(candidates)
 
         assert out.empty
+
+
+# --------------------------------------------------------------------------
+# ADR 108: the close-confirmed allowlist, and the invariant-3 line it holds
+# --------------------------------------------------------------------------
+
+
+def _bear_frames():
+    """Two bars. Row t carries a *different* band than row t-1, so a test
+    reading the wrong row gets a visibly different answer."""
+    bars = _bars(
+        [
+            {
+                "ticker": "AAA",
+                "ts": "2026-01-05",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+            },
+            {
+                "ticker": "AAA",
+                "ts": "2026-01-06",
+                "open": 110.0,
+                "high": 111.0,
+                "low": 104.0,
+                "close": 106.0,
+            },
+        ]
+    )
+    inds = _indicators(
+        [
+            {
+                "ticker": "AAA",
+                "ts": "2026-01-05",
+                "bb_lower": 90.0,
+                "bb_upper": 105.0,
+                "bb_mid": 97.5,
+                "bb_pctb": 0.5,
+                "k_full": 50.0,
+                "d_full": 50.0,
+                "k_fast": 50.0,
+                "atr_14": 2.0,
+                "bear_close_above_upper": False,
+            },
+            {
+                "ticker": "AAA",
+                "ts": "2026-01-06",
+                "bb_lower": 91.0,
+                "bb_upper": 200.0,
+                "bb_mid": 145.0,
+                "bb_pctb": 0.5,
+                "k_full": 50.0,
+                "d_full": 50.0,
+                "k_fast": 50.0,
+                "atr_14": 2.0,
+                "bear_close_above_upper": True,
+            },
+        ]
+    )
+    return bars, inds
+
+
+def test_the_close_confirmed_flag_comes_from_bar_t_s_own_row():
+    """ADR 108. The flag describes bar t and is stored on row t, so this is
+    the one value that must NOT be taken from t-1 — doing so would date the
+    event a session late, which is the whole defect ADR 108 exists to fix."""
+    bars, inds = _bear_frames()
+    out, _ = scan_candidates(bars, inds, SignalParams())
+    fired = out.loc[out["signal_date"] == date(2026, 1, 6), "signal_types_all"]
+    assert len(fired) == 1
+    assert "bear_close_above_upper" in list(fired.iloc[0])
+
+
+def test_the_bands_still_come_from_t_minus_1():
+    """Invariant 3, unmoved. Row t's `bb_upper` is 200 and row t-1's is 105;
+    the bar's high of 111 breaches only the latter. A candidate carrying
+    `bb_upper_touch` proves the t-1 row decided it."""
+    bars, inds = _bear_frames()
+    out, _ = scan_candidates(bars, inds, SignalParams())
+    fired = out.loc[out["signal_date"] == date(2026, 1, 6), "signal_types_all"]
+    assert "bb_upper_touch" in list(fired.iloc[0])
+
+
+def test_no_other_field_from_row_t_reaches_detection():
+    """**The assertion that holds the invariant-3 line.**
+
+    The tests above would all still pass on an implementation that read the
+    whole of row t and happened to use one field from it. This one is
+    behavioral: row t is given a wildly oversold `k_full` of 5.0 against
+    t-1's neutral 50.0. If any part of detection reached row t for the
+    stochastic, `stoch_oversold` would fire on 2026-01-06. It must not.
+    """
+    bars, inds = _bear_frames()
+    inds.loc[inds["ts"] == pd.Timestamp("2026-01-06"), "k_full"] = 5.0
+    inds.loc[inds["ts"] == pd.Timestamp("2026-01-06"), "k_fast"] = 5.0
+    out, _ = scan_candidates(bars, inds, SignalParams())
+
+    fired = out.loc[out["signal_date"] == date(2026, 1, 6), "signal_types_all"]
+    assert len(fired) == 1
+    assert "stoch_oversold" not in list(fired.iloc[0])
+    # And the close-confirmed flag from that same row still did arrive,
+    # which is what makes this a statement about the allowlist rather than
+    # about row t being unreachable.
+    assert "bear_close_above_upper" in list(fired.iloc[0])
+
+
+def test_the_allowlist_names_exactly_one_field():
+    """A second entry here is a decision, not a refactor: it widens the one
+    documented exception to invariant 3."""
+    from capitalscan.research import candidates as cand
+
+    assert cand.CLOSE_CONFIRMED_FIELDS == ("bear_close_above_upper",)
+
+
+def test_a_missing_row_t_leaves_the_flag_false():
+    """A ticker whose indicator row for t is absent must not raise, and must
+    not inherit a neighbouring bar's flag."""
+    bars, inds = _bear_frames()
+    inds = inds.loc[inds["ts"] != pd.Timestamp("2026-01-06")]
+    out, _ = scan_candidates(bars, inds, SignalParams())
+    for types in out["signal_types_all"]:
+        assert "bear_close_above_upper" not in list(types)
+
+
+def test_a_null_flag_on_row_t_is_not_a_fire():
+    """Invariant 4 again, at the job layer this time. `np.nan` is truthy."""
+    bars, inds = _bear_frames()
+    # `object` first: pandas refuses to place NaN into a bool column, which
+    # is itself why the real pipeline stores this column nullable.
+    inds["bear_close_above_upper"] = inds["bear_close_above_upper"].astype(object)
+    inds.loc[inds["ts"] == pd.Timestamp("2026-01-06"), "bear_close_above_upper"] = np.nan
+    out, _ = scan_candidates(bars, inds, SignalParams())
+    for types in out["signal_types_all"]:
+        assert "bear_close_above_upper" not in list(types)
+
+
+def test_an_indicator_frame_without_the_column_still_scans():
+    """The existing corpus predates the column entirely."""
+    bars, inds = _bear_frames()
+    inds = inds.drop(columns=["bear_close_above_upper"])
+    out, _ = scan_candidates(bars, inds, SignalParams())
+    assert not out.empty
+    for types in out["signal_types_all"]:
+        assert "bear_close_above_upper" not in list(types)
