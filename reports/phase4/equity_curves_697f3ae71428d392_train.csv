@@ -1,4 +1,6 @@
-# generated_at=2026-08-14T10:30:31.701830+00:00
+# generated_at=2026-08-14T10:43:04.932449+00:00
+# convention: value = equity at END of that date; base 1.0 precedes row 1
+# total_ret = last_value - 1.0  (NOT last/first - 1)
 date,arm,value
 2010-03-31,buy_hold,1.0
 2010-04-01,buy_hold,1.0051462461770013

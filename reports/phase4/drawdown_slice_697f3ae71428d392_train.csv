@@ -1,0 +1,19 @@
+# generated_at=2026-08-14T18:34:44.629721+00:00
+# edge_ci_low/edge_ci_high = stored cell_stats.ci_low/ci_high minus stored baseline_empirical (no new statistic; see module docstring)
+signal_type,side,dd_bucket,rendered,n_events,n_eff,edge,edge_ci_low,edge_ci_high,suppress_reason
+bb_lower_touch,long,0-10,True,3593.0,369.0,0.0152470456898013,-0.021353204797256997,0.058346795202742996,
+bb_lower_touch,long,10-20,True,775.0,73.0,0.0452146198681793,-0.041720864002788016,0.155779135997212,
+stoch_oversold,long,0-10,True,1444.0,147.0,-0.0137497408897752,-0.062811790751271,0.053188209248728996,
+stoch_oversold,long,10-20,True,900.0,50.0,0.0552903547251105,-0.048631867497111986,0.191868132502888,
+confluence_low,long,0-10,True,725.0,56.0,0.0140006920001133,-0.063392411448163,0.13340758855183701,
+confluence_low,long,10-20,True,620.0,39.0,0.0398965772213178,-0.06859051955287601,0.193209480447124,
+bb_upper_touch,short,0-10,True,4006.0,719.0,0.0139655846488226,-0.008442702919824005,0.040357297080176005,
+bb_upper_touch,short,10-20,True,420.0,47.0,-0.0118145474822914,-0.09238121414895802,0.11961878585104196,
+stoch_overbought,short,0-10,True,5266.0,322.0,0.000446075638959292,-0.030878193255838002,0.04072180674416201,
+stoch_overbought,short,10-20,False,371.0,14.0,,,,n_eff 14.3 below min_n_eff 30
+confluence_high,short,0-10,True,2710.0,202.0,-0.0175203606889176,-0.052341393899249994,0.03205860610075001,
+confluence_high,short,10-20,False,131.0,5.0,,,,n_eff 4.8 below min_n_eff 30
+bear_close_above_upper,short,0-10,True,386.0,152.0,0.00714866436147563,-0.037185014395001006,0.06971498560499899,
+bear_close_above_upper,short,10-20,False,20.0,6.0,,,,n_eff 5.9 below min_n_eff 30
+ALL,ALL,20-35,False,,13.6,,,,"permanently suppressed (ADR 101): 20-35 and 35+ cleared min_n_eff=30 in zero of the cells measured for the study; best n_eff observed 13.6, 0/59 cells cleared the floor"
+ALL,ALL,35+,False,,1.7,,,,"permanently suppressed (ADR 101): 20-35 and 35+ cleared min_n_eff=30 in zero of the cells measured for the study; best n_eff observed 1.7, 0/59 cells cleared the floor"

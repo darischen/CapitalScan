@@ -141,9 +141,7 @@ def test_the_stored_split_key_agrees_with_split_key_for(engine):
         ).all()
 
     assert rows, "no events found; this test proves nothing against an empty table"
-    mismatches = [
-        (stored, when) for stored, when in rows if split_key_for(when, SPLITS) != stored
-    ]
+    mismatches = [(stored, when) for stored, when in rows if split_key_for(when, SPLITS) != stored]
     assert not mismatches, (
         f"{len(mismatches)} (split_key, signal_date) pairs disagree with split_key_for; "
         f"first few: {mismatches[:5]}"
@@ -157,9 +155,7 @@ def test_the_check_is_not_vacuous(engine):
         total = conn.execute(text("SELECT count(*) FROM events")).scalar()
         per_split = {
             r[0]: r[1]
-            for r in conn.execute(
-                text("SELECT split_key, count(*) FROM events GROUP BY 1")
-            )
+            for r in conn.execute(text("SELECT split_key, count(*) FROM events GROUP BY 1"))
         }
     assert total and total > 100_000, f"only {total} events; the zero-counts above prove little"
     assert set(per_split) == {"train", "validate", "holdout"}, (
