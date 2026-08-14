@@ -2082,6 +2082,114 @@ practice even though its inner query supports it.
 
 ---
 
+## Session 14 — Closing Phase 4
+
+Run 2026-08-14, `config_hash = 697f3ae71428d392`. Sessions 11-13 built the statistics;
+this session makes them readable and closes the Phase 4 gate.
+
+### Artifacts
+
+Eight files under `reports/phase4/`, all regenerable and all byte-identical across two
+runs (verified by sha256):
+
+| Artifact | Content |
+|---|---|
+| `three_arms_<hash>_{train,validate}.svg` | Equity curves, 200-replication band, summary table, verdict in words |
+| `drawdown_slice_<hash>_{train,validate}.svg` + `.csv` | Edge vs drawdown bucket with confidence bands |
+| `equity_curves_<hash>_{train,validate}.csv` | Tidy per-day series behind the arm chart |
+
+Static SVG, no plotting dependency. `uv add` locks `.venv` against any running job and
+this project always has one — the live poller was running when these landed.
+
+### ADR 015's central claim, answered
+
+ADR 015 hypothesizes that edge is "positive and stable in the first two buckets and turns
+negative past 35%," and calls that cut "potentially worth more than either indicator."
+
+**Every one of the eleven rendered intervals crosses zero.** Train split, target 3%:
+
+| Side | Signal | 0-10 edge | 10-20 edge |
+|---|---|---|---|
+| long | `bb_lower_touch` | +0.0152 | +0.0452 |
+| long | `stoch_oversold` | −0.0138 | +0.0553 |
+| long | `confluence_low` | +0.0140 | +0.0399 |
+| short | `bb_upper_touch` | +0.0140 | −0.0118 |
+| short | `stoch_overbought` | +0.0004 | — |
+| short | `confluence_high` | −0.0175 | — |
+| short | `bear_close_above_upper` | +0.0071 | — |
+
+Widest interval: `stoch_oversold` 10-20 at [−0.0486, +0.1919]. Narrowest:
+`bb_upper_touch` 0-10 at [−0.0084, +0.0404]. Not one excludes zero.
+
+**Two findings, and the second is the one worth keeping.**
+
+First, the hypothesis is untestable as stated. Its second half — "turns negative past
+35%" — needs the 20-35 and 35+ buckets, and ADR 101 suppressed both permanently after
+measuring them at `n_eff` far below the floor. The slice renders them as suppressed with
+their `n_eff` visible rather than omitting them, because the measurement is the argument
+for the cut and hiding it makes the cut look arbitrary.
+
+Second, the long side runs **opposite** to "stable": all three long signals show a
+*larger* point estimate in 10-20 than in 0-10 (+0.0452 vs +0.0152, +0.0553 vs −0.0138,
++0.0399 vs +0.0140). If that were real it would say deeper drawdowns are better for
+longs, inverting the ADR's "trade shallow dips, stand down on deep ones." It is not real
+at this sample: every one of those intervals spans zero, and `n_eff` in the 10-20 bucket
+runs 39 to 73 against 147 to 719 in 0-10. The pattern is what a smaller sample looks like,
+not a signal. Recorded because a reader looking only at point estimates would reach the
+opposite conclusion from the right one.
+
+### The three-arm chart states its own verdict
+
+Rendered on the chart in words rather than left to be inferred from line positions:
+
+> Verdict: signal (108.37% total return) did NOT clear the null's 97.5th percentile
+> (199.05%) on train.
+
+### Volatility-scaled reachability (DESIGN §6.12)
+
+Reported alongside the fixed 2/3/5/10% ladder and deliberately outside the
+Benjamini-Hochberg family — DESIGN §6.12 names fixed as the headline because it matches
+how a limit order is placed, and adding four scaled targets per cell would take the family
+from 56 tests to 112 for a diagnostic. Same treatment era and breadth already receive.
+
+`sigma_5d = rv_20d * sqrt(5/252)`, derived through `core.baselines.horizon_drift_vol_array`
+rather than restated, so a horizon change cannot leave a stale divisor behind. Measured on
+validate, `bb_lower_touch` long 0-10: 0.5σ 61.2%, 1.0σ 38.2%, 1.5σ 22.6% over 2,920
+observations — a monotone decay, which is the shape a correct scaled ladder has.
+
+### Three defects found by running things rather than reading them
+
+**`peak_ret_5d` was NULL on all 627,380 rows.** `cscan path peak-labels` had never run
+against this config, so the scaled ladder returned `n_obs = 0` everywhere. A missing step
+in the session chain, not a code defect. 284,080 rows populated in 36 seconds.
+
+**A defect fifteen passing tests could not catch.** Neither
+`load_events_for_reachability` nor `combined_reachability_table` called
+`attach_scaled_targets`, so the end-to-end path raised a `KeyError` deep inside a groupby
+while every unit test passed — each built its own frame with the columns already present.
+`combined_reachability_table` now raises a message naming the missing call, and refuses to
+attach the targets itself: it holds no `BaselineParams`, and sigma scaling is exactly where
+a wrong horizon divisor hides.
+
+**Two crashes waiting on suppressed cells.** In the drawdown slice, `r` was bound both by
+a comprehension over `SliceRow` and by a `next(..., None)`, leaving the `None` case
+unguarded on a path that indexes attributes; and the interval draw checked `edge is not
+None` while reading `edge_ci_low` and `edge_ci_high`, which are independently nullable on a
+suppressed cell. Both surfaced only when mypy ran at whole-repo scope.
+
+### A verification error of my own
+
+The curve export was first checked with `last / first - 1` and reported a failure. Wrong
+formula: row *i* is equity at the *end* of day *i*, with the 1.0 base preceding row 1, so
+`total_ret = last - 1`. Real deltas are 1e-16 against a 1e-9 requirement.
+
+Worth recording because of *how* it misleads. `buy_hold` agrees under both formulas —
+`simulate_buy_hold` sets `equity[1] = equity[0]` on day 0, since nothing is held yet — and
+only `signal` diverges, because `simulate_portfolio` can earn a day-0 return. Check one
+arm, see it agree, trust the other. The CSV header now states the convention.
+
+---
+
 ## Holdout
 
 **Evaluated once. Published whatever it says.**

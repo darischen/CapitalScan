@@ -33,7 +33,39 @@ Sessions 0-7 deliver v1 (Phase 1). Sessions 8-9 deliver Phases 2-3. Session 10 i
 
 | 13 | Benchmark arms | Buy-and-hold, signal, 200-replication random-entry null, trim-and-redeploy, four DCA variants, pre/post-tax and wash-sale flagging, ADR 099's high-breadth subset | **Session 13 gate — complete, passed on all 10 items.** Eight arms on one universe and one date range; the null holds exactly 200 rows with `replication` 1-200 and reproduces identically within a `config_hash`. **The signal arm is below the null's 97.5th percentile on both train and validate, and below buy-and-hold on both.** See `RESULTS.md` Session 13 |
 
+| 14 | Closing Phase 4 | Equity-curve export, three-arm chart, ADR 015's drawdown slice, DESIGN 6.12's volatility-scaled ladder, ADR 092's matcher replacement | **Session 14 gate — complete, passed on all 8 items. Phase 4 gate closed on all five criteria.** Eight artifacts under `reports/phase4/`, all deterministic. **Every drawdown-slice interval crosses zero**, so ADR 015's central claim is not supported at this sample. See `RESULTS.md` Session 14 |
+
 Sessions 0-2 can run back to back in one sitting. Session 7 is mostly waiting.
+
+**Session 14 is complete, and Phase 4 is closed.** All five Phase 4 gate criteria in
+`TESTS.md` §10 now pass, the last two closed by 14.2's chart and 14.3's drawdown slice.
+No migration.
+
+What the gate does not say is as important as what it does. It asserts the machinery is
+complete and correct, not that the strategy works. It passes alongside a minimum q-value
+of 0.790 across 56 tests, a signal arm below its own randomization null on both splits,
+and every drawdown-slice interval spanning zero. ADR 033 fixed the kill criteria in
+advance precisely so a negative result stays reportable rather than becoming a reason to
+move the bar.
+
+Four findings carry into Phase 5:
+
+1. **ADR 015's central claim is unsupported at this sample.** Eleven rendered intervals,
+   none excluding zero. Its second half is untestable as stated: "turns negative past 35%"
+   needs the 20-35 and 35+ buckets, which ADR 101 suppressed permanently after measuring
+   them below the floor.
+2. **The long side runs opposite to "stable."** All three long signals show a larger point
+   estimate in 10-20 than 0-10, which would invert "trade shallow dips, stand down on deep
+   ones" if it were real. It is not real at this sample — every interval spans zero and
+   `n_eff` in 10-20 runs 39 to 73 against 147 to 719 in 0-10. Recorded because a reader
+   looking only at point estimates reaches the opposite conclusion from the right one.
+3. **ADR 095's `v_positions` defect is still live**, now detected rather than invisible.
+   ADR 092's replacement matcher catches both spellings; ADR 095 defers the fix to Phase 5,
+   which owns the serving layer.
+4. **Three defects were found by running things rather than reading them**, each with a
+   passing test suite at the moment it was wrong: a `peak_ret_5d` column NULL across all
+   627,380 rows, an end-to-end path that raised a `KeyError` while fifteen unit tests
+   passed, and two null-guard crashes that surfaced only under whole-repo mypy.
 
 **Session 13 is complete.** Tasks 13.1-13.7 all closed, all ten gate items pass. No
 migration: `benchmarks` was already in `db/schema.sql` and had never been written to.
