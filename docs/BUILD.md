@@ -69,6 +69,45 @@ Four findings carry into Session 14:
    signal arm's favor. All three passed their original unit tests. `RESULTS.md` records
    each, and each now has a regression test that would have caught it.
 
+**ADR 108 — the close-confirmed reversal signal (2026-08-13).** Added between
+Session 13 and Session 14, at the user's request, not a numbered session.
+
+`open > close AND close >= bb_upper[t-1]`, short side only. `config_hash` moves
+`1835688bf7d760ba` -> `697f3ae71428d392`. Migration `a9d3c04f7b15` adds
+`indicators.bear_close_above_upper` (boolean, nullable). Grid goes twelve cells to
+fourteen; the Benjamini-Hochberg family goes 48 tests to 56.
+
+Measured: 43,701 flagged bars across 612 tickers, 20,796 event rows under the new hash.
+The new type draws from both `confluence_high` (-16,015) and `bb_upper_touch` (-4,589),
+reconciling to within 192 rows — bars where the reversal fired without a stochastic
+extreme were previously plain band touches. `1835688bf7d760ba` is untouched, so every
+Session 12 and 13 number stays reproducible.
+
+Four defects surfaced, and **three were found by running things rather than reading
+them**, each with a passing test suite at the moment it was wrong:
+
+1. **`config_hash` never moved.** ADR 108 asserted it would; it does not, because
+   `config_hash` hashes `Config` fields and a `SignalType` enum member is not one. Caught
+   by printing the hash before launching the backtest. The run would have rewritten all
+   626,977 events in place and silently broken Sessions 12/13's reproducibility. Fixed by
+   `SignalParams.enabled_signal_types`, which also doubles as DESIGN §3.10's ablation
+   switch.
+2. **`--confluence-only` would have hidden its own target rows.** It filtered on
+   `signal_type`, which carries only the most specific type, and the new type outranks
+   `confluence_high`. Both scan filters now read `signal_types_all`.
+3. **A grid guard rejected a valid cell for its spelling.**
+   `test_signal_type_pairs_with_side_rather_than_crossing_it` asserted the short side via
+   `endswith("_high")`, which `bear_close_above_upper` fails despite being correctly
+   short-side. Rewritten to assert membership plus disjointness.
+4. **`run_cell_stats` had no CLI entry point** and no caller outside its own tests, so
+   Session 12's published table could not be reproduced from the CLI. Added
+   `cscan stats cells`.
+
+Two of my own errors are recorded rather than quietly corrected: a verification query that
+compared row *t*'s band instead of *t-1*'s and appeared to show violations that were the
+query's fault, and a completion monitor that read "`tasklist`: command not found" as "no
+process running" and declared a still-running backtest finished.
+
 **Session 12 is complete.** Tasks 12.1-12.6 all closed, all ten gate items pass.
 Migrations `e3c7f5a91d24` (`cell_stats.arm`, `v_screen` config/arm predicates) and
 `f1a8d3b62c07` (ADR 107, strength pooling).
