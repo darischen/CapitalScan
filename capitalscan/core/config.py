@@ -137,6 +137,23 @@ class ExitParams:
     # the Phase 4 asymmetry comparison before it is ever run.
     exit_stoch_threshold: float = 80.0
     exit_stoch_threshold_short: float = 20.0
+    # Which %K column the close-based stochastic exit reads (2026-08-15,
+    # user's decision). `core/exits.py` hardcoded `"k_full"` until now,
+    # which was invisible while `SignalParams.stoch_source` was also
+    # `k_full`. Flipping the entry to `k_fast` made the two disagree inside
+    # one backtest, with no field naming the disagreement — invariant 9's
+    # failure mode, where the output looks fine either way.
+    #
+    # Deliberately defaults to `"k_full"` rather than tracking
+    # `SignalParams.stoch_source`. ADR 092 holds that exit policy is
+    # independent of signal detection, and an exit-rule sweep must not
+    # require a signal-config change; deriving this from the signal side
+    # would reintroduce exactly the coupling that ADR rejects. The default
+    # also preserves every exit measured to date, so this field's
+    # introduction changes `config_hash` without changing behaviour.
+    #
+    # Set it to `"k_fast"` to make exits follow the entry.
+    exit_stoch_source: str = "k_full"  # "k_full" | "k_fast"
     exit_on_mid_band: bool = False  # ADR 046
     # `capture_ratio = r_exit / mfe` (DESIGN §5.6) is unbounded as mfe -> 0+:
     # a signal whose favorable excursion barely cleared zero before exit

@@ -158,16 +158,22 @@ def _exit_on_bar(
 
     # 3. CLOSE-BASED — last, so it cannot preempt an intraday fill.
     if ep.exit_on_stoch_80:
-        k_full = _level(own_ind, "k_full")
-        if not _isnan(k_full):
+        # `ep.exit_stoch_source`, not a hardcoded "k_full": the column is
+        # exit policy the same way the two thresholds below are. It stayed
+        # invisible while `SignalParams.stoch_source` was also `k_full`, and
+        # became a silent entry/exit disagreement the moment the entry
+        # flipped to `k_fast`. Defaults to `k_full`, so naming it changed no
+        # measured exit.
+        k = _level(own_ind, ep.exit_stoch_source)
+        if not _isnan(k):
             # ADR 092: both levels are exit policy, read from ExitParams,
             # never literals and never derived from each other. The short is
             # not a mirror of the long (ADR 016), so the two sweep
             # independently.
             if side is Side.LONG:
-                extreme = k_full >= ep.exit_stoch_threshold
+                extreme = k >= ep.exit_stoch_threshold
             else:
-                extreme = k_full <= ep.exit_stoch_threshold_short
+                extreme = k <= ep.exit_stoch_threshold_short
             if extreme:
                 return float(bar["close"]), ExitReason.STOCH_80, False
 

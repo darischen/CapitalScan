@@ -256,8 +256,13 @@ class TestRunEventsBackwardCompatibility:
         `IndicatorParams.bear_close_band_lag`. The close-confirmed band is
         read from bar t rather than t-1, which is a formula change and so
         would not have moved the hash by itself; the field exists to make it
-        move. New value: `541f84a384b07ba2`."""
-        assert jobs_config_hash(Config()) == "541f84a384b07ba2"
+        move. New value: `541f84a384b07ba2`.
+
+        Moved again 2026-08-15 by the new `ExitParams.exit_stoch_source`,
+        which defaults to `k_full` — the value `core/exits.py` hardcoded —
+        so it moves the hash without moving any measured exit. New value:
+        `1b97abf7e458d537`."""
+        assert jobs_config_hash(Config()) == "1b97abf7e458d537"
 
     def test_sp_only_caller_still_works_and_matches_config_signals_default(
         self, stub_events_reads, captured_events_upsert
@@ -278,8 +283,8 @@ class TestRunEventsBackwardCompatibility:
         events_calls = [c for c in captured_events_upsert if c["table_name"] == "events"]
         row = events_calls[0]["data"][0]
         assert (
-            row["config_hash"] == "541f84a384b07ba2"
-        )  # ADR 109: bear_close_band_lag field (was 697f3ae71428d392)
+            row["config_hash"] == "1b97abf7e458d537"
+        )  # exit_stoch_source field (was 541f84a384b07ba2)
         assert row["split_key"] == "holdout"  # 2026-07-30 is past the default validate_end
 
     def test_sp_and_config_disagreeing_raises_rather_than_silently_picking_one(
