@@ -205,12 +205,12 @@ def drawdown_from_high(bars: pd.DataFrame, p: IndicatorParams) -> pd.DataFrame:
     return pd.DataFrame({"dd_52w": dd_52w}, index=bars.index)
 
 
-@register("bear_close_above_upper", deps=["open", "close"], warmup=273, dtype="boolean")
+@register("bear_close_above_upper", deps=["open", "close"], warmup=272, dtype="boolean")
 def bear_close_above_upper(bars: pd.DataFrame, p: IndicatorParams) -> pd.DataFrame:
-    """A down bar closing at or above the prior upper band (ADR 108).
+    """A down bar closing at or above **that same day's** upper band (ADR 109).
 
     ```
-    open > close  AND  close >= bb_upper[t-1]
+    open > close  AND  close >= bb_upper[t]
     ```
 
     **Why this lives in the indicator registry rather than in
@@ -222,12 +222,28 @@ def bear_close_above_upper(bars: pd.DataFrame, p: IndicatorParams) -> pd.DataFra
     thing the project pins hardest. Computing it here instead puts the
     answer on the indicator row, which `detect` already receives.
 
-    **The band is bar t-1's, not bar t's** (invariant 3, and the `.shift(1)`
-    below is what enforces it). Today's band is a 20-day mean and standard
-    deviation *ending at today's close*, so testing today's close against it
-    is circular: the close helps set the level it is being measured against.
-    Shifting makes the flag a statement about a level fixed before the bar
-    opened. Warmup is `bollinger`'s 272 plus the one bar the shift consumes.
+    **The band is bar t's own, and that is a correction** (ADR 109, amending
+    ADR 108, 2026-08-14). The first implementation shifted to `bb_upper[t-1]`
+    on the reasoning that today's band embeds today's close and testing one
+    against the other is circular. That reasoning over-applied invariant 3,
+    which exists to stop the close deciding an **intraday** event. Here the
+    event *is* the close: at the closing bell today's band is fully
+    computable from information that already exists, so reading it is not
+    look-ahead. The circularity is also conservative rather than permissive —
+    a high close raises the band and makes it *harder* to clear.
+
+    The shift was measurably wrong, not merely unconventional. Across
+    2010-2026 the shifted form fires 44,114 times and this form 20,146, and
+    **24,104 of the shifted fires (55%) never cleared the band a chart would
+    draw**. Bands rise in an uptrend, so `bb_upper[t-1]` sits below
+    `bb_upper[t]` and presents a lower bar. STT on 2026-08-13 is the worked
+    example: close 189.85 cleared the prior band at 189.758 by nine cents and
+    missed the same-day band at 190.451 by sixty. Every charting platform
+    computes it this way, so the shifted version disagreed with the chart the
+    signal exists to describe.
+
+    Warmup is `bollinger`'s 272, no longer 273 — the extra bar existed only
+    to feed the shift.
 
     **The comparison is "at or above," matching `core.signals._breach`'s
     `price_tolerance = 0.0` convention** ("at or beyond, exact"). It routes
@@ -238,27 +254,32 @@ def bear_close_above_upper(bars: pd.DataFrame, p: IndicatorParams) -> pd.DataFra
     "did not fire," and a False there would read as a measured negative.
 
     **Structural consequence, and it is load-bearing.** `bars_check1`
-    enforces `close <= high`, so `close >= bb_upper[t-1]` implies
-    `high >= bb_upper[t-1]` — every flagged bar necessarily also fired
-    `BB_UPPER_TOUCH`. The flag therefore refines an existing population
-    rather than creating a new one, which is what makes it measurable
-    against events that already exist.
+    enforces `close <= high`, so `close >= bb_upper[t]` implies
+    `high >= bb_upper[t]` — every flagged bar necessarily also touched its
+    own upper band. The flag therefore refines an existing population rather
+    than creating a new one. Note this is now a statement about the *same
+    day's* band on both sides, which is the stronger and more obvious form of
+    the guarantee.
     """
     from capitalscan.core.signals import _breach
     from capitalscan.core.types import Bound
 
-    upper_prior = bollinger(bars, p)["bb_upper"].shift(1)
+    # `bear_close_band_lag` is 0 (bar t's own band, ADR 109) and exists so the
+    # choice lives in `config_hash`; 1 restores ADR 108's shifted rule.
+    upper = bollinger(bars, p)["bb_upper"]
+    if p.bear_close_band_lag:
+        upper = upper.shift(p.bear_close_band_lag)
     close = bars["close"]
     at_or_above = pd.Series(
         [
             _breach(float(c), float(u), Bound.UPPER)
-            for c, u in zip(close.to_numpy(), upper_prior.to_numpy())
+            for c, u in zip(close.to_numpy(), upper.to_numpy())
         ],
         index=bars.index,
     )
     flag = (bars["open"] > close) & at_or_above
     return pd.DataFrame(
-        {"bear_close_above_upper": flag.where(upper_prior.notna())},
+        {"bear_close_above_upper": flag.where(upper.notna())},
         index=bars.index,
     )
 

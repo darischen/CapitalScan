@@ -140,6 +140,30 @@ compared row *t*'s band instead of *t-1*'s and appeared to show violations that 
 query's fault, and a completion monitor that read "`tasklist`: command not found" as "no
 process running" and declared a still-running backtest finished.
 
+**ADR 109 — the close-confirmed band is the same day's (2026-08-14).** Amends ADR 108
+one day later, at the user's request, after checking fired tickers against a chart.
+
+`open > close AND close >= bb_upper[t]`, dropping the `[t-1]` shift. `config_hash` moves
+`697f3ae71428d392` -> `541f84a384b07ba2` via the new `IndicatorParams.bear_close_band_lag`
+(default 0; set it to 1 to reconstruct ADR 108's population as `3f9b74da68e4573e`). No
+migration: the column already exists and only its computed value changes. `max_warmup()`
+returns to 272. Grid and FDR family are unchanged at fourteen cells and 56 tests.
+
+Measured over 2026-08-03 to 2026-08-14: the bear flag falls 151 -> 74 bars, and 109 -> 53
+once `confluence_high` is also required, dropping 56 and gaining 0. Nine of nine
+user-checked tickers now agree with the charted band; NTRS, STT, DELL, NTAP, CAH, and
+PANW all leave the scan. Roughly 55% of the old rule's extra fires never cleared the band
+as drawn, because a gap-up day that fades raises its own band above its close.
+
+The defect ADR 108's own review missed, in the same class as defect 1 above: changing the
+formula did not move `config_hash`, because a formula is not a `Config` field. Third
+occurrence, after `stoch_source` and `enabled_signal_types`. `bear_close_band_lag` exists
+for that reason and for nothing else.
+
+Two display sites still read `k_full` or the `t-1` band directly and do not follow the
+signal: `core/exits.py:161` (no `exit_stoch_source` field exists) and the scan CSV's band
+columns. Neither affects detection. Both are open.
+
 **Session 12 is complete.** Tasks 12.1-12.6 all closed, all ten gate items pass.
 Migrations `e3c7f5a91d24` (`cell_stats.arm`, `v_screen` config/arm predicates) and
 `f1a8d3b62c07` (ADR 107, strength pooling).

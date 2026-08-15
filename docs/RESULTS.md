@@ -2190,6 +2190,69 @@ arm, see it agree, trust the other. The CSV header now states the convention.
 
 ---
 
+## ADR 109 — the close-confirmed band is the same day's
+
+Amended 2026-08-14, one day after ADR 108. `open > close AND close >= bb_upper[t]`: the
+shift to `[t-1]` is dropped.
+
+**A new `config_hash`: `541f84a384b07ba2`**, superseding `697f3ae71428d392`. Every number
+in the Session 14 section above, and every `bear_close_above_upper` figure in the ADR 108
+section, describes the **superseded** rule. Both hashes coexist under ADR 096's composite
+key, and `bear_close_band_lag=1` (`3f9b74da68e4573e`) reconstructs ADR 108's population
+from a config rather than from a database snapshot, which matters because `indicators`
+carries no `config_hash` column and stores one generation only.
+
+### How it was found
+
+Not by a test. The user compared fired tickers against Yahoo Finance charts and reported
+that NTRS, DELL, PANW, NTAP, CAH, and HPE did not match. Every test in the suite asserted
+the shifted behaviour it had been written alongside, so the suite, the five-check harness,
+and the Session 14 gate all passed while the rule disagreed with the world.
+
+The mechanism: a gap-up day that fades still raises its own 20-day band, so the close
+lands under the band as drawn while clearing the prior day's. Roughly 55% of the old
+rule's fires were of this shape.
+
+HPE on 2026-08-10 set the tolerance question. Open 55.40, close 54.68, same-day upper
+54.6788 — a margin of 0.0012 after 4-decimal rounding. The user's call was that touching
+counts, which `_breach`'s `>=` already gave. It fires.
+
+### Measured, 2026-08-03 to 2026-08-14
+
+| Stage | Old rule | New rule |
+|---|---|---|
+| `open > close` and close at or above the upper band | 151 | 74 |
+| ...and `confluence_high` also fires | 109 | 53 |
+| ...and ticker is `in_trade` | — | 13 |
+
+Dropped 56, gained 0. The zero is a property of this window rather than of the rule: the
+same-day band is stricter only while the band rises, and on a falling band the new rule
+would fire where the old stayed silent.
+
+Nine of nine user-checked tickers now agree with the charted band.
+
+### Why the hash needed a field invented for it
+
+Third occurrence of the same trap. `config_hash` hashes `dataclasses.asdict(Config)`, and
+ADR 109 changed a *formula* in `core/indicators.py`. A formula is not a `Config` field, so
+the hash held at `697f3ae71428d392` and a backtest would have overwritten the Session 14
+measurements in place, silently. `IndicatorParams.bear_close_band_lag` exists for that
+reason alone, after `stoch_source` and ADR 108's `enabled_signal_types` reached the same
+failure by different routes.
+
+The three pinned-hash guards in `test_cli_config_resolution.py` and
+`test_events_backtest_config_agreement.py` caught the move in CI, which is what they are
+for.
+
+### Open
+
+Two display sites read a value the signal no longer uses. `core/exits.py:161` reads
+`k_full` with no `exit_stoch_source` field to follow a `stoch_source` swap, and the scan
+CSV prints `t-1` band columns beside a same-day verdict, so `bb_pctb < 1` appears next to
+firing rows. Neither affects detection.
+
+---
+
 ## Holdout
 
 **Evaluated once. Published whatever it says.**

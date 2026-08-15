@@ -88,12 +88,21 @@ def test_default_config_hash_is_pinned():
     overwriting the 626,977 events Sessions 12 and 13 published against.
     Old value: `1835688bf7d760ba`. New value: `697f3ae71428d392`.
 
+    Updated 2026-08-14 for ADR 109's `IndicatorParams.bear_close_band_lag`.
+    Third instance of the same mechanism, reached by a third route: ADR 109
+    changed a *formula* in `core/indicators.py` (the close-confirmed band is
+    bar t's own, not t-1's), and a formula is not a `Config` field, so the
+    hash did not move on its own. Naming the lag as a field moves it, and
+    `bear_close_band_lag=1` keeps ADR 108's superseded population
+    reproducible from a config rather than only from a database snapshot.
+    Old value: `697f3ae71428d392`. New value: `541f84a384b07ba2`.
+
     **The Postgres GUC must not move until a backtest has written events
     under the new hash.** `v_screen` and `compute.scan` both read
     `capitalscan.default_config_hash`, and pointing them at a config with no
     rows yet returns an empty screener rather than an error (invariant 5b's
     deliberate behaviour). Set it after the backtest, not before."""
-    assert config_hash(Config()) == "697f3ae71428d392"
+    assert config_hash(Config()) == "541f84a384b07ba2"
 
 
 # ---------------------------------------------------------------------------

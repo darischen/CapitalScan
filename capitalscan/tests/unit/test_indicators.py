@@ -67,14 +67,15 @@ def test_registry_contains_expected_indicators():
 
 
 def test_max_warmup_matches_longest_chain():
-    # DESIGN §2.7: rv_pct_252d (252 + 20 = 272) was the longest chain.
-    # ADR 108's `bear_close_above_upper` extends it by exactly one bar: it
-    # reads `bollinger`'s 272-bar output shifted back one, so it needs 273.
+    # DESIGN §2.7: rv_pct_252d (252 + 20 = 272) is the longest chain.
+    #
+    # ADR 108 briefly made this 273: its flag read `bollinger`'s output
+    # shifted back one bar, so it needed one more. ADR 109 removed the shift
+    # (the band is bar t's own), and the warmup returns to 272 with it.
     # `max_warmup()` drives the indicators job's read-window expansion, so
-    # this number is load-bearing rather than cosmetic — an unchanged 272
-    # would leave the first flagged bar of every window null.
-    assert ind.max_warmup() == 273
-    assert ind.registry()["bear_close_above_upper"].warmup == 273
+    # this number is load-bearing rather than cosmetic.
+    assert ind.max_warmup() == 272
+    assert ind.registry()["bear_close_above_upper"].warmup == 272
     assert ind.registry()["realized_vol"].warmup == 272
 
 
@@ -381,16 +382,77 @@ def _bear_bars(n=40, seed=7):
 
 
 def test_the_flag_needs_a_down_bar_and_a_close_at_or_above_the_band():
-    """ADR 108's rule, both halves. `open > close` alone is not it, and a
-    close above the band on an up bar is not it either."""
+    """ADR 109's rule, both halves, on a flat base.
+
+    The base is flat deliberately. Under ADR 108's shifted band any large
+    spike cleared the *previous* level; under ADR 109 the close is measured
+    against a band it helped build, so a lone spike partly raises its own
+    bar. With `bb_window=5`, `bb_std=2`, `ddof=0` and four flat values plus
+    one outlier `d`, the algebra collapses exactly:
+
+        mean  = c + d/5
+        std   = 0.4d
+        upper = c + d/5 + 0.8d = c + d = the close
+
+    so the close lands precisely *on* its own band and `_breach`'s "at or
+    beyond" fires it. That identity is why this fixture is flat rather than
+    noisy, and it is the clearest statement of what the same-day band means:
+    a single bar cannot outrun a level it is itself setting.
+    """
     p = IndicatorParams(bb_window=5)
     bars = _bear_bars(n=30)
-    # Force bar 20 to be a down bar closing far above its prior band.
-    bars.loc[20, "close"] = float(bars.loc[19, "close"]) + 20.0
-    bars.loc[20, "open"] = float(bars.loc[20, "close"]) + 5.0
-    bars.loc[20, "high"] = float(bars.loc[20, "open"]) + 1.0
+    for i in range(16, 20):
+        bars.loc[i, ["open", "high", "low", "close"]] = 100.0
+    bars.loc[20, "close"] = 103.0
+    bars.loc[20, "open"] = 105.0
+    bars.loc[20, "high"] = 105.5
+    bars.loc[20, "low"] = 102.5
     out = ind.bear_close_above_upper(bars, p)
     assert bool(out["bear_close_above_upper"].iloc[20])
+
+
+def test_a_lone_spike_lands_exactly_on_the_band_it_sets():
+    """The identity, asserted rather than described.
+
+    With `bb_window=5`, `bb_std=2`, `ddof=0`, four flat values and one
+    outlier, `upper` equals the close **exactly** for any spike size. So a
+    lone spike never rises *above* its own band — it fires only because
+    `_breach` is "at or beyond". A strict `>` would never fire on this shape.
+
+    My first version of this test asserted a big spike would fail to fire.
+    That was wrong: spike size cancels out of the algebra entirely.
+    """
+    p = IndicatorParams(bb_window=5)
+    for spike in (1.0, 3.0, 25.0):
+        bars = _bear_bars(n=30)
+        for i in range(16, 20):
+            bars.loc[i, ["open", "high", "low", "close"]] = 100.0
+        bars.loc[20, "close"] = 100.0 + spike
+        bars.loc[20, "open"] = 100.0 + spike + 2
+        bars.loc[20, "high"] = 100.0 + spike + 3
+        bars.loc[20, "low"] = 99.0
+        upper = ind.bollinger(bars, p)["bb_upper"].iloc[20]
+        assert upper == pytest.approx(100.0 + spike), spike
+        assert bool(ind.bear_close_above_upper(bars, p)["bear_close_above_upper"].iloc[20])
+
+
+def test_a_second_elevated_bar_widens_the_band_past_the_close():
+    """What actually stops a fire under the same-day band.
+
+    One elevated bar lands on its band; two widen the standard deviation
+    enough that the close falls short — 103 against an upper of 104.14. This
+    is the mechanism behind ADR 109's 55% reduction, and it runs in the
+    conservative direction.
+    """
+    p = IndicatorParams(bb_window=5)
+    bars = _bear_bars(n=30)
+    for i in range(16, 19):
+        bars.loc[i, ["open", "high", "low", "close"]] = 100.0
+    for i in (19, 20):
+        bars.loc[i, ["high", "low", "close"]] = 103.0
+        bars.loc[i, "open"] = 105.0
+    out = ind.bear_close_above_upper(bars, p)
+    assert not bool(out["bear_close_above_upper"].iloc[20])
 
 
 def test_an_up_bar_closing_above_the_band_does_not_flag():
@@ -412,16 +474,21 @@ def test_a_down_bar_closing_below_the_band_does_not_flag():
     assert not bool(out["bear_close_above_upper"].iloc[20])
 
 
-def test_the_band_compared_against_is_the_prior_bar_s():
-    """Invariant 3. Today's band embeds today's close, so comparing today's
-    close against it is circular — the close would help set the level it is
-    being tested against. The shift is what makes the flag a statement about
-    a level fixed before the bar opened."""
+def test_the_band_compared_against_is_the_same_bar_s():
+    """ADR 109. The band is bar t's own, not t-1's.
+
+    At the close, today's band is fully computable from information that
+    already exists, so reading it is not look-ahead — invariant 3 exists to
+    stop the close deciding an *intraday* event, and here the event is the
+    close. Measured across 2010-2026, the shifted form fired 44,114 times
+    against this form's 20,146, and 55% of those never cleared the band a
+    chart would draw.
+    """
     p = IndicatorParams(bb_window=5)
     bars = _bear_bars(n=30)
     upper = ind.bollinger(bars, p)["bb_upper"]
     flagged = ind.bear_close_above_upper(bars, p)["bear_close_above_upper"]
-    manual = (bars["open"] > bars["close"]) & (bars["close"] >= upper.shift(1))
+    manual = (bars["open"] > bars["close"]) & (bars["close"] >= upper)
     pd.testing.assert_series_equal(
         flagged.fillna(False).astype(bool),
         manual.fillna(False).astype(bool),
@@ -434,7 +501,10 @@ def test_the_flag_is_null_through_warmup_never_false():
     read as a measured negative."""
     p = IndicatorParams(bb_window=5)
     out = ind.bear_close_above_upper(_bear_bars(n=30), p)
-    assert out["bear_close_above_upper"].iloc[:5].isna().all()
+    # `bb_window - 1` rows lack a band. Without the ADR 108 shift there is no
+    # extra null row, which is exactly the warmup change from 273 to 272.
+    assert out["bear_close_above_upper"].iloc[:4].isna().all()
+    assert not pd.isna(out["bear_close_above_upper"].iloc[4])
 
 
 def test_a_flagged_bar_always_also_touched_the_upper_band():
