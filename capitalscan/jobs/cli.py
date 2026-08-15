@@ -267,6 +267,27 @@ def events(
     resolved = _resolve_tickers(tickers)
     end = date.today()
     start = end - timedelta(days=lookback)
+    # `--lookback` has a hard floor here that no other command has, and
+    # overshooting it costs a full scan before anything raises.
+    # `jobs.config.split_key_for` refuses any `signal_date` before
+    # `event_start` — deliberately, since labelling a pre-2010 row `train`
+    # is a leakage bug — but it fires per row inside `run_events`'s build
+    # loop, minutes in. `--lookback 6100` on 2026-08-14 asked for
+    # 2009-12-01 and died there with 0 rows written.
+    #
+    # Clamping the requested *window* is a different thing from
+    # mislabelling a *row*, so the guard downstream stays exactly as
+    # strict. Printed rather than silent: a run that quietly covers less
+    # history than asked for is the kind of thing that gets discovered
+    # much later, in a population that is short at one end.
+    event_start = date.fromisoformat(config.splits.event_start)
+    if start < event_start:
+        console.print(
+            f"[yellow]note[/yellow]: --lookback {lookback} reaches {start.isoformat()}, "
+            f"before SplitParams.event_start {event_start.isoformat()}; "
+            f"clamping start to {event_start.isoformat()}"
+        )
+        start = event_start
     report = compute.run_events(resolved, start, end, config=config)
     console.print(
         f"events: {report.rows_written} written, "
