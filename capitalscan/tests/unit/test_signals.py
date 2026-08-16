@@ -22,18 +22,35 @@ from capitalscan.core import signals as sig
 from capitalscan.core.config import SignalParams
 from capitalscan.core.types import Bands, Bound, Side, SignalType
 
-# `stoch_source` is named explicitly rather than inherited from
-# `SignalParams()`'s default. Every test below sets its extreme on `k_full`
-# and leaves `k_fast` neutral, so the whole file silently depended on
-# `k_full` *being* the default — flipping that default on 2026-08-15 broke
-# 21 tests here at once, none of which are about the default.
+# `SP` inherits the live default on purpose, and `_ind(k=...)` below puts
+# the extreme on whichever column that default selects. So these tests
+# *follow* `stoch_source` rather than depending on it.
 #
-# Naming it decouples the two questions. What column `stoch_source` selects
-# is tested directly in `TestStochSourceSelectsTheColumn` at the bottom of
-# this file; everything else pins signal *logic* against a fixed column and
-# stays green whatever the default becomes.
-SP = SignalParams(stoch_source="k_full")
+# The problem this solves: every test here used to set its extreme on
+# `k_full` and leave `k_fast` neutral, then read `SignalParams()` for the
+# source. The file therefore depended on `k_full` being the default, not on
+# `k_full` being the column under test — and flipping that default on
+# 2026-08-15 broke 21 tests at once, none of which are about defaults.
+#
+# Skipping them under `k_fast` was the obvious fix and the wrong one. Their
+# subjects are confluence rules, the specificity ranking, `signal_types_all`
+# ordering, `signal_strength` counting, debounce keys, and null handling;
+# `k_full` was only ever the vehicle. Skipping would leave every one of
+# those uncovered on a `k_fast` run, which is when new behaviour is least
+# proven.
+#
+# `SP_FULL` / `SP_FAST` pin an explicit column and belong only to
+# `TestStochSourceSelectsTheColumn`, which asks what `stoch_source`
+# selects. That question needs fixed columns; every other test here does
+# not.
+SP = SignalParams()
+SP_FULL = SignalParams(stoch_source="k_full")
 SP_FAST = SignalParams(stoch_source="k_fast")
+
+# Which %K column `_ind(k=...)` / `_bands(k=...)` write to. Read once at
+# import: `SP` is built once too, so a test reading one and a helper
+# reading the other can never disagree mid-run.
+ACTIVE_K = SP.stoch_source
 
 
 def _bar(open_=100.0, high=101.0, low=99.0, close=100.0, ts="2026-07-29", ticker="TSM"):
@@ -46,16 +63,50 @@ def _bar(open_=100.0, high=101.0, low=99.0, close=100.0, ts="2026-07-29", ticker
     return pd.Series(fields, name=pd.Timestamp(ts))
 
 
+def _route_k(k, k_other, k_full, k_fast):
+    """Put `k` on the column `stoch_source` selects, `k_other` on the other.
+
+    This is what makes a test follow the active source instead of pinning
+    one column. Both default to `None`, meaning "no opinion", so explicit
+    `k_full=` / `k_fast=` arguments pass through untouched — which
+    `TestStochSourceSelectsTheColumn` relies on, since asking what
+    `stoch_source` selects requires naming both columns outright.
+
+    `k_other` exists for the ADR 044 agreement tests. Their subject is the
+    *gap* between the two %K columns, so they need the trigger on the live
+    column and a disagreeing value on the other one, whichever those are.
+    Writing them as `k_full=15, k_fast=90` pinned the roles and inverted
+    them under a `k_fast` source: the 90 became the trigger, firing an
+    overbought short beside the long band touch and returning two hits
+    where the test unpacks one.
+
+    When `k_other` is omitted the non-selected column stays neutral rather
+    than mirroring `k`. Mirroring would satisfy `require_fast_agreement`
+    for free in every other fixture and quietly delete those same tests'
+    subject.
+    """
+    if k is None and k_other is None:
+        return k_full, k_fast
+    if k is None:
+        k = k_full if ACTIVE_K == "k_full" else k_fast
+    if k_other is None:
+        k_other = k_fast if ACTIVE_K == "k_full" else k_full
+    return (k, k_other) if ACTIVE_K == "k_full" else (k_other, k)
+
+
 def _ind(
     bb_lower=95.0,
     bb_mid=100.0,
     bb_upper=105.0,
     bb_pctb=0.5,
+    k=None,
+    k_other=None,
     k_full=50.0,
     d_full=50.0,
     k_fast=50.0,
     atr_14=2.0,
 ):
+    k_full, k_fast = _route_k(k, k_other, k_full, k_fast)
     return pd.Series(
         {
             "bb_lower": bb_lower,
@@ -80,7 +131,10 @@ def _bands(**kw):
         k_fast=50.0,
         atr_14=2.0,
     )
+    k = kw.pop("k", None)
+    k_other = kw.pop("k_other", None)
     base.update(kw)
+    base["k_full"], base["k_fast"] = _route_k(k, k_other, base["k_full"], base["k_fast"])
     return Bands(**base)
 
 
@@ -168,24 +222,24 @@ def test_lower_touch_is_long_side():
 
 
 def test_stoch_oversold_fires_from_k_full():
-    hits = sig.detect(_bar(), _ind(k_full=15.0), SP)
+    hits = sig.detect(_bar(), _ind(k=15.0), SP)
     assert [h.signal_type for h in hits] == [SignalType.STOCH_OVERSOLD]
 
 
 def test_stoch_overbought_fires_from_k_full():
-    hits = sig.detect(_bar(), _ind(k_full=85.0), SP)
+    hits = sig.detect(_bar(), _ind(k=85.0), SP)
     assert [h.signal_type for h in hits] == [SignalType.STOCH_OVERBOUGHT]
 
 
 def test_stoch_thresholds_are_inclusive():
-    assert sig.detect(_bar(), _ind(k_full=20.0), SP)
-    assert sig.detect(_bar(), _ind(k_full=80.0), SP)
+    assert sig.detect(_bar(), _ind(k=20.0), SP)
+    assert sig.detect(_bar(), _ind(k=80.0), SP)
 
 
 def test_stoch_only_hit_has_null_touch_level():
     # None, never NaN. A stochastic-only signal touched no band, and DESIGN
     # §3.4 pins that absence as None so equality and hashing stay coherent.
-    (hit,) = sig.detect(_bar(), _ind(k_full=15.0), SP)
+    (hit,) = sig.detect(_bar(), _ind(k=15.0), SP)
     assert hit.touch_level is None
 
 
@@ -196,19 +250,19 @@ def test_stoch_only_hit_has_null_touch_level():
 
 def test_confluence_low_requires_both_conditions():
     bar = _bar(low=94.0)
-    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k_full=15.0), SP)
+    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k=15.0), SP)
     assert hit.signal_type is SignalType.CONFLUENCE_LOW
 
 
 def test_confluence_low_does_not_fire_on_band_touch_alone():
     bar = _bar(low=94.0)
-    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k_full=50.0), SP)
+    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k=50.0), SP)
     assert hit.signal_type is SignalType.BB_LOWER_TOUCH
 
 
 def test_confluence_high_requires_both_conditions():
     bar = _bar(high=106.0)
-    (hit,) = sig.detect(bar, _ind(bb_upper=105.0, k_full=85.0), SP)
+    (hit,) = sig.detect(bar, _ind(bb_upper=105.0, k=85.0), SP)
     assert hit.signal_type is SignalType.CONFLUENCE_HIGH
 
 
@@ -219,14 +273,14 @@ def test_confluence_high_requires_both_conditions():
 
 def test_concurrent_signals_emit_one_hit_with_the_most_specific_type():
     bar = _bar(low=94.0)
-    hits = sig.detect(bar, _ind(bb_lower=95.0, k_full=15.0), SP)
+    hits = sig.detect(bar, _ind(bb_lower=95.0, k=15.0), SP)
     assert len(hits) == 1
     assert hits[0].signal_type is SignalType.CONFLUENCE_LOW
 
 
 def test_signal_types_all_carries_every_concurrent_signal():
     bar = _bar(low=94.0)
-    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k_full=15.0), SP)
+    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k=15.0), SP)
     assert set(hit.signal_types_all) == {
         SignalType.CONFLUENCE_LOW,
         SignalType.BB_LOWER_TOUCH,
@@ -236,7 +290,7 @@ def test_signal_types_all_carries_every_concurrent_signal():
 
 def test_signal_types_all_is_ordered_most_specific_first():
     bar = _bar(low=94.0)
-    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k_full=15.0), SP)
+    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k=15.0), SP)
     assert hit.signal_types_all == (
         SignalType.CONFLUENCE_LOW,
         SignalType.BB_LOWER_TOUCH,
@@ -246,14 +300,14 @@ def test_signal_types_all_is_ordered_most_specific_first():
 
 def test_signal_strength_counts_concurrent_signals():
     bar = _bar(low=94.0)
-    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k_full=15.0), SP)
+    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k=15.0), SP)
     assert hit.signal_strength == 3
 
 
 def test_both_sides_can_fire_on_one_wide_bar():
     # A bar spanning both bands with %K neutral: one long hit, one short hit.
     bar = _bar(low=94.0, high=106.0)
-    hits = sig.detect(bar, _ind(bb_lower=95.0, bb_upper=105.0, k_full=50.0), SP)
+    hits = sig.detect(bar, _ind(bb_lower=95.0, bb_upper=105.0, k=50.0), SP)
     assert [h.side for h in hits] == [Side.LONG, Side.SHORT]
 
 
@@ -272,12 +326,12 @@ def test_null_band_produces_no_band_signal():
 
 
 def test_null_k_full_produces_no_stochastic_signal():
-    assert sig.detect(_bar(), _ind(k_full=np.nan), SP) == []
+    assert sig.detect(_bar(), _ind(k=np.nan), SP) == []
 
 
 def test_null_k_full_still_allows_a_band_touch():
     bar = _bar(low=94.0)
-    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k_full=np.nan), SP)
+    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k=np.nan), SP)
     assert hit.signal_type is SignalType.BB_LOWER_TOUCH
 
 
@@ -319,29 +373,29 @@ def test_hit_carries_pctb_and_k_full_from_the_indicator_row():
 
 def test_fast_agreement_off_by_default_lets_confluence_fire():
     bar = _bar(low=94.0)
-    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k_full=15.0, k_fast=90.0), SP)
+    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k=15.0, k_other=90.0), SP)
     assert hit.signal_type is SignalType.CONFLUENCE_LOW
 
 
 def test_fast_agreement_blocks_confluence_when_fast_disagrees():
     sp = SignalParams(require_fast_agreement=True, fast_agreement_tol=5.0)
     bar = _bar(low=94.0)
-    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k_full=15.0, k_fast=90.0), sp)
+    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k=15.0, k_other=90.0), sp)
     assert hit.signal_type is SignalType.BB_LOWER_TOUCH
 
 
 def test_fast_agreement_allows_confluence_inside_tolerance():
     sp = SignalParams(require_fast_agreement=True, fast_agreement_tol=5.0)
     bar = _bar(low=94.0)
-    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k_full=15.0, k_fast=19.0), sp)
+    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k=15.0, k_other=19.0), sp)
     assert hit.signal_type is SignalType.CONFLUENCE_LOW
 
 
 def test_crossover_flags_never_change_the_signal_set():
     # ADR 045: computed and stored, but they never enter detect().
     bar = _bar(low=94.0)
-    base = sig.detect(bar, _ind(bb_lower=95.0, k_full=15.0), SP)
-    ind_with_cross = _ind(bb_lower=95.0, k_full=15.0)
+    base = sig.detect(bar, _ind(bb_lower=95.0, k=15.0), SP)
+    ind_with_cross = _ind(bb_lower=95.0, k=15.0)
     ind_with_cross["k_cross_up"] = True
     ind_with_cross["k_cross_down"] = True
     assert sig.detect(bar, ind_with_cross, SP) == base
@@ -366,13 +420,13 @@ def test_breach_live_returns_empty_inside_the_bands():
 
 def test_breach_live_reads_k_full_from_the_prior_close_bands():
     # %K is only defined at session end, so intraday it is a static qualifier.
-    out = sig.breach_live(94.0, _bands(bb_lower=95.0, k_full=15.0), SP)
+    out = sig.breach_live(94.0, _bands(bb_lower=95.0, k=15.0), SP)
     assert SignalType.CONFLUENCE_LOW in out
     assert SignalType.STOCH_OVERSOLD in out
 
 
 def test_breach_live_returns_every_concurrent_type_not_just_the_most_specific():
-    out = sig.breach_live(94.0, _bands(bb_lower=95.0, k_full=15.0), SP)
+    out = sig.breach_live(94.0, _bands(bb_lower=95.0, k=15.0), SP)
     assert set(out) == {
         SignalType.CONFLUENCE_LOW,
         SignalType.BB_LOWER_TOUCH,
@@ -382,7 +436,7 @@ def test_breach_live_returns_every_concurrent_type_not_just_the_most_specific():
 
 def test_breach_live_respects_fast_agreement_flag():
     sp = SignalParams(require_fast_agreement=True, fast_agreement_tol=5.0)
-    out = sig.breach_live(94.0, _bands(bb_lower=95.0, k_full=15.0, k_fast=90.0), sp)
+    out = sig.breach_live(94.0, _bands(bb_lower=95.0, k=15.0, k_other=90.0), sp)
     assert SignalType.CONFLUENCE_LOW not in out
     assert SignalType.BB_LOWER_TOUCH in out
 
@@ -424,7 +478,7 @@ def test_fast_agreement_fails_closed_when_k_fast_is_missing():
     # widen it by defaulting to "agrees".
     sp = SignalParams(require_fast_agreement=True)
     bar = _bar(low=94.0)
-    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k_full=15.0, k_fast=np.nan), sp)
+    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k=15.0, k_other=np.nan), sp)
     assert hit.signal_type is SignalType.BB_LOWER_TOUCH
 
 
@@ -511,8 +565,8 @@ def test_a_missing_ticker_is_not_reported_until_a_signal_fires():
 
 def test_identical_stoch_only_hits_compare_equal():
     """The bug NaN caused. Two structurally identical hits must be equal."""
-    (a,) = sig.detect(_bar(), _ind(k_full=15.0), SP)
-    (b,) = sig.detect(_bar(), _ind(k_full=15.0), SP)
+    (a,) = sig.detect(_bar(), _ind(k=15.0), SP)
+    (b,) = sig.detect(_bar(), _ind(k=15.0), SP)
     assert a == b
 
 
@@ -524,8 +578,8 @@ def test_identical_stoch_only_hits_collapse_in_a_set():
     same and compared unequal — a set kept both. That is precisely the
     silent duplicate a debounce set would have let through.
     """
-    (a,) = sig.detect(_bar(), _ind(k_full=15.0), SP)
-    (b,) = sig.detect(_bar(), _ind(k_full=15.0), SP)
+    (a,) = sig.detect(_bar(), _ind(k=15.0), SP)
+    (b,) = sig.detect(_bar(), _ind(k=15.0), SP)
     assert hash(a) == hash(b)
     assert len({a, b}) == 1
 
@@ -539,12 +593,12 @@ def test_a_band_hit_still_carries_a_float_touch_level():
 def test_no_hit_ever_carries_a_nan_touch_level():
     """Sweep the signal space: every reachable hit is None or a real float."""
     cases = [
-        (_bar(low=94.0), _ind(bb_lower=95.0, k_full=50.0)),  # band only
-        (_bar(), _ind(k_full=15.0)),  # stoch only
-        (_bar(low=94.0), _ind(bb_lower=95.0, k_full=15.0)),  # confluence low
-        (_bar(high=106.0), _ind(bb_upper=105.0, k_full=50.0)),  # upper band
-        (_bar(), _ind(k_full=85.0)),  # stoch overbought
-        (_bar(high=106.0), _ind(bb_upper=105.0, k_full=85.0)),  # confluence high
+        (_bar(low=94.0), _ind(bb_lower=95.0, k=50.0)),  # band only
+        (_bar(), _ind(k=15.0)),  # stoch only
+        (_bar(low=94.0), _ind(bb_lower=95.0, k=15.0)),  # confluence low
+        (_bar(high=106.0), _ind(bb_upper=105.0, k=50.0)),  # upper band
+        (_bar(), _ind(k=85.0)),  # stoch overbought
+        (_bar(high=106.0), _ind(bb_upper=105.0, k=85.0)),  # confluence high
         (_bar(low=94.0, high=106.0), _ind(bb_lower=95.0, bb_upper=105.0)),  # both
     ]
     for bar, ind in cases:
@@ -571,8 +625,8 @@ def test_debounce_key_collapses_a_band_hit_and_a_confluence_hit():
     """One event per ticker per bound per day. A lower touch on Monday and a
     confluence-low on the same Monday are the same debounce slot, even though
     the two hits carry different signal_types."""
-    (band,) = sig.detect(_bar(low=94.0), _ind(bb_lower=95.0, k_full=50.0), SP)
-    (conf,) = sig.detect(_bar(low=94.0), _ind(bb_lower=95.0, k_full=15.0), SP)
+    (band,) = sig.detect(_bar(low=94.0), _ind(bb_lower=95.0, k=50.0), SP)
+    (conf,) = sig.detect(_bar(low=94.0), _ind(bb_lower=95.0, k=15.0), SP)
     assert band.signal_type is not conf.signal_type
     assert sig.debounce_key(band) == sig.debounce_key(conf)
 
@@ -616,7 +670,7 @@ def test_debounce_key_ignores_float_fields_entirely():
 def test_a_stochastic_only_hit_still_has_a_debounce_key():
     """No band was touched, so touch_level is None — the key must still
     resolve, from side rather than from the absent level."""
-    (hit,) = sig.detect(_bar(ticker="TSM"), _ind(k_full=15.0), SP)
+    (hit,) = sig.detect(_bar(ticker="TSM"), _ind(k=15.0), SP)
     assert sig.debounce_key(hit) == ("TSM", pd.Timestamp("2026-07-29").date(), Bound.LOWER)
 
 
@@ -671,7 +725,7 @@ def test_it_ranks_above_confluence_high():
     """ADR 108's ranking: a band breach plus a close-confirmed rejection is
     strictly more specific than a band touch plus a stochastic extreme."""
     bar = _bear_bar(flag=True, high=106.0)
-    hits = sig.detect(bar, _ind(k_full=85.0), SP)
+    hits = sig.detect(bar, _ind(k=85.0), SP)
     short = [h for h in hits if h.side is Side.SHORT][0]
     assert short.signal_type is SignalType.BEAR_CLOSE_ABOVE_UPPER
     assert SignalType.CONFLUENCE_HIGH in short.signal_types_all
@@ -680,9 +734,9 @@ def test_it_ranks_above_confluence_high():
 def test_it_raises_signal_strength_when_it_co_fires():
     """`signal_strength` counts concurrent types (ADR 057), which is exactly
     why this signal forces a new `config_hash` rather than a backfill."""
-    plain = sig.detect(_bar(high=106.0), _ind(k_full=85.0), SP)
+    plain = sig.detect(_bar(high=106.0), _ind(k=85.0), SP)
     plain_short = [h for h in plain if h.side is Side.SHORT][0]
-    withflag = sig.detect(_bear_bar(flag=True, high=106.0), _ind(k_full=85.0), SP)
+    withflag = sig.detect(_bear_bar(flag=True, high=106.0), _ind(k=85.0), SP)
     flag_short = [h for h in withflag if h.side is Side.SHORT][0]
     assert flag_short.signal_strength == plain_short.signal_strength + 1
 
@@ -727,7 +781,7 @@ def test_the_flag_alone_fires_without_any_stochastic_extreme():
     """It is not gated on %K. The poller gates its *display* on
     confluence_high (user's decision), but the signal itself stands alone
     so the backtest can measure both populations."""
-    hits = sig.detect(_bear_bar(flag=True, high=106.0), _ind(k_full=50.0), SP)
+    hits = sig.detect(_bear_bar(flag=True, high=106.0), _ind(k=50.0), SP)
     short = [h for h in hits if h.side is Side.SHORT][0]
     assert short.signal_type is SignalType.BEAR_CLOSE_ABOVE_UPPER
     assert SignalType.CONFLUENCE_HIGH not in short.signal_types_all
@@ -756,11 +810,11 @@ class TestStochSourceSelectsTheColumn:
     """
 
     def test_k_full_source_fires_on_k_full(self):
-        hits = sig.detect(_bar(), _ind(k_full=15.0, k_fast=50.0), SP)
+        hits = sig.detect(_bar(), _ind(k_full=15.0, k_fast=50.0), SP_FULL)
         assert [h.signal_type for h in hits] == [SignalType.STOCH_OVERSOLD]
 
     def test_k_full_source_ignores_an_extreme_k_fast(self):
-        assert sig.detect(_bar(), _ind(k_full=50.0, k_fast=15.0), SP) == []
+        assert sig.detect(_bar(), _ind(k_full=50.0, k_fast=15.0), SP_FULL) == []
 
     def test_k_fast_source_fires_on_k_fast(self):
         hits = sig.detect(_bar(), _ind(k_full=50.0, k_fast=15.0), SP_FAST)
