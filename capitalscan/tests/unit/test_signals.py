@@ -22,7 +22,18 @@ from capitalscan.core import signals as sig
 from capitalscan.core.config import SignalParams
 from capitalscan.core.types import Bands, Bound, Side, SignalType
 
-SP = SignalParams()
+# `stoch_source` is named explicitly rather than inherited from
+# `SignalParams()`'s default. Every test below sets its extreme on `k_full`
+# and leaves `k_fast` neutral, so the whole file silently depended on
+# `k_full` *being* the default — flipping that default on 2026-08-15 broke
+# 21 tests here at once, none of which are about the default.
+#
+# Naming it decouples the two questions. What column `stoch_source` selects
+# is tested directly in `TestStochSourceSelectsTheColumn` at the bottom of
+# this file; everything else pins signal *logic* against a fixed column and
+# stays green whatever the default becomes.
+SP = SignalParams(stoch_source="k_full")
+SP_FAST = SignalParams(stoch_source="k_fast")
 
 
 def _bar(open_=100.0, high=101.0, low=99.0, close=100.0, ts="2026-07-29", ticker="TSM"):
@@ -720,3 +731,78 @@ def test_the_flag_alone_fires_without_any_stochastic_extreme():
     short = [h for h in hits if h.side is Side.SHORT][0]
     assert short.signal_type is SignalType.BEAR_CLOSE_ABOVE_UPPER
     assert SignalType.CONFLUENCE_HIGH not in short.signal_types_all
+
+
+# ---------------------------------------------------------------------------
+# `stoch_source` — which %K column the oversold/overbought test reads
+# ---------------------------------------------------------------------------
+
+
+class TestStochSourceSelectsTheColumn:
+    """The field exists as an A/B switch (2026-08-05, user's decision) and
+    until now nothing asserted that it switches anything.
+
+    That gap is the dangerous kind. `stoch_source` is a `Config` field, so
+    setting it moves `config_hash` and mints a separate identity whatever it
+    does — a run labelled `k_fast` that silently kept reading `k_full` would
+    produce a clean, reproducible, *wrong* comparison, and the A/B it exists
+    to support would conclude the two columns behave identically.
+
+    Every fixture below puts the two %K values on opposite sides of the
+    threshold, so no test can pass by reading the wrong column and landing
+    on the same answer. The negative cases matter as much as the positive
+    ones: an implementation reading *either* column passes the two
+    `_fires_on_` tests and fails the two `_ignores_` tests.
+    """
+
+    def test_k_full_source_fires_on_k_full(self):
+        hits = sig.detect(_bar(), _ind(k_full=15.0, k_fast=50.0), SP)
+        assert [h.signal_type for h in hits] == [SignalType.STOCH_OVERSOLD]
+
+    def test_k_full_source_ignores_an_extreme_k_fast(self):
+        assert sig.detect(_bar(), _ind(k_full=50.0, k_fast=15.0), SP) == []
+
+    def test_k_fast_source_fires_on_k_fast(self):
+        hits = sig.detect(_bar(), _ind(k_full=50.0, k_fast=15.0), SP_FAST)
+        assert [h.signal_type for h in hits] == [SignalType.STOCH_OVERSOLD]
+
+    def test_k_fast_source_ignores_an_extreme_k_full(self):
+        assert sig.detect(_bar(), _ind(k_full=15.0, k_fast=50.0), SP_FAST) == []
+
+    def test_the_overbought_side_switches_too(self):
+        """Both comparisons read the one `k`, so a swap that fixed only the
+        oversold branch would leave the short side on the other column."""
+        assert sig.detect(_bar(), _ind(k_full=50.0, k_fast=85.0), SP_FAST)
+        assert sig.detect(_bar(), _ind(k_full=85.0, k_fast=50.0), SP_FAST) == []
+
+    def test_confluence_follows_the_selected_column(self):
+        """`confluence_high` is band touch AND overbought, so it must read
+        the same column the bare stochastic type does. Two definitions of
+        "overbought" inside one module is the failure this guards."""
+        bar = _bar(high=106.0)
+        (hit,) = sig.detect(bar, _ind(bb_upper=105.0, k_full=50.0, k_fast=85.0), SP_FAST)
+        assert hit.signal_type is SignalType.CONFLUENCE_HIGH
+
+    def test_breach_live_reads_the_same_column_as_detect(self):
+        """ADR 006: the live and backtest paths must agree on which signals
+        exist. A `stoch_source` honoured in `detect` but not in
+        `breach_live` would have the poller and the backtest disagree about
+        what fired, which is the exact drift invariant 2 exists to prevent.
+        """
+        out = sig.breach_live(94.0, _bands(bb_lower=95.0, k_full=50.0, k_fast=15.0), SP_FAST)
+        assert SignalType.STOCH_OVERSOLD in out
+
+    def test_a_null_in_the_selected_column_fires_nothing(self):
+        """Invariant 4's shape: a missing value is never filled. The
+        non-selected column being present and extreme must not rescue it."""
+        assert sig.detect(_bar(), _ind(k_full=15.0, k_fast=np.nan), SP_FAST) == []
+
+    def test_the_hit_still_reports_k_full_whatever_the_source(self):
+        """`SignalHit.k_full` is a recorded field, not the deciding one
+        (`core/signals.py:320` reads it unconditionally). Worth pinning:
+        under a `k_fast` run the reported number is no longer the value that
+        fired the signal, and a reader comparing the two would otherwise
+        have no statement of that anywhere.
+        """
+        (hit,) = sig.detect(_bar(), _ind(k_full=50.0, k_fast=15.0), SP_FAST)
+        assert hit.k_full == 50.0
