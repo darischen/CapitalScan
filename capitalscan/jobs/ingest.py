@@ -122,15 +122,42 @@ def _finish_run(
 
 @contextmanager
 def run_job(engine: Engine, job: str, params: dict) -> Iterator[IngestReport]:
-    """Wraps a job body with a `runs` row: 'running' on entry, 'ok'/'failed' on exit."""
+    """Wraps a job body with a `runs` row: 'running' on entry, and exactly
+    one of 'ok' / 'failed' / 'interrupted' on exit.
+
+    **`BaseException`, not `Exception`.** `KeyboardInterrupt` and
+    `SystemExit` derive from `BaseException`, so an `except Exception`
+    clause does not see them: Ctrl-C propagated straight out of this
+    context manager, `_finish_run` never ran, and the row stayed 'running'
+    forever. Found 2026-08-16 with four such rows in the table, each
+    carrying params identical to an 'ok' row seconds later — the same
+    command, cancelled and immediately re-run.
+
+    That is a false-positive source for anything reading `runs` to answer
+    "is a job live right now": `cscan system-status` could not tell a
+    running backtest from a Ctrl-C an hour earlier, and the only cure was
+    a manual UPDATE.
+
+    Cancellation is recorded as **'interrupted'**, not 'failed'. Migration
+    `c5b81f2e64a7` added that status for exactly this state, and the
+    distinction is load-bearing: 'failed' means the job hit a defect worth
+    investigating, while 'interrupted' means an operator changed their mind
+    and the partial state is expected. Collapsing them would bury real
+    failures among routine cancellations.
+
+    The bare `raise` is preserved in both branches, so Ctrl-C still
+    terminates the process exactly as before. This changes what gets
+    recorded, never what gets propagated.
+    """
     run_id = _start_run(engine, job, params)
     report = IngestReport(job=job, run_id=run_id)
     try:
         yield report
-        _finish_run(engine, run_id, "ok", report.rows_written, report.notes)
-    except Exception as exc:
-        _finish_run(engine, run_id, "failed", report.rows_written, str(exc))
+    except BaseException as exc:
+        status = "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"
+        _finish_run(engine, run_id, status, report.rows_written, str(exc) or type(exc).__name__)
         raise
+    _finish_run(engine, run_id, "ok", report.rows_written, report.notes)
 
 
 # ============ calendar ============
