@@ -47,6 +47,7 @@ _SUPERSET = pd.DataFrame(
             "signal_strength": 1,
             "side": "long",
             "bb_upper": 210.0,
+            "bb_upper_sameday": 211.0,
             "bb_mid": 200.0,
             "bb_lower": 190.0,
             "bb_pctb": 0.1,

@@ -954,6 +954,18 @@ _SCAN_COLUMNS = [
     "signal_strength",
     "side",
     "bb_upper",
+    # The same-day band, alongside the t-1 band above rather than replacing
+    # it (2026-08-15, user's decision). ADR 109 made
+    # `bear_close_above_upper` the one condition read from bar t's own band,
+    # while every other column here stays at t-1 per invariant 3. A reader
+    # checking a fired row against a chart was comparing the close to the
+    # *previous* day's band and seeing `bb_pctb < 1` next to a firing row —
+    # ANET, HPE, and PH all showed this on the 2026-08-14 scan.
+    #
+    # An extra column rather than a conditional swap: swapping would make
+    # one column mean t-1 on six signal types and t on the seventh, which is
+    # worse to read than two columns that each mean one thing.
+    "bb_upper_sameday",
     "bb_mid",
     "bb_lower",
     "bb_pctb",
@@ -1054,7 +1066,8 @@ def scan(
     # this display join must agree with it, not re-decide it.
     query = f"""
         SELECT e.ticker, e.signal_date, e.signal_type, e.signal_types_all, e.signal_strength,
-               e.side, i.bb_upper, i.bb_mid, i.bb_lower, e.bb_pctb, e.k_full, e.k_fast,
+               e.side, i.bb_upper, isd.bb_upper AS bb_upper_sameday,
+               i.bb_mid, i.bb_lower, e.bb_pctb, e.k_full, e.k_fast,
                e.k_cross_up, e.k_cross_down, e.dd_bucket, e.above_sma200
         FROM events e
         LEFT JOIN LATERAL (
@@ -1064,6 +1077,15 @@ def scan(
             ORDER BY i2.ts DESC
             LIMIT 1
         ) i ON true
+        -- ADR 109's band: bar t's own, the one `bear_close_above_upper`
+        -- is actually evaluated against. Equality on `ts`, not the
+        -- `ts < signal_date` ordering above, so this cannot silently
+        -- degrade into a second copy of the t-1 column. LEFT JOIN because
+        -- an event dated ahead of its own indicator row (a live poll event
+        -- before the EOD indicators job) must render as empty rather than
+        -- drop the row.
+        LEFT JOIN indicators isd
+            ON isd.ticker = e.ticker AND isd.interval = '1d' AND isd.ts = e.signal_date
         WHERE {" AND ".join(clauses)}
         ORDER BY e.ticker, e.signal_date
     """

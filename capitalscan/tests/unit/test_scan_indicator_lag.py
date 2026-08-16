@@ -63,6 +63,13 @@ def captured_query(monkeypatch):
                 "signal_strength": [1],
                 "side": ["long"],
                 "bb_upper": [456.523644],
+                # ADR 109's same-day band, deliberately different from the
+                # t-1 value above: this fixture's whole point is that the
+                # two dates carry different bands, and a stub repeating one
+                # value would let a query regression that collapsed the two
+                # columns pass unnoticed. 2026-07-30's own upper, from the
+                # real data recorded in this module's docstring.
+                "bb_upper_sameday": [453.131161],
                 "bb_mid": [418.677000],
                 "bb_lower": [380.830356],
                 "bb_pctb": [0.1],

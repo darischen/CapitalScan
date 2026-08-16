@@ -97,12 +97,22 @@ def test_default_config_hash_is_pinned():
     reproducible from a config rather than only from a database snapshot.
     Old value: `697f3ae71428d392`. New value: `541f84a384b07ba2`.
 
+    Updated 2026-08-15 for the new `ExitParams.exit_stoch_source` field.
+    Unlike every move above, this one changes **no behaviour at all**: it
+    defaults to `"k_full"`, the value `core/exits.py` previously hardcoded
+    as a string literal. The field exists so the exit's %K column is exit
+    policy the way its two thresholds already are, rather than a literal
+    that agrees with `SignalParams.stoch_source` by coincidence. That
+    coincidence is invisible until the entry moves off `k_full`, which is
+    invariant 9's failure mode exactly.
+    Old value: `541f84a384b07ba2`. New value: `1b97abf7e458d537`.
+
     **The Postgres GUC must not move until a backtest has written events
     under the new hash.** `v_screen` and `compute.scan` both read
     `capitalscan.default_config_hash`, and pointing them at a config with no
     rows yet returns an empty screener rather than an error (invariant 5b's
     deliberate behaviour). Set it after the backtest, not before."""
-    assert config_hash(Config()) == "541f84a384b07ba2"
+    assert config_hash(Config()) == "1b97abf7e458d537"
 
 
 # ---------------------------------------------------------------------------
