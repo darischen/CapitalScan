@@ -25,8 +25,27 @@ def _bars(rows: list[dict]) -> pd.DataFrame:
 
 
 def _indicators(rows: list[dict]) -> pd.DataFrame:
+    """`k_fast` mirrors `k_full` unless a row states it explicitly.
+
+    These fixtures choose a %K *value* to drive a signal, never a %K
+    *column* — every one of them is about pairing, rejects, or null
+    handling. Spelling only `k_full` tied them to `stoch_source` being
+    `k_full`, and the 2026-08-16 flip to `k_fast` made the trigger read a
+    missing column: `test_uses_the_prior_dated_indicator_row_not_the_bars_own_date`
+    dropped from `confluence_low` to `bb_lower_touch`, which looks like a
+    t-1 pairing bug and is not one.
+
+    Mirroring also puts the two columns in exact agreement, which matters
+    now that `require_fast_agreement` defaults to True — a neutral or
+    absent `k_fast` would block every confluence here.
+    """
     df = pd.DataFrame(rows)
     df["ts"] = pd.to_datetime(df["ts"])
+    if "k_full" in df.columns:
+        if "k_fast" in df.columns:
+            df["k_fast"] = df["k_fast"].fillna(df["k_full"])
+        else:
+            df["k_fast"] = df["k_full"]
     return df
 
 

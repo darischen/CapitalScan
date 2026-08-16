@@ -44,8 +44,13 @@ from capitalscan.core.types import Bands, Bound, Side, SignalType
 # selects. That question needs fixed columns; every other test here does
 # not.
 SP = SignalParams()
-SP_FULL = SignalParams(stoch_source="k_full")
-SP_FAST = SignalParams(stoch_source="k_fast")
+# Agreement off on both, so `TestStochSourceSelectsTheColumn` varies exactly
+# one thing. Its fixtures put the two %K values on opposite sides of the
+# threshold by design, which is a large gap — leaving `require_fast_agreement`
+# at its default would have those fixtures fail the agreement check and turn
+# a column-selection test into an agreement test.
+SP_FULL = SignalParams(stoch_source="k_full", require_fast_agreement=False)
+SP_FAST = SignalParams(stoch_source="k_fast", require_fast_agreement=False)
 
 # Which %K column `_ind(k=...)` / `_bands(k=...)` write to. Read once at
 # import: `SP` is built once too, so a test reading one and a helper
@@ -80,17 +85,22 @@ def _route_k(k, k_other, k_full, k_fast):
     overbought short beside the long band touch and returning two hits
     where the test unpacks one.
 
-    When `k_other` is omitted the non-selected column stays neutral rather
-    than mirroring `k`. Mirroring would satisfy `require_fast_agreement`
-    for free in every other fixture and quietly delete those same tests'
-    subject.
+    When `k_other` is omitted it **mirrors** `k`, putting the two columns
+    in exact agreement. That is required rather than convenient: with
+    `require_fast_agreement` True by default (2026-08-16), leaving the
+    other column at a neutral 50 while `k` is 15 gives a gap of 35 and
+    blocks every confluence in the file. Eleven tests about confluence
+    rules, specificity, and debounce failed that way on the flip.
+
+    Mirroring costs nothing in coverage because every test whose subject
+    *is* the gap passes `k_other` explicitly, which overrides this.
     """
     if k is None and k_other is None:
         return k_full, k_fast
     if k is None:
         k = k_full if ACTIVE_K == "k_full" else k_fast
     if k_other is None:
-        k_other = k_fast if ACTIVE_K == "k_full" else k_full
+        k_other = k
     return (k, k_other) if ACTIVE_K == "k_full" else (k_other, k)
 
 
@@ -371,10 +381,32 @@ def test_hit_carries_pctb_and_k_full_from_the_indicator_row():
 # ---------------------------------------------------------------------------
 
 
-def test_fast_agreement_off_by_default_lets_confluence_fire():
+def test_fast_agreement_disabled_lets_a_disagreeing_confluence_fire():
+    """Renamed 2026-08-16: `require_fast_agreement` used to be False by
+    default and this test read that default, so its name asserted a config
+    value rather than a behaviour. Turning the flag on flipped the name to
+    a lie while the assertion below stayed correct.
+
+    The behaviour is what matters and is unchanged: with the check
+    disabled, a 75-point gap between the two %K columns does not stop
+    `confluence_low`. Stated against an explicit params object so it means
+    the same thing whatever the default becomes.
+    """
+    sp = SignalParams(require_fast_agreement=False)
     bar = _bar(low=94.0)
-    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k=15.0, k_other=90.0), SP)
+    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k=15.0, k_other=90.0), sp)
     assert hit.signal_type is SignalType.CONFLUENCE_LOW
+
+
+def test_fast_agreement_is_on_by_default():
+    """The default itself, asserted once and in one place.
+
+    Every other test in this file now states its own `require_fast_agreement`
+    or relies on `_route_k` mirroring the columns, so this is the only test
+    that moves when the default moves — which is what makes flipping it a
+    one-line change rather than an eleven-test change.
+    """
+    assert SignalParams().require_fast_agreement is True
 
 
 def test_fast_agreement_blocks_confluence_when_fast_disagrees():

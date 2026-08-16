@@ -60,7 +60,20 @@ class IndicatorParams:
 class SignalParams:
     stoch_oversold: float = 20.0
     stoch_overbought: float = 80.0
-    require_fast_agreement: bool = False  # ADR 044
+    # ADR 044. Flipped to True 2026-08-16 (user's decision), together with
+    # `stoch_source = "k_fast"` below. The pair states one rule: the raw %K
+    # is the trigger, and the smoothed %K must sit within
+    # `fast_agreement_tol` of it for a confluence to fire.
+    #
+    # `core.signals._fast_agrees` compares `|k_fast - k_full|`, which is
+    # symmetric, so "full within 5 of fast" and "fast within 5 of full" are
+    # the same predicate. No code change was needed to express it either
+    # way round.
+    #
+    # Scoped to the confluence types only — bare `stoch_overbought` /
+    # `stoch_oversold` never consult it — so this narrows `confluence_high`
+    # and `confluence_low` while leaving the single-condition types alone.
+    require_fast_agreement: bool = True
     fast_agreement_tol: float = 5.0
     price_tolerance: float = 0.0  # 0.0 == "at or beyond", exact
     # Which %K column decides oversold/overbought (2026-08-05, user's
@@ -79,7 +92,23 @@ class SignalParams:
     #   uv run cscan backtest --workers 8
     # No `config.toml` needed/created — the env var is read directly and
     # leaves no repo state behind once the shell session ends.
-    stoch_source: str = "k_full"  # "k_full" | "k_fast"
+    #
+    # Flipped to `k_fast` 2026-08-16 (user's decision), superseding the
+    # 2026-08-05 note above that called this "an A/B test, not a permanent
+    # swap". The raw %K is now the trigger and `require_fast_agreement`
+    # keeps the smoothed %K within tolerance of it.
+    #
+    # `k_full` stays one env var away, so the pre-flip population is
+    # reconstructible from a config rather than only from a database
+    # snapshot — the same property `enabled_signal_types` (ADR 108) and
+    # `bear_close_band_lag` (ADR 109) exist for.
+    #
+    # The flip was blocked for a day because every test in
+    # `test_signals.py` set its extreme on `k_full` and read this default
+    # for the source, so 21 tests depended on the default rather than on
+    # the column under test. Those tests now route through `_ind(k=...)`
+    # and follow whatever this says, and they pass under both values.
+    stoch_source: str = "k_fast"  # "k_full" | "k_fast"
     # Which `SignalType` values may fire (ADR 108, added 2026-08-13).
     #
     # **This field exists to make the signal set part of `config_hash`.**
