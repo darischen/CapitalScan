@@ -2253,6 +2253,57 @@ firing rows. Neither affects detection.
 
 ---
 
+## ADR 110 — the raw %K becomes the trigger
+
+Flipped 2026-08-16. `stoch_source = "k_fast"`, `require_fast_agreement = True`.
+
+**A new `config_hash`: `86e91448a65aa40b`**, superseding `1b97abf7e458d537`. No code changed: both are `SignalParams` fields that `core/signals.py` already honoured.
+
+### The intermediate hashes, and why there are three
+
+Three identities were minted in three days, and only the first two have measurements:
+
+| Hash | Change | Measured? |
+|---|---|---|
+| `697f3ae71428d392` | ADR 108, close-confirmed signal | Session 14, full |
+| `541f84a384b07ba2` | ADR 109, same-day band | **Detection only** — `cscan events` ran, no backtest |
+| `1b97abf7e458d537` | `exit_stoch_source` field added | Full backtest, 627,668 events, 5/5 harness PASS |
+| `86e91448a65aa40b` | ADR 110, this one | Chain running |
+
+`541f84a384b07ba2` holds 157,168 events with **zero** returns, MFE, or peak labels. That is not a defect: `cscan events` detects signals and stops, and only `cscan backtest` computes outcomes. It is a detection-only generation and should not be read as a measured result.
+
+`1b97abf7e458d537` is the usable k_full baseline. `exit_stoch_source` defaults to `k_full`, the value `core/exits.py` previously hardcoded, so its numbers are what `541f84a384b07ba2` would have produced had it been backtested.
+
+### What the flip does, on the one sample measured so far
+
+Bear-reversal rows, universe members, 2026-08-03 to 2026-08-14:
+
+| Rule | Rows |
+|---|---|
+| `k_full >= 80` (old) | 13 |
+| `k_fast >= 80`, no agreement | 15 |
+| **`k_fast >= 80` and gap <= 5** | **7** |
+
+The column swap *widens* the set. The agreement check does all the narrowing, and the rows it removes share a shape: APH gap 9.5, AVGO 10.5, DAL 10.3, HPE 9.3, UAL 8.0. `k_full` is `k_fast` smoothed, so a wide gap means %K is accelerating — the check is strictest exactly where momentum is sharpest.
+
+That is a deliberate trade, not a correctness fix, and it is worth re-reading against outcomes once this hash has a backtest.
+
+### An operational failure worth recording
+
+The 2026-08-15 chain ran in the wrong order and lost most of a day:
+
+1. `path backfill` ran **before** the backtest, spent 2h46m, and wrote 61,174,645 rows.
+2. `path peak-labels` reported `rows_updated=0`.
+3. The backtest then wrote its own events with fresh ids, orphaning all of step 1.
+
+`path` keys on `event_id` with an FK to `events`, and `run_backtest` mints the event rows itself — 627,668 across four entry kinds, a strict superset of what `cscan events` writes. So the backtest must come first, and `cscan events` is redundant before one.
+
+Compounding it, uncommitted `config.py` edits were in the working tree when that chain launched, so it resolved to a hash neither party intended. `runs.params` recorded the full resolved config, which is the only reason it was diagnosable after the fact.
+
+The chain is now a script (`scripts/run_chain_86e91448.ps1`) with the ordering constraint written into a comment beside the steps.
+
+---
+
 ## Holdout
 
 **Evaluated once. Published whatever it says.**

@@ -162,7 +162,46 @@ for that reason and for nothing else.
 
 Two display sites still read `k_full` or the `t-1` band directly and do not follow the
 signal: `core/exits.py:161` (no `exit_stoch_source` field exists) and the scan CSV's band
-columns. Neither affects detection. Both are open.
+columns. Neither affects detection. **Both closed 2026-08-15/16** — see below.
+
+**ADR 110 — the raw %K becomes the trigger (2026-08-16).** `stoch_source = "k_fast"`,
+`require_fast_agreement = True`. Supersedes the 2026-08-05 note calling `stoch_source`
+"an A/B test, not a permanent swap".
+
+No code changed: both are `SignalParams` fields `core/signals.py` already honoured, and
+`_fast_agrees` compares `abs(k_fast - k_full)` symmetrically, so "smoothed within 5 of
+raw" needed no new comparison. `config_hash` moves `1b97abf7e458d537` ->
+`86e91448a65aa40b`. Unlike ADR 108 and 109, no field had to be invented — both are
+already hashed.
+
+Measured on the one available sample (bear-reversal rows, universe members, 2026-08-03
+to 2026-08-14): 13 rows old, 15 under `k_fast` alone, **7** with agreement. The column
+swap *widens*; the agreement check narrows. The dropped rows carry the widest fast/full
+gaps (APH 9.5, AVGO 10.5, DAL 10.3), which is where %K accelerates hardest — a
+deliberate trade, revisitable once this hash has a backtest.
+
+Four defects and one operational failure came out of the two days around it:
+
+1. **`core/exits.py` hardcoded `"k_full"`** with no field naming it. Invisible while
+   `stoch_source` was also `k_full`; a silent entry/exit disagreement the moment it was
+   not. Closed by `ExitParams.exit_stoch_source`, defaulting to `k_full` so no measured
+   exit moved.
+2. **`run_job` caught `Exception`,** which does not include `KeyboardInterrupt`. Every
+   Ctrl-C left a `runs` row at `'running'` forever, so nothing could tell a live job from
+   a cancelled one. Now records `'interrupted'`.
+3. **21 tests depended on a default rather than on their subject.** They set the extreme
+   on `k_full` and read `SignalParams()` for the source. Now routed through
+   `_ind(k=...)`, which follows `stoch_source`.
+4. **Two fixtures named a %K column where they meant a %K value** — surfaced only by
+   running the suite under the flipped default, and invisible to the conditional-skip
+   approach that was considered first.
+
+The operational failure: the 2026-08-15 chain ran `path backfill` **before** the
+backtest. `path` keys on `event_id`, `run_backtest` mints its own event rows, so 2h46m
+and 61M rows were orphaned three minutes after they were written, and `path peak-labels`
+reported `rows_updated=0`. `cscan events` is redundant before a backtest for the same
+reason — the backtest's population is a strict superset. Ordering is now pinned in
+`scripts/run_chain_86e91448.ps1`.
 
 **Session 12 is complete.** Tasks 12.1-12.6 all closed, all ten gate items pass.
 Migrations `e3c7f5a91d24` (`cell_stats.arm`, `v_screen` config/arm predicates) and
