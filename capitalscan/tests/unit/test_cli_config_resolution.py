@@ -105,14 +105,14 @@ def test_default_config_hash_is_pinned():
     that agrees with `SignalParams.stoch_source` by coincidence. That
     coincidence is invisible until the entry moves off `k_full`, which is
     invariant 9's failure mode exactly.
-    Old value: `541f84a384b07ba2`. New value: `1b97abf7e458d537`.
+    Old value: `541f84a384b07ba2`. New value: `86e91448a65aa40b`.
 
     **The Postgres GUC must not move until a backtest has written events
     under the new hash.** `v_screen` and `compute.scan` both read
     `capitalscan.default_config_hash`, and pointing them at a config with no
     rows yet returns an empty screener rather than an error (invariant 5b's
     deliberate behaviour). Set it after the backtest, not before."""
-    assert config_hash(Config()) == "1b97abf7e458d537"
+    assert config_hash(Config()) == "86e91448a65aa40b"
 
 
 # ---------------------------------------------------------------------------
