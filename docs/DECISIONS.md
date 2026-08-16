@@ -2944,6 +2944,37 @@ ADR 108 reached the wrong answer by applying a correct invariant outside its sco
 
 ---
 
+## 110. The raw %K is the trigger; the smoothed %K must agree within 5 points
+
+**Date:** 2026-08-16. **Status:** accepted. **Supersedes** the 2026-08-05 note on `SignalParams.stoch_source` that called it "an A/B test, not a permanent swap."
+
+**Decision.** `stoch_source = "k_fast"` and `require_fast_agreement = True`. Oversold and overbought are decided by the raw, unsmoothed %K, and a confluence additionally requires the `stoch_smooth_k`-smoothed %K to sit within `fast_agreement_tol` (5.0) of it.
+
+**No code changed.** Both are `SignalParams` fields that already existed and were already honoured by `core/signals.py`. `_fast_agrees` compares `abs(k_fast - k_full)`, which is symmetric, so "the smoothed value within 5 of the raw one" and "the raw within 5 of the smoothed" are the same predicate — the requested rule needed no new comparison.
+
+**Scope.** The agreement check is attached to the confluence definitions only (DESIGN §3.6). Bare `stoch_oversold` and `stoch_overbought` never consult it, so this narrows `confluence_low` and `confluence_high` while leaving the single-condition types untouched.
+
+**Consequences.**
+
+- **A new `config_hash`: `86e91448a65aa40b`**, superseding `1b97abf7e458d537`. Both fields are hashed `Config` fields, so the identity moves without any special handling — unlike ADR 108 and ADR 109, which each needed a field invented for them.
+- **A full chain re-run**: backtest, then `path backfill`, `path peak-labels`, and the four `stats` commands. Roughly eight hours.
+- **`k_full` stays one env var away.** `CAPSCAN_SIGNALS='{"stoch_source":"k_full","require_fast_agreement":false}'` reconstructs the pre-flip population, so it remains derivable from a config rather than only from a database snapshot.
+- **On the sample measured** (2026-08-03 to 2026-08-14, universe members, bear-reversal rows): 13 rows under the old rule, 15 under `k_fast` alone, **7** with the agreement check added. The agreement check, not the column swap, does the narrowing.
+- **`SignalHit.k_full` is now a reported value that is not the deciding one.** `core/signals.py` records it unconditionally, so a scan CSV's "Full Stochastic Value" no longer names the number that fired the signal. Both columns are stored and both are exported, so nothing is lost; the column labelling is what needs to say which is live.
+
+**The rows the agreement check removes are not noise.** `k_full` is `k_fast` smoothed over `stoch_smooth_k`, so a wide gap means %K is accelerating. On the measured sample the dropped rows were APH (gap 9.5), AVGO (10.5), DAL (10.3), HPE (9.3), and UAL (8.0) — the sharpest momentum in the set. This decision deliberately trades those away for agreement between the two series. That is a preference about signal character, not a correctness fix, and it should be revisited against measured outcomes once this hash has a backtest.
+
+**What this cost, and why it is recorded.** The decision was made on 2026-08-15 and took a day to land, because every test in `test_signals.py` set its extreme on `k_full` and read `SignalParams()` for the source. The file depended on `k_full` being the *default* rather than on `k_full` being the column under test, so flipping the default broke 21 tests that were about confluence rules, specificity ranking, and debounce keys — none of them about defaults.
+
+The fix was to make those tests *follow* `stoch_source` rather than pin it, which then surfaced two further fixture defects that a conditional skip would have hidden permanently:
+
+- The ADR 044 agreement tests wrote `k_full=15, k_fast=90`, pinning the roles. Under a `k_fast` source the 90 became the trigger, firing an overbought short beside the long band touch and returning two hits where the test unpacked one.
+- `test_backtest_candidates` never spelled `k_fast` at all, so the trigger read a missing column and one test dropped from `confluence_low` to `bb_lower_touch` — which reads as a t−1 pairing bug and is not one.
+
+The general lesson is the same one ADR 109 recorded from the other direction: a test that inherits a default is testing the default, whatever its name says. Both fixtures named a %K *column* where they meant a %K *value*.
+
+---
+
 ## Open items
 
 | Item | Options | Current lean |
