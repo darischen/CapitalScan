@@ -231,3 +231,68 @@ def test_state_json_still_works_without_an_open():
     payload = poll._state_json(_rev_bands(), pd.Series({"k_full": 95.0}), 110.0)
     assert payload["day_open"] is None
     assert payload["bear_reversal"]["open_gap_atr"] is None
+
+
+def test_the_reversal_never_influences_what_fires():
+    """ADR 117 changed display only, and this is what keeps it that way.
+
+    The user's question when this shipped: "what fired on the old code
+    should also fire after the changes because all we're changing is what
+    displays." Correct, and worth a guard rather than a diff someone read
+    once.
+
+    `breach_live` decides firing from `(price, band, sp)` alone, and none of
+    those derives from `day_open`. So the property to pin is positional: no
+    reversal function may be called before the `events` write. Anything
+    after it is presentation and cannot affect the row.
+
+    Read from the AST rather than by calling, because the failure mode is
+    someone adding `if rev.confirmed:` around the upsert one day, which no
+    fixture would catch unless it happened to supply an open that flipped.
+    """
+    import ast
+    import inspect
+
+    src = inspect.getsource(poll._process_tick)
+    tree = ast.parse(src)
+
+    events_write = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "upsert"
+        and any(isinstance(a, ast.Constant) and a.value == "events" for a in node.args)
+    ]
+    assert events_write, "the events upsert moved; this test needs updating deliberately"
+    cutoff = min(events_write)
+
+    reversal_names = {"reversal_state", "is_bear_reversal", "_reversal_tag", "_reversal_body"}
+    early = [
+        (node.func.id, node.lineno)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in reversal_names
+        and node.lineno < cutoff
+    ]
+    assert not early, (
+        f"reversal logic runs before the events write at line {cutoff}: {early}. "
+        "The reversal is presentation; it must not be able to change what fires."
+    )
+
+
+def test_the_firing_decision_cannot_see_the_open():
+    """`breach_live` takes price, bands, and params. No open, no date.
+
+    The strongest form of the guarantee above: the function that decides
+    whether anything fires has nowhere to put `day_open` even if someone
+    wanted to pass it.
+    """
+    import inspect
+
+    from capitalscan.core import signals as core_signals
+
+    params = set(inspect.signature(core_signals.breach_live).parameters)
+    assert params == {"price", "bands", "sp"}
+    assert not {"day_open", "open", "bear_close"} & params
