@@ -943,8 +943,13 @@ def scan(
 
     console.print(result.to_string(index=False))
 
-    reports_dir = Path("reports")
-    reports_dir.mkdir(exist_ok=True)
+    # `reports/scan/`, split from `reports/poller/` on 2026-08-18 (user's
+    # request). Both wrote timestamped CSVs into one flat directory, so the
+    # only thing separating a scan from a poller session was the filename
+    # prefix -- and `reports/` also holds `phase4/` artifacts. Two
+    # producers, two directories.
+    reports_dir = Path("reports") / "scan"
+    reports_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     csv_path = reports_dir / f"{timestamp}.csv"
 

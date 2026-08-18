@@ -96,7 +96,10 @@ def _scan(**kw):
 
 
 def _tickers_from_csv(tmp_path) -> list[str]:
-    (csv,) = sorted((tmp_path / "reports").glob("*.csv"))
+    # `reports/scan/` since 2026-08-18, split from `reports/poller/`.
+    # Globbing `reports/` directly would still pass by finding the file
+    # one level up, so this pins the subdirectory rather than the name.
+    (csv,) = sorted((tmp_path / "reports" / "scan").glob("*.csv"))
     return sorted(pd.read_csv(csv)["Ticker"].tolist())
 
 

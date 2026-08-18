@@ -40,7 +40,7 @@ while ($true) {
     }
 
     # Check if we already ran the poller today
-    $todaysCsv = Get-ChildItem -Path "C:\Users\daris\Desktop\School\CapitalScan\reports" -Filter "poller_session_$(Get-Date -Format 'yyyy_MM_dd')_*.csv" -ErrorAction SilentlyContinue
+    $todaysCsv = Get-ChildItem -Path "C:\Users\daris\Desktop\School\CapitalScan\reports\poller" -Filter "poller_session_$(Get-Date -Format 'yyyy_MM_dd')_*.csv" -ErrorAction SilentlyContinue
 
     if ($todaysCsv) {
         Write-Host "[OK] $(Get-Date -Format 'HH:mm:ss') - Poller already ran today. File: $($todaysCsv.Name)"
@@ -49,7 +49,14 @@ while ($true) {
 
     # Launch the poller
     Write-Host "[START] $(Get-Date -Format 'HH:mm:ss') - Launching poller. Will run until 1:00 PM PT"
-    $csvPath = "C:\Users\daris\Desktop\School\CapitalScan\reports\poller_session_$(Get-Date -Format 'yyyy_MM_dd_HHmmss').csv"
+    # `reports/poller/`, split from `reports/scan/` on 2026-08-18.
+    # PowerShell does not create a parent directory for a path it is only
+    # about to write to, and Export-Csv fails on a missing directory rather
+    # than creating one -- so a fresh clone would lose the entire session
+    # log to a path that does not exist yet.
+    $pollerDir = "C:\Users\daris\Desktop\School\CapitalScan\reports\poller"
+    if (-not (Test-Path $pollerDir)) { New-Item -ItemType Directory -Force $pollerDir | Out-Null }
+    $csvPath = "C:\Users\daris\Desktop\School\CapitalScan\reports\poller\poller_session_$(Get-Date -Format 'yyyy_MM_dd_HHmmss').csv"
 
     # Start poller in background
     $pollerProcess = Start-Process -FilePath "uv" -ArgumentList "run", "cscan", "poll", "--interval", $PollIntervalSeconds -PassThru -NoNewWindow
