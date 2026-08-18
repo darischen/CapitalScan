@@ -245,8 +245,11 @@ def test_poll_command_threads_resolved_params(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_CONFIG_FILE", _toml(tmp_path, "[exits]\nmax_hold_days = 7\n"))
     captured = {}
 
-    def _fake_run_poll(interval=300, tickers=None, engine=None, sp=None, ep=None, stats=None):
+    def _fake_run_poll(
+        interval=300, tickers=None, engine=None, sp=None, ep=None, stats=None, config=None
+    ):
         captured["ep"] = ep
+        captured["config"] = config
         return SimpleNamespace(rows_written=0, notes=None)
 
     monkeypatch.setattr("capitalscan.jobs.poll.run_poll", _fake_run_poll)
@@ -255,6 +258,17 @@ def test_poll_command_threads_resolved_params(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert captured["ep"].max_hold_days == 7
+    # The whole resolved config, not just the three sections `poll`
+    # consumes. `run_poll` used to rebuild `Config(signals=sp)` to compute
+    # `config_hash`, which dropped every other section — so an override of
+    # `universe`, `splits`, `indicators`, or `costs` made the poller write
+    # live rows under a hash no other job used, unjoinable by any statistic
+    # and never overwritten by the nightly pass.
+    #
+    # This fixture sets `[exits] max_hold_days = 7`, a non-default outside
+    # `signals`, so the assertion below fails against the old rebuild.
+    assert captured["config"] is not None, "cli.poll must thread the resolved config through"
+    assert captured["config"].exits.max_hold_days == 7
 
 
 def test_poll_command_blocks_on_malformed_unrelated_section(monkeypatch, capsys):
