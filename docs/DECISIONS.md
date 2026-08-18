@@ -3502,6 +3502,7 @@ Reading it surfaced a second error, in CLAUDE.md and `DESIGN.md` §11.7 rather t
 | Item | Options | Current lean |
 |---|---|---|
 | **`cscan nightly` never ingests the session it runs after** | Pass `end + 1 day` to the fetcher, or make `_download_daily`'s `end` inclusive to match every other date range in the codebase | Make it inclusive — see below |
+| **`v_forward` exposes probabilities with no interval or q-value** | Add `cell_ci_low`/`cell_ci_high`/`cell_q_value` to the view, or have the model carry its own interval | Whichever ADR 113's model produces. **Blocks `/forward`, not Phase 5.** Recorded in `test_serving_view_contract.py::KNOWN_GAPS` |
 | Point-in-time index membership | Scrape Wikipedia history, or accept survivorship bias and state it | Scrape, note residual error in RESULTS.md |
 | Historical earnings dates | Finnhub free tier, Nasdaq scrape, or drop the feature | Finnhub, since earnings contamination is the largest 5-day confound |
 | Point-in-time market cap | Shares outstanding from filings, or price-times-current-shares approximation | Filings where available, approximation flagged elsewhere |
