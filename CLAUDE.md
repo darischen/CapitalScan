@@ -71,6 +71,57 @@ SELECT relname, n_dead_tup, last_vacuum, last_analyze
 FROM pg_stat_user_tables WHERE relname = 'path';
 ```
 
+## The fetch cache lies when you change what a key means
+
+`jobs/fetch/yahoo.py` caches every network result to
+`data/cache/{source}/{key}.parquet`, keyed on the fetcher's arguments —
+`_batch_key` is `tickers_start_end`, `_window_key` is `ticker_start_end`.
+
+That key is a **promise**: for these inputs, this is the answer. It holds
+only while the function means the same thing.
+
+**Change what a fetcher returns for unchanged arguments and you must bump
+the cache source.** Not the key function — the `source=` string, which is
+the directory name:
+
+```python
+@cached(source="yahoo_daily_v2", key_fn=_batch_key)
+```
+
+**What this cost, 2026-08-17.** `yf.download`'s `end` is exclusive, so
+`cscan nightly` — scheduled 16:30 local, after the close — never ingested
+the session it had just run after. The fix added a day inside
+`_download_daily`. It merged, CI passed, and **the next nightly still
+produced stale data**, because every cached entry answered the post-fix
+request with the pre-fix result. The fix was correct and simply never ran.
+
+Three properties make this worse than an ordinary stale cache:
+
+- **It survives a merge.** The cache short-circuits the function containing
+  the fix.
+- **There is no error.** A hit is indistinguishable from a fetch in every
+  observable way except duration. `run_market` returned 5 rows and a `runs`
+  status of `ok`; the only tell was that it finished in **46 ms**, too fast
+  to have touched the network.
+- **It fails toward the old behaviour.** A miss would have been loud and
+  self-correcting. A hit silently preserves exactly the bug being fixed.
+
+It hid completely because the one path that bypassed the cache was the one
+path that worked: a manual recovery script had used `end = today + 1`, a
+different key, so daily bars looked correct throughout.
+
+**Rule.** A cache key must capture everything that determines the output,
+including the version of the code producing it. These key on arguments
+alone, which assumes the semantics are frozen. They are not, so the version
+lives in the `source` string and moving it is a manual step in any change
+to what a fetcher returns.
+
+**Checking a suspicious result.** Compare the job's duration against a
+plausible network cost — `RATE_LIMIT_PER_SEC = 0.5`, so ~600 tickers cannot
+complete in under a minute. A sub-second ingest is a cache read.
+`data/cache/yahoo_daily/` and `yahoo_hourly/` hold the pre-`_v2` entries and
+are unread; delete them freely.
+
 No `cscan db migrate` or `uv sync`/`uv add` while a job is running. Migrate takes an ACCESS EXCLUSIVE lock against a live writer; `uv sync`/`uv add` on Windows locks `.venv` files a running process holds open.
 
 Long jobs, measured, so nobody starts one blind:
