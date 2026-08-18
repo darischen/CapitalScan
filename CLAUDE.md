@@ -50,7 +50,26 @@ Three traps, all hit for real on 2026-08-09:
 PGPASSWORD=capscan "/c/Program Files/PostgreSQL/18/bin/psql" -h localhost -U capscan -d capitalscan
 ```
 
-Prefix `SET max_parallel_workers_per_gather=0;` if a query hits a shared-memory error.
+Prefix `SET max_parallel_workers_per_gather=0;` if a **query** hits a shared-memory error:
+
+```
+could not resize shared memory segment ... No space left on device
+```
+
+**That setting does not cover maintenance commands.** It governs query-time gather nodes only. `VACUUM` parallelises index cleanup under `max_parallel_maintenance_workers` and ignores it entirely, so a large vacuum fails with the same message and the same fix does nothing. Use the command's own option:
+
+```
+VACUUM (PARALLEL 0, ANALYZE) tablename;
+```
+
+`REINDEX` and `CREATE INDEX` take `max_parallel_maintenance_workers` too.
+
+**The failure is silent.** `psql` exits **0** on this error — it goes to stderr, so a piped or filtered invocation swallows it and the command looks like it worked. On 2026-08-17 two `VACUUM` runs on `path` failed this way and were only caught because `pg_stat_user_tables.last_vacuum` was still NULL with 57.3M dead tuples. Verify maintenance with the catalog, never with the exit code:
+
+```sql
+SELECT relname, n_dead_tup, last_vacuum, last_analyze
+FROM pg_stat_user_tables WHERE relname = 'path';
+```
 
 No `cscan db migrate` or `uv sync`/`uv add` while a job is running. Migrate takes an ACCESS EXCLUSIVE lock against a live writer; `uv sync`/`uv add` on Windows locks `.venv` files a running process holds open.
 

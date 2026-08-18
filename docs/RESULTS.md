@@ -2378,6 +2378,53 @@ Three configs have now been measured end to end, and none has produced a cell th
 
 ---
 
+## `path` pruned to four generations, 2026-08-17
+
+**54,941,515 rows removed in 4m40s**, leaving 12.5M. `events` was not touched.
+
+### Why
+
+`path backfill` is not config-scoped. It walks every event of every generation, so the last full run processed 5,568,263 events and took **2h56m** — roughly 80% of it rebuilding forward paths for configs nothing reads. Twenty-three generations had accumulated at ~3.1M path rows each.
+
+### What was kept, and on what test
+
+Only three hashes appear in `cell_stats`, `benchmarks`, or `rho_era`. A fourth was kept as a comparison baseline:
+
+| Hash | Path rows | Kept because |
+|---|---|---|
+| `86e91448a65aa40b` | 3,135,524 | live (ADR 110) |
+| `1b97abf7e458d537` | 3,127,486 | the k_full baseline ADR 110 is measured against |
+| `697f3ae71428d392` | 3,127,236 | Session 14 published; all three stats tables |
+| `1835688bf7d760ba` | 3,126,340 | Sessions 12/13 published; all three stats tables |
+
+The other nineteen — seventeen sweep runs at 3,101,579 rows each, plus `3e598c59e7d71eae` and `541f84a384b07ba2` — had zero rows in every statistics table.
+
+### Why `path` and not `events`
+
+`path` is **derived**: every row is recomputable from `events` + `bars` by `cscan path backfill`, so this is reversible at the cost of recompute.
+
+`events` is the primary record and regenerating one generation costs a five-hour backtest. It also carries three layers, not one — detection, entry resolution, and forward outcome labels — which is why generations cannot share rows and why ADR 096's composite key exists to let them coexist. All 23 remain, 13,479,752 rows, so every published number stays auditable and any two populations can still be compared at the event level.
+
+That comparison is not hypothetical: proving the ADR 110 flip left the band conditions untouched required querying `signal_types_all` on both `1b97abf7e458d537` and `86e91448a65aa40b` and finding 51,840 rows on each side. Deleting either generation's events would have made that check impossible.
+
+### The vacuum, and a trap worth recording
+
+`DELETE` marks rows dead; it does not free them. Until `VACUUM` ran, all 54.9M deleted rows were still physically present and still scanned, so the prune delivered nothing on its own.
+
+Two `VACUUM` attempts failed silently first:
+
+```
+ERROR: could not resize shared memory segment ... No space left on device
+```
+
+`VACUUM` parallelises index cleanup under `max_parallel_maintenance_workers`, which the `max_parallel_workers_per_gather` workaround in `CLAUDE.md` does not touch. `VACUUM (PARALLEL 0, ANALYZE) path;` succeeded.
+
+**Both failures exited 0.** The error goes to stderr, so a filtered invocation swallows it and the command looks successful. They were caught only because `last_vacuum` was still NULL with 57,343,972 dead tuples. `CLAUDE.md` now says to verify maintenance against `pg_stat_user_tables` rather than the exit code.
+
+After the vacuum: `n_dead_tup` 0, statistics refreshed. On-disk size stays 13 GB by design — plain `VACUUM` makes pages reusable rather than returning them to the OS, and `path` grows back into that space on the next backfill.
+
+---
+
 ## Holdout
 
 **Evaluated once. Published whatever it says.**
