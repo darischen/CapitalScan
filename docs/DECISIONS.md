@@ -4,7 +4,7 @@ Architecture decision record for `CapitalScan`.
 
 Format: each entry states the decision, why, and what it costs. Status is one of Pinned, Provisional, or Superseded. Never delete an entry. Mark it Superseded and add the replacement below it.
 
-Last updated: 2026-08-11
+Last updated: 2026-08-17
 
 Recent structural changes: ADR 097 added 2026-08-08 and reverted 2026-08-09
 without ever taking effect (its window emptied the train and validate splits
@@ -22,6 +22,19 @@ headline grid against measured clustering rather than an assumed sample size
 breadth denominator, 105 adds `cell_stats.arm`, 106 supersedes ADR 016 and
 removes the short side's regime filter). ADR 011 is superseded in part by 102
 and ADR 016 by 106.
+
+ADRs 107-109 added 2026-08-12 to 2026-08-13 (serving-layer cell selection, the
+close-confirmed reversal signal, and the band-date correction to it); ADRs
+110-111 added 2026-08-16 to 2026-08-17 and were missing from the index table
+until 2026-08-17 — the same defect ADR 094 had, and the reason the index and
+body counts are now checked together. ADR 112 added 2026-08-17 recording that
+ADR 033's first kill criterion fired: three configurations measured end to end,
+zero cells surviving FDR correction on either split. ADRs 013, 017, and the
+Phase 6 gate block were corrected the same day to drop "regime-filtered short",
+a category ADR 106 superseded on 2026-08-11 and which survived in three places.
+ADR 113 added the same day answering ADR 093's Provisional condition, which
+ADR 112 had triggered: Phase 6 opens, at twenty heads rather than fifty-six,
+with a fifth promotion check and a kill criterion of its own fixed in advance.
 
 ---
 
@@ -138,6 +151,10 @@ and ADR 016 by 106.
 | 107 | `v_screen` selects the cell pooled over `signal_strength` | Pinned |
 | 108 | Close-confirmed detection, alongside intraday touch | Pinned. Amends 005's scope and 057's ranking. Band date amended by 109 |
 | 109 | Close-confirmed band is the same day's, not the prior day's | Pinned. Amends 108 |
+| 110 | The raw %K is the trigger; the smoothed %K must agree within 5 points | Pinned. Supersedes the 2026-08-05 `stoch_source` A/B note |
+| 111 | `--actionable`: a long needs confluence, a short needs confluence and confirmation | Pinned. Serving-layer only |
+| 112 | ADR 033's first kill criterion fired: the two-indicator hypothesis is retired as a standalone returns predictor | Pinned. Fires 033. Retires 015's central claim; downgrades 093's prior |
+| 113 | Phase 6 opens: the model is a distinct hypothesis from the cell grid, sized down and gated harder | Pinned. Answers 093's Provisional condition; amends 064's head count and 067's gate |
 
 ---
 
@@ -418,7 +435,7 @@ Decision. Primary use of the upper-band and %K-above-80 signal is trimming a hel
 
 Rationale. Carries no borrow cost, no gap risk, no wash-sale interaction, and no undefined loss. Matches the actual described behavior of selling into strength and buying back on weakness.
 
-Expected ranking. Trim-and-redeploy beats regime-filtered short on risk-adjusted terms, and both beat naive short, which likely shows negative edge from band walking.
+Expected ranking. Trim-and-redeploy beats the short on risk-adjusted terms, and the short likely shows negative edge from band walking. (Amended 2026-08-11 by ADR 106: "regime-filtered short" no longer names a distinct category, so the original three-way ranking — trim-and-redeploy above regime-filtered short above naive short — collapses to two-way.)
 
 ---
 
@@ -426,7 +443,7 @@ Expected ranking. Trim-and-redeploy beats regime-filtered short on risk-adjusted
 
 Status: Pinned
 
-Decision. v1 trades long shares and regime-filtered short shares only. No calls, puts, or spreads.
+Decision. v1 trades long shares and short shares only. No calls, puts, or spreads. (Amended 2026-08-11 by ADR 106: this originally read "regime-filtered short shares", a category ADR 016 defined and 106 superseded. The scope this entry actually fixes is shares versus derivatives, which is unchanged.)
 
 Rationale. Yahoo provides current option chains and no history. Any options backtest built on reconstructed prices is fiction unless labeled as such. Synthetic Black-Scholes pricing gets IV wrong on skew, misses post-earnings IV crush of 30 to 50%, and ignores spreads of 1 to 3% of premium on liquid weeklies. Theta alone costs a 30-day ATM option roughly 8.7% of value over a 5-day hold before any move.
 
@@ -1636,7 +1653,7 @@ Found during the session 1-3 audit. The audit also verified independently that e
 
 ## 093. Terminal quantiles expand to five horizons
 
-Status: Provisional. Authorizes a Phase 6 rewrite of DESIGN §7.4
+Status: Provisional. Condition answered by 113 (2026-08-17); head count reduced by 113 from ~56 to 20, and the reachability heads this ADR's amendment left open are retired there. Authorizes a Phase 6 rewrite of DESIGN §7.4
 
 Decision. Terminal-return prediction moves from one horizon to five. Where DESIGN §7.4 currently pins a single terminal-quantile head, `Q̂_τ(R_5)` for τ ∈ {0.05, 0.25, 0.50, 0.75, 0.95}, Phase 6 instead fits that quantile fan independently at each of `h ∈ {1, 2, 3, 5, 10}` trading days:
 
@@ -3005,6 +3022,182 @@ It also excludes bare `bear_close_above_upper` rows with no stochastic extreme, 
 
 ---
 
+## 112. ADR 033's first kill criterion fired
+
+**Date:** 2026-08-17. **Status:** Pinned.
+
+**Context.**
+
+ADR 033 fixed three kill criteria before any code existed, explicitly "before sunk cost exists." The first reads:
+
+> No cell beats its per-ticker-year baseline by the power-adjusted threshold at sufficient `n_eff` after FDR correction: the two-indicator hypothesis is dead as a standalone claim.
+
+Phase 4 closed 2026-08-15 with all five `TESTS.md` §10 gate criteria passing. The gate asserts the machinery is complete and correct, not that the strategy works, and Session 14's own `BUILD.md` entry says so.
+
+Three configurations have now been measured end to end, each with a different signal definition.
+
+| Config | Session | Tests | Min q | Survive FDR |
+|---|---|---|---|---|
+| `1835688bf7d760ba` | 12, 13 | 48 | 0.769 | 0 |
+| `697f3ae71428d392` | 14 | 56 | 0.790 | 0 |
+| `86e91448a65aa40b` | ADR 110 | 224 train / 224 validate | 0.849 / 0.706 | 0 / 0 |
+
+Session 13 declined to fire the criterion on its own evidence, correctly: the criterion is worded about cells, and Session 13 measured arms. The ADR 110 run is the first to satisfy every clause of the criterion simultaneously.
+
+| Clause | Train | Validate |
+|---|---|---|
+| Cells enumerated | 224 | 224 |
+| At sufficient `n_eff` (unsuppressed) | 124 | 56 |
+| Mean `n_eff` | 93.3 | 20.8 |
+| Minimum q-value | 0.8492 | 0.7061 |
+| Surviving FDR at α 0.05 | **0** | **0** |
+
+**Decision.**
+
+Kill criterion 1 has fired. The two-indicator hypothesis — Bollinger band touch plus stochastic extreme, alone or in confluence — is retired as a standalone returns predictor.
+
+The measurement is recorded in `RESULTS.md` under "Kill criteria status" with the same detail a positive result would receive, per ADR 033's own instruction.
+
+Kill criterion 2 is recorded **not applicable** rather than pending. Both splits were measured, so it is evaluable rather than unevaluated; it cannot fire because it presupposes a positive training edge to be half of, and the train signal arm sits 298 points behind buy-and-hold and below its own null's median.
+
+Kill criterion 3 remains **unevaluated**, and holdout stays sealed pending a direction decision. See consequences.
+
+**Rationale.**
+
+Three independent lines of evidence point the same way on the same run.
+
+*Cells.* 124 unsuppressed train cells at a mean `n_eff` of 93.3 is "sufficient `n_eff`" by any reading. The minimum q-value misses α by a factor of seventeen. This is not a near miss, and it is not a power problem at the sample sizes reached.
+
+*Arms.* Train signal +85.75% against buy-and-hold's +383.66%, below the null's median of +102.50%. Validate's signal arm clears its null's 97.5th percentile for the first time, and is not read as an edge: it performs better out-of-sample than in-sample, which is backwards from a real effect, on a sample that just halved. When an aggregate looks better than every one of its components, the aggregate is the artifact — the arm is one number against 200 replications, the grid corrects across 224 tests.
+
+*Costs.* Session 13 measured short-term tax removing the strategy's entire pre-tax return. Session 14 found every drawdown-slice interval crossing zero, which retires ADR 015's central claim at this sample.
+
+Three different signal definitions produced this. ADR 110's flip to `k_fast` with agreement gating cut `confluence_low` from 19,701 events to 10,346 — a materially different population — and the answer did not move.
+
+**The result is a measurement, not an artifact.** `stats self-validate` passes on the same run: the null test finds 0.42% of cells at q < 0.05 against a 5% threshold, the recovery test matches the analytical baseline within 0.039 pp against a 1.0 pp tolerance, and a deliberately broken variant computing standard errors on raw `n` instead of `n_eff` is caught at 11.67%. A pipeline that detects a planted bug of exactly the kind that manufactures false significance, and still reports zero, is reporting a fact about the data. The backtest harness passes 5/5 on every run.
+
+**Consequences.**
+
+*Retired.* The two-indicator hypothesis as a standalone returns predictor. ADR 015's drawdown-slice claim, at this sample. Any Phase 5 or Phase 6 work premised on a measured edge.
+
+*Not retired, and the distinction matters.*
+
+**Detection is not prediction.** The detector fires correctly and deterministically with verified lookahead handling across 630,592 events. "This event does not predict a 5-day return better than the ticker's own base rate" is a different claim from "this event is not worth seeing." Attention-directing use — surfacing events for a human to judge — is **untested rather than disproven**, and it stays untested, because nothing measured so far bears on it. Any such use is human judgment on an event feed, not a validated edge, and every surface must describe it that way. This ADR does not license reframing a null result as a weaker positive one.
+
+**Phase 6's model surface is a related but distinct hypothesis.** The grid tests fourteen fixed cells on `p_hit` against a baseline. ADR 093's model predicts eleven heads over continuous features, including interactions no fixed grid expresses, and terminal-return quantiles as well as reachability. Criterion 1 does not test that directly.
+
+ADR 093 wrote its own answer to this question into its status rationale before the measurement existed: *"Provisional rather than Pinned: ... ADR 033's kill criteria sit between here and there. If Phase 4 finds no cell survives FDR correction, there may be no model to expand."* That condition is now met. Fourteen cells at a mean `n_eff` of 93 showing nothing is weak prior support for a model conditioning on more features with less effective data per condition. ADR 093 and ADR 094 stay Provisional, and any Phase 6 decision must cite this measurement rather than route around it.
+
+**The engine.** Per ADR 033: the event-study engine with correct look-ahead handling and MFE/MAE tracking, the tool-restricted chat layer, the calibration methodology, and the ingest and scheduling pipeline all survive. Four alternative signal families are testable in the same framework with no rewrite — volatility term structure, earnings drift, cross-sectional momentum residuals, volume-price divergence.
+
+*Holdout stays sealed.* Era 2024+ is the holdout split and is the same date range whatever signal is tested. Spending it to confirm a hypothesis train and validate already retired buys little and costs the firewall for whatever replaces it. Per ADR 019 and ADR 033 it is evaluated exactly once. Opening it is a deliberate decision to close the two-indicator hypothesis permanently rather than pivot, and it requires its own ADR.
+
+*Direction is not decided here.* This ADR records what was measured. Whether the project proceeds to Phase 5 on the current engine, pivots the input signal, or both, is a separate decision with its own entry.
+
+**What this ADR is for.**
+
+ADR 033 anticipated this outcome and named it in advance so that reaching it would not become a negotiation:
+
+> Built for that outcome, a null result stops being a failure. A project reporting "I tested this rigorously and found no edge, here is the infrastructure proving it" reads better than a suspiciously profitable backtest.
+
+The criteria were fixed before sunk cost existed precisely so they could be applied after it did. Recording the firing plainly, in the same file and the same format as every other decision, is the whole mechanism working.
+
+---
+
+## 113. Phase 6 opens; ADR 093's condition answered
+
+**Date:** 2026-08-17. **Status:** Pinned. Answers ADR 093's Provisional condition. Amends ADR 064's head count and ADR 067's promotion gate.
+
+**Context.**
+
+ADR 093 made Phase 6 conditional in its own status line, written before any statistics existed:
+
+> Provisional rather than Pinned: this constrains a schema decision Session 10 makes now (the path table's window), but the model surface itself is not built until Phase 6, and ADR 033's kill criteria sit between here and there. **If Phase 4 finds no cell survives FDR correction, there may be no model to expand.**
+
+That condition triggered on 2026-08-16 and is recorded in ADR 112: three configurations, 630,592 events, zero cells surviving FDR correction on either split, minimum q-value 0.706.
+
+ADR 093 wrote "there may be no model to expand," not "there is none." It deferred the judgment rather than making it in advance. This ADR makes it.
+
+**Decision.**
+
+Phase 6 opens. The model is built.
+
+It is built smaller than ADR 093's amendment specifies, and gated harder than ADR 067 specifies. Both changes follow from ADR 112 rather than from anything about the model itself.
+
+**1. The head count drops from ~56 to 20.**
+
+| Family | ADR 093 amended | Here | Reason |
+|---|---|---|---|
+| Terminal quantiles $\hat{Q}_\tau(R_h)$ | 25 (5 τ × 5 h) | 10 (5 τ × h ∈ {5, 10}) | Horizons 1, 2, 3 are the thinnest signal at the shortest windows |
+| Peak quantiles $\hat{Q}_\tau(M_h)$ | 25 | 10 (5 τ × h ∈ {5, 10}) | Same |
+| Reachability | 4 | **0** | Retired. See below |
+| Adverse excursion | 2 | 0 | Subsumed by the terminal fan's lower quantiles |
+| **Total** | **~56** | **20** | |
+
+**2. The reachability heads are retired, not kept.**
+
+ADR 093's amendment left this open: "Phase 6 must either retire those heads or keep them explicitly as a calibrated, human-readable slice of the peak distribution. Keeping both without deciding means training six heads against one distribution and reporting them as independent evidence."
+
+They are retired. $P(\max_t R_t \ge X)$ is the survival function of $M_5$, so the peak fan already expresses it. Keeping both would report one distribution twice, and after ADR 112 the last thing this project needs is a surface that makes one piece of evidence look like two.
+
+**3. The promotion gate gains a fifth check.**
+
+ADR 067's four checks compare a retrained model against an incumbent. They cannot answer the question ADR 112 raises, which is whether the model beats no model at all.
+
+Fifth check: **the model's out-of-sample pinball loss must beat the unconditional baseline** — the same per-ticker-year empirical distribution the cell grid measured against, fit with no features. A model that cannot beat the base rate is not promoted, regardless of how it compares to an incumbent.
+
+This is the model-layer analogue of the cell grid's baseline comparison, and it is the check that makes Phase 6 falsifiable in the same way Phase 4 was.
+
+**4. A kill criterion, fixed in advance, in ADR 033's spirit.**
+
+> If the model fails check 5 on the validation split — no better than the unconditional baseline in pinball loss at any horizon — the two-indicator hypothesis is retired at the model layer as well as the cell layer, and Phase 6 closes with that recorded.
+
+Written now, before the model exists, for the same reason ADR 033's criteria were written before any code existed.
+
+**Rationale.**
+
+*Why the model is a distinct hypothesis.* The cell grid tests fourteen fixed cells on one quantity: $P(\text{hit})$ against a per-ticker-year baseline, at four fixed thresholds. Three things sit outside that test.
+
+The grid conditions on three discrete dimensions. The model conditions on the continuous feature set — `bb_pctb`, `bb_width_pct`, `k_full`, `k_fast`, `dd_52w`, `sma200_slope_60`, `rv_pct_252d`, `vol_z_20d`, `days_to_earnings`, `vix_close`, `cofire_count` — which DESIGN §6.7 deliberately kept continuous precisely because bucketing them would have exploded the grid. An effect living in an interaction between bandwidth regime and days-to-earnings is expressible by a gradient-boosted model and inexpressible by a fourteen-cell grid.
+
+The grid tests a binary hit rate. The model predicts a distribution. A signal that does not change $P(R_5 \ge 3\%)$ can still narrow or widen the spread of $R_5$, and the grid is blind to that by construction.
+
+The grid's suppression floor discards data. 100 of 224 train cells fell below `n_eff < 30` and contributed nothing. A model fits on all 630,592 events at once, with the clustering handled by purged walk-forward CV rather than by discarding thin strata.
+
+*Why smaller.* ADR 112 is the reason, and it cuts against ADR 093's expansion rather than for it. Fifty-six heads against a population where fourteen cells found nothing is a large surface fit to a weak prior, and ADR 067's gate would then run twenty-five coverage checks per fan — a multiple-comparison problem at the model layer of exactly the kind FDR exists to handle at the cell layer. Ten terminal and ten peak heads at the two horizons that carry the most data is the version whose results can be read without a second correction.
+
+Horizons 1, 2, and 3 are dropped rather than 5 and 10 because the shortest windows carry the least movement relative to noise, and because ADR 093's own argument for reaching to day 10 was that peak timing is the information the label set discards. Two horizons preserve that contrast at a fifth of the surface.
+
+*Why the fifth check is necessary.* ADR 067's four checks are all relative to an incumbent. On a first model there is no incumbent, so a model could pass all four by default and serve while being worse than a constant. That gap existed before ADR 112 and was harmless while a measured edge was expected. It is not harmless now.
+
+*What this ADR is not.* It is not a claim that the model will find something. ADR 112's measurement is weak prior support and this ADR says so plainly: fourteen cells at a mean `n_eff` of 93 finding nothing means a model conditioning on more features with less effective data per condition is unlikely to find much. The argument for building it is that it tests a different hypothesis, not that the hypothesis is likely.
+
+**Consequences.**
+
+ADR 064's eleven heads and ADR 093's ~56 are both superseded on count. The definitions in both stand: quantile fans over entry-anchored returns, exit policy as a separate layer, $M_h$ from `path` rather than from `events.mfe`.
+
+ADR 067's gate becomes five checks. The fifth is the only one evaluable on a first model, so it is the only one that gates the first promotion.
+
+DESIGN §7.4's rewrite, which ADR 093 authorizes and does not perform, is performed by Phase 6 against the twenty-head surface here rather than ADR 093's fifty-six.
+
+The cross-horizon monotonicity question ADR 093 defers is now two horizons rather than five, so $\hat{Q}_\tau(R_5) \le \hat{Q}_\tau(R_{10})$ is one comparison per τ. For the peak fan, $M_5 \le M_{10}$ is arithmetic and a violation is a bug, per ADR 093's amendment property 2.
+
+The `path` table's eleven-day window, which ADR 093 exists to have forced, is still required. Dropping horizons 1 through 3 does not shorten it; day 10 still needs day 11 for a `NEXT_OPEN` entry.
+
+`predict()` returns `NotFound` until this phase ships, per Session 15's contract, and the test asserting that is expected to fail when Phase 6 changes it. That failure is the deliberate signal, not an accident.
+
+**Alternatives rejected.**
+
+*Do not build Phase 6.* Defensible, and ADR 093 left room for it. Rejected because the model tests a hypothesis the grid could not, and because closing on an untested claim is weaker than closing on a tested one. ADR 033's framing applies: the deliverable is a rigorous engine and an honest result, and one more honest result costs one phase.
+
+*Build all fifty-six heads as ADR 093 specifies.* A large surface against a weak prior, with a fifty-coverage-check gate that would need its own multiple-testing correction.
+
+*Keep the reachability heads alongside the peak fan.* Reports one distribution twice as if it were two pieces of evidence. ADR 093's amendment named this trap explicitly.
+
+*Skip the fifth check and use ADR 067 as written.* Would let a first model serve without ever being compared to no model.
+
+---
+
 ## Open items
 
 | Item | Options | Current lean |
@@ -3085,11 +3278,19 @@ Phase 5 — Frontend, tools, MCP. Screener, ticker page, research page, the
 `handlers/` layer, the seven tools, the response validator, and the MCP
 server (ADR 027), built after Phase 4 results exist.
 
-Phase 6 — Model. Quantile heads on shares only, long and regime-filtered
-short. Purged walk-forward CV, isotonic calibration, the four-check promotion
-gate, forward log, live inference in the poller. Calibration curves and
-pinball loss are the gate. ADR 093 expands the terminal-quantile surface to
-five horizons here.
+Phase 6 — Model. Quantile heads on shares only, long and short, both on the
+same universe and criteria (ADR 106; this block previously read "regime-filtered
+short", a category ADR 016 defined and 106 superseded). Purged walk-forward CV,
+isotonic calibration, the four-check promotion gate, forward log, live inference
+in the poller. Calibration curves and pinball loss are the gate. ADR 093 expands
+the terminal-quantile surface to five horizons here.
+
+**Conditional on ADR 112.** ADR 093's own status rationale made this phase
+contingent: "If Phase 4 finds no cell survives FDR correction, there may be no
+model to expand." That condition was met on 2026-08-16. Phase 6 is not cancelled
+— the model is a distinct hypothesis class from the fixed cell grid — but it no
+longer proceeds by default, and any decision to open it must cite ADR 112's
+measurement rather than route around it.
 
 Phase 7 — Options. Synthetic Black-Scholes pricing, labeled synthetic. Then
 one month of real Polygon chains to measure and publish the synthetic pricing

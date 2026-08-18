@@ -2435,10 +2435,97 @@ After the vacuum: `n_dead_tup` 0, statistics refreshed. On-disk size stays 13 GB
 
 ## Kill criteria status
 
-| Criterion | Threshold | Status |
-|---|---|---|
-| No cell beats baseline at sufficient `n_eff` after FDR | — | Not yet evaluated |
-| Validation edge under half of training edge | — | Not yet evaluated |
-| Holdout edge negative | — | Not yet evaluated |
+**Criterion 1 fired 2026-08-16.** Recorded here with the same detail ADR 033 asks for.
 
-If any fires, record it here with the same detail as a positive result, then pivot per ADR 033: keep the engine, swap the input signal. Volatility term structure, earnings drift, cross-sectional momentum residuals, and volume-price divergence are all testable in the same framework with no rewrite.
+| Criterion | Status | Evidence |
+|---|---|---|
+| No cell beats baseline at sufficient `n_eff` after FDR | **FIRED** | Three configs, three signal definitions, zero surviving cells. Minimum q 0.706 to 0.849 against α 0.05 |
+| Validation edge under half of training edge | **Not applicable** | Presupposes a positive training edge. There is none to halve |
+| Holdout edge negative | **Not evaluated** | Holdout untouched. See "The holdout is a one-shot resource" below |
+
+### Criterion 1, the measurement
+
+ADR 033's wording: *"No cell beats its per-ticker-year baseline by the power-adjusted threshold at sufficient `n_eff` after FDR correction: the two-indicator hypothesis is dead as a standalone claim."*
+
+Three configurations have now been measured end to end. Each used a different signal definition. None produced a cell surviving FDR correction.
+
+| Config | Session | Tests | Min q | Survive FDR |
+|---|---|---|---|---|
+| `1835688bf7d760ba` | 12, 13 | 48 | 0.769 | 0 |
+| `697f3ae71428d392` | 14 | 56 | 0.790 | 0 |
+| `86e91448a65aa40b` | ADR 110 | 224 train / 224 validate | 0.849 / 0.706 | 0 / 0 |
+
+The ADR 110 run is the one that fires the criterion, because it is the first to satisfy every clause simultaneously.
+
+| Clause | Train | Validate |
+|---|---|---|
+| Cells enumerated | 224 | 224 |
+| Cells at sufficient `n_eff` (unsuppressed) | 124 | 56 |
+| Mean `n_eff` | 93.3 | 20.8 |
+| Minimum q-value | 0.8492 | 0.7061 |
+| Cells surviving FDR at α 0.05 | **0** | **0** |
+
+124 cells on train at a mean `n_eff` of 93.3 is "sufficient `n_eff`" by any reading of the clause. The minimum q-value is off the threshold by a factor of seventeen. This is not a near miss.
+
+Three arms point the same way on the same run:
+
+| Split | Arm | Return | Null p50 | Null p97.5 |
+|---|---|---|---|---|
+| train | buy_hold | **+383.66%** | | |
+| train | signal | +85.75% | +102.50% | +216.70% |
+| validate | buy_hold | −3.69% | | |
+| validate | signal | +12.63% | −12.45% | +6.36% |
+
+Validate's signal arm clears its own null for the first time across three configs. It is not read as an edge: it performs better out-of-sample than in-sample, which is backwards from what a real effect looks like, on a sample that just halved. The train split, with four times the data, has the signal 298 points behind buy-and-hold and below the null's median.
+
+Session 13 additionally found short-term tax removes the strategy's entire pre-tax return, and Session 14 found every drawdown-slice interval crosses zero, retiring ADR 015's central claim at this sample.
+
+### Why this is a measurement and not an artifact
+
+`stats self-validate` passes on the same run.
+
+| Check | Result | Threshold |
+|---|---|---|
+| Null test on driftless synthetic data | 2 of 480 cells at q < 0.05 = 0.42% | 5% |
+| Recovery test against the analytical baseline | gap 0.039 pp | 1.0 pp |
+| Deliberately broken variant (SE on raw `n`) | caught at 11.67% | must fail |
+
+The third row is the load-bearing one. The pipeline detects a deliberately introduced bug of exactly the kind that would manufacture false significance, and finds nothing in real data. A layer that can catch its own sabotage and still reports zero is reporting a fact about the data.
+
+The backtest harness passes 5/5 on every run: `no_lookahead`, `entry_sanity`, `exit_sanity`, `return_identity`, `non_overlap`.
+
+### Criterion 2, and why "not applicable" rather than blank
+
+*"Validation edge under half the training edge → overfit. Cut features, widen cells."*
+
+Both splits exist and both were measured, so this is evaluable rather than pending. It cannot fire because it presupposes a training edge to be half of. The train signal arm sits 298 points behind buy-and-hold and below its null's median, and zero train cells survive correction.
+
+You cannot overfit to an effect you never found. Recorded as not applicable rather than left blank, because a blank reads as "not yet looked at."
+
+### The holdout is a one-shot resource
+
+Holdout is untouched and stays that way pending a direction decision.
+
+Era 2024+ is the holdout split, and it is the same date range whatever signal is tested. Spending it to confirm a hypothesis that train and validate already retired buys very little and costs the firewall for whatever replaces it. Per ADR 019 and ADR 033, holdout is evaluated exactly once.
+
+If the decision is to close out the two-indicator hypothesis permanently, run it and publish. If the decision is to pivot the input signal per ADR 033, leave it sealed.
+
+### What this does not retire
+
+Criterion 1 kills **the two-indicator hypothesis as a standalone returns predictor**. It is a statement about `p_hit` against a per-ticker-year baseline, and about the benchmark arms built on the same events. Three things sit outside that claim and are untouched by it.
+
+**Detection is not prediction.** The detector fires correctly, deterministically, and with verified lookahead handling on 630,592 events. That a `confluence_low` does not predict a 5-day return better than the ticker's own base rate is a different claim from "the event is not worth seeing." Attention-directing use is untested rather than disproven — and untested is exactly what it remains, because nothing measured so far speaks to it. Any such use is a human judgment on top of an event feed, not a validated edge, and it should be described that way.
+
+**Phase 6's model surface is related but not identical.** The cell grid tests fourteen fixed cells; the model per ADR 093 predicts eleven heads over continuous features, including interactions no fixed grid can express, and terminal-return quantiles as well as reachability. That is a genuinely different hypothesis class, and criterion 1 does not test it directly.
+
+ADR 093 anticipated this exact question and wrote its own answer into its status rationale: *"Provisional rather than Pinned: ... ADR 033's kill criteria sit between here and there. If Phase 4 finds no cell survives FDR correction, there may be no model to expand."* Fourteen cells at a mean `n_eff` of 93 showing nothing is weak prior support for a model conditioning on more features with less effective data per condition. Not impossible; not encouraging. Any Phase 6 decision should cite this measurement rather than route around it.
+
+**The engine.** Per ADR 033: the event-study engine with correct look-ahead handling and MFE/MAE tracking, the tool-restricted chat layer, the calibration methodology, and the ingest and scheduling pipeline all survive a null result. Four alternative signal families are testable in the same framework with no rewrite: volatility term structure, earnings drift, cross-sectional momentum residuals, volume-price divergence.
+
+### Recorded
+
+Three configs, three signal definitions, 630,592 events, 328 cells across two splits, zero surviving FDR correction, and a self-validation suite that catches a planted bug on the same run.
+
+ADR 033 was written before any code existed, for this outcome specifically: *"Built for that outcome, a null result stops being a failure. A project reporting 'I tested this rigorously and found no edge, here is the infrastructure proving it' reads better than a suspiciously profitable backtest."*
+
+The measurement worked.
