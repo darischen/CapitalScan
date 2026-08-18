@@ -1310,8 +1310,25 @@ def mcp_serve(
     authentication is one shared bearer token is a deliberate act, so it has
     to be typed.
     """
+    from capitalscan.jobs.db import _load_env
     from capitalscan.mcp.auth import MissingToken
     from capitalscan.mcp.server import resolve_database_url, run
+
+    # `.env.local` is a developer convenience that `cscan` provides and the
+    # process environment does not. Every other command reaches it through
+    # `db_io.get_engine()`; this one never opens an engine itself, so it has
+    # to load it explicitly.
+    #
+    # Without this, `cscan mcp serve` read a bare `os.environ`, found
+    # neither `DATABASE_URL_MCP` nor `MCP_BEARER_TOKEN`, and exited 1 with
+    # "neither ... is set" while both sat in `.env.local`. The end-to-end
+    # check missed it because it set `os.environ` directly and never went
+    # through the CLI.
+    #
+    # `build_app` and `run` deliberately do *not* do this: a deployment gets
+    # its environment from the platform, and a server that reads a dotfile
+    # off disk in production is a server that behaves differently there.
+    _load_env()
 
     url, readonly = resolve_database_url()
     if not url:

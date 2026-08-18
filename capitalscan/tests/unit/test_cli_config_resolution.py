@@ -487,3 +487,37 @@ def test_unknown_section_in_cli_overrides_exits_clean(capsys):
     assert exc_info.value.exit_code == 1
     out = capsys.readouterr().out
     assert "indicatorz" in out
+
+
+def test_mcp_serve_loads_env_local_before_reading_the_database_url():
+    """`cscan mcp serve` must reach `.env.local` like every other command.
+
+    It shipped without this and exited 1 with "neither DATABASE_URL_MCP nor
+    DATABASE_URL_RESEARCH is set" while both sat in `.env.local`. Every
+    other `cscan` command gets there for free through
+    `db_io.get_engine()`; this one never opens an engine of its own, so it
+    is the one command that has to load the file explicitly.
+
+    The end-to-end check that verified the server missed it entirely,
+    because it set `os.environ` directly and never went through the CLI.
+
+    Read positionally from the AST: `_load_env()` has to run *before*
+    `resolve_database_url()`, and a call-presence assertion alone would pass
+    with the two in the wrong order.
+    """
+    import ast
+    import inspect
+
+    from capitalscan.jobs import cli
+
+    tree = ast.parse(inspect.getsource(cli.mcp_serve))
+    calls = {
+        node.func.id: node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "_load_env" in calls, "cscan mcp serve no longer loads .env.local"
+    assert "resolve_database_url" in calls
+    assert calls["_load_env"] < calls["resolve_database_url"], (
+        "_load_env runs after the URL is read, so .env.local cannot be seen"
+    )
