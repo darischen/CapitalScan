@@ -1413,6 +1413,45 @@ changed which row a ticker returns.
 
 ---
 
+## ADR 117: how far from a reversal, not just whether
+
+### Unit Tests (capitalscan/tests/unit/test_poll_bear_reversal.py) — 12 added, 20 total
+
+The eight tests pinning `is_bear_reversal` itself are unchanged. ADR 117
+adds `reversal_state`, which answers *by how much*, and these cover it.
+
+- **A near miss and a runaway no longer produce the same alert.** The
+  defect, stated as the two cases it separates: MPC fired at 364.70 against
+  a band of 358.56 while a little above its open, and a name trading far
+  above its open is a different situation. The old notification tagged only
+  confirmed reversals, so both were byte-identical.
+- The gap is in ATR, so five tickers spanning $28 to $364 compare.
+- A confirmed reversal reports a **negative** gap, so the sign carries the
+  verdict and a reader scanning a column does not need the label.
+- **`reversal_state.confirmed` agrees with `is_bear_reversal`** across a
+  grid of prices and opens. The two are separate on purpose, so a display
+  change cannot alter a signal definition, which also means they can drift.
+- An unknown open reports `None`, not `0.0`. A zero gap reads as "price is
+  at the open", which is a measurement; a missing open is the absence of one.
+- A zero ATR does not divide.
+- Price back inside the band says so rather than rounding to "not
+  confirmed" — `confluence_high` needs an upper-band touch, so it means the
+  price fell back between the touch and the notification.
+- The confirmed wording is unchanged, asserted against the constant, so
+  anything grepping notification history keeps matching.
+- The body always prints all three numbers the rule compares
+  (`bb_upper <= price < open`), and says explicitly what it cannot evaluate.
+- `state_json` carries `day_open` and the reversal block, and still works
+  without an open so every existing caller stays valid.
+
+**One defect caught here.** `_state_json` passed the `ReversalState`
+dataclass to `_json_safe`, which walks dicts and lists and passes anything
+else through — so it would have reached the `jsonb` insert as a Python
+object. `asdict` fixes it, and the test that found it is the one asserting
+`payload["bear_reversal"]["confirmed"] is False`.
+
+---
+
 ## 6. Statistical verification
 
 Two tests catching a category no unit test can (ADR 087).
