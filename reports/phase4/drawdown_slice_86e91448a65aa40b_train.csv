@@ -1,0 +1,19 @@
+# generated_at=2026-08-18T04:00:21.983195+00:00
+# edge_ci_low/edge_ci_high = stored cell_stats.ci_low/ci_high minus stored baseline_empirical (no new statistic; see module docstring)
+signal_type,side,dd_bucket,rendered,n_events,n_eff,edge,edge_ci_low,edge_ci_high,suppress_reason
+bb_lower_touch,long,0-10,True,3613.0,278.0,0.00921317483399001,-0.03141594224323099,0.058584057756769004,
+bb_lower_touch,long,10-20,True,1028.0,65.0,0.0358931436068892,-0.053825144330853975,0.153174855669146,
+stoch_oversold,long,0-10,True,2637.0,324.0,-0.00840851991930613,-0.04459338908881699,0.03570661091118302,
+stoch_oversold,long,10-20,True,1121.0,73.0,0.0484858735506372,-0.039532324486829,0.15966767551317101,
+confluence_low,long,0-10,True,300.0,36.0,0.0186172004022307,-0.071816132931103,0.172383867068897,
+confluence_low,long,10-20,False,317.0,30.0,,,,n_eff 29.9 below min_n_eff 30
+bb_upper_touch,short,0-10,True,4783.0,535.0,0.00921314750480269,-0.016103912917525998,0.039896087082474,
+bb_upper_touch,short,10-20,False,444.0,27.0,,,,n_eff 27.1 below min_n_eff 30
+stoch_overbought,short,0-10,True,6530.0,422.0,-0.00549153711811609,-0.032605472799586005,0.028494527200413983,
+stoch_overbought,short,10-20,False,587.0,25.0,,,,n_eff 25.0 below min_n_eff 30
+confluence_high,short,0-10,True,1672.0,185.0,-0.0210700210474537,-0.05635231769817099,0.030547682301829013,
+confluence_high,short,10-20,False,70.0,3.0,,,,n_eff 3.4 below min_n_eff 30
+bear_close_above_upper,short,0-10,True,187.0,110.0,-0.013033308173095,-0.058085179830849,0.05861482016915101,
+bear_close_above_upper,short,10-20,False,13.0,6.0,,,,n_eff 5.9 below min_n_eff 30
+ALL,ALL,20-35,False,,13.6,,,,"permanently suppressed (ADR 101): 20-35 and 35+ cleared min_n_eff=30 in zero of the cells measured for the study; best n_eff observed 13.6, 0/59 cells cleared the floor"
+ALL,ALL,35+,False,,1.7,,,,"permanently suppressed (ADR 101): 20-35 and 35+ cleared min_n_eff=30 in zero of the cells measured for the study; best n_eff observed 1.7, 0/59 cells cleared the floor"

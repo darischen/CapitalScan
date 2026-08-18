@@ -1504,6 +1504,97 @@ def stats_cells_cmd(
         raise typer.Exit(code=1)
 
 
+@stats_app.command("artifacts")
+def stats_artifacts_cmd(
+    config_hash: Optional[str] = typer.Option(
+        None, "--config-hash", help="Default: the resolved config's own hash"
+    ),
+    splits: str = typer.Option("train,validate", help="Comma-separated splits to render"),
+    output_dir: Path = typer.Option(Path("reports/phase4"), help="Where artifacts are written"),
+) -> None:
+    """Regenerate Phase 4's rendered artifacts for one `config_hash`.
+
+    **Why this exists.** `research/curves.py` and `research/chart_arms.py`
+    shipped in Session 14 with no entry point of any kind — `curves.py`'s
+    own docstring refers to "14.6's CLI hook", which was never built. The
+    eight artifacts under `reports/phase4/` could therefore be produced
+    once, by hand, and never reproduced from the CLI.
+
+    That is the same defect `cscan stats cells` was added to close: a
+    published result nobody can regenerate is a published result nobody can
+    check. `research/drawdown_slice.py` had a `__main__` and so was the
+    only third of the set that was reachable.
+
+    Renders three families per split:
+
+      equity_curves_<hash>_<split>.csv    buy-hold, signal, and the
+                                          2.5/50/97.5 null band, one row
+                                          per trading day
+      three_arms_<hash>_<split>.svg       those curves plus a summary table
+                                          and the verdict in words
+      drawdown_slice_<hash>_<split>.svg   ADR 015's slice, plus its CSV
+
+    The curve CSV is written first because `export_three_arm_chart` reads
+    it — the chart is a pure render of what the CSV holds, so the two can
+    never disagree about what was measured.
+
+    **Holdout is not offered.** Passing `--splits holdout` would spend the
+    one evaluation CLAUDE.md reserves for the end of the project on a
+    routine refresh.
+    """
+    from capitalscan.jobs import db_io, ingest
+    from capitalscan.jobs.config import config_hash as compute_config_hash
+    from capitalscan.research.benchmarks import run_benchmarks
+    from capitalscan.research.chart_arms import export_three_arm_chart
+    from capitalscan.research.curves import export_curves
+    from capitalscan.research.drawdown_slice import export_drawdown_slice
+
+    config = _resolve_config_or_exit()
+    chash = config_hash or compute_config_hash(config)
+    requested = [s.strip() for s in splits.split(",") if s.strip()]
+    if "holdout" in requested:
+        console.print(
+            "[red]error[/red]: holdout is evaluated exactly once, at the end of the "
+            "project. Rendering it here would spend that evaluation on a refresh."
+        )
+        raise typer.Exit(code=2)
+
+    engine = db_io.get_engine()
+    written: list[Path] = []
+    with ingest.run_job(
+        engine, "phase4_artifacts", {"config_hash": chash, "splits": requested}
+    ) as job:
+        for split in requested:
+            # `collect_curves=True` is what populates `report.curves`; the
+            # default path leaves it None so an ordinary `stats benchmarks`
+            # run pays nothing for series it will not use.
+            # `run_benchmarks` returns `(frame, report)`. The frame is the
+            # `benchmarks` rows, which already exist for this hash, so
+            # `write=False` keeps this command a pure render.
+            _frame, report = run_benchmarks(
+                engine,
+                chash,
+                split,
+                cfg=config,
+                run_id=job.run_id,
+                collect_curves=True,
+                write=False,
+            )
+            if report.curves is None:
+                console.print(f"[yellow]skip {split}[/yellow]: no curves returned")
+                continue
+
+            _, curve_path = export_curves(report.curves, chash, split, output_dir)
+            chart_path = export_three_arm_chart(engine, chash, split, output_dir=output_dir)
+            dd_svg, dd_csv = export_drawdown_slice(engine, chash, split, output_dir=output_dir)
+            written += [curve_path, chart_path, dd_svg, dd_csv]
+            console.print(f"{split}: {curve_path.name}, {chart_path.name}, {dd_svg.name}")
+
+        job.rows_written = len(written)
+
+    console.print(f"artifacts: {len(written)} files under {output_dir}")
+
+
 @stats_app.command("benchmarks")
 def stats_benchmarks_cmd(
     config_hash: str = typer.Option(
