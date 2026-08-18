@@ -73,12 +73,31 @@ def _download_daily(tickers: list[str], start: date, end: date) -> pd.DataFrame:
     # parallelism (DESIGN §4.3). auto_adjust=False is mandatory — the
     # default overwrites OHLC with adjusted values and destroys the
     # split-adjusted series band levels are computed from.
+    #
+    # `end + 1 day` because **yfinance's `end` is exclusive** and every
+    # other date range in this codebase is inclusive on both ends
+    # (`run_events`, `run_indicators`, `scan`, `split_key_for`). This
+    # function was the single place that disagreed, and the disagreement
+    # was silent.
+    #
+    # Found 2026-08-17. `cscan nightly` runs at 16:30 local, after the
+    # close, and sets `end = date.today()` — so it requested bars through
+    # *yesterday* and never ingested the session it had just run after.
+    # After a clean ten-phase nightly that evening, `max(bars.ts)`,
+    # `max(indicators.ts)` and `max(events.signal_date)` were all
+    # 2026-08-14 with zero rows for 2026-08-17, a full trading day.
+    #
+    # Nothing failed. Every phase reported `ok`, `bar_rejects` was empty,
+    # and `cscan scan --date <today>` printed "no events found" — which
+    # reads as *nothing fired today* rather than *today was never
+    # fetched*. Fixed here rather than by adding `+ 1` at each call site,
+    # so no future caller has to know about the asymmetry.
     return cast(
         pd.DataFrame,
         yf.download(
             tickers,
             start=start,
-            end=end,
+            end=end + timedelta(days=1),
             auto_adjust=False,
             actions=True,
             group_by="ticker",
@@ -187,12 +206,22 @@ def _hourly_windows(start: date, end: date) -> list[tuple[date, date]]:
 @rate_limited(per_sec=RATE_LIMIT_PER_SEC)
 @with_retry
 def _download_hourly(ticker: str, start: date, end: date) -> pd.DataFrame:
+    # `end + 1 day`, same exclusive-bound reason as `_download_daily`.
+    # Kept identical rather than shared through a helper: the two calls
+    # differ in every other argument, and a one-line wrapper around
+    # `yf.download` would hide which knobs each interval actually sets.
+    #
+    # This one is less visible than the daily case because
+    # `_window_key`/`_hourly_windows` walk 60-day windows and the caller
+    # asks for a long span, so losing the final day looks like a partial
+    # last window rather than a missing session — but the current day's
+    # intraday bars were dropped exactly the same way.
     return cast(
         pd.DataFrame,
         yf.download(
             ticker,
             start=start,
-            end=end,
+            end=end + timedelta(days=1),
             interval="1h",
             auto_adjust=False,
             actions=False,
