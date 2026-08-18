@@ -87,7 +87,11 @@ while ($true) {
     # Pacific, and an unlabelled UTC column sitting next to those read as the
     # same clock three hours off — 12:42 in the 2026-08-10 session was 05:42
     # PT, before the market had opened.
-    $csvHeader = "fired_at_pt,ticker,signal_type,entry_price,side,touch_level,k_full,d_full,k_fast,atr_14,vix_close,spx_ret_1d,channels_sent"
+    # `day_open`, `reversal`, and `open_gap_atr` added 2026-08-18 (ADR 117).
+    # The reversal rule is bb_upper <= price < open; the CSV now carries all
+    # three numbers so a near miss can be judged after the session instead
+    # of only at the moment the alert scrolled past.
+    $csvHeader = "fired_at_pt,ticker,signal_type,entry_price,side,touch_level,k_full,d_full,k_fast,atr_14,vix_close,spx_ret_1d,channels_sent,day_open,reversal,open_gap_atr"
     $csvHeader | Out-File -FilePath $csvPath -Encoding UTF8
 
     # Monitor for new events
@@ -115,7 +119,7 @@ while ($true) {
             # ORDER BY stays on the raw `timestamptz`, which sorts identically.
             # Delete this chain if `_now_et` is fixed to return an aware
             # datetime -- it becomes wrong the moment the stored data is right.
-            $query = "SELECT s.event_id, ((s.fired_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York' AT TIME ZONE 'America/Los_Angeles'), e.ticker, e.signal_type, e.entry_price::text, e.side, e.touch_level::text, e.k_full::text, e.d_full::text, e.k_fast::text, e.atr_14::text, e.vix_close::text, e.spx_ret_1d::text, s.channels_sent FROM events e JOIN signal_reports s ON e.id = s.event_id WHERE DATE(e.signal_date) = CURRENT_DATE AND e.id > $lastEventId ORDER BY s.fired_at ASC;"
+            $query = "SELECT s.event_id, ((s.fired_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York' AT TIME ZONE 'America/Los_Angeles'), e.ticker, e.signal_type, e.entry_price::text, e.side, e.touch_level::text, e.k_full::text, e.d_full::text, e.k_fast::text, e.atr_14::text, e.vix_close::text, e.spx_ret_1d::text, s.channels_sent, s.state_json->>'day_open', s.state_json->'bear_reversal'->>'confirmed', s.state_json->'bear_reversal'->>'open_gap_atr' FROM events e JOIN signal_reports s ON e.id = s.event_id WHERE DATE(e.signal_date) = CURRENT_DATE AND e.id > $lastEventId ORDER BY s.fired_at ASC;"
 
             $newEvents = & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -h localhost -U capscan -d capitalscan -t -c $query
 
@@ -124,7 +128,7 @@ while ($true) {
                     if ($_ -match '\|') {
                         $parts = $_ -split '\|' | ForEach-Object { $_.Trim() }
 
-                        if ($parts.Count -ge 14) {
+                        if ($parts.Count -ge 17) {
                             $eventId = $parts[0]
                             $firedAt = $parts[1]
                             $ticker = $parts[2]
@@ -145,13 +149,45 @@ while ($true) {
                                     $vix = $parts[11]
                                     $spxRet = $parts[12]
                                     $channels = $parts[13]
+                                    $dayOpen = $parts[14]
+                                    $revConfirmed = $parts[15]
+                                    $openGapAtr = $parts[16]
+
+                                    # ADR 117: every confluence still shows.
+                                    # What changed is that a short-side one
+                                    # says where it sits relative to the
+                                    # reversal rule instead of saying nothing
+                                    # when it misses.
+                                    $revLabel = "n/a"
+                                    $revColor = "Cyan"
+                                    if ($signalType -eq "confluence_high") {
+                                        if ($revConfirmed -eq "true") {
+                                            $revLabel = "REVERSAL"
+                                            $revColor = "Yellow"
+                                        } elseif ($openGapAtr) {
+                                            # Signed, so the number carries the
+                                            # verdict on its own: negative is
+                                            # below the open and therefore a
+                                            # reversal, positive is not.
+                                            $gap = [math]::Round([double]$openGapAtr, 2)
+                                            $revLabel = "no reversal (+$gap ATR vs open)"
+                                            if ($gap -lt 0) { $revLabel = "no reversal ($gap ATR vs open)" }
+                                            $revColor = "DarkYellow"
+                                        } else {
+                                            $revLabel = "no reversal (open unavailable)"
+                                            $revColor = "DarkYellow"
+                                        }
+                                    }
 
                                     # Print to terminal
                                     Write-Host "[CONFLUENCE #$confluenceCount] $firedAt" -ForegroundColor Green
                                     Write-Host "  $ticker $signalType | Price: $entryPrice | K: $kFull D: $dFull | VIX: $vix" -ForegroundColor Cyan
+                                    if ($signalType -eq "confluence_high") {
+                                        Write-Host "  band $touchLevel | open $dayOpen | $revLabel" -ForegroundColor $revColor
+                                    }
 
                                     # Write to CSV
-                                    "$firedAt,$ticker,$signalType,$entryPrice,$side,$touchLevel,$kFull,$dFull,$kFast,$atr,$vix,$spxRet,$channels" | Out-File -FilePath $csvPath -Encoding UTF8 -Append
+                                    "$firedAt,$ticker,$signalType,$entryPrice,$side,$touchLevel,$kFull,$dFull,$kFast,$atr,$vix,$spxRet,$channels,$dayOpen,$revConfirmed,$openGapAtr" | Out-File -FilePath $csvPath -Encoding UTF8 -Append
                                 }
                             }
                         }

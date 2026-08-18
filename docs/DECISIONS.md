@@ -158,6 +158,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 114 | The screener's default is the event feed; statistics are one action away | Pinned. Follows 112. Governs `screen_signals` and `/` |
 | 115 | `v_positions` reads a settings row, not a generated DDL | Pinned. Resolves 095's deferred rebuild; reverses its stated preference |
 | 116 | `v_ticker_state` reads one row per ticker instead of sorting three million | Pinned. 1000x on `v_positions`; corrects a Session 15 measurement |
+| 117 | The poller reports every confluence and says how far it is from a reversal | Pinned. Amends 108's display half; diverges from 111 on purpose |
 
 ---
 
@@ -3376,6 +3377,59 @@ Migration `a3c8e15d40b7`, reversible. `downgrade()` restores the slow view verba
 *A materialized view.* Faster still, and it introduces a refresh that can be stale, a `REFRESH` to schedule, and a second definition of "current". 27 ms does not justify any of that.
 
 *A foreign key from `indicators` to `bars`.* Would make the `EXISTS` provably redundant and let the lateral read `indicators` alone. It is the right long-term shape of the invariant and it changes ingest behaviour — deletes and rejects on `bars` would start blocking or cascading — which is a larger change than a read optimisation should carry. Worth revisiting on its own terms.
+
+---
+
+## 117. The poller reports every confluence and says how far it is from a reversal
+
+**Date:** 2026-08-18. **Status:** Pinned. Amends the display half of ADR 108. Deliberately diverges from ADR 111.
+
+**Context.**
+
+ADR 111 gave `cscan scan` an `--actionable` filter: a long needs confluence, a short needs confluence **and** the close-confirmed reversal. The poller kept notifying every `confluence_high`, and the reversal appeared only as a tag when it was confirmed.
+
+That divergence was noticed on 2026-08-18 (user's observation): five `confluence_high` alerts fired, none tagged, and there was no way to tell from the alert whether a name had missed the reversal narrowly or was running hard away from its open. MPC fired at 364.70 against a band of 358.56 while trading a little above its open. The user's judgement was that it was "good enough to buy puts". The alert could not have supported that judgement either way, because it contained neither the open nor any measure of distance.
+
+**Decision.**
+
+Three parts.
+
+**1. The poller keeps alerting on every confluence.** No `--actionable` equivalent, and this is a deliberate divergence from ADR 111 rather than an oversight. The two surfaces answer different questions. `cscan scan --actionable` is a decision surface and should be narrow. The poller is where a person watches the session and makes the call, so it needs to show the near misses. A reversal that has not formed yet is not the same as one that will not.
+
+**2. A short-side confluence always says where it sits relative to the rule.** The subject line carries one of four states rather than a tag-or-silence:
+
+| State | Tag |
+|---|---|
+| Confirmed | `[bear reversal: above band, below today's open]` |
+| Not confirmed | `[no reversal: +0.39 ATR vs today's open]` |
+| Open unknown | `[no reversal: today's open unavailable]` |
+| Back inside the band | `[no reversal: back inside the band]` |
+
+The confirmed wording is unchanged from ADR 108's live half, so anything grepping notification history for it keeps matching.
+
+**3. The gap is measured in ATR, and the sign carries the verdict.** `open_gap_atr = (price - day_open) / atr_14`. Negative means price is below the open, which *is* the reversal. Small positive is a near miss. Large positive is a name trending away from the rule.
+
+ATR rather than dollars or percent because the reader is comparing five tickers at once: on 2026-08-18 the same five alerts spanned MPC at $364 and WBD at $28, and a dollar gap is meaningless across them. `atr_14` is already on the band the poller holds, so it costs nothing to compute.
+
+**What is stored.**
+
+`signal_reports.state_json` gains `day_open` and a `bear_reversal` block (`above_band`, `confirmed`, `band_gap`, `open_gap`, `open_gap_atr`). No migration: the column is already `jsonb`.
+
+This matters more than the alert text. Without `day_open` the stored report carried the band and the price but not the third number the rule compares, so "how close was that?" could only be answered from a quote feed that no longer exists by the evening. `scripts/wait_and_poll.ps1` reads the three new fields into its console line and its session CSV.
+
+**What did not change.**
+
+The signal definitions. `breach_live` still cannot emit `bear_close_above_upper` — the stored type is close-confirmed and mid-session there is no close — and `is_bear_reversal` is still the live analogue, `price >= bb_upper AND price < day_open`. `reversal_state` is presentation and is kept separate from `is_bear_reversal` so a display change cannot alter a signal definition; a test asserts the two agree on every combination it checks.
+
+Every confluence still fires, is still written to `events`, and is still notified. Nothing about what reaches the database moved, which is what keeps the poller's day reproducible by that night's `run_events`.
+
+**Rejected.**
+
+*Filter the poller to actionable shorts (option A when this was raised).* It would make the two surfaces agree, and it would hide exactly the names this ADR exists to surface. The live reversal flag is unstable intraday by construction: a name can satisfy it at 10am and fail it at the bell, or the reverse. Suppressing on an unstable flag drops signals that confirm later.
+
+*Report the gap in dollars or percent.* Not comparable across the five names that fire on the same morning.
+
+*Report only "near" or "far" rather than a number.* A threshold nobody chose, applied to a judgement the reader is making. The number is the input to their decision, not a verdict to be pre-computed.
 
 ---
 

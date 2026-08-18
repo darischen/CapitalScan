@@ -20,6 +20,7 @@ never train or validate data.
 from __future__ import annotations
 
 import time
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
 from typing import Callable
@@ -250,9 +251,16 @@ def _build_live_event_row(
     }
 
 
-def _state_json(band: Bands, ind_row: pd.Series, price: float) -> dict:
+def _state_json(
+    band: Bands, ind_row: pd.Series, price: float, day_open: float = float("nan")
+) -> dict:
     payload = {k: _none(v) for k, v in ind_row.items()}
     payload["live_price"] = price
+    # `day_open` is stored so a reader can re-judge the reversal call
+    # afterwards. Without it the report carries the band and the price but
+    # not the third number the rule compares, so "how close was this?" can
+    # only be answered by going back to the quote feed, which is gone.
+    payload["day_open"] = _none(day_open)
     payload["bands"] = {
         "bb_lower": band.bb_lower,
         "bb_mid": band.bb_mid,
@@ -262,6 +270,11 @@ def _state_json(band: Bands, ind_row: pd.Series, price: float) -> dict:
         "k_fast": band.k_fast,
         "atr_14": band.atr_14,
     }
+    # `asdict`, not the dataclass itself: `_json_safe` walks dicts and
+    # lists and passes anything else through, so a bare `ReversalState`
+    # would reach the jsonb insert as a Python object. Found by
+    # `test_state_json_carries_the_open_and_the_reversal_block`.
+    payload["bear_reversal"] = _json_safe(asdict(reversal_state(price, day_open, band)))
     return _json_safe(payload)  # type: ignore[no-any-return]
 
 
@@ -293,6 +306,125 @@ def is_bear_reversal(price: float, day_open: float, bands: Bands) -> bool:
     if _isnan(day_open) or _isnan(price):
         return False
     return _breach(price, bands.bb_upper, Bound.UPPER) and price < day_open
+
+
+@dataclass(frozen=True)
+class ReversalState:
+    """How far a short-side signal is from being a bear reversal (ADR 117).
+
+    `is_bear_reversal` answers yes or no. This answers *by how much*, which
+    is the question a reader actually has when a `confluence_high` fires
+    without confirming: MPC on 2026-08-18 fired 6.14 above its band and a
+    little above its open, and the yes/no answer alone cannot distinguish
+    that from a name trading mid-channel.
+
+    `open_gap_atr` is the one to read. Negative means confirmed - price is
+    below the open, which is the reversal. Small positive means the name is
+    above its open by a fraction of a day's range and could cross before the
+    bell. Large positive means it is running, not reversing.
+
+    Normalised by ATR rather than reported in dollars or percent, because
+    the reader is comparing five tickers at once and a $6 gap on MPC and a
+    $0.03 gap on WBD are not comparable in any other unit. `atr_14` is
+    already on the band the poller holds, so it costs nothing.
+    """
+
+    above_band: bool
+    confirmed: bool
+    band_gap: float | None
+    open_gap: float | None
+    open_gap_atr: float | None
+
+    @property
+    def label(self) -> str:
+        """One word for a notification subject or a CSV column."""
+        if not self.above_band:
+            return "n/a"
+        return "confirmed" if self.confirmed else "not_confirmed"
+
+
+def reversal_state(price: float, day_open: float, bands: Bands) -> ReversalState:
+    """The reversal call and the distances behind it.
+
+    Deliberately not folded into `is_bear_reversal`. That function is the
+    *rule* and is compared against the stored `bear_close_above_upper` flag
+    by `test_poll_bear_reversal.py`; this one is presentation, and mixing
+    them would let a display change alter a signal definition.
+
+    Every distance is `None` when it cannot be computed - a missing open, a
+    missing price, a zero ATR - rather than 0.0, which reads as "no gap"
+    and is the opposite of "unknown".
+    """
+    above_band = _breach(price, bands.bb_upper, Bound.UPPER)
+    confirmed = is_bear_reversal(price, day_open, bands)
+
+    band_gap = None if _isnan(price) or _isnan(bands.bb_upper) else price - bands.bb_upper
+    open_gap = None if _isnan(price) or _isnan(day_open) else price - day_open
+
+    atr = bands.atr_14
+    open_gap_atr = None
+    if open_gap is not None and not _isnan(atr) and atr > 0:
+        open_gap_atr = open_gap / atr
+
+    return ReversalState(
+        above_band=above_band,
+        confirmed=confirmed,
+        band_gap=band_gap,
+        open_gap=open_gap,
+        open_gap_atr=open_gap_atr,
+    )
+
+
+# The confirmed-reversal wording, unchanged since ADR 108's live half so
+# that anything grepping notification history for it keeps matching.
+REVERSAL_CONFIRMED_TAG = " [bear reversal: above band, below today's open]"
+
+
+def _reversal_tag(state: ReversalState) -> str:
+    """The subject-line tag for a short-side confluence.
+
+    Three outcomes, never silence. The old version emitted a tag only when
+    confirmed, so a near miss and a name running away from its open were
+    indistinguishable in the alert list.
+    """
+    if not state.above_band:
+        # `confluence_high` requires an upper-band touch, so reaching here
+        # means the price fell back between the touch and the notification.
+        # Rare, and worth saying rather than rounding to "not confirmed".
+        return " [no reversal: back inside the band]"
+    if state.confirmed:
+        return REVERSAL_CONFIRMED_TAG
+    if state.open_gap_atr is None:
+        return " [no reversal: today's open unavailable]"
+    return f" [no reversal: {state.open_gap_atr:+.2f} ATR vs today's open]"
+
+
+def _reversal_body(state: ReversalState, price: float, day_open: float, bands: Bands) -> str:
+    """The three numbers the rule compares, always, in one sentence.
+
+    `bb_upper <= price < open` is the rule. Printing all three lets the
+    reader apply it themselves, which is the point: the poller reports, and
+    the decision to treat a near miss as good enough is the reader's.
+    """
+    band_part = f"upper band {bands.bb_upper:.2f}, price {price:.2f}"
+    if _isnan(day_open):
+        return (
+            f"{band_part}, today's open unavailable. The reversal rule is "
+            "bb_upper <= price < open and cannot be evaluated without it."
+        )
+
+    open_part = f"today's open {day_open:.2f}"
+    gap = "" if state.open_gap_atr is None else f" ({state.open_gap_atr:+.2f} ATR)"
+    if state.confirmed:
+        return (
+            f"{band_part}, {open_part}{gap}. Above the band and below the "
+            "open: the intraday shape of bear_close_above_upper, which only "
+            "confirms at the close."
+        )
+    return (
+        f"{band_part}, {open_part}{gap}. Above the band but not below the "
+        "open, so the reversal has not formed. It still can before the bell."
+    )
 
 
 def _process_tick(
@@ -336,7 +468,7 @@ def _process_tick(
         # decided mid-session, so writing one here would put a row in
         # `events` that tonight's `run_events` might legitimately disagree
         # with. `breach_live` never returns that type for the same reason.
-        bear_now = is_bear_reversal(price, float(getattr(row, "day_open", float("nan"))), band)
+        day_open = float(getattr(row, "day_open", float("nan")))
 
         for side, side_types in _fired_by_side(fired_types).items():
             signal_type = side_types[0].value
@@ -392,25 +524,32 @@ def _process_tick(
                 git_sha=git_sha(),
             )
 
-            # The display gate the user asked for: surface the reversal tag
-            # only where it coincides with `confluence_high`. The underlying
-            # signal still fires, is still written, and is still notified —
-            # this decides whether the notification *mentions* the reversal,
-            # not whether anything happens.
-            show_reversal = bear_now and SignalType.CONFLUENCE_HIGH in side_types
-            tag = " [bear reversal: above band, below today's open]" if show_reversal else ""
+            # ADR 117. Every confluence still fires, is still written, and
+            # is still notified. What changed on 2026-08-18 is that a
+            # short-side confluence now says *where* it sits relative to the
+            # reversal rule instead of saying nothing when it misses.
+            #
+            # The previous version tagged only confirmed reversals, so a
+            # near miss and a name running hard away from its open produced
+            # byte-identical alerts. MPC that morning fired 6.14 above its
+            # band and 0.39 ATR above its open - a reversal that had not
+            # happened yet rather than one that was not going to - and
+            # nothing in the notification could tell the two apart.
+            #
+            # `cscan scan --actionable` still filters these out (ADR 111).
+            # The poller deliberately does not: it is the surface where the
+            # reader makes the call, so it needs the numbers, not a verdict.
+            rev = reversal_state(price, day_open, band)
+            is_short_confluence = SignalType.CONFLUENCE_HIGH in side_types
+            tag = _reversal_tag(rev) if is_short_confluence else ""
+
             subject = f"{ticker} {signal_type}{tag}"
             body = (
                 f"{ticker} fired {signal_type} at {price:.2f} "
                 f"(touch level {event_row['touch_level']}, k_full {ind_row.get('k_full')})."
             )
-            if show_reversal:
-                body += (
-                    f" Currently {price:.2f} against today's open "
-                    f"{float(getattr(row, 'day_open', float('nan'))):.2f} and upper band "
-                    f"{band.bb_upper:.2f} — the intraday shape of "
-                    f"bear_close_above_upper, which only confirms at the close."
-                )
+            if is_short_confluence:
+                body += " " + _reversal_body(rev, price, day_open, band)
             channels_sent = notify.notify_all(notifiers, subject, body)
 
             db_io.append(
@@ -421,7 +560,7 @@ def _process_tick(
                         "event_id": event_id,
                         "ticker": ticker,
                         "fired_at": now,
-                        "state_json": _state_json(band, ind_row, price),
+                        "state_json": _state_json(band, ind_row, price, day_open),
                         "cell_id": None,
                         "prediction_id": None,
                         "call_overlay_json": _json_safe(overlay) if overlay else None,
