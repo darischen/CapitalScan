@@ -145,7 +145,24 @@ def _batch_key(tickers: list[str], start: date, end: date) -> str:
     return f"{'-'.join(sorted(tickers))}_{start}_{end}"
 
 
-@cached(source="yahoo_daily", key_fn=_batch_key)
+# `_v2` invalidates every entry written before the exclusive-`end` fix.
+#
+# `_batch_key` is `tickers_start_end`. The fix changed what a given
+# `(start, end)` *fetches* without changing the key, so a cached v1 entry
+# answers a post-fix request with pre-fix data — silently one session short,
+# the exact defect the fix was for.
+#
+# Caught 2026-08-17: the nightly after the fix still had `market_days` ending
+# 2026-08-14, and `run_market` completed in **46 ms**, which is a cache read,
+# not a network call. Daily bars looked correct only because the manual
+# recovery script had used `end = today + 1`, a different key.
+#
+# Bumping the source rather than deleting the files makes the invalidation
+# declarative: the reason lives next to the change that caused it, and any
+# future semantic change to what a key means gets the same treatment.
+# `data/cache/yahoo_daily/` (394 MB) and `data/cache/yahoo_hourly/` are now
+# unread and safe to delete.
+@cached(source="yahoo_daily_v2", key_fn=_batch_key)
 def _fetch_daily_batch(tickers: list[str], start: date, end: date) -> pd.DataFrame:
     """One batch, with the partial-batch-failure retry (DESIGN §4.3)."""
     raw = _download_daily(tickers, start, end)
@@ -235,7 +252,10 @@ def _window_key(ticker: str, start: date, end: date) -> str:
     return f"{ticker}_{start}_{end}"
 
 
-@cached(source="yahoo_hourly", key_fn=_window_key)
+# `_v2` for the same reason as `yahoo_daily_v2` above: `_window_key` is
+# `ticker_start_end` and the exclusive-`end` fix changed what those dates
+# fetch.
+@cached(source="yahoo_hourly_v2", key_fn=_window_key)
 def _fetch_hourly_window(ticker: str, start: date, end: date) -> pd.DataFrame:
     raw = _download_hourly(ticker, start, end)
     if raw.empty:

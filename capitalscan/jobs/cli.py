@@ -1172,16 +1172,41 @@ def path_peak_labels_cmd(
 def path_backfill_cmd(
     quiet: bool = typer.Option(False, "--quiet", help="JSON-lines progress instead of a live bar"),
     workers: int = typer.Option(1, help="ProcessPoolExecutor workers; 1 runs serially"),
+    config_hash: Optional[str] = typer.Option(
+        None, "--config-hash", help="Default: the resolved config's own hash"
+    ),
 ) -> None:
-    """Populate `path` and `events.fwd_window_days` for every filled entry."""
+    """Populate `path` and `events.fwd_window_days` for every filled entry
+    of one `config_hash`.
+
+    Scoped to a single generation since 2026-08-17, matching
+    `cscan path peak-labels`. Unscoped, this walked every event of every
+    config ever backtested: 23 generations, 5,568,263 events, 2h56m, and
+    67.5M `path` rows of which only four generations' worth had any
+    consumer.
+
+    That is not merely wasteful — it is self-undoing. Superseded events are
+    kept deliberately (ADR 096) so published numbers stay auditable and two
+    populations can be compared at the event level, so an unscoped backfill
+    regenerates every path row a manual prune removes.
+    """
     from capitalscan.jobs import db_io, ingest
+    from capitalscan.jobs.config import config_hash as compute_config_hash
     from capitalscan.research.path_backfill import run_path_backfill
 
     config = _resolve_config_or_exit()
+    chash = config_hash or compute_config_hash(config)
     engine = db_io.get_engine()
-    with ingest.run_job(engine, "path_backfill", {"workers": workers}) as job_report:
+    with ingest.run_job(
+        engine, "path_backfill", {"workers": workers, "config_hash": chash}
+    ) as job_report:
         report = run_path_backfill(
-            engine, config, job_report.run_id, quiet=quiet, max_workers=workers
+            engine,
+            config,
+            job_report.run_id,
+            quiet=quiet,
+            max_workers=workers,
+            config_hash=chash,
         )
         job_report.rows_written = report.rows_written
     console.print(
@@ -1207,15 +1232,31 @@ def path_capture_cmd(
     window. Intended to run nightly, after `events` — cheap because it
     only touches tickers with at least one incomplete-window event, unlike
     `path backfill`'s full recompute.
+
+    Scoped to the resolved config's `config_hash` since 2026-08-17, same
+    as `path backfill` and `path peak-labels`. The incomplete-window filter
+    already hid most of the cross-config cost here, since a 2010 event's
+    window closed years ago — but a superseded generation's events could
+    still be selected by a `window_days` change, so the scope is explicit
+    rather than incidental.
     """
     from capitalscan.jobs import db_io, ingest
+    from capitalscan.jobs.config import config_hash as compute_config_hash
     from capitalscan.research.path_backfill import run_path_capture
 
     config = _resolve_config_or_exit()
+    chash = compute_config_hash(config)
     engine = db_io.get_engine()
-    with ingest.run_job(engine, "path_capture", {"workers": workers}) as job_report:
+    with ingest.run_job(
+        engine, "path_capture", {"workers": workers, "config_hash": chash}
+    ) as job_report:
         report = run_path_capture(
-            engine, config, job_report.run_id, quiet=quiet, max_workers=workers
+            engine,
+            config,
+            job_report.run_id,
+            quiet=quiet,
+            max_workers=workers,
+            config_hash=chash,
         )
         job_report.rows_written = report.rows_written
     console.print(

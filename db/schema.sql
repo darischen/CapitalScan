@@ -1511,13 +1511,6 @@ CREATE INDEX indicators_ts_idx ON public.indicators USING btree (ts);
 
 
 --
--- Name: path_event_id; Type: INDEX; Schema: public; Owner: capscan
---
-
-CREATE INDEX path_event_id ON public.path USING btree (event_id);
-
-
---
 -- Name: bars bars_ticker_fkey; Type: FK CONSTRAINT; Schema: public; Owner: capscan
 --
 
