@@ -47,7 +47,9 @@ def test_path_backfill_cmd_routes_through_resolve_config_or_exit(monkeypatch):
         seen["called"] = True
         return sentinel_config
 
-    def fake_run_path_backfill(engine, config, run_id, quiet=False, max_workers=1):
+    def fake_run_path_backfill(
+        engine, config, run_id, quiet=False, max_workers=1, config_hash=None
+    ):
         seen["config"] = config
         seen["max_workers"] = max_workers
         return PathBackfillReport(events_processed=1, events_skipped_unfilled=0, rows_written=1)
@@ -68,7 +70,9 @@ def test_path_backfill_cmd_passes_workers_through(monkeypatch):
     # `cscan backtest --workers` and `cscan indicators --workers` use.
     seen: dict = {}
 
-    def fake_run_path_backfill(engine, config, run_id, quiet=False, max_workers=1):
+    def fake_run_path_backfill(
+        engine, config, run_id, quiet=False, max_workers=1, config_hash=None
+    ):
         seen["max_workers"] = max_workers
         return PathBackfillReport()
 
@@ -90,7 +94,7 @@ def test_path_capture_cmd_routes_through_resolve_config_or_exit(monkeypatch):
         seen["called"] = True
         return sentinel_config
 
-    def fake_run_path_capture(engine, config, run_id, quiet=False, max_workers=1):
+    def fake_run_path_capture(engine, config, run_id, quiet=False, max_workers=1, config_hash=None):
         seen["config"] = config
         seen["max_workers"] = max_workers
         return PathBackfillReport(events_processed=1, events_skipped_unfilled=0, rows_written=1)
@@ -108,7 +112,7 @@ def test_path_capture_cmd_routes_through_resolve_config_or_exit(monkeypatch):
 def test_path_capture_cmd_passes_workers_through(monkeypatch):
     seen: dict = {}
 
-    def fake_run_path_capture(engine, config, run_id, quiet=False, max_workers=1):
+    def fake_run_path_capture(engine, config, run_id, quiet=False, max_workers=1, config_hash=None):
         seen["max_workers"] = max_workers
         return PathBackfillReport()
 

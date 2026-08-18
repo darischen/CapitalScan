@@ -30,6 +30,7 @@ from capitalscan.core.config import Config
 from capitalscan.core.returns import entry_offset_for, path_for_event
 from capitalscan.core.types import EntryKind, Side
 from capitalscan.jobs import db_io
+from capitalscan.jobs.config import config_hash as compute_config_hash
 from capitalscan.jobs.progress import track
 
 
@@ -186,17 +187,38 @@ def _compute_rows_for_ticker(
 
 
 def _events_query_for_ticker(
-    ticker: str, window_days: int, incomplete_only: bool
+    ticker: str, window_days: int, incomplete_only: bool, config_hash: str | None = None
 ) -> tuple[str, dict]:
     """Pure query-building for `_compute_ticker_path`'s events read, split
     out so the incompleteness filter (Task 10.6) is testable without a
     database or a worker-process round trip.
+
+    `config_hash` scopes the read to one generation. Without it this walked
+    **every** event of **every** config that had ever been backtested, so a
+    full backfill rebuilt forward paths for populations nothing reads.
+
+    Measured 2026-08-17: `path` held 67.5M rows across 23 generations,
+    5,568,263 events were processed on the last full run, and it took
+    2h56m. Only four generations had any consumer. Pruning `path` by hand
+    freed 54.9M rows and the next unscoped backfill would have regenerated
+    every one of them, because the events it derives from are deliberately
+    kept for reproducibility (ADR 096).
+
+    `cscan path peak-labels` was already scoped this way — one
+    `--config-hash`, defaulting to the resolved config. This makes the two
+    `path` commands agree.
+
+    `None` preserves the old cross-config behaviour for any caller that
+    genuinely wants it.
     """
     query = (
         "SELECT id, entry_price, side, signal_date FROM events "
         "WHERE ticker = :ticker AND entry_price IS NOT NULL"
     )
     params: dict = {"ticker": ticker}
+    if config_hash is not None:
+        query += " AND config_hash = :config_hash"
+        params["config_hash"] = config_hash
     if incomplete_only:
         query += " AND (fwd_window_days IS NULL OR fwd_window_days < :window_days)"
         params["window_days"] = window_days
@@ -205,7 +227,11 @@ def _events_query_for_ticker(
 
 
 def _compute_ticker_path(
-    ticker: str, window_days: int, database_url: str | None, incomplete_only: bool = False
+    ticker: str,
+    window_days: int,
+    database_url: str | None,
+    incomplete_only: bool = False,
+    config_hash: str | None = None,
 ) -> tuple[str, pd.DataFrame, list[dict], int, int, int]:
     """One ticker's path rows and `fwd_window_days` updates, computed with
     no side effects on shared state — runs in a worker process under
@@ -230,7 +256,9 @@ def _compute_ticker_path(
     workers are dispatching it.
     """
     engine = db_io.get_engine(database_url, use_null_pool=True)
-    events_query, params = _events_query_for_ticker(ticker, window_days, incomplete_only)
+    events_query, params = _events_query_for_ticker(
+        ticker, window_days, incomplete_only, config_hash
+    )
     with engine.connect() as conn:
         bars = pd.read_sql(
             text("SELECT * FROM bars WHERE ticker = :ticker AND interval = '1d' ORDER BY ts"),
@@ -273,6 +301,7 @@ def _run_path_job(
     incomplete_only: bool,
     description: str,
     run_id: str,
+    config_hash: str | None = None,
 ) -> PathBackfillReport:
     """Shared dispatch/write loop behind both `run_path_backfill` and
     `run_path_capture` (Task 10.6). The two differ only in which tickers
@@ -334,7 +363,12 @@ def _run_path_job(
         with ProcessPoolExecutor(max_workers=max_workers) as pool:
             futures = {
                 pool.submit(
-                    _compute_ticker_path, ticker, window_days, database_url, incomplete_only
+                    _compute_ticker_path,
+                    ticker,
+                    window_days,
+                    database_url,
+                    incomplete_only,
+                    config_hash,
                 ): ticker
                 for ticker in tickers
             }
@@ -348,13 +382,22 @@ def _run_path_job(
                 _write_result(*future.result())
     else:
         for ticker in track(tickers, description=description, quiet=quiet, label="ticker"):
-            _write_result(*_compute_ticker_path(ticker, window_days, database_url, incomplete_only))
+            _write_result(
+                *_compute_ticker_path(
+                    ticker, window_days, database_url, incomplete_only, config_hash
+                )
+            )
 
     return report
 
 
 def run_path_backfill(
-    engine: Engine, config: Config, run_id: str, quiet: bool = False, max_workers: int = 1
+    engine: Engine,
+    config: Config,
+    run_id: str,
+    quiet: bool = False,
+    max_workers: int = 1,
+    config_hash: str | None = None,
 ) -> PathBackfillReport:
     """Backfills `path` and `events.fwd_window_days` for every event with a
     filled entry, one ticker at a time (each ticker's `bars` loaded once
@@ -383,14 +426,21 @@ def run_path_backfill(
     should call once the event set is large (see `run_path_capture`).
     """
     window_days = window_days_for_config(config)
+    # Scoped to one generation, defaulting to the resolved config's own.
+    # Unscoped, this selected tickers across all 23 config_hashes in the
+    # table and `_events_query_for_ticker` then read every one of their
+    # events — 5,568,263 rows and 2h56m on the last unscoped run, for
+    # populations nothing reads. See that function's docstring.
+    chash = config_hash if config_hash is not None else compute_config_hash(config)
     with engine.connect() as conn:
         tickers = [
             r[0]
             for r in conn.execute(
                 text(
                     "SELECT DISTINCT ticker FROM events "
-                    "WHERE entry_price IS NOT NULL ORDER BY ticker"
-                )
+                    "WHERE entry_price IS NOT NULL AND config_hash = :chash ORDER BY ticker"
+                ),
+                {"chash": chash},
             )
         ]
     return _run_path_job(
@@ -400,13 +450,19 @@ def run_path_backfill(
         quiet,
         max_workers,
         incomplete_only=False,
+        config_hash=chash,
         description="path backfill",
         run_id=run_id,
     )
 
 
 def run_path_capture(
-    engine: Engine, config: Config, run_id: str, quiet: bool = False, max_workers: int = 1
+    engine: Engine,
+    config: Config,
+    run_id: str,
+    quiet: bool = False,
+    max_workers: int = 1,
+    config_hash: str | None = None,
 ) -> PathBackfillReport:
     """Task 10.6: live path capture — the nightly-scheduled counterpart to
     `run_path_backfill` that accumulates each event's forward path as
@@ -429,16 +485,18 @@ def run_path_capture(
     cost scales with recent signal volume, not with total event history.
     """
     window_days = window_days_for_config(config)
+    chash = config_hash if config_hash is not None else compute_config_hash(config)
     with engine.connect() as conn:
         tickers = [
             r[0]
             for r in conn.execute(
                 text(
                     "SELECT DISTINCT ticker FROM events WHERE entry_price IS NOT NULL "
+                    "AND config_hash = :chash "
                     "AND (fwd_window_days IS NULL OR fwd_window_days < :window_days) "
                     "ORDER BY ticker"
                 ),
-                {"window_days": window_days},
+                {"window_days": window_days, "chash": chash},
             )
         ]
     return _run_path_job(
@@ -448,6 +506,7 @@ def run_path_capture(
         quiet,
         max_workers,
         incomplete_only=True,
+        config_hash=chash,
         description="path capture",
         run_id=run_id,
     )

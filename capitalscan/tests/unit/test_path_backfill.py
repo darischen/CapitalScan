@@ -9,6 +9,7 @@ from capitalscan.core.config import DEFAULT_CONFIG
 from capitalscan.core.returns import entry_offset_for
 from capitalscan.core.types import EntryKind, Side
 from capitalscan.jobs import db_io
+from capitalscan.jobs.config import config_hash as jobs_config_hash
 from capitalscan.research import path_backfill as path_backfill_mod
 from capitalscan.research.path_backfill import (
     _compute_rows_for_ticker,
@@ -267,7 +268,9 @@ def test_run_path_backfill_serial_aggregates_across_tickers(monkeypatch):
         ),
     }
 
-    def fake_compute_ticker_path(ticker, window_days, database_url, incomplete_only=False):
+    def fake_compute_ticker_path(
+        ticker, window_days, database_url, incomplete_only=False, config_hash=None
+    ):
         return canned[ticker]
 
     upsert_calls: list = []
@@ -298,7 +301,9 @@ def test_run_path_capture_scopes_ticker_query_to_incomplete_windows(monkeypatch)
     # enforces the filter.
     fake_engine = _FakeEngine(ticker_rows=["AAA"])
 
-    def fake_compute_ticker_path(ticker, window_days, database_url, incomplete_only=False):
+    def fake_compute_ticker_path(
+        ticker, window_days, database_url, incomplete_only=False, config_hash=None
+    ):
         assert incomplete_only is True
         return (
             ticker,
@@ -318,7 +323,16 @@ def test_run_path_capture_scopes_ticker_query_to_incomplete_windows(monkeypatch)
     assert report.tickers == ["AAA"]
     query_text, params = fake_engine.ticker_query_calls[0]
     assert "fwd_window_days IS NULL OR fwd_window_days < :window_days" in query_text
-    assert params == {"window_days": window_days_for_config(DEFAULT_CONFIG)}
+    # `config_hash` joined the ticker selection on 2026-08-17. Unscoped,
+    # this walked every generation ever backtested — 23 of them, 5,568,263
+    # events, 2h56m on the last full run — rebuilding forward paths for
+    # populations nothing reads. Asserted as exact equality rather than
+    # membership so a future filter cannot be added here unnoticed.
+    assert "config_hash = :chash" in query_text
+    assert params == {
+        "window_days": window_days_for_config(DEFAULT_CONFIG),
+        "chash": jobs_config_hash(DEFAULT_CONFIG),
+    }
 
 
 def test_events_query_for_ticker_adds_incompleteness_filter_only_when_requested():
