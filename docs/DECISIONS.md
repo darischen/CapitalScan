@@ -3321,11 +3321,69 @@ ADR 095 named the row-existence dependency and it is real. Bounded three ways:
 | Item | Options | Current lean |
 |---|---|---|
 | **`cscan nightly` never ingests the session it runs after** | Pass `end + 1 day` to the fetcher, or make `_download_daily`'s `end` inclusive to match every other date range in the codebase | Make it inclusive — see below |
+| **Who serves `/` and `/ticker/[sym]`: Next.js on views (ADR 070/076) or a Python web layer on handlers (session plan §17.1)** | A: TypeScript routes selecting from the views. B: a Python web layer. C: Next.js over a Python API | A — 070 and 076 are Pinned and DESIGN was written to them. See below; **sessions 17 and 18 are stopped until this is decided** |
 | Point-in-time index membership | Scrape Wikipedia history, or accept survivorship bias and state it | Scrape, note residual error in RESULTS.md |
 | Historical earnings dates | Finnhub free tier, Nasdaq scrape, or drop the feature | Finnhub, since earnings contamination is the largest 5-day confound |
 | Point-in-time market cap | Shares outstanding from filings, or price-times-current-shares approximation | Filings where available, approximation flagged elsewhere |
 | Polling home | Actions cron with internal loop, or persistent Modal function | Actions until the live log matters, then Modal |
 | Non-US mega-caps | Add ASML, SAP, Novo, Toyota, Samsung, LVMH for lower correlation | Add if effective sample falls short after clustering adjustment |
+
+### Who serves `/` and `/ticker/[sym]`, found 2026-08-18
+
+**Sessions 17 and 18 are blocked on this, and nothing in either was built.**
+CLAUDE.md: *"If a task appears to require contradicting one [ADR], stop and
+ask. Do not work around it."*
+
+`session16-18-phase5.md` §17.1 says routes call the Python handler layer:
+
+> Routes call handlers. No route constructs SQL or imports `db_io`,
+> enforced by the same import test Session 16 uses.
+
+That is ADR 072's arrangement. **ADR 076 refines ADR 072 and withdraws it:**
+
+> ADR 072 named a Python handler layer as the shared contract, which would
+> have required either duplicating queries in TypeScript **or hosting a
+> Python service**. Views achieve the same guarantee at the database level.
+
+ADR 070 says where the routes run — "every endpoint is an indexed SELECT
+executed by Next.js against Neon through the Postgres driver. **No Python
+functions on Vercel**" — and DESIGN §8.1, §11.8, and the architecture
+diagram all agree. `lightweight-charts` and `recharts` are JavaScript.
+
+**Session 15's handler layer is not in conflict** and does not need
+revisiting. It already complies with ADR 076: `screen_signals` reads
+`v_screen`, `get_events` reads `v_events`, `get_universe` reads
+`v_universe`. Session 16's MCP server is the "Python MCP handlers" half of
+ADR 076, built and passing. The conflict is confined to who serves the two
+web routes.
+
+| Option | Follows | Costs |
+|---|---|---|
+| **A.** Next.js + TypeScript selecting from the views | ADR 070, 076, DESIGN as written | A second toolchain and a third CI job. ADR 114's event-feed default is re-implemented in TypeScript. `handlers/validate.py`'s raise guards two of three surfaces instead of three |
+| **B.** A Python web layer calling the handlers | The session plan, ADR 072 | Contradicts two Pinned ADRs and needs a Python host that is not Vercel — the cost ADR 076 named and declined |
+| **C.** Next.js frontend, Python API behind it | Neither cleanly | ADR 076's hosting cost plus the network hop ADR 072 rejected |
+
+**Current lean: A**, because ADR 070 and ADR 076 are Pinned and DESIGN was
+written to them, and because the views genuinely do carry `n_eff`,
+`ci_low`, `ci_high`, and `q_value` as columns. The honest cost of A is that
+"no probability without its companions" becomes structural-by-column rather
+than enforced-by-raise on the web surface, and ADR 114's default has a
+second implementation. Both should be stated in whatever ADR resolves this
+rather than discovered in session 19.
+
+**A second blocker, independent of the choice.** CLAUDE.md requires reading
+the frontend-design skill before writing any component, because it carries
+this environment's design tokens. **That skill is not available in this
+environment.** Either make it available or accept that the first pass uses
+invented tokens and will be redone.
+
+**Chat has a version of the same question.** §18.2 requires tool results to
+pass through `handlers/validate.py` before reaching the model. Under ADR 070
+the chat route is TypeScript and cannot call it. Calling the MCP server —
+built, authenticated, and passing since Session 16 — is the reading the
+existing code most nearly supports, and it makes Session 16 load-bearing
+rather than a side surface. Recorded in
+`sessions/session18-research-and-chat.md` §0.
 
 ### The nightly ingest gap, found 2026-08-17
 
