@@ -159,6 +159,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 115 | `v_positions` reads a settings row, not a generated DDL | Pinned. Resolves 095's deferred rebuild; reverses its stated preference |
 | 116 | `v_ticker_state` reads one row per ticker instead of sorting three million | Pinned. 1000x on `v_positions`; corrects a Session 15 measurement |
 | 117 | The poller reports every confluence and says how far it is from a reversal | Pinned. Amends 108's display half; diverges from 111 on purpose |
+| 118 | MCP is for LLM callers; deterministic reads go straight to the views | Pinned. Resolves the Session 17 blocker; confirms 070 and 076 |
 
 ---
 
@@ -3433,19 +3434,84 @@ Every confluence still fires, is still written to `events`, and is still notifie
 
 ---
 
+## 118. MCP is for LLM callers; deterministic reads go straight to the views
+
+**Date:** 2026-08-18. **Status:** Pinned. Resolves the Session 17 blocker. Confirms ADR 070 and ADR 076 as written; corrects `session16-18-phase5.md` §17.1.
+
+**Context.**
+
+Session 15 built the Python handler layer and Session 16 wrapped it in an MCP server. `session16-18-phase5.md` §17.1 then said the web routes should call those handlers:
+
+> Routes call handlers. No route constructs SQL or imports `db_io`.
+
+That is ADR 072's arrangement, and **ADR 076 had already withdrawn it** in favour of views as the shared contract, with ADR 070 fixing the routes in TypeScript on Vercel. The session plan and three Pinned ADRs disagreed, and Sessions 17 and 18 were stopped on 2026-08-18 rather than picking one (CLAUDE.md: "if a task appears to require contradicting one, stop and ask").
+
+Three options were put up, plus a fourth raised in discussion: route the web UI through the MCP server, so the handler layer serves every surface.
+
+**Decision.**
+
+Option A. TypeScript routes select from the Postgres views. The handler layer and the MCP server serve LLM callers only.
+
+```
+/  /ticker  /research   ──SELECT──►  v_screen, v_chart, v_events, v_ticker_state
+                                            ▲
+/chat, Claude Code, Claude Desktop          │
+        └── MCP ──► handlers/ ──────────────┘
+```
+
+**The rule, in one line: MCP is for LLM callers, not for deterministic retrieval** (user's decision, 2026-08-18).
+
+*Why that line and not another.* A screener query is deterministic. It has one right answer, no tool-selection step, and no model in the path. Sending it through a protocol built for LLM tool calls means an `initialize` handshake, a session id, an SSE frame, and a tool-call envelope, in order to run a `SELECT` that Postgres already answers in 27 ms. The protocol earns its overhead when a model is choosing which tool to call and needs a schema to choose from. It earns nothing when a route already knows.
+
+MCP stays valuable exactly where that is true: `/chat`, and driving the engine from Claude Code or Claude Desktop. Session 16 is not diminished by this. It is the surface for the callers that need it.
+
+**The fourth option, and why not.**
+
+Routing the web UI through the handlers was argued on the facts as they stand: the database is `localhost:5432`, `DATABASE_URL_SERVING` is unset, nothing is on Vercel or Neon, so ADR 076's "would have required hosting a Python service" costs nothing today, and in-process calls would also void ADR 072's "no network hop".
+
+That reasoning is sound about today and wrong about the intent. The Vercel deployment is still the plan, and building the serving layer against a topology nobody intends to keep would mean rewriting it at the moment it first mattered. ADR 070 and ADR 076 are confirmed as written rather than amended.
+
+**Consequences.**
+
+*`session16-18-phase5.md` §17.1 is corrected*, along with the §0 blockers in `session17-screener-and-ticker.md` and `session18-research-and-chat.md`. `capitalscan/web/` stays empty; the Next application lives at the repo root.
+
+*Invariant 8 changes form on the web surface and this is the real cost.* In Python `handlers/validate.py` raises. In TypeScript the guarantee is that `n_eff`, `ci_low`, `ci_high`, and `q_value` are columns on `v_screen` and `v_stats`, so returning a bare probability requires deliberately dropping columns (ADR 076). That is structural but weaker than a raise, and it is the price of A. **A test asserts the serving views carry the four companion columns**, so "structural" is checked rather than assumed.
+
+*ADR 114's event-feed default gets a second implementation.* The handler's `with_stats=False` does not help a route that never calls it, so the TypeScript screener must default to the feed on its own. Named here so it is not discovered as a bug.
+
+*Session 18's chat layer routes through MCP*, which answers that session's own open question. Tool results reach the model having passed `handlers/validate.py`, because the MCP server calls the handlers. One validator on the path that carries a model, which is the path that needs it.
+
+**Still blocking Session 17, and not resolved by this ADR.** CLAUDE.md requires reading the `frontend-design` skill before writing any component, because it carries this environment's design tokens. That skill is not available in this environment. Components written without it will use invented tokens.
+
+**Rejected.**
+
+*B, a Python web layer on the handlers.* Contradicts ADR 070 and needs a Python host that is not Vercel.
+
+*C, Next.js over a Python API.* ADR 076's hosting cost plus the network hop ADR 072 rejected.
+
+*D, the web UI over MCP.* Above. Cleanest single-contract story, wrong protocol for a deterministic read, and it bets on a topology that is not the plan.
+
+---
+
 ## Open items
 
 | Item | Options | Current lean |
 |---|---|---|
 | **`cscan nightly` never ingests the session it runs after** | Pass `end + 1 day` to the fetcher, or make `_download_daily`'s `end` inclusive to match every other date range in the codebase | Make it inclusive — see below |
-| **Who serves `/` and `/ticker/[sym]`: Next.js on views (ADR 070/076) or a Python web layer on handlers (session plan §17.1)** | A: TypeScript routes selecting from the views. B: a Python web layer. C: Next.js over a Python API | A — 070 and 076 are Pinned and DESIGN was written to them. See below; **sessions 17 and 18 are stopped until this is decided** |
 | Point-in-time index membership | Scrape Wikipedia history, or accept survivorship bias and state it | Scrape, note residual error in RESULTS.md |
 | Historical earnings dates | Finnhub free tier, Nasdaq scrape, or drop the feature | Finnhub, since earnings contamination is the largest 5-day confound |
 | Point-in-time market cap | Shares outstanding from filings, or price-times-current-shares approximation | Filings where available, approximation flagged elsewhere |
 | Polling home | Actions cron with internal loop, or persistent Modal function | Actions until the live log matters, then Modal |
 | Non-US mega-caps | Add ASML, SAP, Novo, Toyota, Samsung, LVMH for lower correlation | Add if effective sample falls short after clustering adjustment |
 
-### Who serves `/` and `/ticker/[sym]`, found 2026-08-18
+### Who serves `/` and `/ticker/[sym]` — RESOLVED by ADR 118, 2026-08-18
+
+**Answered the same day: option A.** MCP is for LLM callers; deterministic
+reads go straight to the views. ADR 070 and ADR 076 are confirmed as
+written and the session plan was what needed correcting. The account below
+is kept because it is how the question was framed and what each option
+cost.
+
 
 **Sessions 17 and 18 are blocked on this, and nothing in either was built.**
 CLAUDE.md: *"If a task appears to require contradicting one [ADR], stop and

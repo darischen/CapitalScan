@@ -7,111 +7,59 @@ they shipped.
 
 ---
 
-## 0. STOP — one decision is needed before any code
+## 0. Decided: TypeScript routes select from the views (ADR 118)
 
-**This session cannot start until someone chooses between ADR 070/076 and
-`session16-18-phase5.md` §17.1. They contradict each other, and the choice
-changes almost everything about the work.**
+**This session was stopped on 2026-08-18 and unblocked the same day.** The
+plan below said routes call the Python handlers; three Pinned ADRs said
+otherwise. ADR 118 settles it in favour of the ADRs.
 
-CLAUDE.md: *"If a task appears to require contradicting one [ADR], stop and
-ask. Do not work around it."* This is that case, so this session stops here
-rather than picking.
+### The rule
 
-### The contradiction
+**MCP is for LLM callers, not for deterministic retrieval.**
 
-`session16-18-phase5.md` §17.1 says:
+```
+/  /ticker  /research   ──SELECT──►  v_screen, v_chart, v_events, v_ticker_state
+                                            ▲
+/chat, Claude Code, Claude Desktop          │
+        └── MCP ──► handlers/ ──────────────┘
+```
 
-> Routes call handlers. No route constructs SQL or imports `db_io`,
-> enforced by the same import test Session 16 uses.
+A screener query has one right answer and no model in the path. Sending it
+through a protocol built for LLM tool calls buys an `initialize` handshake,
+a session id, an SSE frame, and a tool-call envelope in order to run a
+`SELECT` Postgres answers in 27 ms. The protocol earns its overhead when a
+model is choosing which tool to call. It earns nothing when a route already
+knows.
 
-That describes a **Python** `web/` package, and it is what ADR 072 said:
+So: **`capitalscan/web/` stays empty.** The Next application lives at the
+repo root and reads the views. Sessions 15 and 16 are unaffected and serve
+`/chat` and Claude Code.
 
-> Business logic lives in handler functions. The HTTP API and the MCP server
-> both call those handlers directly.
+### What this session must carry that the handlers otherwise would
 
-**ADR 076 refines ADR 072 and withdraws exactly that arrangement:**
+Two things move from Python to TypeScript, and both are named here so
+neither is discovered as a bug:
 
-> ADR 072 named a Python handler layer as the shared contract, which would
-> have required either duplicating queries in TypeScript **or hosting a
-> Python service**. Views achieve the same guarantee at the database level.
-> Query logic lives in Postgres views. TypeScript API routes select from
-> those views. Python MCP handlers select from the same views.
+- **ADR 114's event-feed default.** `with_stats=False` is a handler
+  decision and does not help a route that never calls one. The TypeScript
+  screener defaults to the feed on its own.
+- **Invariant 8.** In Python `handlers/validate.py` raises. Here the
+  guarantee is that `n_eff`, `ci_low`, `ci_high`, and `q_value` are
+  *columns* on `v_screen` and `v_stats`, so returning a bare probability
+  means deliberately dropping columns (ADR 076). Structural but weaker
+  than a raise, and that is the price of this option. **A test asserts the
+  serving views carry all four**, so "structural" is checked rather than
+  assumed. Write it first.
 
-And ADR 070 is unambiguous about where the routes run:
+### Still blocking, and not resolved by ADR 118
 
-> Every endpoint is an indexed SELECT executed by Next.js against Neon
-> through the Postgres driver. **No Python functions on Vercel.**
+CLAUDE.md: *"Read the frontend-design skill before writing any component.
+It carries this environment's design tokens and styling constraints, which
+`DESIGN.md` does not cover."*
 
-DESIGN §8.1 repeats it, and DESIGN §11.8 names `lightweight-charts` and
-`recharts` — both JavaScript. DESIGN's own architecture diagram says
-`CLIENT (Next.js on Vercel)`.
-
-So the session plan describes a Python web layer that three Pinned ADRs and
-DESIGN all replaced.
-
-### What is *not* in conflict
-
-Session 15's handler layer stands either way, and it already complies with
-ADR 076: `screen_signals` reads `v_screen`, `get_events` reads `v_events`,
-`get_universe` reads `v_universe`, and `get_indicators` reads `indicators`
-joined to `bars`. The handlers hold no query logic the views do not already
-carry. Session 16's MCP server is the "Python MCP handlers" half of ADR 076,
-built and passing.
-
-The conflict is confined to **who serves `/` and `/ticker/[sym]`**.
-
-### The options
-
-**Option A — Next.js on Vercel, TypeScript routes selecting from the views.**
-Follows ADR 070, ADR 076, and DESIGN as written. `capitalscan/web/` stays
-empty and a `web/` (or `app/`) directory at the repo root holds the Next
-application. The handler layer serves MCP and chat only.
-
-*Cost.* A second toolchain in the repo: `package.json`, `node_modules`, a
-third CI job, and a second place where "no probability without `n_eff`"
-has to hold. ADR 076's answer to that last point is that the views make it
-structural — `v_screen` and `v_stats` carry `n_eff`, `ci_low`, `ci_high`,
-and `q_value` as columns, so returning a bare probability requires
-deliberately dropping columns. That is a weaker guarantee than
-`handlers/validate.py`'s raise, and it is the guarantee ADR 076 chose.
-
-*Also.* ADR 114's event-feed default is a *rendering* decision, so it has to
-be re-implemented in TypeScript. The handler's `with_stats=False` does not
-help a route that never calls it.
-
-**Option B — a Python web layer calling the handlers.**
-Follows the session plan. One implementation of the response contract, and
-`handlers/validate.py` guards every surface rather than two of three.
-
-*Cost.* Contradicts ADR 070 and ADR 076, both Pinned. It needs a Python host
-somewhere that is not Vercel, which is the cost ADR 076 named and declined.
-Choosing this means amending both ADRs and saying why the hosting cost is
-now acceptable.
-
-**Option C — Next.js frontend, Python API behind it.**
-The frontend is TypeScript and calls a Python service that calls the
-handlers. Keeps one validator.
-
-*Cost.* Still hosts a Python service, so it carries ADR 076's cost plus a
-network hop ADR 072 explicitly rejected ("no network hop"). It is the option
-both ADRs already weighed.
-
-### The second blocker
-
-CLAUDE.md: *"**Read the frontend-design skill before writing any
-component.** It carries this environment's design tokens and styling
-constraints, which `DESIGN.md` does not cover."*
-
-**That skill is not available in this environment.** Whatever the stack
-decision, components written without it will use invented tokens and be
-redone. Either make the skill available or accept that the first pass is
-throwaway and say so.
-
-### Recorded, not worked around
-
-`DECISIONS.md` "Open items" carries this as an entry. Nothing in Session 17
-is built until it is resolved, and the resolution belongs in an ADR that
-either amends 070/076 or supersedes §17.1 of the session plan.
+**That skill is not available in this environment.** Either make it
+available or accept that the first pass uses invented tokens and will be
+redone. Nothing else stops this session.
 
 ---
 
