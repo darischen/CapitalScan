@@ -2975,15 +2975,75 @@ The general lesson is the same one ADR 109 recorded from the other direction: a 
 
 ---
 
+## 111. `--actionable`: a long needs confluence, a short needs confluence and confirmation
+
+**Date:** 2026-08-17. **Status:** accepted. Serving-layer only — no change to what is detected or stored.
+
+**Decision.** `cscan scan --actionable` selects
+
+```
+confluence_low  OR  (confluence_high AND bear_close_above_upper)
+```
+
+A long qualifies on confluence alone. A short qualifies only when a close-confirmed reversal agrees with it.
+
+**Why asymmetric.** This is ADR 016's position applied to serving rather than to exits. A bounce off the lower band is a single observable event: the price went down and turned. A push through the upper band is not the mirror image — it is ambiguous until the session ends, because a stock can ride the upper band for days in a genuine uptrend. `bear_close_above_upper` is exactly the disambiguator: the day opened above where it closed while still holding the band, which is the giveback that separates exhaustion from continuation.
+
+So the two sides are asked different questions because they *are* different questions, not because the short side is arbitrarily held to a higher bar.
+
+**Why a new flag rather than composing the existing two.** `--confluence-only` and `--bear-close-only` compose as an AND. No combination of them expresses an OR of two conditions, and the closest attempt (`--confluence-only --bear-close-only`) yields bear ∩ `confluence_high`, which drops every long.
+
+**`--actionable` refuses to compose with either.** Intersecting an OR-of-two with an AND-of-two-others produces a set that cannot be stated in one sentence, and a filter whose meaning cannot be stated is one that gets misread. Passing them together exits 2 rather than silently returning something surprising.
+
+**What it excludes, and the honest cost.** On 2026-08-03..2026-08-14 it selected 37 rows — 30 longs and 7 shorts — while excluding **73 `confluence_high` rows with no reversal to confirm them**. Those 73 are not noise; they are real confluence signals that this view deliberately withholds. Anyone reading `--actionable` as "every signal worth knowing about" will miss them. `--confluence-only` remains the way to see the full picture.
+
+It also excludes bare `bear_close_above_upper` rows with no stochastic extreme, which `--bear-close-only` still surfaces. The flag is the "act on it" view, not the "it fired" view.
+
+**What it leans on.** `core.signals.detect` builds `fired` as a dict keyed by `Side` and emits one hit per side, so `signal_types_all` never mixes long and short types. That is why the short clause needs no explicit side check. Measured across 2,541 `bear_close_above_upper` rows in the live population: zero carry `confluence_low`, and they span exactly one `side`. The property was structural all along and nothing asserted it; `test_scan_actionable.py` now does.
+
+**Not a recommendation.** Per CLAUDE.md's sourcing rule, this flag narrows a view. It does not assert that the rows it keeps are good trades, and no claim about suitability attaches to it.
+
+---
+
 ## Open items
 
 | Item | Options | Current lean |
 |---|---|---|
+| **`cscan nightly` never ingests the session it runs after** | Pass `end + 1 day` to the fetcher, or make `_download_daily`'s `end` inclusive to match every other date range in the codebase | Make it inclusive — see below |
 | Point-in-time index membership | Scrape Wikipedia history, or accept survivorship bias and state it | Scrape, note residual error in RESULTS.md |
 | Historical earnings dates | Finnhub free tier, Nasdaq scrape, or drop the feature | Finnhub, since earnings contamination is the largest 5-day confound |
 | Point-in-time market cap | Shares outstanding from filings, or price-times-current-shares approximation | Filings where available, approximation flagged elsewhere |
 | Polling home | Actions cron with internal loop, or persistent Modal function | Actions until the live log matters, then Modal |
 | Non-US mega-caps | Add ASML, SAP, Novo, Toyota, Samsung, LVMH for lower correlation | Add if effective sample falls short after clustering adjustment |
+
+### The nightly ingest gap, found 2026-08-17
+
+**`cscan nightly` is scheduled for 16:30 local, after the close. It never ingests the session it just ran after.** Every scan, every screener read, and every poller band is one trading session stale.
+
+`cli.py::nightly` sets `end = date.today()` and passes it to `ingest.run_bars_daily`, which reaches `jobs/fetch/yahoo.py::_download_daily`:
+
+```python
+yf.download(tickers, start=start, end=end, ...)
+```
+
+**yfinance's `end` is exclusive.** Run at 16:30 on 2026-08-17, it requests bars *through 2026-08-16*.
+
+Measured that evening, after a clean 10-phase nightly:
+
+| | |
+|---|---|
+| `max(bars.ts)` | 2026-08-14 |
+| `bars` rows for 2026-08-17 | **0** |
+| `max(indicators.ts)` | 2026-08-14 |
+| `max(events.signal_date)` | 2026-08-14 |
+
+2026-08-17 is a full trading day in `trading_days` and not an early close. The weekend explains 08-15 and 08-16; nothing explains 08-17 except the exclusive bound.
+
+**Why it survived this long.** Nothing fails. Every phase reports `ok`, `bar_rejects` is empty, and `cscan scan --date <today>` prints "no events found" — which reads as *nothing fired today* rather than *today was never fetched*. The two are indistinguishable from the output, and the second is the one that keeps being true.
+
+**The fix.** Make `_download_daily`'s `end` inclusive by adding a day internally, rather than patching `date.today() + 1` into every caller. Every other date range in this codebase is inclusive on both ends — `run_events`, `run_indicators`, `scan`, `split_key_for` — so the fetcher is the one place that disagrees, and fixing it there stops the disagreement from leaking further.
+
+This is deferred rather than applied because it changes what data lands, and because a same-day daily bar from Yahoo is not always final immediately after the close. Whether to also shift the schedule later is a separate question from the off-by-one.
 
 ---
 
