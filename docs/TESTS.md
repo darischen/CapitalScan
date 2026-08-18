@@ -1106,10 +1106,10 @@ What did change is the verdict now printed on the three-arm chart: the signal ar
 sat below the null on both splits before. `RESULTS.md` records why that is very likely
 noise -- better out-of-sample than in-sample, on a sample that had just halved.
 
-- Three-arm comparison produces a chart — **closed, Session 14.2.** `reports/phase4/three_arms_<config_hash>_{train,validate}.svg`: three polylines, one 2.5th-97.5th band, summary table read from `benchmarks`, and the verdict stated in words on the chart
+- Three-arm comparison produces a chart — **closed, Session 14.2.** Regenerate with `cscan stats artifacts --config-hash <hash>`; the SVGs are no longer committed (see the note below). `reports/phase4/three_arms_<config_hash>_{train,validate}.svg`: three polylines, one 2.5th-97.5th band, summary table read from `benchmarks`, and the verdict stated in words on the chart
 - Random-entry null spans 200 replications — **closed, Session 13.** 200 rows in `benchmarks` with `replication` 1-200, reproducible within a `config_hash` and different across configs
 - Every headline cell reports `n_eff`, CI, baseline, and q-value — **closed, Session 12**, extended to fourteen cells by ADR 108
-- Drawdown slice renders — **closed, Session 14.3.** `reports/phase4/drawdown_slice_<config_hash>_{train,validate}.svg` plus its CSV; intervals read from stored `cell_stats`, suppressed buckets rendered with `n_eff` rather than omitted
+- Drawdown slice renders — **closed, Session 14.3.** Regenerate with `cscan stats artifacts --config-hash <hash>`. `reports/phase4/drawdown_slice_<config_hash>_{train,validate}.svg` plus its CSV; intervals read from stored `cell_stats`, suppressed buckets rendered with `n_eff` rather than omitted
 - Random-walk null test passes on the full pipeline — **closed, Session 11.4**
 
 **What the gate does not assert.** Every one of these is a criterion about the *machinery*
@@ -1118,6 +1118,19 @@ q-value of 0.790 across 56 tests, a signal arm below its own null on both splits
 every drawdown-slice interval crossing zero. That is the gate behaving as designed: ADR
 033 fixed the kill criteria in advance precisely so a negative result would be reportable
 rather than a reason to move the bar.
+
+**The artifacts are not committed.** Removed 2026-08-18 (user's request), once
+`cscan stats artifacts --config-hash <hash>` made them reproducible — before that
+command existed they could only be produced by hand, which is why they were kept.
+
+**What that depends on.** Regeneration reads `benchmarks` and `cell_stats` for the
+hash. Both generations still have theirs (`697f3ae71428d392` and `86e91448a65aa40b`,
+448 cell rows and 818 benchmark rows each), so both remain renderable. Pruning those
+tables for a hash would make its artifacts unrecoverable — unlike `path`, they are not
+derivable from `events` alone.
+
+The numbers themselves are in `RESULTS.md` in prose, so the gate's *findings* survive
+independently of whether the pictures are on disk.
 
 ### Phase 5
 

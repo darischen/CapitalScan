@@ -432,7 +432,7 @@ capitalscan/
   handlers/      screen.py stats.py predict.py explain.py   # empty until Phase 5
   mcp/           server.py tools.py auth.py
   web/           (Next.js, session 10+)
-  db/            migrations/ schema.sql seeds/
+  db/            migrations/ schema.sql
   tests/         unit/ property/ golden/ integration/ acceptance/
   data/          cache/ (gitignored)  universe_union.csv
   models/        (LFS, populated in Phase 6)
@@ -446,6 +446,8 @@ capitalscan/
 ```
 
 `handlers/`, `mcp/`, and `web/` are created empty in session 0 and stay empty until Phase 5. They exist in the scaffold so imports and tooling config are settled once.
+
+`db/seeds/` was in the original scaffold and is not listed above because it was never used. Reference data — the trading calendar, ticker identity, corporate actions, shares outstanding, earnings dates — landed in migration `f8a373722e8d` instead, which is the right home for it: a seed file would have to be applied separately and could drift from the schema it populates. The empty directory was removed 2026-08-18. Git never tracked it, since git does not track empty directories.
 
 **0.2 `pyproject.toml`**
 
