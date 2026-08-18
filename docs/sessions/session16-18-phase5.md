@@ -164,7 +164,7 @@ Items 3 and 5 are the ones that matter. The rest is plumbing; those two are the 
 - `/research` and `/chat`. Session 18.
 - `/positions`. Phase 2 built it; this session does not touch it.
 - `/forward`. Phase 6.
-- Any query logic. Routes call handlers.
+- Any query logic. Routes select from the views (ADR 118).
 
 ## 1. The constraint that shapes both routes
 
@@ -192,7 +192,7 @@ Where statistics do render, they render whole: the hit rate, the baseline it is 
 
 Rules:
 
-- Routes call handlers. No route constructs SQL or imports `db_io`, enforced by the same import test Session 16 uses.
+- ~~Routes call handlers. No route constructs SQL or imports `db_io`, enforced by the same import test Session 16 uses.~~ **Superseded by ADR 118, 2026-08-18.** This contradicted ADR 070 ("no Python functions on Vercel") and ADR 076 ("TypeScript API routes select from those views"), all three Pinned. Routes select from the views; MCP is for LLM callers. See `session17-screener-and-ticker.md` §0.
 - The staleness banner reads `meta.staleness_days` and renders above 2 days per DESIGN §11.2.
 - Server-side rendering where it is simpler. This is a research tool for two people, not a public product.
 

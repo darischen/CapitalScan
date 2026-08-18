@@ -41,6 +41,20 @@ Sessions 0-7 deliver v1 (Phase 1). Sessions 8-9 deliver Phases 2-3. Session 10 i
 
 Sessions 0-2 can run back to back in one sitting. Session 7 is mostly waiting.
 
+**Sessions 17 and 18 were stopped on 2026-08-18 and unblocked the same day by ADR 118.**
+The session plan said web routes call the Python handlers; ADR 070, 072-as-refined-by-076,
+and DESIGN all said TypeScript routes select from the views. CLAUDE.md says stop and ask
+rather than work around, so nothing was built until it was decided.
+
+**MCP is for LLM callers, not for deterministic retrieval.** `/`, `/ticker`, and
+`/research` select from the views; `/chat`, Claude Code, and Claude Desktop go through the
+MCP server to the handlers. ADR 070 and ADR 076 stand as written; the session plan was
+what needed correcting.
+
+Session 17 remains blocked on one thing ADR 118 does not resolve: CLAUDE.md requires
+reading the `frontend-design` skill before writing any component, and that skill is not
+available in this environment.
+
 **Session 16 is complete.** No migration. One dependency, `mcp>=1.2.0` (resolved to
 2.0.0), which brings `starlette` and `uvicorn`.
 

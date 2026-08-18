@@ -6,50 +6,36 @@ blocks this session**, and the chat route is where it bites hardest.
 
 ---
 
-## 0. Blocked on the same decision, plus one of its own
+## 0. Decided: chat routes through MCP (ADR 118)
 
-### Inherited
+**Unblocked 2026-08-18.** See `session17-screener-and-ticker.md` §0 for the
+shape. The rule is that MCP is for LLM callers, not for deterministic
+retrieval, and `/chat` is the clearest LLM caller in the system.
 
-ADR 070 ("no Python functions on Vercel") and ADR 076 ("TypeScript API
-routes select from views; Python MCP handlers select from the same views")
-against `session16-18-phase5.md` §17.1's Python `web/` package. Fully stated
-in Session 17's plan.
+### What that settles
 
-### Specific to chat
+§18.2 required tool results to pass through Session 15's validator before
+reaching the model. Under ADR 070 the chat route is TypeScript and cannot
+call `handlers/validate.py` directly. It does not need to: **the chat route
+calls the MCP server, which calls the handlers, which validate.**
 
-`session16-18-phase5.md` §18.2 requires:
+```
+/chat ──MCP──► handlers/ ──► views
+```
 
-> Tool results pass through Session 15's validator before reaching the
-> model, unchanged.
-> A test asserting the chat layer has no database access outside handlers.
+One validator on the path that carries a model, which is the path that
+needs it. `/research` is deterministic and reads the views like `/` and
+`/ticker`.
 
-`handlers/validate.py` is Python. Under ADR 070 the chat route runs on
-Vercel in TypeScript, so it cannot call it. That leaves three readings, and
-they are not equivalent:
-
-1. **The chat route calls the MCP server**, which calls the handlers, which
-   validate. One validator, one implementation, and a network hop ADR 072
-   explicitly rejected — though ADR 072's rejection was about the *API*
-   path, and a chat turn already pays several hundred milliseconds to a
-   model. This is the option the existing code most nearly supports: the
-   MCP server is built, authenticated, and passing.
-2. **The chat route selects from views directly** and re-implements the
-   invariant-8 check in TypeScript. Two implementations of the one rule the
-   whole handler layer exists to hold. ADR 076's answer is that the views
-   make it structural, which is true of the *columns* and not of the raise.
-3. **A Python chat service.** Contradicts ADR 070 for the same reason
-   Session 17 option B does.
-
-Reading 1 looks right and is not mine to choose. It is worth noting that it
-makes Session 16 load-bearing rather than a side surface, which is a change
-in what that session was for.
+That makes Session 16 load-bearing rather than a side surface, which is
+worth stating: the MCP server is now the only way a model reaches this
+data.
 
 ### Not blocked
 
-`/research` is a rendering of finished artifacts and needs no new query
-logic under any option. `docs/SYSTEM_PROMPT.md` is written and
-version-controlled (18.3's requirement); only the loader depends on the
-stack.
+`/research` renders finished artifacts and needs no new query logic.
+`docs/SYSTEM_PROMPT.md` is written and version-controlled (18.3's
+requirement). Only the loader waits on the route work.
 
 ---
 
