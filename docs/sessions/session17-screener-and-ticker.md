@@ -48,8 +48,10 @@ neither is discovered as a bug:
   *columns* on `v_screen` and `v_stats`, so returning a bare probability
   means deliberately dropping columns (ADR 076). Structural but weaker
   than a raise, and that is the price of this option. **A test asserts the
-  serving views carry all four**, so "structural" is checked rather than
-  assumed. Write it first.
+  serving views carry all four** (`test_serving_view_contract.py`, 9 tests,
+  written first). It found one gap: `v_forward` exposes `p_touch_*` with no
+  interval and no q-value. Phase 6's, not this session's, and recorded in
+  `KNOWN_GAPS` with what would close it.
 
 ### Where the design constraints actually live
 

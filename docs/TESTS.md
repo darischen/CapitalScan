@@ -1452,6 +1452,53 @@ object. `asdict` fixes it, and the test that found it is the one asserting
 
 ---
 
+## Session 17: the serving-view contract
+
+### Integration Tests (capitalscan/tests/integration/test_serving_view_contract.py) — 9 tests
+
+ADR 118 puts the web routes in TypeScript selecting from the views, so
+`handlers/validate.py` does not guard them. ADR 076's answer is that the
+guarantee is structural instead: `n_eff`, `ci_low`, `ci_high`, and
+`q_value` are *columns*, so returning a bare probability requires
+deliberately dropping columns.
+
+**Structural is not the same as true, and nothing checked it.** This module
+is what makes that claim a fact, and ADR 118 requires it before any route
+work. Written first for that reason.
+
+- **`v_screen` and `v_stats` carry all four companions**, asserted
+  individually rather than swept, because these are the two views a browser
+  reads with no validator behind them.
+- A paired assertion that they still expose `p_hit`. A view that lost its
+  rate would satisfy "no probability without companions" trivially and break
+  every statistical panel.
+- **A sweep over every public view**, so a future migration adding `p_hit`
+  to `v_chart` fails here rather than reaching a route.
+- A guard that the sweep is not vacuous: at least two views must expose a
+  probability, or the whole file passes on an empty database and says
+  nothing.
+
+**One predicate, two enforcement points.** The check uses
+`handlers.types.is_probability_field`, the same function governing the
+Python result types. A column named `p_hit` and a dataclass field named
+`p_hit` are the same claim and must not disagree about whether they need
+backing. Asserted directly, along with the companions *not* being
+probabilities themselves — otherwise the rule recurses into an interval
+needing an interval — and `p_value_randomization` not counting, since a
+p-value is a property of the test.
+
+**One gap found and recorded rather than fixed.** `v_forward` exposes
+`p_touch_2/3/5/10` and `p_adverse_3/5` and carries **none** of the four
+companions. It has `cell_n_eff` under a prefixed name and no interval, no
+q-value. It is the Phase 6 predictions view, `predictions` is empty because
+no model exists, and closing it is ADR 113's job. `KNOWN_GAPS` carries it
+with that reason, and a test asserts every entry **still describes a real
+gap** — the `threshold_lint.KNOWN_EXCEPTIONS` pattern, which learned the
+hard way that an exemption kept past its fix hides a working thing instead
+of documenting a broken one.
+
+---
+
 ## 6. Statistical verification
 
 Two tests catching a category no unit test can (ADR 087).
