@@ -22,8 +22,13 @@ the cheap fix (session 15 §7). New files use
 | 14 | 4 | `session14-phase4-close.md` | Artifacts, drawdown slice, ADR 092's matcher. **Phase 4 gate closed** |
 | 15 | 5 | `session15-handlers-and-tools.md` | Handlers, seven tools, response validator, ADR 095's `v_positions` rebuild. **Gate passed 2026-08-18** |
 | 16 | 5 | `session16-18-phase5.md` | MCP server. **Gate passed 2026-08-18**; see `../MCP_SETUP.md` |
-| 17 | 5 | `session16-18-phase5.md` | Screener and ticker page |
-| 18 | 5 | `session16-18-phase5.md` | Research page, chat, Phase 5 close |
+
+`session16-18-phase5.md` remains as the combined original. Sessions 17 and
+18 were split into their own files when Session 16 closed, per that
+document's own instruction, and each opens with what changed since it was
+written.
+| 17 | 5 | `session17-screener-and-ticker.md` | Screener and ticker page. **Blocked** — see its §0 |
+| 18 | 5 | `session18-research-and-chat.md` | Research page, chat, Phase 5 close. **Blocked** on the same decision; the system prompt is written |
 
 Sessions 0-8 predate the per-session plan convention. `HANDOFF.md` and
 `SESSION_9_STANDING_ORDERS.md` are cross-session documents rather than
