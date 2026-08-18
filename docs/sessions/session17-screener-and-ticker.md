@@ -144,13 +144,17 @@ treated the mid-band flag as a boolean needs a look.
 
 ### Two measurements to respect
 
-**`v_ticker_state` takes 26.5 s to materialize** on the developer database
-(612 tickers, 4.5M+ `indicators` rows, `max_parallel_workers_per_gather=0`;
-with parallelism on it fails outright with a shared-memory error). Both
-`v_positions` and the ticker page read it, and nothing pushes a ticker
-predicate down through its `DISTINCT ON`. **Measure before building an
-interactive page on it.** The likely fix is an index or a materialized
-view, and it is a Session 17 task either way.
+**Fixed before this session started (ADR 116), and the claim that
+prompted it was wrong.** The Session 15 note said nothing pushed a ticker
+predicate down through the view's `DISTINCT ON`. Postgres pushes a
+*constant* one down fine - a single-ticker read was 17 ms all along - and
+only a *correlated* predicate, which is what `v_positions` uses, paid the
+23.8 s. The ticker page was never the query at risk.
+
+The view is now a loose index scan: **27 ms** for all 612 tickers, **1.4 ms**
+for one, **23.5 ms** for a `v_positions` row. Nothing here needs a
+mitigation. Measuring a page's real load time before trusting it is still
+worth doing, which is why gate item 11 below stays.
 
 **ADR 112 is the shape of the data, not a caveat.** Zero cells survive FDR
 correction; 100 of 224 train cells suppress. On the ticker page and the

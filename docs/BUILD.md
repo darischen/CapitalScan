@@ -86,6 +86,12 @@ Two defects found by running the tests rather than by reading:
 And one hazard worth knowing before Session 17: **`v_ticker_state` takes 26.5 s to
 materialize** on the developer database, and every read of `v_positions` pays it.
 
+**Superseded by ADR 116, 2026-08-18, and half of it was wrong.** The 26.5 s was
+the whole view; a single-ticker read was already 17 ms, because Postgres pushes a
+*constant* predicate down through `DISTINCT ON`. Only a *correlated* one -
+`v_positions` joining on `p.ticker` - paid the full cost. ADR 116 rewrote the view
+as a loose index scan: the whole view is now 27 ms and `v_positions` 23.5 ms.
+
 **Session 14 is complete, and Phase 4 is closed.** All five Phase 4 gate criteria in
 `TESTS.md` §10 now pass, the last two closed by 14.2's chart and 14.3's drawdown slice.
 No migration.

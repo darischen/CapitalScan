@@ -246,3 +246,195 @@ CREATE VIEW public.v_positions AS
    FROM (public.positions p
      LEFT JOIN public.v_ticker_state s ON ((s.ticker = p.ticker)))
 """
+
+
+# ---------------------------------------------------------------------------
+# v_ticker_state (ADR 116)
+# ---------------------------------------------------------------------------
+#
+# **The shipped view joined four tables across every daily indicator row and
+# applied `DISTINCT ON` last.** 2,912,426 rows in, 612 out. Measured
+# 2026-08-18 with `max_parallel_workers_per_gather = 0`:
+#
+#     SELECT count(*) FROM v_ticker_state          23.8 s
+#     SELECT * FROM v_positions WHERE id = 43      24.5 s
+#     SELECT * FROM v_ticker_state WHERE ticker=?  17 ms
+#
+# The single-ticker read was already fast: the planner pushes a *constant*
+# predicate down through the `DISTINCT ON`. It cannot push a *correlated*
+# one, which is why `v_positions` - joining on `p.ticker` - paid the full
+# cost to return one row.
+#
+# The rewrite is a **loose index scan**: drive off `tickers` (712 rows) and
+# take one indicator row per ticker with `ORDER BY ts DESC LIMIT 1`.
+#
+#     SELECT count(*) FROM v_ticker_state          23.7 ms   (1000x)
+#     SELECT * FROM v_ticker_state WHERE ticker=?  1.4 ms
+#
+# **The `LIMIT` is load-bearing twice.** It makes the scan stop at the first
+# qualifying row per ticker instead of reading all ~4,800 of them, and it
+# stops the planner from flattening the lateral: a correlated subquery with
+# no volatile function and no LIMIT gets pulled up into a plain join, which
+# is exactly what happened to an earlier attempt at fixing `v_positions`
+# with a lateral over the unchanged view (22.7 s, identical plan).
+#
+# **`EXISTS (bars)` rather than a join, and it is not decoration.** The old
+# view inner-joined `bars` and *then* took the latest surviving row per
+# ticker, so a ticker whose latest indicator row had no matching bar fell
+# through to the next one down. A rewrite that selected from `indicators`
+# alone would drop that ticker entirely instead. `ORDER BY ts DESC LIMIT 1`
+# under the EXISTS filter picks the same row the old view did.
+#
+# That fallback currently never fires - zero of 2,912,426 daily indicator
+# rows lack a bar, measured 2026-08-18 - and the EXISTS is kept anyway, so
+# the behaviour is preserved structurally rather than by that measurement
+# continuing to hold. An intermediate version that put the join *inside* a
+# `DISTINCT ON` was also correct and only 1.7x faster (13.7 s), because it
+# reintroduced the 2.9M-row join and an external merge sort of 74 MB.
+#
+# Equivalence was measured, not argued: with the original view rebuilt
+# alongside, `EXCEPT` in both directions returned zero rows over all 612.
+V_TICKER_STATE_DDL = """
+CREATE VIEW public.v_ticker_state AS
+ SELECT i.ticker,
+    t.name,
+    t.sector,
+    i.ts AS as_of,
+    b.close,
+    b.volume,
+    i.bb_lower,
+    i.bb_mid,
+    i.bb_upper,
+    i.bb_pctb,
+    i.bb_width,
+    i.bb_width_pct,
+    i.k_full,
+    i.d_full,
+    i.k_fast,
+    i.k_cross_up,
+    i.k_cross_down,
+    i.sma_200,
+    i.sma200_slope_60,
+    i.atr_14,
+    i.rv_20d,
+    i.rv_pct_252d,
+    i.vol_z_20d,
+    i.dd_52w,
+    i.days_to_earnings,
+    m.vix_close,
+    m.vix_pct_252d,
+    m.spx_ret_1d,
+    u.in_trade,
+    u.mcap_usd,
+    u.crit_mcap,
+    u.crit_above_sma200,
+    u.crit_sma200_slope,
+    u.crit_rel_return,
+    u.crit_rev_growth,
+    (b.close > i.sma_200) AS above_sma200
+   FROM ((((public.tickers t
+     CROSS JOIN LATERAL ( SELECT ind.ts
+           FROM public.indicators ind
+          WHERE ((ind.ticker = t.ticker) AND (ind."interval" = '1d'::text)
+              AND (EXISTS ( SELECT 1
+                   FROM public.bars bb
+                  WHERE ((bb.ticker = ind.ticker) AND (bb.ts = ind.ts)
+                      AND (bb."interval" = ind."interval")))))
+          ORDER BY ind.ts DESC
+         LIMIT 1) latest)
+     JOIN public.indicators i ON (((i.ticker = t.ticker) AND (i.ts = latest.ts)
+         AND (i."interval" = '1d'::text))))
+     JOIN public.bars b ON (((b.ticker = i.ticker) AND (b.ts = i.ts)
+         AND (b."interval" = i."interval"))))
+     LEFT JOIN public.market_days m ON ((m.ts = (i.ts)::date)))
+     LEFT JOIN LATERAL ( SELECT u2.in_trade,
+            u2.mcap_usd,
+            u2.crit_mcap,
+            u2.crit_above_sma200,
+            u2.crit_sma200_slope,
+            u2.crit_rel_return,
+            u2.crit_rev_growth
+           FROM public.universe u2
+          WHERE ((u2.ticker = i.ticker) AND (u2.as_of <= (i.ts)::date))
+          ORDER BY u2.as_of DESC
+         LIMIT 1) u ON (true)
+"""
+
+# The index the lateral reads. `(ticker, ts DESC)` matches its
+# `WHERE ticker = ? ... ORDER BY ts DESC LIMIT 1` exactly, so each of the
+# 712 lookups is an index seek that stops at the first qualifying row.
+#
+# Partial on `interval = '1d'`. `indicators` holds hourly rows the view
+# never reads; a full index would be several times larger and maintained on
+# every hourly write for no read it serves.
+INDICATORS_DAILY_LATEST_INDEX = """
+CREATE INDEX IF NOT EXISTS indicators_daily_latest
+    ON public.indicators (ticker, ts DESC)
+    WHERE ("interval" = '1d'::text)
+"""
+
+# The shipped version, kept verbatim so `downgrade()` restores it exactly.
+# It is the slow one on purpose: a downgrade that quietly kept the
+# optimisation would not be a downgrade.
+V_TICKER_STATE_DDL_PRE_116 = """
+CREATE VIEW public.v_ticker_state AS
+ SELECT DISTINCT ON (i.ticker) i.ticker,
+    t.name,
+    t.sector,
+    i.ts AS as_of,
+    b.close,
+    b.volume,
+    i.bb_lower,
+    i.bb_mid,
+    i.bb_upper,
+    i.bb_pctb,
+    i.bb_width,
+    i.bb_width_pct,
+    i.k_full,
+    i.d_full,
+    i.k_fast,
+    i.k_cross_up,
+    i.k_cross_down,
+    i.sma_200,
+    i.sma200_slope_60,
+    i.atr_14,
+    i.rv_20d,
+    i.rv_pct_252d,
+    i.vol_z_20d,
+    i.dd_52w,
+    i.days_to_earnings,
+    m.vix_close,
+    m.vix_pct_252d,
+    m.spx_ret_1d,
+    u.in_trade,
+    u.mcap_usd,
+    u.crit_mcap,
+    u.crit_above_sma200,
+    u.crit_sma200_slope,
+    u.crit_rel_return,
+    u.crit_rev_growth,
+    (b.close > i.sma_200) AS above_sma200
+   FROM ((((public.indicators i
+     JOIN public.bars b ON (((b.ticker = i.ticker) AND (b.ts = i.ts)
+         AND (b."interval" = i."interval"))))
+     JOIN public.tickers t ON ((t.ticker = i.ticker)))
+     LEFT JOIN public.market_days m ON ((m.ts = (i.ts)::date)))
+     LEFT JOIN LATERAL ( SELECT u2.ticker,
+            u2.as_of,
+            u2.in_train,
+            u2.in_trade,
+            u2.mcap_usd,
+            u2.mcap_rank,
+            u2.adv_20d_usd,
+            u2.crit_mcap,
+            u2.crit_above_sma200,
+            u2.crit_sma200_slope,
+            u2.crit_rel_return,
+            u2.crit_rev_growth
+           FROM public.universe u2
+          WHERE ((u2.ticker = i.ticker) AND (u2.as_of <= (i.ts)::date))
+          ORDER BY u2.as_of DESC
+         LIMIT 1) u ON (true))
+  WHERE (i."interval" = '1d'::text)
+  ORDER BY i.ticker, i.ts DESC
+"""

@@ -965,7 +965,7 @@ ALTER VIEW public.v_forward OWNER TO capscan;
 --
 
 CREATE VIEW public.v_ticker_state AS
- SELECT DISTINCT ON (i.ticker) i.ticker,
+ SELECT i.ticker,
     t.name,
     t.sector,
     i.ts AS as_of,
@@ -1001,17 +1001,19 @@ CREATE VIEW public.v_ticker_state AS
     u.crit_rel_return,
     u.crit_rev_growth,
     (b.close > i.sma_200) AS above_sma200
-   FROM ((((public.indicators i
+   FROM (((((public.tickers t
+     CROSS JOIN LATERAL ( SELECT ind.ts
+           FROM public.indicators ind
+          WHERE ((ind.ticker = t.ticker) AND (ind."interval" = '1d'::text) AND (EXISTS ( SELECT 1
+                   FROM public.bars bb
+                  WHERE ((bb.ticker = ind.ticker) AND (bb.ts = ind.ts) AND (bb."interval" = ind."interval")))))
+          ORDER BY ind.ts DESC
+         LIMIT 1) latest)
+     JOIN public.indicators i ON (((i.ticker = t.ticker) AND (i.ts = latest.ts) AND (i."interval" = '1d'::text))))
      JOIN public.bars b ON (((b.ticker = i.ticker) AND (b.ts = i.ts) AND (b."interval" = i."interval"))))
-     JOIN public.tickers t ON ((t.ticker = i.ticker)))
      LEFT JOIN public.market_days m ON ((m.ts = (i.ts)::date)))
-     LEFT JOIN LATERAL ( SELECT u2.ticker,
-            u2.as_of,
-            u2.in_train,
-            u2.in_trade,
+     LEFT JOIN LATERAL ( SELECT u2.in_trade,
             u2.mcap_usd,
-            u2.mcap_rank,
-            u2.adv_20d_usd,
             u2.crit_mcap,
             u2.crit_above_sma200,
             u2.crit_sma200_slope,
@@ -1020,9 +1022,7 @@ CREATE VIEW public.v_ticker_state AS
            FROM public.universe u2
           WHERE ((u2.ticker = i.ticker) AND (u2.as_of <= (i.ts)::date))
           ORDER BY u2.as_of DESC
-         LIMIT 1) u ON (true))
-  WHERE (i."interval" = '1d'::text)
-  ORDER BY i.ticker, i.ts DESC;
+         LIMIT 1) u ON (true));
 
 
 ALTER VIEW public.v_ticker_state OWNER TO capscan;
@@ -1563,6 +1563,13 @@ CREATE INDEX events_ticker_date ON public.events USING btree (ticker, signal_dat
 
 
 --
+-- Name: indicators_daily_latest; Type: INDEX; Schema: public; Owner: capscan
+--
+
+CREATE INDEX indicators_daily_latest ON public.indicators USING btree (ticker, ts DESC) WHERE ("interval" = '1d'::text);
+
+
+--
 -- Name: indicators_ts_idx; Type: INDEX; Schema: public; Owner: capscan
 --
 
@@ -1631,6 +1638,258 @@ ALTER TABLE ONLY public.signal_reports
 
 ALTER TABLE ONLY public.universe
     ADD CONSTRAINT universe_ticker_fkey FOREIGN KEY (ticker) REFERENCES public.tickers(ticker);
+
+
+--
+-- Name: SCHEMA public; Type: ACL; Schema: -; Owner: pg_database_owner
+--
+
+GRANT USAGE ON SCHEMA public TO capscan_ro;
+
+
+--
+-- Name: TABLE alembic_version; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.alembic_version TO capscan_ro;
+
+
+--
+-- Name: TABLE bar_rejects; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.bar_rejects TO capscan_ro;
+
+
+--
+-- Name: TABLE bars; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.bars TO capscan_ro;
+
+
+--
+-- Name: TABLE benchmarks; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.benchmarks TO capscan_ro;
+
+
+--
+-- Name: TABLE cell_stats; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.cell_stats TO capscan_ro;
+
+
+--
+-- Name: TABLE corporate_actions; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.corporate_actions TO capscan_ro;
+
+
+--
+-- Name: TABLE earnings; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.earnings TO capscan_ro;
+
+
+--
+-- Name: TABLE events; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.events TO capscan_ro;
+
+
+--
+-- Name: TABLE indicators; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.indicators TO capscan_ro;
+
+
+--
+-- Name: TABLE market_days; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.market_days TO capscan_ro;
+
+
+--
+-- Name: TABLE order_intents; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.order_intents TO capscan_ro;
+
+
+--
+-- Name: TABLE outcomes; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.outcomes TO capscan_ro;
+
+
+--
+-- Name: TABLE path; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.path TO capscan_ro;
+
+
+--
+-- Name: TABLE poller_sessions; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.poller_sessions TO capscan_ro;
+
+
+--
+-- Name: TABLE positions; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.positions TO capscan_ro;
+
+
+--
+-- Name: TABLE predictions; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.predictions TO capscan_ro;
+
+
+--
+-- Name: TABLE quotes_live; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.quotes_live TO capscan_ro;
+
+
+--
+-- Name: TABLE rho_era; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.rho_era TO capscan_ro;
+
+
+--
+-- Name: TABLE runs; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.runs TO capscan_ro;
+
+
+--
+-- Name: TABLE scheduled_runs; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.scheduled_runs TO capscan_ro;
+
+
+--
+-- Name: TABLE serving_config; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.serving_config TO capscan_ro;
+
+
+--
+-- Name: TABLE shares_outstanding; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.shares_outstanding TO capscan_ro;
+
+
+--
+-- Name: TABLE signal_reports; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.signal_reports TO capscan_ro;
+
+
+--
+-- Name: TABLE tickers; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.tickers TO capscan_ro;
+
+
+--
+-- Name: TABLE trading_days; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.trading_days TO capscan_ro;
+
+
+--
+-- Name: TABLE universe; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.universe TO capscan_ro;
+
+
+--
+-- Name: TABLE v_chart; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.v_chart TO capscan_ro;
+
+
+--
+-- Name: TABLE v_events; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.v_events TO capscan_ro;
+
+
+--
+-- Name: TABLE v_forward; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.v_forward TO capscan_ro;
+
+
+--
+-- Name: TABLE v_ticker_state; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.v_ticker_state TO capscan_ro;
+
+
+--
+-- Name: TABLE v_positions; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.v_positions TO capscan_ro;
+
+
+--
+-- Name: TABLE v_screen; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.v_screen TO capscan_ro;
+
+
+--
+-- Name: TABLE v_stats; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.v_stats TO capscan_ro;
+
+
+--
+-- Name: TABLE v_universe; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.v_universe TO capscan_ro;
+
+
+--
+-- Name: DEFAULT PRIVILEGES FOR TABLES; Type: DEFAULT ACL; Schema: public; Owner: capscan
+--
+
+ALTER DEFAULT PRIVILEGES FOR ROLE capscan IN SCHEMA public GRANT SELECT ON TABLES TO capscan_ro;
 
 
 --

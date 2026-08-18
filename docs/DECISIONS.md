@@ -157,6 +157,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 113 | Phase 6 opens: the model is a distinct hypothesis from the cell grid, sized down and gated harder | Pinned. Answers 093's Provisional condition; amends 064's head count and 067's gate |
 | 114 | The screener's default is the event feed; statistics are one action away | Pinned. Follows 112. Governs `screen_signals` and `/` |
 | 115 | `v_positions` reads a settings row, not a generated DDL | Pinned. Resolves 095's deferred rebuild; reverses its stated preference |
+| 116 | `v_ticker_state` reads one row per ticker instead of sorting three million | Pinned. 1000x on `v_positions`; corrects a Session 15 measurement |
 
 ---
 
@@ -3313,6 +3314,68 @@ ADR 095 named the row-existence dependency and it is real. Bounded three ways:
 *Leave the view alone and document the discrepancy.* ADR 092 and invariant 9 exist because a documented discrepancy is one nobody reads at the moment it matters.
 
 *Drop the exit-signal columns from the view entirely and compute them in `handlers/`.* Attractive — it would put the one implementation in Python where `core/exits.py` already lives. Rejected because `v_positions` is a Phase 2 surface with existing consumers, and the change is a rewrite of the position page rather than a fix to a view. Worth reconsidering when session 17 builds `/positions` against handlers.
+
+---
+
+## 116. `v_ticker_state` reads one row per ticker instead of sorting three million
+
+**Date:** 2026-08-18. **Status:** Pinned. A performance change to a view ADR 076 makes a shared contract, with no change in output.
+
+**Context.**
+
+ADR 076 makes Postgres views the contract both consumers read, so a view's cost is a cost every surface pays. `v_ticker_state` is read by `v_positions`, by the ticker page Session 17 will build, and by `cscan poll`.
+
+It joined `bars`, `tickers`, `market_days`, and a LATERAL over `universe` across every daily indicator row, then applied `DISTINCT ON (ticker)` to the result. 2,912,426 rows in, 612 out.
+
+Measured 2026-08-18, `max_parallel_workers_per_gather = 0`:
+
+| Query | Before |
+|---|---|
+| `SELECT count(*) FROM v_ticker_state` | 23.8 s |
+| `SELECT * FROM v_positions WHERE id = 44` | 24.5 s |
+| `SELECT * FROM v_ticker_state WHERE ticker = 'TSM'` | **17 ms** |
+
+**That third row corrects a claim Session 15 made.** `RESULTS.md`'s Session 15 note said "nothing pushes the position's ticker down through the `DISTINCT ON`", generalising from one measurement of the *whole* view. It is wrong: Postgres pushes a **constant** predicate down through `DISTINCT ON` and the single-ticker read was already fast. What it cannot push down is a **correlated** one, which is why `v_positions` — joining on `p.ticker` — paid the full 24.5 s to return one row, and why the ticker page was never in danger. Session 17's plan repeated the wrong version and is corrected with this ADR.
+
+**Decision.**
+
+Rewrite the view as a loose index scan: drive off `tickers` (712 rows) and take one indicator row per ticker with `ORDER BY ts DESC LIMIT 1`, supported by a new partial index `indicators (ticker, ts DESC) WHERE interval = '1d'`.
+
+| Query | After |
+|---|---|
+| `SELECT count(*) FROM v_ticker_state` | 27 ms |
+| `SELECT * FROM v_positions WHERE id = 44` | 23.5 ms |
+| `SELECT * FROM v_ticker_state WHERE ticker = 'TSM'` | 1.4 ms |
+
+**Two rejected attempts, both measured rather than reasoned about.**
+
+*A LATERAL over the unchanged view.* Replacing `v_positions`' `LEFT JOIN v_ticker_state s ON s.ticker = p.ticker` with a correlated `LEFT JOIN LATERAL (SELECT * FROM v_ticker_state WHERE ticker = p.ticker)` produced a byte-identical plan at 22.7 s. A correlated subquery with no volatile function and no `LIMIT` is pulled up and the lateral flattened away. **The `LIMIT` in the shipped version is load-bearing twice** — it prevents that flattening, and it is what makes the index scan stop at the first qualifying row instead of reading all ~4,800 rows for that ticker.
+
+*Moving the joins inside a `DISTINCT ON`.* Correct, and only 1.7x faster at 13.7 s. It reintroduced the 2.9M-row join to `bars` and an external merge sort of 74 MB to disk. Being correct is not the same as being fast, and this version was almost shipped on the strength of a 62x measurement taken against a variant that had dropped the join entirely.
+
+**Why the rewrite is necessary at all.** Postgres cannot apply `DISTINCT ON` before the joins on its own. Semantically the distinct applies to the joined row, and although these particular joins can neither multiply nor eliminate rows, nothing in the schema tells the planner that. Saying it requires rewriting the query.
+
+**The elimination case, kept structurally.**
+
+The lateral filters on `EXISTS (bars ...)` rather than selecting from `indicators` alone. The old view inner-joined `bars` and *then* took the latest surviving row per ticker, so a ticker whose newest indicator row had no matching bar fell through to the next one down. A rewrite without the `EXISTS` would drop that ticker entirely.
+
+Measured across all 2,912,426 daily indicator rows: **zero** lack a matching bar, **zero** lack a matching ticker. The filter is kept anyway. `indicators` is derived from `bars`, so the invariant is real, and it is enforced by nothing — no foreign key, no constraint. Relying on a measurement that is true today to justify a behaviour change tomorrow is how this class of defect gets in, and the `EXISTS` costs nothing because the index serves it.
+
+**Equivalence is measured, not argued.** `tests/integration/test_v_ticker_state_rewrite.py` rebuilds the pre-116 view from `jobs/views.py::V_TICKER_STATE_DDL_PRE_116` under a second name and diffs both directions with `EXCEPT` over whole rows. Zero differences across all 612. It also re-derives the expected `as_of` from `indicators` and `bars` independently, so the test does not merely confirm that two views agree.
+
+**Consequences.**
+
+`v_positions` inherits the fix with no change of its own — it was 24.5 s per row for the same reason. Session 17's ticker page no longer needs the mitigation its plan called for; the "measure before building an interactive page on it" instruction stands, but the number it was reacting to is gone.
+
+The index costs one entry per daily indicator write. `cscan indicators` writes ~600 rows a night, so the maintenance is negligible against a 62x read.
+
+Migration `a3c8e15d40b7`, reversible. `downgrade()` restores the slow view verbatim and drops the index, because a downgrade that quietly kept the optimisation would not be a downgrade.
+
+**Rejected.**
+
+*A materialized view.* Faster still, and it introduces a refresh that can be stale, a `REFRESH` to schedule, and a second definition of "current". 27 ms does not justify any of that.
+
+*A foreign key from `indicators` to `bars`.* Would make the `EXISTS` provably redundant and let the lateral read `indicators` alone. It is the right long-term shape of the invariant and it changes ingest behaviour — deletes and rejects on `bars` would start blocking or cascading — which is a larger change than a read optimisation should carry. Worth revisiting on its own terms.
 
 ---
 

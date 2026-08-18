@@ -1154,13 +1154,17 @@ deletes exactly those.
   in the failure message. Without this the row goes stale silently, which is
   ADR 095's own defect one indirection further out.
 
-**Measured 2026-08-18: `v_ticker_state` takes 26.5 s to materialize** on 612
+**Measured 2026-08-18: `v_ticker_state` took 26.5 s to materialize** on 612
 tickers with `max_parallel_workers_per_gather = 0`, and every
-`SELECT ... FROM v_positions` pays it because nothing pushes the position's
-ticker down through the `DISTINCT ON`. With parallelism on it fails outright
-(`could not resize shared memory segment`). Harmless in CI, where the
-container is empty. **Session 17 builds the ticker page on the same view and
-should measure before trusting it.**
+`SELECT ... FROM v_positions` paid it. With parallelism on it failed
+outright (`could not resize shared memory segment`).
+
+**Corrected and then fixed the same day (ADR 116).** The claim that "nothing
+pushes the position's ticker down through the `DISTINCT ON`" was wrong: a
+constant predicate pushes down and a single-ticker read was 17 ms; only a
+correlated one paid the full cost. ADR 116 rewrote the view as a loose index
+scan - 27 ms whole, 23.5 ms for a `v_positions` row - so this module now runs
+in seconds locally too. See `test_v_ticker_state_rewrite.py`.
 
 ### Unit Tests (capitalscan/tests/unit/test_threshold_lint.py) — reworked
 
@@ -1378,6 +1382,34 @@ initialized`. No unit test here would have caught it.
 SDK's DNS-rebinding guard answers `421 Misdirected Request` on a Host
 mismatch, and the same setting is what a deployment behind a domain must
 pass.
+
+---
+
+## ADR 116: the `v_ticker_state` rewrite
+
+### Integration Tests (capitalscan/tests/integration/test_v_ticker_state_rewrite.py) — 7 tests
+
+A performance change is safe only if it is provably not a behaviour change,
+and "provably" means running both versions against the same data rather than
+reading the two queries and agreeing they look equivalent. That reading is
+what nearly shipped a variant which dropped the `bars` join and would have
+changed which row a ticker returns.
+
+- The old view is rebuilt from `views.V_TICKER_STATE_DDL_PRE_116` under a
+  second name and diffed **both directions** with `EXCEPT` over whole rows.
+  One direction alone is not enough: a rewrite returning two rows per ticker
+  contains every original row and passes "drops nothing".
+- A guard asserts the shadow view was actually built and is non-empty, and
+  skips loudly rather than passing vacuously when the database has no rows —
+  which is CI's state.
+- One row per ticker, the property `DISTINCT ON` used to guarantee and the
+  lateral's `LIMIT 1` now does.
+- **Each row's `as_of` re-derived independently** from `indicators` and
+  `bars`, so the suite does not merely confirm that two views agree with
+  each other.
+- The supporting index exists and is partial to `interval = '1d'`. Without
+  it the rewrite is still correct and takes 1.1 s instead of 27 ms, so a
+  missing index is a silent regression rather than a failure.
 
 ---
 

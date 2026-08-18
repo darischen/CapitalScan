@@ -88,13 +88,14 @@ def _conn(engine):
     connection does not help the next one out of the pool; every read in
     this module goes through here.
 
-    **Measured 2026-08-18: 26.5 s to materialize `v_ticker_state` once**,
-    with parallelism off, on 612 tickers. Every `SELECT ... FROM
-    v_positions` pays it, because nothing pushes the position's ticker
-    down through the `DISTINCT ON`. Harmless in CI, where the container is
-    empty, and the reason this module is slow locally. Session 17 builds
-    the ticker page on the same view and should measure it before
-    trusting it.
+    **The cost this used to carry is gone (ADR 116).** `v_ticker_state`
+    took 26.5 s to materialize and every read here paid it; it was rewritten
+    the same day as a loose index scan and now takes 27 ms, with a
+    `v_positions` row at 23.5 ms.
+
+    The GUC stays. The old view is still rebuilt by
+    `test_v_ticker_state_rewrite.py` to prove the rewrite changed no output,
+    and that one genuinely needs parallelism off.
     """
     with engine.connect() as conn:
         conn.execute(text("SET max_parallel_workers_per_gather = 0"))

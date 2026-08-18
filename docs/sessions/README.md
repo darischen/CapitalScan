@@ -47,9 +47,11 @@ plan:
 - **The screener's statistical fields live in `ScreenRow.stats`**, a
   `CellStats | Suppressed | None` union, not as columns (ADR 114). The
   handler does not query `cell_stats` at all unless asked.
-- **`v_ticker_state` takes 26.5 s to materialize** on the developer
-  database, and `v_positions` and the ticker page both read it. Measure
-  before building an interactive page on top of it.
+- **`v_ticker_state` was 26.5 s and is now 27 ms** (ADR 116). The Session
+  15 note framed this as a ticker-page hazard and was wrong about which
+  query was slow - a single-ticker read was 17 ms all along, and only
+  `v_positions`' correlated join paid the full cost. Measuring before
+  building an interactive page is still the right habit.
 - **The union tag is decided.** Session 16 serializes `Suppressed` and
   `NotFound` with a `kind` field so a client can tell "we cannot say" from
   "it never happened". A web route rendering the same union should make the

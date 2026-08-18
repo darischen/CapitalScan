@@ -2501,12 +2501,23 @@ settings row leaves no literal in any checked-in SQL, so the exemption was
 (4.5M+ `indicators` rows). With parallelism on it fails outright:
 `could not resize shared memory segment ... No space left on device`.
 
-Every `SELECT ... FROM v_positions` pays that, because nothing pushes the
-position's ticker down through the view's `DISTINCT ON (ticker)`. That is
-why `test_v_positions_config.py` takes minutes locally and seconds in CI,
-where the container is empty. **Session 17 builds the ticker page on the
-same view** and should measure before trusting it — an interactive page
-cannot spend 26 s per load.
+Every `SELECT ... FROM v_positions` pays that, which is why
+`test_v_positions_config.py` takes minutes locally and seconds in CI, where
+the container is empty.
+
+> **Corrected 2026-08-18, ADR 116.** The sentence that stood here said
+> "nothing pushes the position's ticker down through the view's `DISTINCT
+> ON`", generalising from one measurement of the *whole* view. Postgres
+> does push a **constant** predicate down through `DISTINCT ON`: a
+> single-ticker read measured **17 ms** all along. What it cannot push is a
+> **correlated** one, which is why `v_positions` - joining on `p.ticker` -
+> paid the full 24.5 s to return one row, and why the ticker page was never
+> the query at risk.
+>
+> ADR 116 then rewrote the view as a loose index scan and the distinction
+> stopped mattering: the whole view is **27 ms**, `v_positions` **23.5 ms**,
+> a single ticker **1.4 ms**. The instruction to measure before building an
+> interactive page stands; the number it was reacting to is gone.
 
 **748 `order_intents` rows on the live research database.** Found while
 writing the integration test. `test_positions.py` truncates `positions`
@@ -2688,8 +2699,81 @@ Two things worth carrying over anyway.
   are how a client tells "we cannot say" from "it never happened". A web
   route rendering the same union needs the same distinction, and it is
   already decided.
-- **`v_ticker_state` still costs 26.5 s** (Session 15). The ticker page is
-  built on it.
+- **`v_ticker_state` no longer costs 26.5 s** (ADR 116, same day). It is
+  27 ms for the whole view and 1.4 ms for one ticker, and the Session 15
+  note that framed this as a ticker-page problem was wrong about which
+  query was slow.
+
+---
+
+## ADR 116 — `v_ticker_state` rewritten, 2026-08-18
+
+Not a session. A performance fix taken on its own because Sessions 17 and 18
+are blocked on a stack decision and this one is stack-independent: ADR 076
+makes views the shared contract, so a view's cost is a cost every consumer
+pays regardless of who serves the routes.
+
+### Measured
+
+`max_parallel_workers_per_gather = 0`, developer database, 2,912,426 daily
+indicator rows, 612 tickers.
+
+| Query | Before | After | |
+|---|---|---|---|
+| `SELECT count(*) FROM v_ticker_state` | 23.8 s | **27 ms** | 880x |
+| `SELECT * FROM v_positions WHERE id = 44` | 24.5 s | **23.5 ms** | 1040x |
+| `SELECT * FROM v_ticker_state WHERE ticker = 'TSM'` | 17 ms | **1.4 ms** | 12x |
+
+Index build: 4.7 s. Migration `a3c8e15d40b7`, reversible.
+
+### The Session 15 claim this corrects
+
+`RESULTS.md`'s Session 15 note said "nothing pushes the position's ticker
+down through the view's `DISTINCT ON`", and repeated it into `BUILD.md`,
+`TESTS.md`, `sessions/README.md`, Session 17's plan, and a test docstring.
+
+It generalised from a single measurement of the **whole** view. Postgres
+pushes a *constant* predicate down through `DISTINCT ON` perfectly well —
+the single-ticker read was 17 ms all along. What it cannot push is a
+*correlated* one, which is why `v_positions`, joining on `p.ticker`, paid
+24.5 s to return one row. **The ticker page was never the query at risk**,
+which is the opposite of what five documents said.
+
+All six places are corrected in place rather than quietly edited, because
+the wrong version had already been used to plan Session 17.
+
+### Two rejected attempts, both measured first
+
+**A LATERAL over the unchanged view.** `LEFT JOIN LATERAL (SELECT * FROM
+v_ticker_state WHERE ticker = p.ticker)` produced a byte-identical plan at
+22.7 s. A correlated subquery with no volatile function and no `LIMIT` gets
+pulled up and the lateral flattened away. The `LIMIT` in the shipped
+version prevents that *and* makes the scan stop early — it is load-bearing
+twice.
+
+**Joins inside a `DISTINCT ON`.** Correct, and only 1.7x faster at 13.7 s:
+it kept the 2.9M-row join to `bars` and added an external merge sort of
+74 MB to disk. This one nearly shipped on the strength of a 62x measurement
+that had actually been taken against a *different* variant — one that
+dropped the `bars` join entirely and would have changed behaviour. Measuring
+the thing you are about to ship, rather than the thing you measured earlier,
+is the lesson.
+
+### Equivalence
+
+`tests/integration/test_v_ticker_state_rewrite.py` rebuilds the pre-116 view
+from `jobs/views.py::V_TICKER_STATE_DDL_PRE_116` under a second name and
+diffs both directions with `EXCEPT` over whole rows: **zero differences
+across all 612**. It also re-derives each row's expected `as_of` from
+`indicators` and `bars` independently, so the suite does not merely confirm
+that two views agree with each other.
+
+The rewrite keeps an `EXISTS (bars ...)` filter that currently never
+excludes anything — zero of 2,912,426 daily indicator rows lack a bar. It
+is kept because the old view's inner join *would* have fallen through to
+the next-newest row in that case, `indicators` has no foreign key to
+`bars`, and a behaviour change justified by a measurement that happens to
+hold today is how this class of defect arrives.
 
 ---
 
