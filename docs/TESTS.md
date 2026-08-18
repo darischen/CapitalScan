@@ -1087,12 +1087,29 @@ other than the engine:
 
 ### Phase 4
 
-**All five closed as of 2026-08-14.**
+**All five closed as of 2026-08-14, rechecked 2026-08-18 under `86e91448a65aa40b`.**
 
-- Three-arm comparison produces a chart — **closed, Session 14.2.** `reports/phase4/three_arms_697f3ae71428d392_{train,validate}.svg`: three polylines, one 2.5th-97.5th band, summary table read from `benchmarks`, and the verdict stated in words on the chart
+The recheck was needed because three `config_hash` moves followed the original close
+(ADR 109's same-day band, `ExitParams.exit_stoch_source`, ADR 110's k_fast flip), and the
+eight rendered artifacts still described `697f3ae71428d392`. The statistics had been
+recomputed; the pictures had not. All five criteria hold under the new config, and the
+artifacts are now regenerable with `cscan stats artifacts --config-hash <hash>`.
+
+One criterion looks like a failure and is not. Criterion 3 reads "every headline cell",
+and only 64 of 180 rendered cells carry a `q_value` -- because the Benjamini-Hochberg
+family is the **pooled** cells only. Era breakdowns are descriptive, and folding them in
+would inflate the family with non-independent tests. The same 72-of-192 ratio holds under
+`697f3ae71428d392`, so this is longstanding behaviour rather than drift.
+
+What did change is the verdict now printed on the three-arm chart: the signal arm
+**clears** the null's 97.5th percentile on validate (+12.63% against +6.36%), where it
+sat below the null on both splits before. `RESULTS.md` records why that is very likely
+noise -- better out-of-sample than in-sample, on a sample that had just halved.
+
+- Three-arm comparison produces a chart — **closed, Session 14.2.** `reports/phase4/three_arms_<config_hash>_{train,validate}.svg`: three polylines, one 2.5th-97.5th band, summary table read from `benchmarks`, and the verdict stated in words on the chart
 - Random-entry null spans 200 replications — **closed, Session 13.** 200 rows in `benchmarks` with `replication` 1-200, reproducible within a `config_hash` and different across configs
 - Every headline cell reports `n_eff`, CI, baseline, and q-value — **closed, Session 12**, extended to fourteen cells by ADR 108
-- Drawdown slice renders — **closed, Session 14.3.** `reports/phase4/drawdown_slice_697f3ae71428d392_{train,validate}.svg` plus its CSV; intervals read from stored `cell_stats`, suppressed buckets rendered with `n_eff` rather than omitted
+- Drawdown slice renders — **closed, Session 14.3.** `reports/phase4/drawdown_slice_<config_hash>_{train,validate}.svg` plus its CSV; intervals read from stored `cell_stats`, suppressed buckets rendered with `n_eff` rather than omitted
 - Random-walk null test passes on the full pipeline — **closed, Session 11.4**
 
 **What the gate does not assert.** Every one of these is a criterion about the *machinery*
