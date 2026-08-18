@@ -834,15 +834,41 @@ def scan(
     bear_close_only: bool = typer.Option(
         False,
         "--bear-close-only",
-        help="Show only ADR 108 close-confirmed reversals: the day opened above where it "
-        "closed, and the close still held at or above the prior upper band",
+        help="Show only ADR 109 close-confirmed reversals: the day opened above where it "
+        "closed, and the close still held at or above that same day's upper band",
+    ),
+    actionable: bool = typer.Option(
+        False,
+        "--actionable",
+        help="Longs on confluence alone, shorts only when a close-confirmed reversal "
+        "agrees. Asymmetric by design (ADR 016) — see the command docstring",
     ),
 ) -> None:
     """Query detected events (ADR 049).
 
-    `--confluence-only` and `--bear-close-only` compose: passing both shows
-    the intersection, which is the population the poller's live tag
-    highlights.
+    `--confluence-only` and `--bear-close-only` compose as an **AND**:
+    passing both shows the intersection, which is the population the
+    poller's live tag highlights.
+
+    `--actionable` is the **OR** the other two cannot express (user's
+    request, 2026-08-17):
+
+        confluence_low  OR  (confluence_high AND bear_close_above_upper)
+
+    A long needs confluence on its own; a short needs confluence *plus*
+    close confirmation. That asymmetry is deliberate and is ADR 016's
+    position that the short side is not a mirror of the long — a bounce off
+    the lower band is one event, while a push through the upper band is
+    only interesting once the day gives it back.
+
+    On 2026-08-03..2026-08-14 this selected 37 rows: 30 longs and 7 shorts,
+    excluding 73 `confluence_high` rows with no reversal to confirm them.
+
+    `--actionable` is mutually exclusive with the other two rather than
+    composing with them. Intersecting an OR-of-two-conditions with an
+    AND-of-two-others produces a set nobody can state in one sentence, and
+    a filter whose meaning cannot be stated is a filter that gets
+    misread.
     """
     from datetime import date as date_cls
 
@@ -870,6 +896,34 @@ def scan(
     # "did this fire" rather than "did this outrank everything else".
     def _fired(row, wanted: set[str]) -> bool:
         return bool(wanted & set(row or []))
+
+    if actionable and (confluence_only or bear_close_only):
+        console.print(
+            "[red]error[/red]: --actionable already states its own rule and does not "
+            "compose with --confluence-only or --bear-close-only. Pass it alone."
+        )
+        raise typer.Exit(code=2)
+
+    if actionable:
+        # The long side asks only for confluence. The short side asks for
+        # confluence AND the close-confirmed reversal, so an upper-band
+        # push with no giveback is not surfaced.
+        #
+        # `bear_close_above_upper` alone is deliberately *not* enough: it
+        # fires without any stochastic extreme (see
+        # `test_the_flag_alone_fires_without_any_stochastic_extreme`), and
+        # this filter is the "act on it" view rather than the "it fired"
+        # view. `--bear-close-only` remains the way to see those.
+        keep = result["signal_types_all"].map(
+            lambda t: (
+                _fired(t, {"confluence_low"})
+                or (_fired(t, {"confluence_high"}) and _fired(t, {"bear_close_above_upper"}))
+            )
+        )
+        result = result[keep]
+        if result.empty:
+            console.print("[yellow]no actionable events found[/yellow]")
+            raise typer.Exit(code=0)
 
     if confluence_only:
         keep = result["signal_types_all"].map(
@@ -901,7 +955,23 @@ def scan(
     csv_export["signal_types_all"] = csv_export["signal_types_all"].apply(_map_signal_types_for_csv)
     csv_export["side"] = csv_export["side"].map(lambda x: SIDE_LABELS.get(x, x))
 
-    csv_export = csv_export.rename(columns=COLUMN_LABELS)
+    # Mark which %K column actually decided oversold/overbought.
+    #
+    # `SignalParams.stoch_source` selects it, and ADR 110 moved it to
+    # `k_fast`. `core/signals.py` still records `k_full` on every
+    # `SignalHit` unconditionally, so the CSV exports both columns and
+    # neither says which one fired the row. A reader checking a signal
+    # against a chart has no way to tell — the same shape of defect as the
+    # `t-1` band column ADR 109 exposed.
+    #
+    # Read from the resolved config rather than hardcoded, so a `k_full`
+    # run labels itself correctly too.
+    labels = dict(COLUMN_LABELS)
+    trigger = _resolve_config_or_exit().signals.stoch_source
+    if trigger in labels:
+        labels[trigger] = f"{labels[trigger]} [TRIGGER]"
+
+    csv_export = csv_export.rename(columns=labels)
     csv_export.to_csv(csv_path, index=False)
     console.print(f"\n[green]saved to[/green] {csv_path}")
 
@@ -941,6 +1011,10 @@ def poll(
         sp=config.signals,
         ep=config.exits,
         stats=config.stats,
+        # The whole config, so `run_poll` hashes what was actually resolved
+        # rather than rebuilding a partial one and minting an identity no
+        # other job writes under.
+        config=config,
     )
     console.print(f"poll: session ended, {report.rows_written} events fired")
     if report.notes:

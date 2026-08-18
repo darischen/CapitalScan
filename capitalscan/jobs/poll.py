@@ -442,6 +442,7 @@ def run_poll(
     sp: SignalParams | None = None,
     ep: ExitParams | None = None,
     stats: StatsParams | None = None,
+    config: Config | None = None,
     notifiers: list[Notifier] | None = None,
     now_fn: Callable[[], datetime] = _now_et,
     sleep_fn: Callable[[float], None] = time.sleep,
@@ -458,7 +459,23 @@ def run_poll(
     sp = sp or SignalParams()
     ep = ep or ExitParams()
     stats = stats or StatsParams()
-    chash = config_hash(Config(signals=sp))
+    # `config` when the caller has one, never `Config(signals=sp)`.
+    #
+    # That rebuild dropped every non-`signals` section, so a `config.toml`
+    # or `CAPSCAN_*` override of `universe`, `splits`, `indicators`, or
+    # `costs` produced a hash here that `run_events` and `run_backtest`
+    # would not produce for the identical resolved config. The poller then
+    # wrote live rows under an identity no other job used, and they would
+    # never be overwritten by the nightly pass or joined by any statistic.
+    #
+    # Exactly the defect `test_events_backtest_config_agreement.py` was
+    # written for after it was found in `run_events` — same rebuild, same
+    # dropped sections, different module. Harmless while no override is
+    # set, which is why it survived: the two hashes agree on defaults.
+    #
+    # `cli.poll` already resolves the full config (ADR 091's
+    # all-or-nothing contract) and simply was not passing it.
+    chash = config_hash(config or Config(signals=sp, exits=ep, stats=stats))
     notifiers = notifiers if notifiers is not None else notify.active_notifiers()
 
     with run_job(engine, "poll", {"interval": interval}) as report:
