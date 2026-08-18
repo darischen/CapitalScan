@@ -2425,6 +2425,139 @@ After the vacuum: `n_dead_tup` 0, statistics refreshed. On-disk size stays 13 GB
 
 ---
 
+## Session 15 — the handler layer, 2026-08-18
+
+**This session produced no measurements about the market, and the note says
+so rather than being omitted.** An absent session reads as an incomplete
+one. What it produced is a contract: seven functions between the database
+and every future surface, each of which either returns a complete
+statistical claim or refuses to return one.
+
+Run: no backtest, no statistics job, no ingest. One migration.
+
+### What was built
+
+| | |
+|---|---|
+| `capitalscan/handlers/` | 10 modules: `types`, `validate`, `enums`, `errors`, `_db`, and one per tool |
+| Tools | `screen_signals`, `get_stats`, `get_indicators`, `get_events`, `predict`, `explain_signal`, `get_universe` |
+| Tests added | 209 unit, 11 integration |
+| Migration | `d7f4b91c26ea` — `serving_config` and a rebuilt `v_positions` |
+| ADRs | 114 (screener columns), 115 (`v_positions` reads a settings row) |
+| Fast tier after | 1,644 → 1,853 passing, `core/` coverage 95.83% |
+
+### The shape ADR 112 forced
+
+Nothing here is pessimism about the product. It is what the measurement
+says, expressed as types.
+
+| Measured (ADR 112) | Consequence in the layer |
+|---|---|
+| 100 of 224 train cells suppress at `n_eff < 30` | `Suppressed` is the *common* return of `get_stats`, not an edge case, and it carries no probability field at all |
+| 0 of 124 unsuppressed cells survive FDR | `CellStats.survives_fdr` is `False` on every cell that returns; the flag is computed once here rather than by three consumers |
+| Minimum q-value 0.8492 train / 0.7061 validate | The q-value renders **alongside** the hit rate, never in place of it. A "not significant" label is less informative than the number |
+| Every edge interval spans zero | `edge` is treated as a probability by the validator, so it cannot be returned without its interval |
+
+ADR 114 follows from the first two rows. The screener's default is the event
+feed; the statistical fields sit behind `with_stats=True`, and in that mode
+`cell_stats` is **not queried at all** rather than queried and hidden.
+
+### `v_positions`, rebuilt (ADR 095 → ADR 115)
+
+Deferred out of Phase 4 by ADR 095 because Phase 4 never read the view.
+Phase 5 does.
+
+Five defects, four named by ADR 095 and one found while writing the parity
+fixture:
+
+| Was | Now |
+|---|---|
+| `k_full >= (80)::numeric` | `serving_config.exit_stoch_threshold` |
+| `(CURRENT_DATE - entry_date) >= 5` | `serving_config.max_hold_days`, counted in sessions |
+| Long threshold applied to shorts | `exit_stoch_threshold_short` when `side = 'short'` |
+| `k_full` regardless of policy | The column `exit_stoch_source` names (ADR 110) |
+| `exit_signal_mid_band` always published | NULL unless `exit_on_mid_band` |
+| `days_held` in calendar days | `trading_days` count |
+
+The last one is the one nobody had written down. `max_hold_days` counts
+bars — `core/exits.py` walks `fwd_bars` and `holding_days` is `exit_idx +
+1` — while the view counted calendar days. A Thursday entry read 4 calendar
+days and 2 sessions on the following Monday, so `exit_signal_timeout` fired
+a session early over every weekend and two early over a holiday weekend.
+Nothing consumed the flag yet, so nothing was wrong in production; it would
+have been wrong the day `/positions` was rebuilt.
+
+ADR 115 reverses ADR 095's stated preference. ADR 095 preferred generating
+the view's DDL from `ExitParams` in the migration; that still bakes `80`
+into the database, `pg_dump` still writes it into `db/schema.sql`, and
+`threshold_lint.KNOWN_EXCEPTIONS` would have had to exempt it forever. The
+settings row leaves no literal in any checked-in SQL, so the exemption was
+**deleted** on 2026-08-18 — which is what ADR 095's own note asked for.
+
+### Measured while building
+
+**`v_ticker_state` costs 26.5 s.** Materializing it once, 612 tickers,
+`max_parallel_workers_per_gather = 0`, on the developer database
+(4.5M+ `indicators` rows). With parallelism on it fails outright:
+`could not resize shared memory segment ... No space left on device`.
+
+Every `SELECT ... FROM v_positions` pays that, because nothing pushes the
+position's ticker down through the view's `DISTINCT ON (ticker)`. That is
+why `test_v_positions_config.py` takes minutes locally and seconds in CI,
+where the container is empty. **Session 17 builds the ticker page on the
+same view** and should measure before trusting it — an interactive page
+cannot spend 26 s per load.
+
+**748 `order_intents` rows on the live research database.** Found while
+writing the integration test. `test_positions.py` truncates `positions`
+and `order_intents` around every test, and `TRUNCATE positions CASCADE`
+would have taken all 748. That convention is safe on a CI container built
+from migrations and unsafe on a developer database; the new module records
+the ids it creates and deletes exactly those. **The existing module was not
+changed** — that is a separate decision about whether those rows matter, and
+it belongs to whoever knows what they are.
+
+### `runs` now times the whole backtest
+
+`cli.py::backtest` closed its `with ingest.run_job(...)` block before
+calling `run_harness`, so `runs.finished_at - started_at` measured the write
+phase alone. The 2026-08-13 full-universe run measured **4h55m by wall clock
+and 32m55s in `runs`**, and a 2026-08-09 session read those durations as the
+whole job and briefly "corrected" `CLAUDE.md` to ~36 minutes on the strength
+of them.
+
+The harness now runs inside the block. Two consequences, both intended: a
+failing harness marks the run `failed` rather than `ok`, and ADR 059's sweep
+gate reads `status = 'ok'` — so a sweep can no longer start on top of a run
+whose harness failed. The harness outcome also lands in `runs.notes`.
+
+Durations recorded before 2026-08-18 remain write-phase-only and should be
+read that way.
+
+### Defects found by running things
+
+1. **`explain_signal` accepted `split='holdout'`** whenever `target_pct` was
+   omitted, because the split was validated inside the conditional branch
+   that looked up the cell. A refusal that depends on another argument is
+   not a refusal. Found by `test_handlers_contract.py` on its first run,
+   which is why that test parameterizes over `inspect.signature` rather than
+   over a list of handlers someone expected to check.
+2. **`v_positions.days_held`**, above.
+3. **`test_threshold_lint.py` counted findings**, so it broke the moment a
+   docstring quoted the defect it described. Replaced with two assertions
+   that derive from the exception list in both directions: every entry still
+   matches something, and every finding is on the list.
+
+### What Session 16 inherits
+
+Seven handlers with stable signatures, typed results that serialize
+cleanly, the validator callable on its own (`handlers.validate.validate`),
+and `handlers.enums` as the single source for MCP tool schemas. ADR 027
+requires the MCP server to add no query logic; if it needs to, the handler
+contract was wrong and the fix belongs here.
+
+---
+
 ## Holdout
 
 **Evaluated once. Published whatever it says.**

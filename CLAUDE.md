@@ -128,7 +128,7 @@ Long jobs, measured, so nobody starts one blind:
 
 - `cscan backtest --workers 8`, full universe: **2h48m to 4h55m**. Write phase 20-36 min; the validation harness is single-threaded and takes the rest regardless of worker count — more workers do not shorten it.
   - **Re-measured 2026-08-13 by wall clock: 4h55m total** (write 35m50s, harness ~4h19m), on 627,380 rows / 590 tickers under `697f3ae71428d392`. That is 1.75x the 2h48m figure, so treat 2h48m as a floor rather than an estimate. Two plausible contributors, neither verified: the event count grew slightly, and ADR 108 added a seventh signal type, which widens `signal_types_all` and the cluster tagging the harness walks. **Budget five hours, not three.**
-  - **`runs` does not measure this.** `cli.py::backtest` closes its `with ingest.run_job(...)` block before calling `run_harness`, so `finished_at - started_at` times the write phase **only**. Measured write phases sit at 20-38 min (`SELECT run_id, finished_at-started_at FROM runs WHERE job='backtest'`), which is consistent with the 2h48m total above, not a contradiction of it. A 2026-08-09 session read those durations as the whole job and briefly "corrected" this line to ~36 min. It was wrong. The harness is untimed anywhere; wall-clock is the only way to measure it.
+  - **`runs` measures this from 2026-08-18, and did not before.** `cli.py::backtest` used to close its `with ingest.run_job(...)` block before calling `run_harness`, so `finished_at - started_at` timed the write phase **only** — 20-38 min against a 2h48m-to-4h55m job. A 2026-08-09 session read those durations as the whole job and briefly "corrected" this line to ~36 min. It was wrong. Session 15 moved the harness inside the block, so new rows time the whole job and a failing harness now records `status='failed'`. **Rows written before 2026-08-18 are still write-phase-only** and must be read that way; check `started_at` before quoting one.
   - `cscan weekly` genuinely is ~36 min: it calls `run_backtest` and deliberately skips the harness (`cli.py::weekly` docstring). Do not read a weekly duration as a `cscan backtest` duration.
 - `cscan bars --hourly --backfill`, all tickers: **~4.5-5.5 hours**. Yahoo caps hourly at 60 days per request, so backfill walks 13 sequential windows per ticker at 0.5 req/s. No incremental path — already-stored data does not reduce the cost.
 - `cscan universe --quarter`, one quarter: ~10s.
@@ -223,6 +223,14 @@ For every migration:
 | Current revision | `cscan db status` |
 | Apply | `cscan db migrate` |
 | Undo one | `cscan db rollback --yes` |
+| Push `ExitParams` to the serving views | `cscan db sync-config` |
+
+**`cscan db sync-config` is not optional after a threshold change.**
+`v_positions` reads its exit policy from the one-row `serving_config` table
+rather than from SQL literals (ADR 115), so sweeping `exit_stoch_threshold`
+moves the backtest and leaves the position page reporting the old number
+until this runs. `test_v_positions_config.py::test_the_stored_row_matches_
+the_live_config` fails when the two disagree and names this command.
 
 `cscan db migrate` applies to **both** databases by default. Single-target requires an explicit flag. Forgetting the second database is the main way this goes wrong. A target whose env var is unset is skipped with a visible `skip <target>: <VAR> not set`, so read the output rather than assuming both ran.
 

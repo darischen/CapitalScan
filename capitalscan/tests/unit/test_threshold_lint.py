@@ -264,24 +264,44 @@ def test_every_known_exception_is_annotated_with_an_adr():
 
 
 def test_repo_is_clean_after_known_exceptions():
-    """Pointed at the repository as it stands (production Python plus
-    checked-in SQL), the matcher reports zero findings once the one
-    documented, ADR-095-authorized exception (`v_positions`, deferred to
-    the Phase 5 serving-layer rebuild — out of this session's scope) is
-    excluded. Any new finding here is real and must be fixed or explicitly
-    annotated, not silently absorbed into this test."""
+    """Zero findings across production Python and checked-in SQL, once the
+    documented exceptions are excluded.
+
+    Any new finding here is real and must be fixed or explicitly annotated,
+    never silently absorbed into this test."""
     findings = tl.scan_repo()
     assert findings == [], "\n".join(str(f) for f in findings)
 
 
-def test_repo_scan_without_exceptions_finds_exactly_the_known_v_positions_defect():
-    """Without the exception list, the repository as it stands has exactly
-    the two known instances of the same defect: the live `db/schema.sql`
-    view and the historical migration that first created it. If this count
-    ever changes, either a new instance appeared (fix it) or an old one was
-    fixed (shrink `KNOWN_EXCEPTIONS` to match, per its own docstring)."""
+def test_every_known_exception_is_still_found_without_the_list():
+    """The exception list is checked against the matcher, not trusted.
+
+    An entry that no longer matches anything describes a defect that was
+    fixed, and it must be deleted. ADR 095's own note - "its continued
+    presence past that point is itself a signal the rebuild missed a spot"
+    - is why this is an assertion rather than a bare count. The
+    `db/schema.sql` entry was removed on 2026-08-18 when session 15.4
+    rebuilt `v_positions` against `serving_config`; this test is what would
+    have caught it being left behind.
+    """
     findings = tl.scan_repo(apply_known_exceptions=False)
-    assert len(findings) == 2
+    for path_part, line_part in tl.KNOWN_EXCEPTIONS:
+        assert any(path_part in f.path.as_posix() and line_part in f.text for f in findings), (
+            f"KNOWN_EXCEPTIONS entry ({path_part}, {line_part}) matches nothing; delete it"
+        )
+
+
+def test_the_only_findings_left_are_the_documented_ones():
+    """Everything the matcher sees is on the list, so the list is complete.
+
+    Paired with the test above: that one proves no entry is stale, this one
+    proves no finding is unlisted. Together they pin the exception list to
+    the repository rather than to a count that drifts every time a
+    docstring quotes the defect it is describing.
+    """
+    findings = tl.scan_repo(apply_known_exceptions=False)
+    assert findings, "the matcher found nothing at all, which means it stopped working"
     for f in findings:
+        assert tl._is_known_exception(f), f"undocumented finding: {f}"
         assert f.column == "k_full"
         assert f.literal == "80"

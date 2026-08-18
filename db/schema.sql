@@ -695,6 +695,28 @@ CREATE TABLE public.scheduled_runs (
 ALTER TABLE public.scheduled_runs OWNER TO capscan;
 
 --
+-- Name: serving_config; Type: TABLE; Schema: public; Owner: capscan
+--
+
+CREATE TABLE public.serving_config (
+    only_row boolean DEFAULT true NOT NULL,
+    config_hash text NOT NULL,
+    exit_stoch_source text NOT NULL,
+    exit_stoch_threshold numeric(12,4) NOT NULL,
+    exit_stoch_threshold_short numeric(12,4) NOT NULL,
+    exit_on_stoch_80 boolean NOT NULL,
+    exit_on_upper_band boolean NOT NULL,
+    exit_on_mid_band boolean NOT NULL,
+    max_hold_days integer NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT serving_config_only_row_check CHECK (only_row),
+    CONSTRAINT serving_config_stoch_source_check CHECK ((exit_stoch_source = ANY (ARRAY['k_full'::text, 'k_fast'::text])))
+);
+
+
+ALTER TABLE public.serving_config OWNER TO capscan;
+
+--
 -- Name: shares_outstanding; Type: TABLE; Schema: public; Owner: capscan
 --
 
@@ -1030,13 +1052,42 @@ CREATE VIEW public.v_positions AS
             WHEN (p.status = 'open'::text) THEN ((s.close - p.entry_price) / p.entry_price)
             ELSE p.realized_ret
         END AS unrealized_or_realized_ret,
-    (CURRENT_DATE - p.entry_date) AS days_held,
-    (s.k_full >= (80)::numeric) AS exit_signal_stoch,
-    (s.close >= s.bb_upper) AS exit_signal_upper_band,
-    (s.close >= s.bb_mid) AS exit_signal_mid_band,
-    ((CURRENT_DATE - p.entry_date) >= 5) AS exit_signal_timeout
-   FROM (public.positions p
-     LEFT JOIN public.v_ticker_state s ON ((s.ticker = p.ticker)));
+    ( SELECT count(*) AS count
+           FROM public.trading_days td
+          WHERE ((td.d > p.entry_date) AND (td.d <= CURRENT_DATE))) AS days_held,
+        CASE
+            WHEN (NOT c.exit_on_stoch_80) THEN NULL::boolean
+            WHEN (p.side = 'short'::text) THEN (
+            CASE
+                WHEN (c.exit_stoch_source = 'k_fast'::text) THEN s.k_fast
+                ELSE s.k_full
+            END <= c.exit_stoch_threshold_short)
+            ELSE (
+            CASE
+                WHEN (c.exit_stoch_source = 'k_fast'::text) THEN s.k_fast
+                ELSE s.k_full
+            END >= c.exit_stoch_threshold)
+        END AS exit_signal_stoch,
+        CASE
+            WHEN (NOT c.exit_on_upper_band) THEN NULL::boolean
+            WHEN (p.side = 'short'::text) THEN (s.close <= s.bb_lower)
+            ELSE (s.close >= s.bb_upper)
+        END AS exit_signal_upper_band,
+        CASE
+            WHEN (NOT c.exit_on_mid_band) THEN NULL::boolean
+            WHEN (p.side = 'short'::text) THEN (s.close <= s.bb_mid)
+            ELSE (s.close >= s.bb_mid)
+        END AS exit_signal_mid_band,
+    (( SELECT count(*) AS count
+           FROM public.trading_days td
+          WHERE ((td.d > p.entry_date) AND (td.d <= CURRENT_DATE))) >= c.max_hold_days) AS exit_signal_timeout,
+        CASE
+            WHEN (c.exit_stoch_source = 'k_fast'::text) THEN s.k_fast
+            ELSE s.k_full
+        END AS exit_stoch_k
+   FROM ((public.positions p
+     LEFT JOIN public.v_ticker_state s ON ((s.ticker = p.ticker)))
+     LEFT JOIN public.serving_config c ON (true));
 
 
 ALTER VIEW public.v_positions OWNER TO capscan;
@@ -1426,6 +1477,14 @@ ALTER TABLE ONLY public.runs
 
 ALTER TABLE ONLY public.scheduled_runs
     ADD CONSTRAINT scheduled_runs_pkey PRIMARY KEY (job, scheduled_for);
+
+
+--
+-- Name: serving_config serving_config_pkey; Type: CONSTRAINT; Schema: public; Owner: capscan
+--
+
+ALTER TABLE ONLY public.serving_config
+    ADD CONSTRAINT serving_config_pkey PRIMARY KEY (only_row);
 
 
 --

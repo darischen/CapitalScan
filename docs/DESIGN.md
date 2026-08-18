@@ -2287,25 +2287,68 @@ Phase 7 adds one month of Polygon, $29-199, once.
 
 Seven tools, closed enums, dates validated against the ingested window, `limit` capped server-side at 200 (ADR 074).
 
-```python
-screen_signals(date, signal_types=["confluence_low"], universe="trade",
-               dd_bucket=None, min_strength=None, limit=50) -> ScreenResult
+**As built, session 15** (`capitalscan/handlers/`). The signatures below are
+the shipped ones; four differences from the original spec are noted after.
 
-get_stats(signal_type, target_pct=3.0, dd_bucket=None, signal_strength=None,
-          entry_kind="next_open", split="validate", ticker=None)
+```python
+screen_signals(date_=None, signal_types=None, universe="trade",
+               dd_bucket=None, min_strength=None, limit=None,
+               with_stats=False) -> ScreenResult
+
+get_stats(signal_type, target_pct, dd_bucket, split,
+          entry_kind="next_open", signal_strength=None,
+          horizon_days=None, era=None, arm="signal")
           -> CellStats | Suppressed
 
-get_indicators(ticker, start, end, fields) -> IndicatorSeries
+get_indicators(ticker, start=None, end=None, fields=None,
+               limit=None) -> IndicatorSeries
 
 get_events(ticker=None, start=None, end=None, signal_types=None,
-           cluster_head_only=True, limit=200) -> EventList
+           cluster_head_only=True, entry_kind="next_open", split=None,
+           limit=None) -> EventList
 
 predict(ticker, as_of=None) -> Prediction | NotFound
 
-explain_signal(ticker, date) -> Explanation     # features, cell, SHAP top-5
+explain_signal(ticker, date_, entry_kind="next_open", split=None,
+               target_pct=None) -> Explanation    # features and the cell
 
-get_universe(as_of=None) -> UniverseResult      # per-criterion pass/fail
+get_universe(as_of=None, universe=None) -> UniverseResult
 ```
+
+**Four differences from the spec above, each deliberate.**
+
+*`get_stats` takes no `ticker`.* `cell_stats` has no ticker dimension — ADR
+102 fixed the grid at side x signal type x drawdown bucket, and ADR 104 made
+the breadth denominator the train universe rather than any single name. A
+`ticker` argument could therefore only be accepted and ignored, which is the
+worst of the three options. Per-ticker history is `get_events(ticker=...)`.
+
+*`get_stats` has no `target_pct` default.* `v_screen` pins 0.03 in SQL and
+§11.2 quotes "up 3% within 5 sessions", but a fourth copy of that number
+outside `core/config.py` violates invariant 9. Callers state the target they
+mean, and it is validated against `StatsParams.reach_targets`.
+
+*`explain_signal` returns no SHAP top-5.* A SHAP value is an attribution of
+a *model*, and no model exists (ADR 093 Provisional, ADR 113). The field is
+absent rather than present and empty: an empty list reads as "nothing
+contributed", which is a claim, and a missing field reads as "no model",
+which is the fact. Phase 6 adds it.
+
+*`screen_signals` returns no statistical columns by default.* ADR 114. With
+`with_stats=False` the handler does not query `cell_stats` at all, and the
+fields arrive on `ScreenRow.stats` as a `CellStats | Suppressed` union
+rather than as columns, so a suppressed cell cannot render as a blank
+number.
+
+**`split` is a closed enum of `train` and `validate`.** `holdout` is not a
+value any handler accepts, and `handlers/enums.py` raises `HoldoutRequested`
+naming ADR 019 and ADR 033. `test_holdout_firewall.py` guards the database;
+this guards the only layer that could ask it.
+
+**Every result carries `meta`** — `config_hash`, `as_of` (the most recent
+*bar* date, not the clock), `staleness_days` in **trading** days, `run_id`
+where one applies. §11.2's staleness banner cannot render what the handler
+does not say.
 
 `compare_positions` joins in Phase 2 with the trade log.
 
