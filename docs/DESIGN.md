@@ -2533,7 +2533,9 @@ Color carries meaning and nothing else: direction, suppressed grey, one selectio
 
 Charts win where shape matters (distributions, equity curves, calibration). Tables win where lookup matters (screener, cell grid).
 
-**Before writing any component, read the frontend-design skill** — it carries the environment's design tokens and styling constraints, which this document does not cover.
+**Before writing any component, read the frontend-design skill.** It is Anthropic's general design-guidance skill and **carries no CapitalScan tokens** — this line claimed otherwise until 2026-08-18. The constraints are the four sections around this one; the skill governs process, not palette.
+
+Its most useful warning for this brief: a near-black background with one bright accent is among the looks that read as generated rather than chosen. The direction above sits close to that, so the accent and the type pairing are where a real decision has to be made.
 
 ### 11.8 Libraries
 

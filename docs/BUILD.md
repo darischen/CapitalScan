@@ -51,9 +51,11 @@ rather than work around, so nothing was built until it was decided.
 MCP server to the handlers. ADR 070 and ADR 076 stand as written; the session plan was
 what needed correcting.
 
-Session 17 remains blocked on one thing ADR 118 does not resolve: CLAUDE.md requires
-reading the `frontend-design` skill before writing any component, and that skill is not
-available in this environment.
+**Session 17 is unblocked.** A second blocker was claimed and was not real: the
+`frontend-design` skill is installed and enabled as a *plugin* skill, under
+`~/.claude/plugins/` rather than `~/.claude/skills/`. Reading it then showed that
+CLAUDE.md and `DESIGN.md` §11.7 both described it wrongly — it carries general design
+guidance, not CapitalScan tokens. The constraints were always in `DESIGN.md` §11.6-11.9.
 
 **Session 16 is complete.** No migration. One dependency, `mcp>=1.2.0` (resolved to
 2.0.0), which brings `starlette` and `uvicorn`.

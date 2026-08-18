@@ -3481,7 +3481,11 @@ That reasoning is sound about today and wrong about the intent. The Vercel deplo
 
 *Session 18's chat layer routes through MCP*, which answers that session's own open question. Tool results reach the model having passed `handlers/validate.py`, because the MCP server calls the handlers. One validator on the path that carries a model, which is the path that needs it.
 
-**Still blocking Session 17, and not resolved by this ADR.** CLAUDE.md requires reading the `frontend-design` skill before writing any component, because it carries this environment's design tokens. That skill is not available in this environment. Components written without it will use invented tokens.
+**Nothing else blocks Session 17.**
+
+This ADR originally closed by naming a second blocker: that the `frontend-design` skill CLAUDE.md requires was unavailable. **That was wrong, corrected 2026-08-18 the same day.** It is a plugin skill, installed and enabled, living under `~/.claude/plugins/` rather than `~/.claude/skills/`; the claim came from checking one directory and generalising.
+
+Reading it surfaced a second error, in CLAUDE.md and `DESIGN.md` §11.7 rather than here: both said the skill "carries this environment's design tokens". It does not. It is general design guidance and holds no palette, type scale, or spacing system. The design constraints were always in `DESIGN.md` §11.6-11.9 and CLAUDE.md's own Frontend section.
 
 **Rejected.**
 
@@ -3554,11 +3558,12 @@ than enforced-by-raise on the web surface, and ADR 114's default has a
 second implementation. Both should be stated in whatever ADR resolves this
 rather than discovered in session 19.
 
-**A second blocker, independent of the choice.** CLAUDE.md requires reading
-the frontend-design skill before writing any component, because it carries
-this environment's design tokens. **That skill is not available in this
-environment.** Either make it available or accept that the first pass uses
-invented tokens and will be redone.
+**A second blocker was claimed here and was not real.** The
+`frontend-design` skill is installed and enabled; it is a *plugin* skill
+under `~/.claude/plugins/`, and the claim came from checking
+`~/.claude/skills/` alone. Corrected 2026-08-18. Reading it then showed that
+CLAUDE.md and `DESIGN.md` §11.7 both described it wrongly: it carries no
+CapitalScan tokens, only general design guidance.
 
 **Chat has a version of the same question.** §18.2 requires tool results to
 pass through `handlers/validate.py` before reaching the model. Under ADR 070

@@ -27,7 +27,7 @@ the cheap fix (session 15 §7). New files use
 18 were split into their own files when Session 16 closed, per that
 document's own instruction, and each opens with what changed since it was
 written.
-| 17 | 5 | `session17-screener-and-ticker.md` | Screener and ticker page. Stack decided (ADR 118); blocked only on the `frontend-design` skill |
+| 17 | 5 | `session17-screener-and-ticker.md` | Screener and ticker page. Stack decided (ADR 118). **Unblocked** |
 | 18 | 5 | `session18-research-and-chat.md` | Research page, chat, Phase 5 close. Chat routes through MCP (ADR 118); the system prompt is written |
 
 Sessions 0-8 predate the per-session plan convention. `HANDOFF.md` and
