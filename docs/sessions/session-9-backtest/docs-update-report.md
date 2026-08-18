@@ -94,4 +94,4 @@ findings.
   the distribution-is-an-aggregate point) all matched what's actually in the
   schema and event data.
 
-Report path: `.superpowers/sdd/2026-08-01-session-9-backtest/docs-update-report.md`
+Report path: `docs/sessions/session-9-backtest/docs-update-report.md`

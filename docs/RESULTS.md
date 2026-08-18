@@ -321,7 +321,7 @@ hourly bars. In fact Yahoo pre-adjusts a window of 1-41 sessions
 immediately before each ex-date, and the code divided those bars again,
 corrupting them. Verified on ANET: split ex_date 2024-12-04, the reject
 window runs 2024-10-07 through 2024-12-03 (41 sessions, source:
-`.superpowers/sdd/2026-08-01-session-9-backtest/hourly-residual-diagnosis.md`)
+`docs/sessions/session-9-backtest/hourly-residual-diagnosis.md`)
 — a contiguous block ending exactly one day before the split, with
 discrepancies landing at exact split multiples: ANET `99.87 / 24.9675 =
 4.0004`, NFLX `117.914 / 11.79 = 10.0012`.
@@ -629,7 +629,7 @@ other two splits.
 
 Full measurement detail, including the queries behind the event-rate check
 and the harness-gate debugging history, is in
-`.superpowers/sdd/2026-08-01-session-9-backtest/phase3-gate-measurement.md`
+`docs/sessions/session-9-backtest/phase3-gate-measurement.md`
 and `progress.md` in the same directory.
 
 **Caveats on record, not blocking the gate:**
@@ -826,7 +826,7 @@ GROUP BY 1,2,3,4 ORDER BY 1,2,3,4;
 87 rows (15 configs × 5 reasons + 3 `stop_mode='none'` configs × 4
 reasons, since `none` never emits `exit_reason='stop'`). Full table
 omitted here for length; retained in
-`.superpowers/sdd/2026-08-01-session-9-backtest/results-sweep-report.md`.
+`docs/sessions/session-9-backtest/results-sweep-report.md`.
 Qualitative shape, reading straight off the numbers with no
 interpretation: raising `stop_atr_k` (looser stop, `atr` mode) shifts
 mass from `stop` toward `timeout`; raising `target_pct` shifts mass from

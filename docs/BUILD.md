@@ -233,7 +233,7 @@ Three findings carry into Session 13:
 **Session 9 is complete.** Phase 3 gate passed on all five criteria — see
 `docs/RESULTS.md` (Phase 3 — Engine validation) for the run of record
 (`run_id=backtest_20260802T183304_6b1c5b52`, `config_hash=3e598c59e7d71eae`)
-and `.superpowers/sdd/2026-08-01-session-9-backtest/phase3-gate-measurement.md`
+and `docs/sessions/session-9-backtest/phase3-gate-measurement.md`
 for the full measurement detail. The 18-config sweep and the entry-reuse
 refactor decision remain open, tracked outside this document.
 

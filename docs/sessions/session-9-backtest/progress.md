@@ -101,7 +101,7 @@ Task 6: review found 1 Important (no entry_idx consistency guard; a caller passi
   absolute position 3. exit_reason uses .value, matching the text column.
   Surfaced `exit_idx` in the output dict for Task 7.
 Task 6: fix round 1/5 dispatched (resumed implementer a500d26be86a8c681)
-NOTE: wrote .superpowers/sdd/2026-08-01-session-9-backtest/CONSTRAINTS.md —
+NOTE: wrote docs/sessions/session-9-backtest/CONSTRAINTS.md —
   consolidated safety rules, invariants, conventions, and rulings C1-C5. Point
   every later dispatch at it instead of restating.
 Task 6: fix round 1/5 (2 addressed, 0 open; commits e42de7d..dc591a3)
@@ -662,7 +662,7 @@ resolve_config wiring: complete (commits 5bf5aec..5613eef, review clean)
 WHOLE-BRANCH REVIEW dispatched (sonnet, agent afd1f3b800a82aaba).
   Scope 03242ae..5613eef, 26 commits. The generated package was 415KB, too
   large for one read, so the controller built a SOURCE-ONLY diff at
-  .superpowers/sdd/2026-08-01-session-9-backtest/whole-branch-source.diff
+  docs/sessions/session-9-backtest/whole-branch-source.diff
   (187KB, 10 source files, -U8) plus the full stat summary including tests.
   Test files excluded deliberately: all 17 were reviewed per-task, and this pass
   is for cross-task defects. Reviewer was pointed at the ledger's deferred and
@@ -701,7 +701,7 @@ Fix dispatched (agent ac677b2b10b944eb0, in flight).
 universe.mcap_usd max was $17.3 QUADRILLION (2010), $23 quadrillion (2016).
 p99 was sane throughout (~$308B for 2010, correct), so: a few extreme outliers.
 DIAGNOSED (read-only agent ace0752715900cdf6, report at
-.superpowers/sdd/2026-08-01-session-9-backtest/mcap-outlier-diagnosis.md):
+docs/sessions/session-9-backtest/mcap-outlier-diagnosis.md):
   43 rows / 24 tickers, all source='sec_xbrl'. Individual filings carry the real
   share count scaled by an extra x1,000 or x1,000,000 IN THE RAW SEC XBRL DATA,
   ingested verbatim with no plausibility check, then multiplied by a correct
@@ -722,7 +722,7 @@ Fix dispatched (agent a7ce6051618040a38, in flight) — ingestion-side guard in
 
 ## CPI DEFLATOR (user asked; fetched 2026-08-02)
 
-Saved to .superpowers/sdd/2026-08-01-session-9-backtest/cpi-u-annual.md.
+Saved to docs/sessions/session-9-backtest/cpi-u-annual.md.
 BLS and Minneapolis Fed both 403 automated requests; used a secondary source
 reproducing the BLS CPI-U series. 2025 is a PARTIAL-year average; 2026 has no
 annual average at all, so any "2026 dollars" anchor is an extrapolation.
