@@ -1,0 +1,3 @@
+Ticker,Date,Signal Type,All Signals,Signal Strength,Direction,Upper Bound (Prior Day),Upper Bound (Same Day),20-day MA (Split-Adjusted),Lower Bound,bb_pctb,Full Stochastic Value,Fast Stochastic Value [TRIGGER],K Crossed Up,K Crossed Down,52-Week Drawdown Range,Price vs 200-day MA
+BUD,2026-08-17,Confluence Low,Confluence Low; Bollinger Band Lower Bound; Stochastic Oversold,3,Long,86.954389,87.34154,82.678,78.401611,0.155317,11.86513,12.035851,False,False,0-10,above_sma200
+EBAY,2026-08-17,Confluence Low,Confluence Low; Bollinger Band Lower Bound; Stochastic Oversold,3,Long,118.211307,118.280397,110.207,102.202693,0.05855,9.291005,8.0,True,False,10-20,above_sma200
