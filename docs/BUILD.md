@@ -35,7 +35,33 @@ Sessions 0-7 deliver v1 (Phase 1). Sessions 8-9 deliver Phases 2-3. Session 10 i
 
 | 14 | Closing Phase 4 | Equity-curve export, three-arm chart, ADR 015's drawdown slice, DESIGN 6.12's volatility-scaled ladder, ADR 092's matcher replacement | **Session 14 gate — complete, passed on all 8 items. Phase 4 gate closed on all five criteria.** Eight artifacts under `reports/phase4/`, all deterministic. **Every drawdown-slice interval crosses zero**, so ADR 015's central claim is not supported at this sample. See `RESULTS.md` Session 14 |
 
+| 15 | Handlers, tools, and the response validator | `handlers/` layer, seven tools, typed results, invariant-8 validator, closed enums, ADR 095's `v_positions` rebuild | **Session 15 gate — complete, passed on all 10 items.** Opens Phase 5. Seven handlers, one contract, no HTTP or display imports. **No probability leaves without `n_eff`, an interval, and a q-value**, enforced by the validator and by a structural test on the annotations. `split='holdout'` raises on every handler that takes one. `predict` returns `NotFound` for every input. `v_positions` reads `serving_config` instead of literals (ADR 115); five defects fixed, one of them not in ADR 095. See `RESULTS.md` Session 15 |
+
 Sessions 0-2 can run back to back in one sitting. Session 7 is mostly waiting.
+
+**Session 15 is complete. Phase 5 is open.**
+
+One migration, `d7f4b91c26ea`: `serving_config` plus a rebuilt `v_positions`. Applied
+to research on 2026-08-18 and `db/schema.sql` regenerated. Run `cscan db sync-config`
+after any change to `ExitParams`, and after migrating a database whose row predates a
+new field.
+
+The session has no measurements, and that is the honest description of it: it builds
+the layer three surfaces will call and returns nothing new about the market. What it
+does carry is a shape decided by ADR 112. `Suppressed` is the common return of
+`get_stats` rather than an edge case, `survives_fdr` is False on every cell that comes
+back, and the screener's default view (ADR 114) shows no statistical columns at all.
+
+Two defects found by running the tests rather than by reading:
+
+1. `explain_signal` validated `split` only inside a conditional branch, so
+   `split='holdout'` passed through whenever `target_pct` was omitted.
+2. `v_positions.days_held` counted calendar days while `max_hold_days` counts bars, so
+   `exit_signal_timeout` fired a session early over every weekend. Not a defect ADR 095
+   named; it surfaced while writing the parity fixture.
+
+And one hazard worth knowing before Session 17: **`v_ticker_state` takes 26.5 s to
+materialize** on the developer database, and every read of `v_positions` pays it.
 
 **Session 14 is complete, and Phase 4 is closed.** All five Phase 4 gate criteria in
 `TESTS.md` §10 now pass, the last two closed by 14.2's chart and 14.3's drawdown slice.

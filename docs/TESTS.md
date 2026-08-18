@@ -892,6 +892,303 @@ The purged-fold half of §3.5 stays absent. Purged walk-forward CV is Phase 6; t
 
 ---
 
+## Session 15: The handler layer
+
+Phase 5 opens. Nothing in this session has a user interface, so every
+guarantee it makes is made by a test or not at all.
+
+The five tests that carry the session are marked **(gate)**. The rest are
+inventory.
+
+### Unit Tests (capitalscan/tests/unit/test_handlers_contract.py) — 57 tests
+
+Structure, not behaviour. Each of these is something a careful reviewer
+would check by reading, and something a careless commit would break
+silently.
+
+- **(gate)** No result type declares a probability field without `n_eff`,
+  `ci_low`, `ci_high`, and `q_value` in the same object. Read off the
+  annotations, so it holds for every value the type can carry — including
+  the ones no test constructs.
+- `RESULT_TYPES` covers every result dataclass in `handlers/types.py`.
+  Without it, adding a `Forecast` with a bare `p_touch_3` and forgetting the
+  registry leaves the invariant-8 test green while the violation ships.
+- Every result type is a frozen dataclass.
+- `Suppressed` has no probability field at all, not a nulled one.
+- The probability rule does not capture `p_value_randomization` or
+  `q_value`. A p-value has no interval and requiring one would recurse.
+- No `handlers/` module imports `rich`, `fastapi`, `starlette`, `flask`,
+  `django`, `requests`, `httpx`, `aiohttp`, `urllib`, `typer`, or `click`.
+  Parsed from the AST, per module.
+- **(gate)** Every one of the seven handlers routes **every** value-returning
+  statement through `validated()`. Read from the AST rather than by calling:
+  a handler that validates its main return and falls out of an early branch
+  bare would pass a behavioural test on the one input the test picked, and
+  the early branches are exactly where `Suppressed` and `NotFound` come from.
+- Exactly seven tools, by name (ADR 074).
+- **(gate)** `split='holdout'` raises `HoldoutRequested` on every handler
+  whose signature takes a `split`. Parameterized over
+  `inspect.signature`, not over a hand-written list.
+- `holdout` is absent from `enums.SPLITS`, so a consumer iterating "every
+  split" to build a tab bar cannot reach it by accident.
+- `enums.split_bounds('holdout')` raises too — the date bounds are a side
+  door and it is shut.
+
+**This file found a defect on its first run.** `explain_signal` validated
+`split` only inside a conditional branch, so `split='holdout'` passed
+straight through whenever `target_pct` was omitted. A refusal that depends
+on another argument is not a refusal. That is why the holdout test
+parameterizes over the signature rather than naming the three handlers
+someone expected to check.
+
+### Unit Tests (capitalscan/tests/unit/test_handlers_validate.py) — 26 tests
+
+The guard's own coverage, complete. A guard with untested branches is a
+function that happens to run.
+
+Every failure mode is constructed by hand. The handlers cannot currently
+build these objects, which is the point — the validator exists for the
+version of the code that can.
+
+- A probability with no `n_eff` raises; with half an interval raises; with
+  no interval raises.
+- NaN counts as absent. A value routed through pandas arrives as NaN where
+  Postgres sent NULL, and `nan is not None` — so a rate could otherwise
+  escape with a blank sample size that passes an `is not None` check.
+- A cell that claims nothing needs nothing. No probability stated means no
+  companions required; refusing it would force every empty cell to carry
+  fabricated numbers.
+- An inverted interval raises.
+- A point estimate outside its own interval raises. A Wilson interval
+  contains its point estimate by construction, so a violation means the two
+  came from different samples — what a join matching the wrong cell looks
+  like from outside.
+- Containment tolerates `numeric(12,6)` round-trip precision.
+- **A cell that did not survive FDR still returns.** On the live config that
+  is every cell that returns (ADR 112); refusing them would empty the
+  product.
+- `survives_fdr` must agree with `q_value` at `StatsParams.fdr_alpha`, in
+  both directions, and against a swept alpha rather than a literal 0.05.
+- A null q-value means "not tested", which is not "survived".
+- A `Suppressed` that grew a rate raises. Tested against a subclass, since
+  the shipped type cannot express it.
+- The walk reaches a `CellStats` nested two levels inside a `ScreenResult`,
+  and terminates on an object shared by fifty rows.
+- **(gate)** The escape hatch is off: `validate._DISABLED is False`, and
+  neither `validate` nor `validated` accepts a per-call bypass keyword.
+- The validator refuses rather than repairing — the rejected object still
+  has its missing fields missing after the raise.
+
+### Unit Tests (capitalscan/tests/unit/test_handlers_enums.py) — 29 tests
+
+Every set compared against its source, never against a written-down list.
+A test listing the expected strings would pass forever and would not notice
+ADR 108 adding an eighth signal type.
+
+- `signal_types()` equals `SignalType`; `entry_kinds()` equals `EntryKind`;
+  `dd_buckets()` equals `core.cells.dd_bucket_labels`.
+- The bucket labels equal the ones `compute.DD_BUCKETS` stamps onto events.
+  Two implementations of the same edges, and a query built on the second
+  that disagreed with the first would filter out every event rather than
+  fail.
+- The labels move when `StatsParams.dd_buckets` moves, so the derivation is
+  real rather than a coincidence at the defaults.
+- Every `SignalType` member has a grid side. ADR 108 broke the positional
+  pairing of `LONG_SIGNALS`/`SHORT_SIGNALS` once; this fails if a ninth type
+  lands in neither.
+- Each enum, three ways: a valid value, an invalid value, and a near-miss
+  in the wrong case. Case is not forgiven — a case-insensitive fallback gets
+  rejected by Postgres three layers down, where the error names a constraint
+  instead of an argument.
+- A rejection names the valid values.
+- `signal_types=[]` raises rather than being treated as "all". None and the
+  empty list are different intents and only one is expressible.
+- **`limit=10_000` returns 200** (ADR 074), and a non-positive limit clamps
+  to 1 rather than raising.
+- A date outside the ingested window raises with the window in the message;
+  an absent window checks nothing rather than pretending to.
+- Train and validate bounds are contiguous and non-overlapping, and validate
+  ends before 2024-01-01 — holdout's first day.
+
+### Unit Tests (capitalscan/tests/unit/test_handlers_stats.py) — 18 tests
+
+Fixtures shaped like the live config's actual output: a suppressed cell at
+`n_eff` 14 against a floor of 30, and an unsuppressed one at q 0.8492. A
+fixture with a healthy significant cell would test a branch the product does
+not take.
+
+- The union: `CellStats` for an unsuppressed cell, `Suppressed` for a
+  suppressed one carrying the **stored** reason.
+- A cell that was never computed returns `Suppressed` with
+  `"cell not computed for this config"` — ADR 101 permanently suppresses
+  `20-35` and `35+`, and saying so beats raising or answering with the
+  nearest cell that exists.
+- **(gate)** A suppressed cell never becomes a broader one. Asserted by
+  counting the queries, not by checking the answer: exactly one `cell_stats`
+  query runs, so there is no retry path to widen.
+- The cell id is built by `core.cells.cell_key`, pooled over
+  `signal_strength` (ADR 107), with the horizon from
+  `ExitParams.max_hold_days` rather than a literal.
+- Side is derived from the signal type, since `cell_stats` is keyed by side
+  and DESIGN §10.1's signature has none.
+- `survives_fdr` is False at q 0.8492 and True only below the configured
+  alpha.
+- `baseline` is `baseline_empirical` (ADR 013), not the parametric
+  diagnostic under the same name.
+- `split='holdout'` raises before any query runs.
+
+### Unit Tests (capitalscan/tests/unit/test_handlers_screen.py) — 18 tests
+
+- **(gate)** The default is the event feed, and it does not even query
+  `cell_stats` — not merely blank, not fetched. A default that queried and
+  hid the result would still pay for the join and be one edit from
+  rendering it (ADR 114).
+- `with_stats=True` attaches a whole `CellStats`, or a `Suppressed` with its
+  reason. Never a partial set.
+- Cells are fetched in one query, not one per row.
+- The type filter reads `signal_types_all`, not `signal_type`. The latter
+  carries only the most specific type per ADR 057, so a filter on it drops
+  every `confluence_high` bar that also closed above the band.
+- A quiet day returns an empty result with populated `meta`. DESIGN §11.2:
+  most days nothing fires, so this is the common path, and an empty result
+  still has to say which config it queried and how stale the data is.
+- `total_matched` reports the pre-`limit` count, and the count query carries
+  no LIMIT.
+- Staleness is measured in **trading days**. A Monday query against
+  Friday's close is zero sessions stale; counting calendar days would raise
+  the banner every Monday and over every holiday, and a banner that is
+  always on is a banner that is off.
+
+### Unit Tests (capitalscan/tests/unit/test_handlers_events.py) — 15 tests
+
+- **(gate)** With no `split` argument the predicate is
+  `split_key = ANY(:splits)` over `enums.SPLITS`, never an inequality. An
+  inequality admits whatever a later migration adds to the check
+  constraint; membership admits only what this layer decided.
+- A named split bounds the dates as well as the label, the same pairing
+  `test_split_leakage.py` applies.
+- Cluster heads by default, and the toggle actually widens the predicate —
+  asserted on `AND is_cluster_head`, since the bare column name also appears
+  in the SELECT list and an unqualified check would pass either way.
+- One `entry_kind` is pinned, because the `events` grain includes it and
+  omitting the filter returns one signal four times.
+- `EventRow` carries no probability field. One row is not a sample.
+- `last_fire()` supplies DESIGN §11.2's empty state, and returns None when
+  nothing has ever fired.
+
+### Unit Tests (capitalscan/tests/unit/test_handlers_rest.py) — 27 tests
+
+`get_indicators`, `predict`, `explain_signal`, `get_universe`.
+
+- The chart default carries **both** `%K` series. ADR 110 made the
+  agreement between them part of the signal rule, so a panel drawing one is
+  drawing half the rule.
+- An unknown `fields` entry raises before the query. This is the only
+  handler where a caller's string reaches the SQL text rather than a bound
+  parameter, which is why it has an allowlist and the others do not; the
+  test passes `"close; DROP TABLE bars"`.
+- **(gate)** `predict` returns `NotFound` for every input, parameterized
+  over three. **This test is meant to fail when Phase 6 changes it** — the
+  change should be a deliberate edit that says why, not a stub quietly
+  starting to return a plausible fan.
+- `Prediction` carries the four invariant-8 companions, so a Phase 6 model
+  that cannot say how much data stands behind its fan cannot ship through
+  this layer.
+- `Explanation` has no SHAP field. Absent, not empty: an empty list reads as
+  "nothing contributed", which is a claim, and a missing field reads as "no
+  model", which is the fact.
+- `explain_signal` refuses half a cell request — `split` and `target_pct`
+  select a cell together and there is no sensible default for the other
+  half (invariant 9).
+- Nothing fired raises rather than returning an empty `Explanation`.
+- `get_universe` carries the five `crit_*` booleans on every row (ADR 003),
+  moves its counts with its filter, and takes **no** `limit` — ADR 104 makes
+  the universe the denominator of every breadth statistic, and a truncated
+  denominator silently changes what a percentage means.
+
+### Unit Tests (capitalscan/tests/unit/test_v_positions_ddl.py) — 18 tests
+
+Session 15.4 required "a test that fails against the current view and
+passes against the rebuilt one. A test asserting the view's shape passes
+both ways and proves nothing."
+
+`V_POSITIONS_DDL_PRE_115` is checked in verbatim, so that requirement is met
+literally: six checks run against **both** DDLs, and each must pass on the
+new text and fail on the old. `test_the_old_view_fails_every_check` is the
+guard that keeps the assertions discriminating.
+
+The six: no threshold literal (via `threshold_lint`), reads
+`serving_config`, respects `exit_stoch_threshold_short`, follows
+`exit_stoch_source`, gates on `exit_on_mid_band`, counts `trading_days`.
+
+Plus: the settings row is derived from `ExitParams` and moves when a
+threshold moves; every policy field the view reads exists on the row and
+every row field except `config_hash` is read by the view; the join is
+`LEFT ... ON true` so a missing row renders NULL flags rather than zero
+rows.
+
+### Integration Tests (capitalscan/tests/integration/test_v_positions_config.py) — 11 tests
+
+**This module does not truncate.** Every other integration module truncates
+its tables, and on 2026-08-18 the live research database held **748
+`order_intents` rows** — a `TRUNCATE positions CASCADE`, which
+`test_positions.py` runs around every test, would have taken all of them.
+That convention is safe on a CI container built from migrations and is not
+safe on a developer database. This module records the ids it created and
+deletes exactly those.
+
+- Moving `exit_stoch_threshold` past the ticker's current `%K` flips
+  `exit_signal_stoch`. Against the old view it could not, because the
+  number was not in the database at all.
+- `exit_stoch_k` follows `exit_stoch_source` between `k_full` and `k_fast`.
+- `exit_signal_mid_band` is NULL when `exit_on_mid_band` is False (ADR 046),
+  not false. "Not in force" and "in force and not fired" are different facts.
+- **The view and `core/exits.py` agree**, parameterized long and short, on
+  the stochastic rule and on the far band. The old view applied the long
+  threshold and `bb_upper` to both sides.
+- `days_held` equals the `trading_days` count and is never more than the
+  calendar difference.
+- A deleted settings row leaves the position visible with NULL flags.
+- `serving_config` cannot hold a second row.
+- The stored row matches the live `ExitParams`, naming `cscan db sync-config`
+  in the failure message. Without this the row goes stale silently, which is
+  ADR 095's own defect one indirection further out.
+
+**Measured 2026-08-18: `v_ticker_state` takes 26.5 s to materialize** on 612
+tickers with `max_parallel_workers_per_gather = 0`, and every
+`SELECT ... FROM v_positions` pays it because nothing pushes the position's
+ticker down through the `DISTINCT ON`. With parallelism on it fails outright
+(`could not resize shared memory segment`). Harmless in CI, where the
+container is empty. **Session 17 builds the ticker page on the same view and
+should measure before trusting it.**
+
+### Unit Tests (capitalscan/tests/unit/test_threshold_lint.py) — reworked
+
+The two repository-state tests were counting findings, which broke the
+moment a docstring quoted the defect it was describing. They now derive
+from the exception list in both directions:
+
+- Every `KNOWN_EXCEPTIONS` entry still matches something. An entry that
+  matches nothing describes a defect that was fixed and must be deleted —
+  which is what caught the `db/schema.sql` entry after session 15.4.
+- Every finding is on the list. Together the two pin the exception list to
+  the repository rather than to a number that drifts.
+
+### Unit Tests (capitalscan/tests/unit/test_backtest_cli.py) — 2 added
+
+- `run_harness` is called **inside** the `with ingest.run_job(...)` block,
+  read from the AST. It used to run after the block closed, so
+  `runs.finished_at - started_at` timed the write phase alone: the
+  2026-08-13 full-universe run measured **4h55m by wall clock and 32m55s in
+  `runs`**. Structural rather than behavioural, because what changed is
+  nesting — a call-order assertion passes as soon as the two happen in
+  sequence, which they always did.
+- A failing outcome raises inside the block, so the run records `failed`.
+  ADR 059's sweep gate reads `status = 'ok'`, and while the harness ran
+  outside the block a run whose harness failed was still recorded `ok`.
+
+---
+
 ## 6. Statistical verification
 
 Two tests catching a category no unit test can (ADR 087).
@@ -1134,10 +1431,42 @@ independently of whether the pictures are on disk.
 
 ### Phase 5
 
-- Every tool returns a schema-valid response
-- Validator rejects a crafted naked-probability response
-- Validator allows a sourced advisory response
-- MCP server responds to `tools/list` and one live `tools/call`
+**Session 15 (handlers) — passed 2026-08-18.**
+
+- [x] Seven handlers, each returning a typed result, none importing HTTP or
+      display libraries
+- [x] No probability leaves the layer without `n_eff`, an interval, and a
+      q-value, enforced by the validator *and* by a structural test on the
+      types
+- [x] `split='holdout'` raises on every handler that takes a split
+- [x] `get_stats` returns `Suppressed` for suppressed cells and never
+      substitutes a broader cell
+- [x] `predict` returns `NotFound` for every input, with a test that fails
+      when Phase 6 changes it
+- [x] `v_positions` reads its thresholds from config, and six checks fail
+      against the pre-rebuild view
+- [x] Closed enums derive from their source of truth, and `limit` caps at
+      200
+- [x] Empty results carry populated `meta` rather than raising
+- [x] Determinism: two calls with identical arguments against an unchanged
+      database return equal results
+
+**Sessions 16-18 (MCP, routes, chat) — not started.**
+
+- [ ] Every tool returns a schema-valid response
+- [ ] Validator rejects a crafted naked-probability response
+- [ ] Validator allows a sourced advisory response
+- [ ] MCP server responds to `tools/list` and one live `tools/call`
+- [ ] Unauthenticated MCP requests rejected, including discovery
+- [ ] The MCP connection role cannot write
+- [ ] `/`, `/ticker/[sym]`, `/research`, and `/chat` render against the live
+      database
+- [ ] The chat layer performs no arithmetic and cannot query outside the
+      seven tools
+- [ ] ADR 112's result is visible on every surface that reports a statistic
+
+`test_holdout_firewall.py` and `test_schema_drift.py` both pass, the latter
+having run rather than skipped, at each session's close.
 
 ### Phase 6
 

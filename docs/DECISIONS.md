@@ -155,6 +155,8 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 111 | `--actionable`: a long needs confluence, a short needs confluence and confirmation | Pinned. Serving-layer only |
 | 112 | ADR 033's first kill criterion fired: the two-indicator hypothesis is retired as a standalone returns predictor | Pinned. Fires 033. Retires 015's central claim; downgrades 093's prior |
 | 113 | Phase 6 opens: the model is a distinct hypothesis from the cell grid, sized down and gated harder | Pinned. Answers 093's Provisional condition; amends 064's head count and 067's gate |
+| 114 | The screener's default is the event feed; statistics are one action away | Pinned. Follows 112. Governs `screen_signals` and `/` |
+| 115 | `v_positions` reads a settings row, not a generated DDL | Pinned. Resolves 095's deferred rebuild; reverses its stated preference |
 
 ---
 
@@ -3195,6 +3197,122 @@ The `path` table's eleven-day window, which ADR 093 exists to have forced, is st
 *Keep the reachability heads alongside the peak fan.* Reports one distribution twice as if it were two pieces of evidence. ADR 093's amendment named this trap explicitly.
 
 *Skip the fifth check and use ADR 067 as written.* Would let a first model serve without ever being compared to no model.
+
+---
+
+## 114. The screener's default is the event feed; statistics are one action away
+
+**Date:** 2026-08-18. **Status:** Pinned. Governs `screen_signals` and the `/` route. Follows from ADR 112.
+
+**Context.**
+
+`v_screen` returns twenty-six columns. Nine describe the event — ticker, date, type, strength, `%B`, `%K`, drawdown bucket, cofire count, sector. Six describe the cell the event lands in: `p_hit`, `baseline`, `edge`, `ci_low`, `ci_high`, `q_value`, plus `n_eff`, `suppressed`, and `suppress_reason`. The original design showed all of them.
+
+ADR 112 changed what those six columns contain. Measured on the live config, `86e91448a65aa40b`:
+
+| | Train | Validate |
+|---|---|---|
+| Cells suppressed at `n_eff < 30` | 100 of 224 | 100 of 224 |
+| Cells surviving FDR correction | 0 of 124 | 0 of 124 |
+| Minimum q-value | 0.8492 | 0.7061 |
+| Edge intervals excluding zero | 0 | 0 |
+
+So on a given screener day, roughly 45% of rows render four blanks and a reason string, and the other 55% render a hit rate whose interval spans zero next to a q-value of 0.85.
+
+**Decision.**
+
+The default screener view is the **event feed**: what fired, on what ticker, in what state.
+
+```
+Ticker | Signal | Str | %B | %K | DD | Cofire | Fired
+```
+
+The statistical fields sit behind a deliberate action — an expander on the web route, `with_stats=True` on the handler:
+
+```
+Cell hit rate | Baseline | n_eff | Interval | q-value | Suppressed reason
+```
+
+Three rules govern the expanded view:
+
+- **Whole or nothing.** Every statistical field renders, or none does. A partial set invites a reader to fill the gap.
+- **A suppressed cell renders its stored reason, never a number and never a blank.**
+- **A q-value above `fdr_alpha` renders alongside the hit rate**, not instead of it and not hidden. The reader learns the cell did not survive correction from the row itself.
+
+**Why not the other options.**
+
+*Statistics as default columns.* Four columns that are blank or meaningless on every row, every day, teach a reader to stop looking at the row. The row is the part that carries information — a `confluence_low` on a name in the 10-20% drawdown bucket is a real observation about today's market whatever the cell says. Training the reader to skip it costs the product its only working surface.
+
+*Drop the statistical fields entirely.* Overcorrects. The measurement is the honest half of this project (ADR 033), and a screener that never shows it is a screener pretending the question was never asked. It also makes `/research` the only place a number appears, which separates the number from the row it describes.
+
+*Render "not significant" instead of the q-value.* A label is less informative than the number and reads as a verdict. `q = 0.849` says something specific about how far from significant this is; "not significant" says only that someone applied a threshold.
+
+*Grey out a suppressed cell's `p_hit`.* `v_screen` already nulls it, which is why the handler reads `cell_stats` instead. A greyed number is still a number on a screen and gets read by someone in a hurry. `handlers/types.py` makes it impossible rather than discouraged: `Suppressed` has no probability field at all.
+
+**Consequences.**
+
+`handlers.screen_signals` defaults `with_stats=False` and does not query `cell_stats` at all in that mode — not merely hiding the result, but not paying for the join. `ScreenRow.stats` is `CellStats | Suppressed | None`, a union, so a consumer that forgets to branch gets a type error rather than a blank cell.
+
+`ScreenResult.total_matched` reports the pre-`limit` count, because a page showing 200 of 640 rows and saying only "200" misstates how much fired.
+
+This ADR is a display decision and changes no measurement. If a later config produces cells that survive correction, the default can be revisited — but the revisit should cite a measurement, not a preference.
+
+---
+
+## 115. `v_positions` reads a settings row, not a generated DDL
+
+**Date:** 2026-08-18. **Status:** Pinned. Resolves ADR 095's deferred Phase 5 rebuild. Chooses ADR 095's *first* option over its stated preference.
+
+**Context.**
+
+ADR 095 found a second exit implementation in SQL: `v_positions` compared `k_full` against a bare `80` and `CURRENT_DATE - entry_date` against a bare `5`, which are `ExitParams.exit_stoch_threshold` and `ExitParams.max_hold_days` written as constants. It deferred the rebuild to Phase 5 and offered two fixes:
+
+> Pass the thresholds in through a settings table the view joins, which keeps the view a plain view but adds a row-existence dependency to every read. Or generate the view DDL from `ExitParams` inside the migration, which keeps the numbers single-sourced at the cost of making the DDL a build artifact rather than a checked-in file. **The second is the better fit for this codebase's "one implementation" rule**; the first is easier to sweep without a migration.
+
+**Decision.**
+
+The settings row. ADR 095's preference is reversed, and the reason is a thing that did not exist when ADR 095 was written.
+
+`jobs/threshold_lint.py` shipped in Session 14 as ADR 092's replacement matcher. It scans checked-in Python and SQL for a numeric literal adjacent to a comparison on a threshold-bearing column, and it carries a `KNOWN_EXCEPTIONS` list with this note:
+
+> Remove this entry the moment `v_positions` is rebuilt (Phase 5) — its continued presence past that point is itself a signal the rebuild missed a spot.
+
+**A generated DDL cannot satisfy that.** Generating the view's SQL from `ExitParams` at migration time still writes `80` into the database. `pg_dump` then writes `(80)::numeric` back into `db/schema.sql`, the linter finds it, and the `db/schema.sql` exemption has to stay forever. The defect class would remain permanently allowlisted in the file most likely to grow the next instance of it — and the exemption would no longer be describing a known defect, but hiding a working one, which is worse because nobody would think to look.
+
+The settings row leaves no literal in any checked-in SQL. The exemption was deleted on 2026-08-18 rather than renewed.
+
+**What was built.**
+
+`serving_config`, a single-row table (`only_row boolean PRIMARY KEY DEFAULT true CHECK (only_row)`) holding `exit_stoch_source`, `exit_stoch_threshold`, `exit_stoch_threshold_short`, `exit_on_stoch_80`, `exit_on_upper_band`, `exit_on_mid_band`, `max_hold_days`, and the `config_hash` they came from. `v_positions` joins it `LEFT ... ON true`.
+
+Four defects fixed in the same rebuild:
+
+1. **Thresholds come from the row.** Sweeping `exit_stoch_threshold` to 70 now moves the position page with the backtest, via `cscan db sync-config` and no migration.
+2. **The stochastic exit respects `p.side`.** The old view applied the long threshold to every row, so an open short read its exit off the wrong number — and wrong in the direction that *suppresses* the exit. `exit_stoch_threshold_short` exists precisely so the two sides sweep independently (ADR 016, ADR 092).
+3. **The `%K` column follows `exit_stoch_source`.** ADR 110 moved the entry trigger to `k_fast`. The view read `k_full` unconditionally, so the position page and the backtest could disagree about what "overbought" means.
+4. **`exit_signal_mid_band` is gated on `exit_on_mid_band`**, which defaults False (ADR 046). Gated to NULL, not to false: "this rule is not in force" and "this rule is in force and has not fired" are different facts and a reader acts differently on each.
+
+**A fifth defect, not in ADR 095, found while writing the parity fixture.** `days_held` was `CURRENT_DATE - p.entry_date` — **calendar** days — while `max_hold_days` counts bars: `core/exits.py` walks `fwd_bars` and `holding_days` equals `exit_idx + 1`. A position opened on a Thursday reads 4 calendar days and 2 sessions on the following Monday, so `exit_signal_timeout` fired a session early over every weekend and by two over a holiday weekend. The view now counts `trading_days`.
+
+`exit_stoch_k` is exposed as a new trailing column so the comparison is auditable from the row: a reader sees which `%K` produced the flag without knowing what `exit_stoch_source` currently says. It is appended last so every existing column keeps its ordinal.
+
+**The cost, stated rather than minimised.**
+
+ADR 095 named the row-existence dependency and it is real. Bounded three ways:
+
+- The join is `LEFT ... ON true`, so a missing row renders every exit flag NULL and the position still appears. "Unknown" is the honest failure; a plain join would return zero rows, which reads as "you have no positions".
+- The migration seeds the row from `ExitParams()` defaults, so a freshly migrated database is never in that state.
+- `test_v_positions_config.py::test_the_stored_row_matches_the_live_config` fails when `ExitParams` moves and the row does not, naming `cscan db sync-config` in the failure message. Without it the row would go stale silently — which is ADR 095's own defect, one indirection further out.
+
+**Why the migration imports application code.** `capitalscan/jobs/views.py` holds the DDL and the row payload so the staleness test above can compare the deployed policy against the live `ExitParams`. A migration runs once; the test is what makes the single-sourcing durable rather than momentary. The import is narrow — `views.py` imports only `core/config.py`, which imports only `dataclasses`.
+
+**Rejected.**
+
+*Generate the DDL from `ExitParams` in the migration.* ADR 095's preference. See above: it does not remove the literal from `db/schema.sql`, so it does not let the linter exemption be deleted, and a threshold sweep still needs a migration.
+
+*Leave the view alone and document the discrepancy.* ADR 092 and invariant 9 exist because a documented discrepancy is one nobody reads at the moment it matters.
+
+*Drop the exit-signal columns from the view entirely and compute them in `handlers/`.* Attractive — it would put the one implementation in Python where `core/exits.py` already lives. Rejected because `v_positions` is a Phase 2 surface with existing consumers, and the change is a rewrite of the position page rather than a fix to a view. Worth reconsidering when session 17 builds `/positions` against handlers.
 
 ---
 

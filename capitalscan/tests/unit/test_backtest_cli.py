@@ -708,3 +708,77 @@ def test_load_bars_by_ticker_skips_ticker_with_no_bars(monkeypatch):
     out = _REAL_LOAD_BARS_BY_TICKER(_FakeEngine(), ["ZZZZ"], DEFAULT_CONFIG)
 
     assert out == {}
+
+
+# ---------------------------------------------------------------------------
+# The harness is inside the timed block (session 15 prerequisite)
+# ---------------------------------------------------------------------------
+
+
+def test_the_harness_runs_inside_the_run_job_block():
+    """`runs.finished_at - started_at` has to cover the whole job.
+
+    It used to cover the write phase alone, because `run_harness` was called
+    after the `with ingest.run_job(...)` had closed. The 2026-08-13
+    full-universe run measured **4h55m by wall clock and 32m55s in `runs`**,
+    and a duration column that silently means "part of the job" is worse
+    than no column, because it gets quoted -- a 2026-08-09 session read
+    those durations as the whole job and "corrected" CLAUDE.md to ~36
+    minutes on the strength of them.
+
+    Structural rather than behavioural: a timing assertion would need a
+    clock, and a call-order assertion passes as soon as the two happen in
+    sequence, which they always did. What changed is *nesting*, so nesting
+    is what this reads.
+    """
+    import ast
+    import inspect
+
+    from capitalscan.jobs import cli
+
+    tree = ast.parse(inspect.getsource(cli.backtest))
+    with_blocks = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.With)
+        and any(
+            isinstance(item.context_expr, ast.Call)
+            and getattr(item.context_expr.func, "attr", "") == "run_job"
+            for item in node.items
+        )
+    ]
+    assert with_blocks, "cscan backtest no longer opens a run_job block"
+
+    def _calls_harness(node) -> bool:
+        return any(
+            isinstance(inner, ast.Call) and getattr(inner.func, "id", "") == "run_harness"
+            for inner in ast.walk(node)
+        )
+
+    assert any(_calls_harness(block) for block in with_blocks), (
+        "run_harness is called outside every run_job block, so `runs` times the write phase only"
+    )
+
+
+def test_a_failing_harness_marks_the_run_rather_than_exiting_quietly():
+    """ADR 059's sweep gate reads `status = 'ok'`.
+
+    While the harness ran outside the block, a run whose harness failed was
+    still recorded `ok`, so `--sweep` would happily start on top of it --
+    the exact ordering ADR 059 exists to prevent.
+    """
+    import ast
+    import inspect
+
+    from capitalscan.jobs import cli
+
+    source = inspect.getsource(cli.backtest)
+    tree = ast.parse(source)
+    raises = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Raise)
+        and isinstance(node.exc, ast.Call)
+        and getattr(node.exc.func, "id", "") == "_BacktestOutcomeFailed"
+    ]
+    assert raises, "a failing outcome no longer raises inside the run_job block"

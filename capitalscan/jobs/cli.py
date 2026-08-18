@@ -540,6 +540,17 @@ def _print_harness_report(report) -> None:
         )
 
 
+class _BacktestOutcomeFailed(Exception):
+    """A backtest that wrote rows and then failed its own checks.
+
+    Distinct from `BacktestRunFailed`, which means every worker raised and
+    nothing was written. This one means the run completed and its output
+    did not pass - failed tickers, a failing harness, or both - and it
+    exists so the failure is recorded on the `runs` row before the process
+    exits.
+    """
+
+
 @app.command()
 def backtest(
     tickers: Optional[str] = typer.Option(None, help="Comma-separated ticker list"),
@@ -711,6 +722,19 @@ def backtest(
         "n_tickers": len(resolved),
     }
 
+    # **The harness runs inside the `run_job` block** (session 15
+    # prerequisite, 2026-08-18). It used to run after the `with` had
+    # closed, so `runs.finished_at - runs.started_at` timed the write phase
+    # alone: the 2026-08-13 full-universe run measured 4h55m by wall clock
+    # and 32m55s in `runs`. A duration column that silently means "part of
+    # the job" is worse than no column, because it gets quoted.
+    #
+    # Two consequences, both wanted. A failing harness now marks the run
+    # `failed` rather than `ok`, which is what it is - and ADR 059's sweep
+    # gate reads `status = 'ok'`, so a sweep can no longer start on top of
+    # a run whose harness failed. And the harness outcome lands in
+    # `runs.notes`, where it is queryable next to the run it describes.
+    exit_code = 0
     try:
         with ingest.run_job(engine, "backtest", run_params) as report:
             bt_report = run_backtest(
@@ -722,11 +746,51 @@ def backtest(
                 full_universe=full_universe,
             )
             report.rows_written = bt_report.rows_written
+            notes: list[str] = []
             if bt_report.failed_tickers:
+                exit_code = 1
                 failed = sorted(bt_report.failed_tickers)
                 sample = ", ".join(failed[:10])
                 more = "" if len(failed) <= 10 else f", +{len(failed) - 10} more"
-                report.notes = f"{len(failed)}/{len(resolved)} ticker(s) failed: {sample}{more}"
+                notes.append(f"{len(failed)}/{len(resolved)} ticker(s) failed: {sample}{more}")
+
+            console.print(f"[bold]config_hash[/bold]: {chash}")
+            console.print(
+                f"backtest: run_id={bt_report.run_id} rows_written={bt_report.rows_written} "
+                f"tickers={len(bt_report.tickers)}/{len(resolved)}"
+            )
+            if bt_report.failed_tickers:
+                # Names, not just a count. Whoever reads this needs to know
+                # *which* tickers to re-run, and the count alone sends them
+                # back to the database to find out.
+                console.print(
+                    f"[red]{len(bt_report.failed_tickers)} ticker(s) failed[/red]: {notes[0]}"
+                )
+
+            if bt_report.tickers:
+                bars_by_ticker = _load_bars_by_ticker(engine, bt_report.tickers, config)
+                hourly_by_ticker = _load_hourly_by_ticker(engine, bt_report.tickers, config)
+                events_for_harness = _load_events_for_run(engine, bt_report.run_id)
+                harness_report = run_harness(
+                    events_for_harness, bars_by_ticker, config, hourly_by_ticker=hourly_by_ticker
+                )
+                _print_harness_report(harness_report)
+                notes.append("harness passed" if harness_report.all_passed else "harness FAILED")
+                if not harness_report.all_passed:
+                    exit_code = 1
+            else:
+                console.print("[yellow]harness skipped[/yellow]: no events written")
+                notes.append("harness skipped: no events written")
+
+            report.notes = "; ".join(notes)
+            if exit_code:
+                # Raised inside the block on purpose, so `run_job`'s
+                # exception path records `failed`. `_HarnessOrTickerFailure`
+                # rather than `typer.Exit`, because `run_job` would store
+                # the repr of a control-flow exception as the run's error
+                # and "Exit(1)" explains nothing to whoever reads `runs`
+                # six weeks later.
+                raise _BacktestOutcomeFailed("; ".join(notes))
     except BacktestRunFailed as exc:
         console.print(
             "[red]error[/red]: backtest run failed — every dispatched ticker's "
@@ -734,35 +798,8 @@ def backtest(
             f"data. {exc}"
         )
         raise typer.Exit(code=1) from None
-
-    console.print(f"[bold]config_hash[/bold]: {chash}")
-    console.print(
-        f"backtest: run_id={bt_report.run_id} rows_written={bt_report.rows_written} "
-        f"tickers={len(bt_report.tickers)}/{len(resolved)}"
-    )
-
-    exit_code = 0
-    if bt_report.failed_tickers:
-        exit_code = 1
-        console.print(
-            f"[red]{len(bt_report.failed_tickers)} ticker(s) failed[/red]: {report.notes}"
-        )
-
-    if bt_report.tickers:
-        bars_by_ticker = _load_bars_by_ticker(engine, bt_report.tickers, config)
-        hourly_by_ticker = _load_hourly_by_ticker(engine, bt_report.tickers, config)
-        events_for_harness = _load_events_for_run(engine, bt_report.run_id)
-        harness_report = run_harness(
-            events_for_harness, bars_by_ticker, config, hourly_by_ticker=hourly_by_ticker
-        )
-        _print_harness_report(harness_report)
-        if not harness_report.all_passed:
-            exit_code = 1
-    else:
-        console.print("[yellow]harness skipped[/yellow]: no events written")
-
-    if exit_code:
-        raise typer.Exit(code=exit_code)
+    except _BacktestOutcomeFailed:
+        raise typer.Exit(code=1) from None
 
 
 SIGNAL_TYPE_LABELS = {
@@ -1135,6 +1172,69 @@ def schema() -> None:
     from capitalscan.jobs import db as db_ops
 
     db_ops.schema()
+
+
+@db_app.command("sync-config")
+def db_sync_config() -> None:
+    """Rewrite `serving_config` from the resolved config (ADR 115).
+
+    `v_positions` reads its exit thresholds from that one row rather than
+    from SQL literals, so this is the command that makes a threshold sweep
+    visible on the position page. Run it after any change to `ExitParams`,
+    and after `cscan db migrate` on a database whose row predates a new
+    field.
+
+    Idempotent. It writes one row and reports what changed, so running it
+    when nothing moved prints "unchanged" rather than doing nothing
+    silently.
+    """
+    from sqlalchemy import text
+
+    from capitalscan.jobs import db_io
+    from capitalscan.jobs.config import config_hash as compute_config_hash
+    from capitalscan.jobs.views import (
+        SERVING_CONFIG_COLUMNS,
+        SERVING_CONFIG_UPSERT,
+        serving_config_values,
+    )
+
+    config = _resolve_config_or_exit()
+    values = serving_config_values(config, compute_config_hash(config))
+    engine = db_io.get_engine()
+
+    with engine.begin() as conn:
+        before = (
+            conn.execute(text(f"SELECT {', '.join(SERVING_CONFIG_COLUMNS)} FROM serving_config"))
+            .mappings()
+            .first()
+        )
+        conn.execute(text(SERVING_CONFIG_UPSERT), values)
+
+    def _same(stored: object, wanted: object) -> bool:
+        # Numeric-aware. `numeric(12,4)` reads back as Decimal("80.0000")
+        # and the config field is `80.0`, so a string comparison marks every
+        # threshold as changed on every run and the `*` markers stop meaning
+        # anything.
+        try:
+            return float(stored) == float(wanted)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return stored == wanted
+
+    changed = [
+        name
+        for name in SERVING_CONFIG_COLUMNS
+        if before is None or not _same(before[name], values[name])
+    ]
+    console.print(f"serving_config: config_hash={values['config_hash']}")
+    for name in SERVING_CONFIG_COLUMNS:
+        mark = "[yellow]*[/yellow]" if name in changed else " "
+        console.print(f"  {mark} {name} = {values[name]}")
+    if before is None:
+        console.print("[green]wrote[/green] the first serving_config row")
+    elif changed:
+        console.print(f"[green]updated[/green] {len(changed)} field(s)")
+    else:
+        console.print("unchanged")
 
 
 path_app = typer.Typer(help="Forward path store (Session 10)")

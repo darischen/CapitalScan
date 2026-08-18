@@ -245,13 +245,33 @@ DEFAULT_SQL_ROOTS: tuple[Path, ...] = (
 # (Phase 5) — its continued presence past that point is itself a signal the
 # rebuild missed a spot.
 KnownException = tuple[str, str]  # (path suffix/substring, line substring)
+
+# **The `db/schema.sql` entry is gone** (2026-08-18, session 15 task 15.4).
+# ADR 095's rebuild landed: `v_positions` now reads its thresholds from the
+# `serving_config` row, so no literal survives into the dumped schema and
+# there is nothing left to exempt. ADR 095's own note asked for exactly
+# this - "remove this entry the moment `v_positions` is rebuilt; its
+# continued presence past that point is itself a signal the rebuild missed
+# a spot."
+#
+# That removal is also *why* ADR 115 chose a settings row over ADR 095's
+# preferred generated-DDL fix. A generated DDL still bakes `80` into the
+# database and `pg_dump` still writes it back into `db/schema.sql`, so the
+# exemption would have had to stay forever and this matcher would remain
+# blind in the one file most likely to grow the next instance.
+#
+# The two entries that remain are both **historical text that must not
+# change**, not live policy:
 KNOWN_EXCEPTIONS: tuple[KnownException, ...] = (
-    # ADR 095: v_positions' long-exit stochastic threshold, baked into the
-    # view as `(80)::numeric` instead of reading ExitParams.exit_stoch_
-    # threshold. Deferred to the Phase 5 serving-layer rebuild.
-    ("db/schema.sql", "s.k_full >= (80)::numeric"),
-    # Same defect, same ADR, in the migration that first created the view.
+    # ADR 095: the migration that first created the view. It is applied and
+    # immutable; editing an applied migration is how a schema and its
+    # history stop agreeing.
     ("db/migrations/versions/6d86bf1f668e_views.py", "s.k_full >= 80"),
+    # ADR 115: the pre-rebuild DDL, kept verbatim so `downgrade()` restores
+    # the old view exactly rather than approximately. A downgrade that
+    # quietly kept the fix would not be a downgrade, so the literal has to
+    # be here and has to stay wrong.
+    ("capitalscan/jobs/views.py", "s.k_full >= (80)::numeric"),
 )
 
 
