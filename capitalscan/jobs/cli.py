@@ -1237,6 +1237,128 @@ def db_sync_config() -> None:
         console.print("unchanged")
 
 
+@db_app.command("grant-readonly")
+def db_grant_readonly(
+    role: str = typer.Option("capscan_ro", "--role", help="Role name"),
+    password: str = typer.Option(..., "--password", help="Role password", prompt=False),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the statements, run nothing"),
+) -> None:
+    """Provision the MCP server's read-only role (ADR 027).
+
+    Idempotent: safe to re-run, and a re-run *narrows* rather than only
+    adding, so a role that was over-granted by hand comes back to the
+    intended set.
+
+    Not a migration. Roles are cluster-level objects, so one created by
+    Alembic would be created once per database the chain touches, collide on
+    the second, and survive a downgrade of the database that made it.
+
+    After this, point the server at it:
+
+        DATABASE_URL_MCP=postgresql://capscan_ro:<password>@localhost:5432/capitalscan
+
+    `--password` is required rather than generated, so the value is one the
+    operator already has somewhere. It is never echoed; `--dry-run` prints
+    the statements with it redacted.
+    """
+    from sqlalchemy import text
+
+    from capitalscan.jobs import db_io
+    from capitalscan.jobs.roles import InvalidRoleName, grant_statements, redacted
+
+    engine = db_io.get_engine()
+    database = engine.url.database or ""
+    try:
+        statements = grant_statements(role, password, database)
+    except InvalidRoleName as exc:
+        console.print(f"[red]error[/red]: {exc}")
+        raise typer.Exit(code=2) from None
+
+    if dry_run:
+        for statement in redacted(statements, password):
+            console.print(statement.strip())
+        console.print(f"[yellow]dry run[/yellow]: {len(statements)} statement(s), nothing executed")
+        return
+
+    with engine.begin() as conn:
+        for statement in statements:
+            conn.execute(text(statement))
+
+    console.print(f"[green]granted[/green]: {role} may SELECT on {database}, and nothing else")
+    console.print(
+        f"set DATABASE_URL_MCP=postgresql://{role}:<password>@"
+        f"{engine.url.host}:{engine.url.port}/{database}"
+    )
+
+
+mcp_app = typer.Typer(help="MCP server (ADR 027, Session 16)")
+app.add_typer(mcp_app, name="mcp")
+
+
+@mcp_app.command("serve")
+def mcp_serve(
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address"),
+    port: int = typer.Option(8787, "--port", help="Bind port"),
+) -> None:
+    """Serve the seven tools over streamable HTTP, authenticated.
+
+    Refuses to start without `MCP_BEARER_TOKEN`. An unauthenticated MCP
+    endpoint is an open database proxy (ADR 027), and a warning printed
+    beside a live open endpoint is not a mitigation.
+
+    `127.0.0.1` by default. Binding `0.0.0.0` on a server whose only
+    authentication is one shared bearer token is a deliberate act, so it has
+    to be typed.
+    """
+    from capitalscan.mcp.auth import MissingToken
+    from capitalscan.mcp.server import resolve_database_url, run
+
+    url, readonly = resolve_database_url()
+    if not url:
+        console.print(
+            "[red]error[/red]: neither DATABASE_URL_MCP nor DATABASE_URL_RESEARCH is set."
+        )
+        raise typer.Exit(code=1)
+    if readonly:
+        console.print("[green]read-only[/green]: serving through DATABASE_URL_MCP")
+    else:
+        # Loud, because the whole point of the second layer is that a future
+        # handler bug should not be able to write. Running without it is a
+        # supported development choice and an unsupported deployment.
+        console.print(
+            "[yellow]warning[/yellow]: DATABASE_URL_MCP is unset, so the server "
+            "reads through the read-write research role. Defense in depth is off. "
+            "Run `cscan db grant-readonly` and set DATABASE_URL_MCP."
+        )
+    if host != "127.0.0.1":
+        console.print(f"[yellow]binding {host}[/yellow]: reachable beyond this machine")
+
+    try:
+        run(host=host, port=port)
+    except MissingToken as exc:
+        console.print(f"[red]error[/red]: {exc}")
+        raise typer.Exit(code=1) from None
+
+
+@mcp_app.command("tools")
+def mcp_tools() -> None:
+    """Print the seven tool names and their generated input schemas.
+
+    The schemas are generated from `handlers.enums`, so this is also how you
+    check that a new signal type reached the wire without editing anything
+    under `mcp/`.
+    """
+    import asyncio
+    import json
+
+    from capitalscan.mcp.server import build_mcp_server
+
+    listed = asyncio.run(build_mcp_server().list_tools())
+    for tool in listed:
+        console.print(f"[bold]{tool.name}[/bold]")
+        console.print(json.dumps(tool.input_schema, indent=2))
+
+
 path_app = typer.Typer(help="Forward path store (Session 10)")
 
 

@@ -1189,6 +1189,198 @@ from the exception list in both directions:
 
 ---
 
+## Session 16: The MCP server
+
+Session 16's gate names items 3 and 5 as the ones that matter — "those two
+are the difference between a server and an open database" — and calls the
+rest plumbing. The inventory below is ordered that way.
+
+### Unit Tests (capitalscan/tests/unit/test_mcp_auth.py) — 29 tests
+
+**(gate 3)** Missing, malformed, and wrong are one response, asserted eight
+ways: no header, scheme only, no scheme, wrong scheme, empty value, wrong
+token, a token one character short, and the right token in the wrong case.
+Status, body, and the `WWW-Authenticate` header are all compared, and one
+further test asserts the three rejection bodies are **byte identical** — a
+difference anywhere in the body is a signal, including one nobody meant to
+put there.
+
+- Tool discovery needs a token too. The tool list describes the database's
+  shape, and that is information.
+- The token never appears in any rejection response, in the unauthorized
+  constant, or in `MissingToken`'s message.
+- The inner app receives `sha256(token)[:16]`, not the token, so a rate
+  limiter bucket key in a diagnostic carries a handle.
+- Comparison uses `hmac.compare_digest`, asserted by reading the source. The
+  property is not observable: a `==` here would pass every behavioural test
+  in the file and leak the common prefix length through timing.
+- `configured_token({})` raises. The server refuses to start rather than
+  starting unauthenticated, because a warning printed beside a live open
+  endpoint is not a mitigation.
+
+**(gate 4)** Rate limiting on a fake clock, as 16.2 requires. A sleeping
+test is slow, flaky on a loaded runner, and cannot reach the reset boundary
+without sleeping through it — so it gets written to assert the trigger and
+skip the reset, and the reset is the half that breaks.
+
+- The limit triggers at capacity and **resets** as the clock advances.
+- The bucket does not refill past capacity, so a caller cannot spend two
+  windows' budget across a boundary the way a fixed window allows.
+- Limits are per token, not shared. A new caller starts full, because
+  starting empty would rate-limit the first request of every session.
+- A clock that steps backwards does not drain every bucket.
+- **An unauthenticated request never allocates a bucket.** Auth is outermost
+  on purpose: with the order reversed, an anonymous caller could exhaust
+  memory one forged token at a time. Asserted by sending 50 bad requests and
+  checking the bucket dict is still empty.
+
+### Unit Tests (capitalscan/tests/unit/test_mcp_readonly_role.py) — 31 tests
+
+**(gate 5, first half)** The statements say what they should, and nothing a
+caller supplies can change what they mean.
+
+- `GRANT SELECT` and no `GRANT INSERT`/`UPDATE`/`DELETE`/`TRUNCATE`/`ALL`.
+- Schema `USAGE` granted separately from `SELECT`; without it every query
+  fails with "permission denied for schema public", which reads like a
+  missing table.
+- No `CREATEDB`, `CREATEROLE`, or `SUPERUSER`; `NOINHERIT` set.
+- Sequence `USAGE` revoked, so a write that got past the table grant still
+  fails on `nextval`.
+- `REVOKE CREATE ON SCHEMA public FROM PUBLIC`.
+- Every `REVOKE` precedes every `GRANT`, so a re-run **narrows** rather than
+  only adding — the case that matters is a role someone over-granted by hand.
+- Default privileges cover tables a later migration adds, so the role does
+  not silently lose access the next time the schema grows.
+
+Injection, tested with real attempts rather than asserted in a docstring:
+`ro; DROP TABLE bars`, an embedded double quote, a space, mixed case, a
+leading digit, an over-long name, and an SQL comment are all refused
+**before any SQL is composed**. A quote in the password is doubled rather
+than dropped, a password containing a statement terminator stays inside one
+literal, and the redaction replaces it in **both** places it appears — a
+first-occurrence replacement would leave the second on screen, which is
+worse than none because it looks handled.
+
+### Integration Tests (capitalscan/tests/integration/test_mcp_readonly_role.py) — 10 tests
+
+**(gate 5, second half)** The role cannot write, proven by writing.
+
+A test against `information_schema` would assert what Postgres was *told*; a
+test that runs an INSERT asserts what Postgres *does*, and those come apart
+the first time a default privilege or an ownership change gets in between.
+Parameterized across INSERT, UPDATE, DELETE, CREATE TABLE, and DROP TABLE,
+plus `nextval` and CREATE ROLE, because the grants permitting each are
+separate and a role can easily end up able to do one of them.
+
+The module provisions and drops its own role rather than reusing
+`capscan_ro`, so a test run cannot rotate the password a running server is
+using.
+
+**Measured 2026-08-18:** `SELECT count(*) FROM tickers` returns 712 through
+the role; `INSERT INTO tickers` returns `permission denied`. DDL is refused
+differently — `must be owner of table`, because no grant confers DROP in
+Postgres — which is why the assertion accepts both refusals and says why.
+
+### Unit Tests (capitalscan/tests/unit/test_mcp_contract.py) — 38 tests
+
+ADR 027's "the same tools, and no query logic", made structural.
+
+- No `mcp/` module imports `sqlalchemy`, `psycopg`, `pandas`, `alembic`, or
+  `db_io`.
+- No `mcp/` module holds a **string literal shaped like SQL**. Matched on
+  statement shape (`select` with `from`) rather than on keywords, because
+  `FROM` alone matches the word "from" in any sentence and a test that fires
+  on prose gets weakened until it fires on nothing. Docstrings are excluded
+  by AST node identity, since `ast.get_docstring` returns cleaned text that
+  never equals the raw `Constant.value` it came from.
+- **Each tool makes exactly one handler call**, to its namesake, and
+  serializes exactly once. A second call would be a tool that combines two,
+  which saves a round trip and puts query logic in the wrong layer.
+- **No statement-level control flow in any tool.** A ternary shaping an
+  argument is fine and unavoidable; an `if`, a loop, or a second return is
+  filtering or combining, and the result of either still looks like a valid
+  tool response from outside.
+- `mcp.tools.TOOLS` and `handlers.SEVEN_TOOLS` have identical keys.
+
+Schemas, generated rather than written:
+
+- The `signal_type`, `entry_kind`, and `dd_bucket` enums equal `SignalType`,
+  `EntryKind`, and `dd_bucket_labels` exactly.
+- The `split` enum has two members and no `holdout`.
+- **No enum value is spelled as a string literal anywhere in `mcp/` code.**
+  This is what makes "generated" checkable rather than coincidental: a
+  schema that happens to match today is not generated, and a package that
+  contains no signal-type string cannot have a hand-written one.
+
+### Unit Tests (capitalscan/tests/unit/test_mcp_serialize.py) — 35 tests
+
+**(gate 7)** `Suppressed` and `NotFound` carry a `kind` tag; a measured cell
+does not. The distinction the tag exists for is asserted directly: a
+suppressed cell and a cell measuring `p_hit = 0.0` are opposite claims —
+"we cannot say" and "it never happened" — and must not arrive as two objects
+differing only by which keys are null.
+
+- **Nothing is rounded.** A q-value of 0.849213 survives serialization and a
+  JSON round trip. `0.849` and `0.8492` are not the same statement, and a
+  three-place rounding here would lose the difference with no test noticing.
+- Six decimal places round-trip, matching `numeric(12,6)`.
+- **(gate 8)** `meta` survives whole, `staleness_days` included, and reaches
+  the client on an *empty* result too.
+- An unknown type is not silently stringified: it reaches `json.dumps` and
+  raises there, naming the value. A `str()` fallback would put a Python repr
+  on the wire and call it data.
+
+Error mapping (16.3):
+
+- Each handler exception maps to a distinct code, tested individually.
+- **`HoldoutRequested` does not report as an ordinary enum error**, though
+  it subclasses `InvalidEnum`. A dict keyed by type would resolve it by
+  iteration order, and the bug would surface as holdout refusals reported
+  generically — the one refusal this system most wants to see distinctly.
+- An invalid enum names the valid values; an out-of-window date names the
+  window.
+- **(gate 6)** No mapped message contains `SELECT`, a table name, a
+  connection string, a traceback, or a file path. An unexpected exception
+  gets a fixed string, because by definition nobody has checked its text —
+  tested with a `RuntimeError` whose message is a query containing a table
+  name and a Windows path.
+- A new `HandlerError` subclass nobody mapped falls back to the fixed string
+  rather than leaking its own text. The safety of a message comes from this
+  layer having composed it.
+
+### Integration Tests (capitalscan/tests/integration/test_mcp_server_live.py) — 13 tests
+
+The assembled server over the real protocol. **`TestClient` as a context
+manager, which is why this file exists**: the transport's session manager
+starts in the app's lifespan, and `build_app` originally mounted the
+transport inside another `Starlette`, which never forwards lifespan to a
+sub-app. That version authenticated correctly, accepted the request, and
+failed every `initialize` with `RuntimeError: Task group is not
+initialized`. No unit test here would have caught it.
+
+- **(gate 3)** `initialize`, `tools/list`, and `/health` all refused without
+  a token.
+- `/health` returns `{"status": "ok"}` and nothing else — no row counts, no
+  config hash, no last-bar date. A liveness probe should not double as a way
+  to learn when the database was last updated.
+- **(gate 9)** `initialize` returns the server identity; `tools/list`
+  returns exactly seven names; a live `tools/call` returns a structured
+  result with a distinguishable `kind` and a populated `meta`.
+- `predict` returns `not_found` over the wire.
+- Holdout is refused at the **schema**, before any handler runs, and the
+  tool description explains why in prose — so a model reading the schema
+  learns it is not an option and a model reading the description learns the
+  reason.
+- No response leaks a table name or a path.
+- **(gate 10)** Identical requests return identical responses.
+
+`allowed_hosts=["testserver"]` in the fixture is not a test convenience: the
+SDK's DNS-rebinding guard answers `421 Misdirected Request` on a Host
+mismatch, and the same setting is what a deployment behind a domain must
+pass.
+
+---
+
 ## 6. Statistical verification
 
 Two tests catching a category no unit test can (ADR 087).
@@ -1451,18 +1643,40 @@ independently of whether the pictures are on disk.
 - [x] Determinism: two calls with identical arguments against an unchanged
       database return equal results
 
-**Sessions 16-18 (MCP, routes, chat) — not started.**
+**Session 16 (MCP) — passed 2026-08-18.**
 
-- [ ] Every tool returns a schema-valid response
+- [x] Seven tools registered with generated schemas matching the handler
+      enums
+- [x] No `mcp/` module imports `sqlalchemy` or `db_io`
+- [x] Unauthenticated requests rejected, including discovery, with
+      byte-identical responses across all failure modes
+- [x] Rate limiting triggers and resets on a fake clock
+- [x] The connection role cannot write, proven by a failed insert
+- [x] No serialized response or error contains SQL, a table name, a file
+      path, or the token
+- [x] `Suppressed` distinguishable from `CellStats` on the wire
+- [x] `meta.staleness_days` survives serialization
+- [x] Local client setup documented (`MCP_SETUP.md`) and the protocol flow
+      verified end to end against the live database
+- [x] Determinism: identical requests return identical responses
+
+**Sessions 17-18 (routes, chat) — not started.**
+
 - [ ] Validator rejects a crafted naked-probability response
 - [ ] Validator allows a sourced advisory response
-- [ ] MCP server responds to `tools/list` and one live `tools/call`
-- [ ] Unauthenticated MCP requests rejected, including discovery
-- [ ] The MCP connection role cannot write
 - [ ] `/`, `/ticker/[sym]`, `/research`, and `/chat` render against the live
       database
+- [ ] No `web/` or chat module imports `sqlalchemy` or `db_io`
+- [ ] The default screener shows the event feed; statistics require a
+      deliberate action (ADR 114)
+- [ ] Suppressed cells render their reason and never a number
+- [ ] The staleness banner triggers above `MonitoringThresholds.
+      stale_after_days`
+- [ ] Both `%K` series render on the ticker chart (ADR 110)
+- [ ] Era 2024+ absent everywhere on `/research`
 - [ ] The chat layer performs no arithmetic and cannot query outside the
       seven tools
+- [ ] The system prompt names ADR 112's result
 - [ ] ADR 112's result is visible on every surface that reports a statistic
 
 `test_holdout_firewall.py` and `test_schema_drift.py` both pass, the latter

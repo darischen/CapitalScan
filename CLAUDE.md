@@ -224,6 +224,7 @@ For every migration:
 | Apply | `cscan db migrate` |
 | Undo one | `cscan db rollback --yes` |
 | Push `ExitParams` to the serving views | `cscan db sync-config` |
+| Provision the MCP read-only role | `cscan db grant-readonly --password <pw>` |
 
 **`cscan db sync-config` is not optional after a threshold change.**
 `v_positions` reads its exit policy from the one-row `serving_config` table
@@ -245,6 +246,26 @@ Design direction: dense instrument panel, not a marketing page. Monospace for al
 `lightweight-charts` for price and stochastic panels. `recharts` for statistical charts.
 
 ---
+
+## MCP server
+
+`cscan mcp serve` (127.0.0.1:8787), `cscan mcp tools` to print the generated
+schemas. Full setup, token rotation, and client configuration in
+`docs/MCP_SETUP.md`.
+
+Three things that bite:
+
+- **It refuses to start without `MCP_BEARER_TOKEN`.** By design (ADR 027).
+- **`DATABASE_URL_MCP` unset is a development-only state.** The server falls
+  back to the read-write research role and says so. `cscan db grant-readonly`
+  provisions `capscan_ro`.
+- **Behind a domain, pass `allowed_hosts`.** The SDK's DNS-rebinding guard
+  answers `421 Misdirected Request` on a Host mismatch, which reads like a
+  routing fault rather than a policy one.
+
+`mcp/` may not import `sqlalchemy` or `db_io`, and no tool may make two
+handler calls or branch after one. Both are tests, not conventions — ADR 027
+requires the server to add no query logic.
 
 ## Chat and tools
 
