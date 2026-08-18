@@ -2304,6 +2304,80 @@ The chain is now a script (`scripts/run_chain_86e91448.ps1`) with the ordering c
 
 ---
 
+## ADR 110 measured — the k_fast run, `86e91448a65aa40b`
+
+Chain run 2026-08-16, 03:12 to 11:41 PT. Backtest, `path backfill`, `path peak-labels`, then the four `stats` commands.
+
+| Step | Duration | Rows |
+|---|---|---|
+| backtest | **4h50m23s** | 630,592 events, 591/616 tickers |
+| `path backfill` | 2h56m58s | 67,433,412 |
+| `path peak-labels` | 51.9s | 285,997 |
+| `stats rho` / `cells` / `benchmarks` / `self-validate` | ~10m | — |
+
+Harness: **5/5 PASS** (`no_lookahead`, `entry_sanity`, `exit_sanity`, `return_identity`, `non_overlap`).
+
+The 4h50m is wall clock. `runs` recorded 32m55s for the same job, because `cli.py::backtest` closes its `run_job` block before calling `run_harness` — the harness is untimed anywhere, and the only record of that figure was a log file.
+
+### What the flip did to the population
+
+Comparing like with like on `entry_kind = 'touch'`, against `1b97abf7e458d537` (the k_full baseline):
+
+| Signal type | k_full | k_fast + agreement | Δ |
+|---|---|---|---|
+| `stoch_overbought` | 43,904 | 43,469 | −435 |
+| **`confluence_high`** | **32,034** | **18,964** | **−13,070** |
+| `stoch_oversold` | 22,545 | 23,711 | +1,166 |
+| **`confluence_low`** | **19,701** | **10,346** | **−9,355** |
+| `bb_lower_touch` | 18,924 | 28,279 | **+9,355** |
+| `bb_upper_touch` | 17,268 | 30,338 | **+13,070** |
+| `bear_close_above_upper` | 2,541 | 2,541 | 0 |
+
+**The reconciliation is exact**, and that is the whole story. `confluence_high` loses 13,070 and `bb_upper_touch` gains exactly 13,070; `confluence_low` loses 9,355 and `bb_lower_touch` gains exactly 9,355. Nothing disappeared. The agreement check stripped confluence status and those bars fell to the next rank in `_SPECIFICITY`. Total events barely moved, 156,917 → 157,648.
+
+The band conditions did not change at all, which is worth stating because the table above invites the opposite reading. `bb_upper_touch` appears in `signal_types_all` on **51,840** rows under both configs, and `bb_lower_touch` on **38,625** under both. Identical to the row. Only the `signal_type` *label* migrated.
+
+`bear_close_above_upper` holding at exactly 2,541 is the control: it never consults %K, so any movement there would have meant something leaked.
+
+### Benchmark arms
+
+| Split | Era | Arm | Return | Null p50 | Null p97.5 | |
+|---|---|---|---|---|---|---|
+| train | pooled | buy_hold | **+383.66%** | | | |
+| train | pooled | signal | +85.75% | +102.50% | +216.70% | below median |
+| train | pooled | trim | +157.70% | | | |
+| train | breadth_high | signal | +302.77% | +106.72% | +324.82% | above median |
+| validate | pooled | buy_hold | −3.69% | | | |
+| **validate** | **pooled** | **signal** | **+12.63%** | −12.45% | **+6.36%** | **above p97.5** |
+| validate | breadth_high | signal | −6.45% | −8.45% | +23.61% | above median |
+
+**The signal arm clears its own randomization null on validate for the first time.** Under `697f3ae71428d392` it was below the null on both splits.
+
+**This should not be read as an edge.** It performs *better out-of-sample than in-sample*, which is backwards from what a real effect looks like — a genuine edge shows up strongest in training. Validate's pooled sample also just halved, and this is the pattern noise produces when a sample gets small. The train split, with four times the data, has the signal arm below the null's median and 298 points behind buy-and-hold.
+
+### Cell grid
+
+| Split | Cells | Suppressed | Mean `n_eff` | Min q | Significant after FDR |
+|---|---|---|---|---|---|
+| train | 224 | **100** | 93.3 | 0.8492 | **0** |
+| validate | 224 | **168** | 20.8 | 0.7061 | **0** |
+
+**Zero cells survive FDR on either split.** The minimum q-value is 0.849 on train and 0.706 on validate, against an α of 0.05.
+
+Suppression rose exactly as the halved confluence sample predicted. Train went 88 → 100 suppressed against `697f3ae71428d392`; validate held at 168 because it was already near the floor, with mean `n_eff` slipping 22.0 → 20.8.
+
+### Self-validation
+
+`stats self-validate` **PASS**: null test 2/480 cells at q < 0.05 = 0.42% against a 5% threshold, recovery test gap 0.039 pp against a 1.0 pp tolerance, and the deliberately-broken variant (standard error on raw `n` instead of `n_eff`) caught at 11.67%. The machinery is sound, so the negative result above is a measurement rather than an artifact.
+
+### The reading
+
+Two measurements disagree in direction, and the disagreement is informative. The benchmark arm says validate cleared its null; the cell grid says nothing is significant anywhere. When an aggregate looks better than every one of its components, the aggregate is usually the artifact — the arm is a single number against 200 replications, while the grid corrects across 224 tests.
+
+Three configs have now been measured end to end, and none has produced a cell that survives correction. ADR 033 fixed the kill criteria in advance for exactly this situation.
+
+---
+
 ## Holdout
 
 **Evaluated once. Published whatever it says.**
