@@ -2558,6 +2558,141 @@ contract was wrong and the fix belongs here.
 
 ---
 
+## Session 16 — the MCP server, 2026-08-18
+
+Like Session 15, this session measures nothing about the market. It makes
+the seven handlers reachable from a chat client, authenticated, rate
+limited, and read-only at the connection level.
+
+Run: no backtest, no statistics job, no ingest, no migration. One
+dependency added.
+
+### What was built
+
+| | |
+|---|---|
+| `capitalscan/mcp/` | `tools`, `server`, `auth`, `ratelimit`, `serialize`, `errors` |
+| Transport | Streamable HTTP at `/mcp`, plus an authenticated `/health` |
+| CLI | `cscan mcp serve`, `cscan mcp tools`, `cscan db grant-readonly` |
+| Tests added | 98 unit, 23 integration |
+| Dependency | `mcp>=1.2.0`, resolved to 2.0.0 (brings `starlette`, `uvicorn`) |
+| Docs | `docs/MCP_SETUP.md` |
+
+### Verified end to end against the live database
+
+2026-08-18, config `86e91448a65aa40b`, server on `127.0.0.1:8799`:
+
+| Step | Result |
+|---|---|
+| `tools/list` with no token | **401**, `{"error": "unauthorized"}` |
+| `initialize` | 200, `capitalscan 0.2.0` |
+| `tools/list` | 200, all seven names |
+| `tools/call get_stats` | 200, a real measured answer |
+| `tools/call` with `split=holdout` | refused |
+
+The `get_stats` call asked for `confluence_low`, 3%, bucket `0-10`, validate
+split, and got back:
+
+```json
+{"kind": "suppressed",
+ "cell_id": "confluence_low|long|0-10|all|next_open|validate|pooled|h5|t0.03",
+ "reason": "n_eff 12.8 below min_n_eff 30",
+ "n_events": 61, "n_eff": 13, "min_n_eff": 30,
+ "meta": {"config_hash": "86e91448a65aa40b", "as_of": "2026-08-17",
+          "staleness_days": 1, "run_id": "cell_stats_20260816T183226_2c0047c4",
+          "split": "validate", "stale": false}}
+```
+
+**That is the expected answer, not a failure.** 61 events collapse to an
+effective sample of 13 after the clustering correction, against a floor of
+30. ADR 112 measured 100 of 224 train cells in that state, so a suppression
+is the *common* return of `get_stats`, and the wire shape says so with a
+`kind` tag rather than with nulls.
+
+### The read-only role, proven rather than granted
+
+`cscan db grant-readonly` provisions `capscan_ro`: `CONNECT`, `USAGE` on
+`public`, `SELECT` on every table and view, and nothing else. Measured
+directly on 2026-08-18:
+
+```
+SELECT count(*) FROM tickers;                      -> 712
+INSERT INTO tickers (ticker, name) VALUES (...);   -> ERROR: permission denied
+```
+
+`test_mcp_readonly_role.py` runs INSERT, UPDATE, DELETE, CREATE TABLE, DROP
+TABLE, `nextval`, and CREATE ROLE through the role's own connection and
+asserts each refusal. Session 16's gate calls this one of the two items that
+matter, and the reason it is a behavioural test rather than a grant-table
+query is that those two come apart the first time an ownership or default
+privilege gets in between.
+
+**A detail worth recording.** DDL and DML are refused differently. An INSERT
+without a grant says `permission denied for table ...`; a `DROP TABLE` says
+`must be owner of table ...`, because no grant confers DROP in Postgres at
+all. A test asserting only the first passed on four of five rows and failed
+on the fifth for exactly the right reason.
+
+### Defects found by running things
+
+**1. The transport was mounted inside another Starlette app.** Its session
+manager starts in the app's *lifespan*, and `Starlette.mount` never forwards
+lifespan to a sub-app. The server authenticated correctly, accepted the
+request, and failed every `initialize` with `RuntimeError: Task group is not
+initialized. Make sure to use run().` — a message that reads like an SDK bug
+rather than an assembly mistake. Fixed by wrapping the transport app
+directly in plain ASGI middleware, which pass non-HTTP scopes straight
+through.
+
+No unit test in this repository would have caught it. That is why
+`test_mcp_server_live.py` exists and why it uses `TestClient` as a context
+manager.
+
+**2. `Invalid Host header`.** The SDK compares `Host` against an allowlist
+and answers `421 Misdirected Request` on a miss, a DNS-rebinding guard whose
+default accepts `127.0.0.1` and `localhost`. It surfaced as a wall of 421s
+in the integration tests, and it is the same setting a deployment behind a
+domain has to pass. `build_app(allowed_hosts=[...])` now exposes it, and
+`MCP_SETUP.md` §3 says so before anyone spends an afternoon on a routing
+diagram.
+
+### Holdout is refused twice, and the order matters
+
+The generated schema types `split` as a two-member literal, so a request for
+holdout fails validation *before* any handler runs. The handler's raise is
+still there, still carrying ADR 019's reasoning, and still the only guard on
+the web and chat surfaces, which have no schema in front of them.
+
+The consequence is that an MCP client sees a pydantic validation error
+rather than the ADR text. That is why the `get_stats` tool description says
+in prose that holdout is refused and why: a model reading the schema learns
+it is not an option, and a model reading the description learns the reason.
+
+### What ADR 112 looks like on the wire
+
+The server's `instructions` are sent to every client on connect and name the
+result directly: 630,592 events, three signal definitions, no cell surviving
+Benjamini-Hochberg correction on either split, minimum q-value 0.706, and
+roughly 45% of cells reporting nothing.
+
+That is Phase 5 gate item 8 — "ADR 112's result is visible on every surface
+that reports a statistic" — discharged for this surface. A client that never
+opens the documentation still receives it.
+
+### What Session 17 inherits
+
+Nothing structural: the routes call the same handlers, not the MCP server.
+Two things worth carrying over anyway.
+
+- **The union tag.** `{"kind": "suppressed"}` and `{"kind": "not_found"}`
+  are how a client tells "we cannot say" from "it never happened". A web
+  route rendering the same union needs the same distinction, and it is
+  already decided.
+- **`v_ticker_state` still costs 26.5 s** (Session 15). The ticker page is
+  built on it.
+
+---
+
 ## Holdout
 
 **Evaluated once. Published whatever it says.**

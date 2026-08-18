@@ -20,8 +20,8 @@ the cheap fix (session 15 §7). New files use
 | 12 | 4 | `session12-cell-grid.md` | Cell grid, `cell_key` parity, `cell_stats` writer |
 | 13 | 4 | `session13-benchmark-arms.md` | Eight arms, the 200-replication null |
 | 14 | 4 | `session14-phase4-close.md` | Artifacts, drawdown slice, ADR 092's matcher. **Phase 4 gate closed** |
-| 15 | 5 | `session15-handlers-and-tools.md` | Handlers, seven tools, response validator, ADR 095's `v_positions` rebuild |
-| 16 | 5 | `session16-18-phase5.md` | MCP server |
+| 15 | 5 | `session15-handlers-and-tools.md` | Handlers, seven tools, response validator, ADR 095's `v_positions` rebuild. **Gate passed 2026-08-18** |
+| 16 | 5 | `session16-18-phase5.md` | MCP server. **Gate passed 2026-08-18**; see `../MCP_SETUP.md` |
 | 17 | 5 | `session16-18-phase5.md` | Screener and ticker page |
 | 18 | 5 | `session16-18-phase5.md` | Research page, chat, Phase 5 close |
 
@@ -29,7 +29,7 @@ Sessions 0-8 predate the per-session plan convention. `HANDOFF.md` and
 `SESSION_9_STANDING_ORDERS.md` are cross-session documents rather than
 plans.
 
-## What sessions 16-18 should know before starting
+## What sessions 17-18 should know before starting
 
 `session16-18-phase5.md` says its own task-level detail for 17 and 18 is a
 starting position, and that a planner should re-read the shipped
@@ -45,3 +45,11 @@ plan:
 - **`v_ticker_state` takes 26.5 s to materialize** on the developer
   database, and `v_positions` and the ticker page both read it. Measure
   before building an interactive page on top of it.
+- **The union tag is decided.** Session 16 serializes `Suppressed` and
+  `NotFound` with a `kind` field so a client can tell "we cannot say" from
+  "it never happened". A web route rendering the same union should make the
+  same distinction rather than inventing a second one.
+- **Nothing under `web/` may import `sqlalchemy` or `db_io`**, the same rule
+  `test_mcp_contract.py` already enforces for `mcp/`. Copy that test rather
+  than writing a new one; its docstring-versus-code handling is the fiddly
+  part.

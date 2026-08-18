@@ -37,7 +37,30 @@ Sessions 0-7 deliver v1 (Phase 1). Sessions 8-9 deliver Phases 2-3. Session 10 i
 
 | 15 | Handlers, tools, and the response validator | `handlers/` layer, seven tools, typed results, invariant-8 validator, closed enums, ADR 095's `v_positions` rebuild | **Session 15 gate — complete, passed on all 10 items.** Opens Phase 5. Seven handlers, one contract, no HTTP or display imports. **No probability leaves without `n_eff`, an interval, and a q-value**, enforced by the validator and by a structural test on the annotations. `split='holdout'` raises on every handler that takes one. `predict` returns `NotFound` for every input. `v_positions` reads `serving_config` instead of literals (ADR 115); five defects fixed, one of them not in ADR 095. See `RESULTS.md` Session 15 |
 
+| 16 | MCP server | Seven tools over streamable HTTP, bearer auth, per-token rate limiting, generated schemas, read-only database role | **Session 16 gate — complete, passed on all 10 items.** Verified end to end against the live database on 2026-08-18: unauthenticated `tools/list` refused, `initialize` and all seven tools answered, `get_stats` returned a real suppressed cell. **No `mcp/` module imports `sqlalchemy` or `db_io`**, and no enum value is spelled as a literal anywhere under it. The read-only role is proven by running each write verb through its own connection. See `RESULTS.md` Session 16 and `MCP_SETUP.md` |
+
 Sessions 0-2 can run back to back in one sitting. Session 7 is mostly waiting.
+
+**Session 16 is complete.** No migration. One dependency, `mcp>=1.2.0` (resolved to
+2.0.0), which brings `starlette` and `uvicorn`.
+
+The server adds no query logic, and that is asserted rather than intended: a tool making
+two handler calls, or any statement-level control flow after the handler call, fails
+`test_mcp_contract.py`. Tool schemas are generated from `handlers.enums`, so adding a
+`SignalType` member changes the wire contract with no edit under `mcp/` -- pinned by a
+test that no signal type, drawdown label, or split name appears as a string literal in
+that package's code at all.
+
+One defect found by running it. `build_app` mounted the transport inside another
+`Starlette`, which never forwards lifespan events to a sub-app. The result authenticated
+correctly, accepted the request, and failed every `initialize` with `RuntimeError: Task
+group is not initialized` -- a message that reads like an SDK bug. No unit test in this
+repository would have caught it, which is why `test_mcp_server_live.py` drives the real
+protocol through a `TestClient` context manager.
+
+Two operational notes. `cscan db grant-readonly` provisions the read-only role and is
+idempotent; a deployment behind a domain must pass `allowed_hosts` or every request
+returns `421 Misdirected Request`. Both are in `MCP_SETUP.md`.
 
 **Session 15 is complete. Phase 5 is open.**
 

@@ -2352,6 +2352,23 @@ does not say.
 
 `compare_positions` joins in Phase 2 with the trade log.
 
+**On the wire (session 16).** The MCP server registers these seven and
+nothing else, with schemas *generated* from `handlers.enums` rather than
+hand-written — adding a `SignalType` member changes every schema with no
+edit under `mcp/`, and a test asserts no enum value appears as a string
+literal in that package's code at all.
+
+`Suppressed` and `NotFound` serialize with a `"kind"` tag. A client must be
+able to tell a suppressed cell from one measuring `p_hit = 0.0`: those are
+opposite claims — "we cannot say" and "it never happened" — and two objects
+differing only by which keys are null cannot express the difference.
+
+Nothing is rounded in serialization. A q-value of 0.8492 reaches the client
+as 0.8492, because "nowhere near significant" and "nowhere near
+significant, and here is how far" are different statements.
+
+See `MCP_SETUP.md` for auth, the read-only role, and client configuration.
+
 Tool schemas dominate input tokens, so a small tool count is a cost decision as well as a correctness one.
 
 ### 11.2 System prompt
