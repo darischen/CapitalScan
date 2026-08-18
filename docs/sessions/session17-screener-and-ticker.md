@@ -51,15 +51,39 @@ neither is discovered as a bug:
   serving views carry all four**, so "structural" is checked rather than
   assumed. Write it first.
 
-### Still blocking, and not resolved by ADR 118
+### Where the design constraints actually live
 
-CLAUDE.md: *"Read the frontend-design skill before writing any component.
-It carries this environment's design tokens and styling constraints, which
-`DESIGN.md` does not cover."*
+**Nothing blocks this session.** A second blocker was claimed on 2026-08-18
+and was not real: the `frontend-design` skill is installed and enabled. It is
+a *plugin* skill under `~/.claude/plugins/`, and the claim came from checking
+`~/.claude/skills/` alone and generalising.
 
-**That skill is not available in this environment.** Either make it
-available or accept that the first pass uses invented tokens and will be
-redone. Nothing else stops this session.
+Reading it surfaced a different error. CLAUDE.md and `DESIGN.md` §11.7 both
+said it "carries this environment's design tokens". **It does not.** It is
+Anthropic's general design-guidance skill: avoid templated output, pair a
+display and body face deliberately, pick one signature element, spend
+boldness in one place. No palette, no type scale, no spacing system. Both
+documents are corrected.
+
+The constraints were always here:
+
+| Source | Carries |
+|---|---|
+| CLAUDE.md, Frontend | Dense instrument panel, monospace numerals, dark by default, colour as meaning |
+| DESIGN §11.6 | The five states, with exact renderings. "Suppressed is the one people get wrong" |
+| DESIGN §11.7 | Small type, tight rows, no hero sections, colorblind-safe. Charts for shape, tables for lookup |
+| DESIGN §11.8 | `lightweight-charts` for price and stochastic, `recharts` for statistics |
+| DESIGN §11.9 | Screener-as-cards on mobile; `/research` is desktop-only and says so |
+
+The skill's own rule settles how they combine: *"where the brief pins down a
+visual direction, follow it exactly."* The brief is pinned, so the skill
+governs **process**, not palette.
+
+Its one warning that bites here: a near-black background with a single bright
+accent is among the three looks it names as reading generated rather than
+chosen. §11.7's direction sits close to that. The accent and the type pairing
+are therefore the two places this session has to make a real decision rather
+than reach for the default.
 
 ---
 

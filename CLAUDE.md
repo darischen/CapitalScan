@@ -239,7 +239,13 @@ the_live_config` fails when the two disagree and names this command.
 
 ## Frontend
 
-**Read the frontend-design skill before writing any component.** It carries this environment's design tokens and styling constraints, which `DESIGN.md` does not cover.
+**Read the frontend-design skill before writing any component.** It is Anthropic's general design-guidance skill: how to avoid templated-looking output, pair a display and body face deliberately, pick one signature element, spend boldness in one place.
+
+**It carries no CapitalScan tokens.** This line and `DESIGN.md` §11.7 both claimed it held "this environment's design tokens" until 2026-08-18, when someone read it. There is no palette, no type scale, and no spacing system in it. The design constraints are already here and in `DESIGN.md` §11.6-11.9: dense instrument panel, monospace numerals, dark by default, colour as meaning, five states per data component.
+
+The skill's own rule settles how the two combine: *"where the brief pins down a visual direction, follow it exactly."* The brief is pinned. The skill governs process, not palette.
+
+It is a plugin skill, so it lives under `~/.claude/plugins/`, not `~/.claude/skills/`. Invoke it as `frontend-design:frontend-design`.
 
 Design direction: dense instrument panel, not a marketing page. Monospace for all numbers. Dark by default. Color carries meaning only. Every data component handles five states: loading, empty, suppressed, stale, error.
 
