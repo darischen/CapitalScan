@@ -675,14 +675,22 @@ export default function TickerChart({
    */
   useEffect(() => {
     let cancelled = false;
+    // Set once the database says the session is over. A ref rather than
+    // state: nothing renders differently, and a state write here would
+    // re-run this effect and rearm the timer it just disarmed.
+    const closed = { current: false };
 
     const refresh = async () => {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState !== "visible" || closed.current) return;
       try {
         const response = await fetch(`/api/live?sym=${encodeURIComponent(ticker)}`);
         if (!response.ok) return;
         const { bar } = (await response.json()) as { bar: ChartBar | null };
         if (cancelled || !bar || bar.close === null) return;
+        // The session ended. Nothing rewrites `bars_live` until tomorrow,
+        // so the timer is cleared rather than left querying a row that
+        // cannot change for the next seventeen hours.
+        if (bar.marketOpen === false) closed.current = true;
 
         const bars = barsRef.current;
         const index = bars.findIndex((b) => b.ts === bar.ts);

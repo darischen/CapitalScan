@@ -9,8 +9,9 @@ Ordered by when it blocks something, not by size.
 **Closed 2026-08-19**: the poller's four-hour timestamp offset (ADR 127,
 1,752 rows corrected), today's live candle (ADR 128, `bars_live`), the
 live price reading a stale `quotes_live` row (ADR 131), the `/chat` and `/`
-date disagreement (ADR 132, `grain` argument), and the ticker history's
-blank outcomes (ADR 133, `v_ticker_events`). All are recorded in
+date disagreement (ADR 132, `grain` argument), the ticker history's
+blank outcomes (ADR 133, `v_ticker_events`), and the live price outliving
+the session (ADR 134, `market_is_open()`). All are recorded in
 `DECISIONS.md`; they are gone from here rather than marked done, because a
 backlog of finished work is a changelog wearing the wrong name.
 
@@ -104,6 +105,12 @@ own. `/research` shows the rate interval with the baseline marked inside
 it, which answers the same question. DESIGN §11.2 asks for an edge bar; one
 cannot be drawn without either storing an edge interval or differencing two
 bounds, and the latter assumes independence the data does not have.
+
+**Half-day sessions are not modelled.** `market_is_open()` is 09:30-16:00
+ET every trading day. The market closes at 13:00 ET on roughly nine
+afternoons a year, and on those the live price stays visible for three
+hours after trading ends. Needs a holiday calendar carrying session
+lengths, which nothing here has.
 
 **Self-hosting the three Google fonts.** The only outbound request the app
 still makes. Cosmetic.

@@ -40,19 +40,28 @@ export default function LivePrice({
 
   useEffect(() => {
     let cancelled = false;
+    // Stops the timer once the session ends. Same reasoning as the chart's.
+    const closed = { current: false };
 
     const refresh = async () => {
-      if (document.visibilityState !== "visible") return;
+      if (document.visibilityState !== "visible" || closed.current) return;
       try {
         const url = `/api/live?sym=${encodeURIComponent(ticker)}&bar=${encodeURIComponent(barDate)}`;
         const response = await fetch(url);
         if (!response.ok) return;
-        const { quote: next } = (await response.json()) as { quote: LiveQuote | null };
-        // A null after a session ends leaves the last quote on screen with
-        // its own timestamp beside it. Blanking it would remove the record
-        // of what the last price was, which is the thing a reader arriving
-        // after the close wants.
-        if (!cancelled && next) setQuote(next);
+        const { quote: next, bar } = (await response.json()) as {
+          quote: LiveQuote | null;
+          bar: { marketOpen?: boolean } | null;
+        };
+        if (cancelled) return;
+        // **Null means the session is over, and the price goes away.**
+        // After the close the poller's last tick ages in place — TSLA read
+        // 349.58 at 15:25 PT against a 351.12 close — so keeping it on
+        // screen would show a stale number under a "live" label. The close
+        // beside it is the answer once trading ends, and it takes over the
+        // large size on its own.
+        setQuote(next);
+        if (bar?.marketOpen === false) closed.current = true;
       } catch {
         // Same reasoning as the chart: the visible timestamp stops
         // advancing, and that is the honest report of a failed poll.

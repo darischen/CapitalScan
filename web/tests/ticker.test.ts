@@ -271,6 +271,7 @@ describe("the live row is one source for two shapes", () => {
     // same one-session offset ADR 120's chart markers hit.
     session_date: new Date(2026, 7, 19),
     ts: new Date("2026-08-19T19:55:46Z"),
+    market_is_open: true,
     open: "233.5900",
     high: "239.6700",
     low: "232.5600",
@@ -299,9 +300,31 @@ describe("the live row is one source for two shapes", () => {
     expect(toLiveQuote(row(), "2026-08-19")?.aheadOfBar).toBe(false);
   });
 
-  it("both are null when the session is closed or the poller skips the ticker", () => {
+  it("both are null when the poller does not cover the ticker", () => {
     expect(toLiveBar(null)).toBeNull();
     expect(toLiveQuote(null, "2026-08-18")).toBeNull();
+  });
+
+  /**
+   * The reported defect: TSLA showed 349.58 as "live" at 15:25 PT against
+   * an official close of 351.12. The poller's last tick landed at 15:55:46
+   * ET, five minutes before the bell, and the stock moved $1.54 after it.
+   *
+   * The row is still real — it is the session's OHLCV and the candle keeps
+   * drawing it. What must not survive the close is the *price*, because
+   * "live" is a claim about now.
+   */
+  it("the price goes away after the close, and the candle does not", () => {
+    const closed = row({ market_is_open: false });
+    expect(toLiveQuote(closed, "2026-08-18")).toBeNull();
+
+    const bar = toLiveBar(closed);
+    expect(bar?.close).toBe(234.63);
+    expect(bar?.marketOpen).toBe(false);
+  });
+
+  it("the candle carries the session flag so the client can stop polling", () => {
+    expect(toLiveBar(row())?.marketOpen).toBe(true);
   });
 
   /** The candle stays partial: it has no indicators and must never grow

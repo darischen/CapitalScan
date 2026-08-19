@@ -453,6 +453,41 @@ CREATE VIEW public.v_ticker_state AS
 #
 # One definition, `STABLE` rather than `IMMUTABLE` because it reads the
 # clock. Every consumer calls it instead of spelling the zone again.
+# Whether a regular session is in progress right now, in ET.
+#
+# **A live price outside the session is a lie with a timestamp on it.**
+# Reported 2026-08-19: TSLA showed 349.58 as "live" at 15:25 PT against an
+# official close of 351.12. The poller's last tick was 15:55:46 ET, five
+# minutes before the bell, and TSLA moved $1.54 after it. `bars_live` was
+# doing its job; the page was showing a session snapshot two and a half
+# hours after the session ended.
+#
+# **The date half was already handled and the clock half was not.**
+# `market_date()` is the ET calendar date, so a weekend or holiday leaves
+# `session_date = market_date()` unmatched and the price disappears on its
+# own. A weekday evening matches, which is exactly the window that was
+# wrong.
+#
+# **The bounds are the poller's**, `poll.py::MARKET_OPEN` and
+# `MARKET_CLOSE`, and `test_market_hours.py` asserts these two agree with
+# those two rather than trusting the pair of literals to stay in step. They
+# cannot be imported -- one is Python and one is SQL -- so the guarantee is
+# a test.
+#
+# Half-days close at 13:00 ET and are not modelled. The cost is a stale
+# price for three hours on roughly nine afternoons a year; modelling them
+# needs a holiday calendar with session lengths, which nothing here has.
+# Recorded rather than silently accepted.
+MARKET_IS_OPEN_DDL = """
+CREATE OR REPLACE FUNCTION public.market_is_open() RETURNS boolean
+    LANGUAGE sql
+    STABLE
+    AS $$ SELECT (now() AT TIME ZONE 'America/New_York')::time
+                 >= TIME '09:30'
+             AND (now() AT TIME ZONE 'America/New_York')::time
+                 <  TIME '16:00' $$
+"""
+
 MARKET_DATE_DDL = """
 CREATE OR REPLACE FUNCTION public.market_date() RETURNS date
     LANGUAGE sql
@@ -716,7 +751,7 @@ CREATE VIEW public.v_screen_live AS
     b.low,
     b.close,
     b.volume,
-    lq.close AS live_price,
+        CASE WHEN market_is_open() THEN lq.close ELSE NULL::numeric END AS live_price,
     lq.ts AS live_price_ts,
     fr.fired_at,
     rev.confirmed AS rev_confirmed,

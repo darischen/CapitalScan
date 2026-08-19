@@ -87,6 +87,11 @@ export interface ChartBar {
    * actually makes.
    */
   partial?: boolean;
+  /** Only set on the partial bar. The client stops polling when this goes
+   * false: after the close nothing rewrites `bars_live` until tomorrow, so
+   * a timer that keeps running is a query every 45 seconds for a row that
+   * cannot change. */
+  marketOpen?: boolean;
 }
 
 /**
@@ -277,7 +282,7 @@ function toBar(r: ChartRowRaw): ChartBar {
  * one.
  */
 const LIVE_BAR_SQL = `
-  SELECT session_date, ts, open, high, low, close, volume
+  SELECT session_date, ts, open, high, low, close, volume, market_is_open()
     FROM bars_live
    WHERE ticker = $1
      AND session_date = market_date()
@@ -286,6 +291,9 @@ const LIVE_BAR_SQL = `
 export interface LiveRow {
   session_date: Date;
   ts: Date;
+  /** Whether a regular session is in progress *now*, from the database
+   * clock rather than the browser's. See `views.py::MARKET_IS_OPEN_DDL`. */
+  market_is_open: boolean;
   open: string | null;
   high: string | null;
   low: string | null;
@@ -347,6 +355,7 @@ export function toLiveBar(today: LiveRow | null): ChartBar | null {
     sides: [],
     signalStrength: null,
     partial: true,
+    marketOpen: today.market_is_open,
   };
 }
 
@@ -726,6 +735,13 @@ export async function liveQuote(ticker: string, barDate: string): Promise<LiveQu
 /** The quote shape, from the row. Pure, so a test can feed it one. */
 export function toLiveQuote(row: LiveRow | null, barDate: string): LiveQuote | null {
   if (!row) return null;
+  // **Nothing is live outside the session.** The poller's last tick lands
+  // before the bell and then stops, so after the close this is a snapshot
+  // ageing in place: TSLA read 349.58 at 15:25 PT against a 351.12 close,
+  // because the final five minutes happened after the last tick. The
+  // candle keeps the row -- it is a real record of the session -- and the
+  // header falls back to the close, which is the answer once trading ends.
+  if (!row.market_is_open) return null;
   // `close` is `NOT NULL` in the table, so this is a defence against a
   // future nullable column rather than a case that happens.
   const price = num(row.close);

@@ -4138,6 +4138,48 @@ Corrected in `a4b8f2e619c3` twenty minutes after `a8d3e5c17f92` applied. `pendin
 
 ---
 
+## 134. A live price exists only during the session
+
+**Date:** 2026-08-19. **Status:** Pinned. Adds `market_is_open()`. Completes ADR 131.
+
+**Context.**
+
+Reported by the user: TSLA showed **349.58** as its live price at 15:25 PT against an official close of **351.12**.
+
+```
+bars_live  TSLA  last tick 15:55:46 ET  349.58
+bars       TSLA  official close         351.12
+now                          18:25 ET
+```
+
+The poller's final tick landed five minutes before the bell and TSLA moved $1.54 after it. `bars_live` was correct and the page was presenting a session snapshot two and a half hours after the session ended, with nothing on screen to say so.
+
+ADR 131 fixed *staleness within* a session by polling. It did not ask what a live price means once there is no session, and the answer is that it means nothing: after 16:00 ET the poller stops, the row freezes, and the label keeps claiming currency the number no longer has.
+
+**The date half was already handled and the clock half was not.** `market_date()` is the ET calendar date, so a weekend or holiday leaves `session_date = market_date()` unmatched and the price disappears by itself. A weekday evening matches — which is every evening, on every ticker.
+
+**Decision.**
+
+`market_is_open()`: ET `09:30 <= now < 16:00`. `live_price` is NULL outside it, on both surfaces.
+
+**The bounds are the poller's**, `poll.py::MARKET_OPEN` and `MARKET_CLOSE`. They exist twice and cannot be shared — one is a Python `time` the poller compares against its own clock, one is SQL a view evaluates — so `test_market_hours.py` asserts they agree rather than trusting two literals to stay in step. That test also pins `AT TIME ZONE 'America/New_York'`: this machine runs on Pacific, and a missing cast would open the session at 06:30 local, which is a plausible-looking number wrong by three hours (ADR 127's failure, one module over).
+
+**The close is exclusive and the open is not**, deliberately asymmetric with the poller's inclusive bounds. The poller may write one tick at 16:00:00 and that print belongs in the bar; a price *labelled live* may not outlast the session.
+
+**`STABLE`, not `VOLATILE`.** Volatile re-evaluates per row, so one screener scan crossing 16:00:00 could give some rows a live price and others none.
+
+**The candle keeps the row.** It is a real record of the session's OHLCV and remains the only representation of today until the nightly ingest writes the closed bar. Only the *price* goes, because "live" is a claim about now and OHLC is a claim about the day.
+
+**Consequences.**
+
+`live_price_ts` survives the guard, so a reader who wants to know when the last tick landed still can. What goes away is the number pretending to be current.
+
+Both clients stop polling once the database reports the session closed. Nothing rewrites `bars_live` until tomorrow, so a timer left running is a query every 45 seconds for a row that cannot change for seventeen hours.
+
+**Half-days are not modelled.** The market closes at 13:00 ET on roughly nine afternoons a year, and on those the live price stays visible for three hours after trading ends. Modelling them needs a holiday calendar carrying session lengths, which nothing here has. Recorded rather than silently accepted.
+
+---
+
 ## Open items
 
 | Item | Options | Current lean |
