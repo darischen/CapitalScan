@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 
 import { afterAll, describe, expect, it } from "vitest";
 
+import { applyEnv } from "@/lib/env";
+
 /**
  * The checks that need the real database.
  *
@@ -18,17 +20,13 @@ import { afterAll, describe, expect, it } from "vitest";
  */
 
 // `next.config.ts` does this for the app. Vitest does not load it.
+//
+// Through `applyEnv` rather than a loop of its own: this file carried a
+// copy, and the copy was the first-wins variant that resolves a duplicate
+// key differently from `python-dotenv`. That was the bug behind `/chat`'s
+// 401, and it was in two places.
 const envPath = resolve(__dirname, "..", "..", ".env.local");
-if (existsSync(envPath)) {
-  for (const raw of readFileSync(envPath, "utf8").split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const eq = line.indexOf("=");
-    if (eq <= 0) continue;
-    const key = line.slice(0, eq).trim();
-    if (process.env[key] === undefined) process.env[key] = line.slice(eq + 1).trim();
-  }
-}
+if (existsSync(envPath)) applyEnv(readFileSync(envPath, "utf8"), process.env);
 
 const connected = Boolean(process.env.DATABASE_URL_MCP || process.env.DATABASE_URL_RESEARCH);
 

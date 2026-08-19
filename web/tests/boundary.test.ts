@@ -66,10 +66,52 @@ describe("gate 2: no web module imports the Python data layer (ADR 118)", () => 
    * an HTTP call to the MCP server or a spawned Python process would satisfy
    * the letter and break the decision.
    */
+  /**
+   * The chat path, and the only files allowed to reach the MCP server.
+   *
+   * ADR 118's rule has two halves and Session 17 could only test one,
+   * because the LLM caller did not exist yet: *routes select from the
+   * views, and MCP is for LLM callers.* `/chat` is that caller, so the
+   * guard below became "everything except these six files", and the list is
+   * written out rather than matched by directory — `components/Chat.tsx`
+   * and `app/chat/page.tsx` are on it because they are the surface, not
+   * because they connect, and if either ever does the reason should be an
+   * edit here.
+   */
+  const CHAT_PATH = new Set([
+    "lib/chat.ts",
+    "lib/mcp.ts",
+    "lib/prompt.ts",
+    "app/api/chat/route.ts",
+    "components/Chat.tsx",
+    "app/chat/page.tsx",
+  ]);
+
+  const rel = (path: string) => relative(ROOT, path).split(sep).join("/");
+
   it.each(sources())("%s does not shell out or call the MCP server", (path) => {
     const text = code(path);
+    // Universal. Nothing in this app spawns a process, chat path included:
+    // ADR 070 says no Python runs in the request path, and reaching the
+    // handlers over HTTP is exactly how the chat route obeys that.
     expect(text).not.toMatch(/child_process|spawnSync|execSync/);
+    if (CHAT_PATH.has(rel(path))) return;
     expect(text).not.toMatch(/8787|mcp\/v1|modelcontextprotocol/i);
+  });
+
+  /**
+   * The carve-out is asserted from the other side too.
+   *
+   * A list of exempt files is only meaningful while the files on it still
+   * need the exemption. Without this, deleting the MCP client and having
+   * `/chat` query Postgres directly would leave every test in this file
+   * green — the exemption would simply stop being used.
+   */
+  it("the chat route does reach the MCP server, which is why it is exempt", () => {
+    const client = sources().find((path) => rel(path) === "lib/mcp.ts");
+    expect(client, "lib/mcp.ts is missing").toBeDefined();
+    expect(code(client!)).toMatch(/modelcontextprotocol/);
+    expect(code(join(ROOT, "app", "api", "chat", "route.ts"))).toMatch(/@\/lib\/mcp/);
   });
 });
 
@@ -168,17 +210,20 @@ describe("the client boundary", () => {
    * external, which turns a stray import into a build error, and this is the
    * cheaper check that says which file did it.
    */
-  it("the client components are exactly the four that need a browser", () => {
+  it("the client components are exactly the six that need a browser", () => {
     const clients = sources()
       .filter((p) => /^\s*["']use client["']/.test(read(p)))
       .map((p) => relative(ROOT, p).split(sep).join("/"))
       .sort();
-    // Each earns it: a popover calendar, an IntersectionObserver, a canvas
-    // chart, and a keyboard-driven menu. The list is asserted whole rather
-    // than as a count, so adding one is a decision someone makes here.
+    // Each earns it: a streaming transcript, a popover calendar, an
+    // IntersectionObserver, a polled quote, a canvas chart, and a
+    // keyboard-driven menu. The list is asserted whole rather than as a
+    // count, so adding one is a decision someone makes here.
     expect(clients).toEqual([
+      "components/Chat.tsx",
       "components/DatePicker.tsx",
       "components/EventRows.tsx",
+      "components/LivePrice.tsx",
       "components/TickerChart.tsx",
       "components/TickerSearch.tsx",
     ]);

@@ -87,13 +87,18 @@ export interface ChartBar {
    * actually makes.
    */
   partial?: boolean;
+  /** Only set on the partial bar. The client stops polling when this goes
+   * false: after the close nothing rewrites `bars_live` until tomorrow, so
+   * a timer that keeps running is a query every 45 seconds for a row that
+   * cannot change. */
+  marketOpen?: boolean;
 }
 
 /**
  * The newest price the poller saw, with the time it saw it.
  *
  * A separate read rather than a column on `v_ticker_state`: that view is
- * the last *closed* session, and joining an intraday quote onto it would
+ * the last *closed* session, and joining an intraday price onto it would
  * make one row mean two different times. `null` outside market hours and
  * for any ticker the poller does not cover — it polls
  * `_load_in_trade_tickers`, so a train-universe name never has one.
@@ -144,6 +149,15 @@ export interface TickerEvent {
   side: Side;
   isClusterHead: boolean | null;
   ddBucket: string | null;
+  /** The poller recorded this fire and `cscan backtest` has not reached it
+   * yet, so it has no measured outcome *yet*. 246 rows when measured. */
+  pending: boolean;
+  /** ADR 122 keeps out-of-trade events visible here and excludes them from
+   * every statistical read, so they carry no outcome and never will. That
+   * is a third state, distinct from `pending`, and conflating the two was
+   * the first cut of `v_ticker_events` promising a number that was never
+   * coming for 179,286 rows. */
+  inTrade: boolean | null;
   entryDate: string | null;
   entryPrice: number | null;
   exitDate: string | null;
@@ -268,61 +282,98 @@ function toBar(r: ChartRowRaw): ChartBar {
  * one.
  */
 const LIVE_BAR_SQL = `
-  SELECT session_date, open, high, low, close, volume
+  SELECT session_date, ts, open, high, low, close, volume, market_is_open()
     FROM bars_live
    WHERE ticker = $1
      AND session_date = market_date()
 `;
 
+export interface LiveRow {
+  session_date: Date;
+  ts: Date;
+  /** Whether a regular session is in progress *now*, from the database
+   * clock rather than the browser's. See `views.py::MARKET_IS_OPEN_DDL`. */
+  market_is_open: boolean;
+  open: string | null;
+  high: string | null;
+  low: string | null;
+  close: string | null;
+  volume: string | null;
+}
+
+/**
+ * The one row that describes the open session, read once.
+ *
+ * Both the chart's candle and the header's live price are built from this,
+ * and that is the point — see `liveQuote` below for what happened when
+ * they came from two tables.
+ */
+export async function liveRowFor(ticker: string): Promise<LiveRow | null> {
+  const rows = await query<LiveRow>(LIVE_BAR_SQL, [ticker]);
+  return rows[0] ?? null;
+}
+
+/**
+ * Today's partial candle, or null outside a session.
+ *
+ * **Its own exported function because the chart has to be able to re-read
+ * it.** The page is a server component: it renders once, and the candle it
+ * renders is whatever `bars_live` held at that instant. The poller rewrites
+ * that row every five minutes, so a tab left open showed a price frozen at
+ * page load — correct when it was drawn and progressively wronger all
+ * session, with nothing on screen saying which. `/api/live` calls this on a
+ * timer so the same shape reaches the chart on the first paint and on every
+ * refresh after it.
+ */
+export async function liveBar(ticker: string): Promise<ChartBar | null> {
+  return toLiveBar(await liveRowFor(ticker));
+}
+
+/** The candle shape, from the row. Pure, so a test can feed it one. */
+export function toLiveBar(today: LiveRow | null): ChartBar | null {
+  if (!today) return null;
+
+  return {
+    ts: isoDate(today.session_date),
+    open: num(today.open),
+    high: num(today.high),
+    low: num(today.low),
+    close: num(today.close),
+    volume: num(today.volume),
+    // Null, never carried forward from yesterday. Indicators are
+    // computed on closed bars; inventing them here would be the
+    // look-ahead this design exists to prevent, one layer up.
+    bbLower: null,
+    bbMid: null,
+    bbUpper: null,
+    kFull: null,
+    dFull: null,
+    kFast: null,
+    sma200: null,
+    eventIds: [],
+    signalTypes: [],
+    sides: [],
+    signalStrength: null,
+    partial: true,
+    marketOpen: today.market_is_open,
+  };
+}
+
 export async function chart(ticker: string, range: Range = DEFAULT_RANGE): Promise<ChartBar[]> {
-  const [rows, live] = await Promise.all([
+  const [rows, today] = await Promise.all([
     query<ChartRowRaw>(CHART_SQL, [ticker, RANGES[range]]),
-    query<{
-      session_date: Date;
-      open: string | null;
-      high: string | null;
-      low: string | null;
-      close: string | null;
-      volume: string | null;
-    }>(LIVE_BAR_SQL, [ticker]),
+    liveBar(ticker),
   ]);
 
   const bars = rows.map(toBar);
-  const today = live[0];
   if (!today) return bars;
 
-  const ts = isoDate(today.session_date);
   // Across the nightly handover both exist: the ingest has written today's
   // closed bar and `bars_live` still holds the session's partial one. The
   // closed bar wins — it is settled and it carries indicators.
-  if (bars.some((b) => b.ts === ts)) return bars;
+  if (bars.some((b) => b.ts === today.ts)) return bars;
 
-  return [
-    ...bars,
-    {
-      ts,
-      open: num(today.open),
-      high: num(today.high),
-      low: num(today.low),
-      close: num(today.close),
-      volume: num(today.volume),
-      // Null, never carried forward from yesterday. Indicators are
-      // computed on closed bars; inventing them here would be the
-      // look-ahead this design exists to prevent, one layer up.
-      bbLower: null,
-      bbMid: null,
-      bbUpper: null,
-      kFull: null,
-      dFull: null,
-      kFast: null,
-      sma200: null,
-      eventIds: [],
-      signalTypes: [],
-      sides: [],
-      signalStrength: null,
-      partial: true,
-    },
-  ];
+  return [...bars, today];
 }
 
 /** How many sessions one drag-left fetches. A year, matching the default
@@ -433,16 +484,21 @@ export async function state(ticker: string): Promise<TickerState | null> {
 /**
  * Event history.
  *
- * **`entry_kind = 'touch'`, matching the chart's markers (ADR 120).**
- * `v_events` carries all four kinds, so an unfiltered read returns the same
- * signal four times. `touch` is the one the markers use, and a history row
- * with no marker on the chart above it is the kind of disagreement nobody
- * debugs — they assume the chart is wrong.
+ * **Reads `v_ticker_events`, which is `next_open` plus the poller's
+ * not-yet-backtested fires.** This read `entry_kind = 'touch'` until
+ * 2026-08-19 and showed a blank entry and exit on 47% of its rows,
+ * permanently: a `touch` entry means "enter at the level you touched", and
+ * a stochastic threshold crossing has no level, so all 19,218
+ * `stoch_oversold` and `stoch_overbought` rows carried no entry price and
+ * no exit. The user reported it as old events with the horizon long past
+ * still reading `— — —`, which is exactly what it looked like.
  *
- * The consequence, stated because it is a real one: the outcome columns are
- * then measured on the **touch** entry, while the screener's hit rates are
- * measured on `next_open` (`GRID_ENTRY_KIND`). Same event, two entries, two
- * outcomes. The column header says which.
+ * The outcomes now also match the grain the screener's hit rates were
+ * measured on (`GRID_ENTRY_KIND`), closing the "same event, two entries,
+ * two outcomes" wart this comment used to apologise for.
+ *
+ * `pending` marks a fire `cscan backtest` has not reached. It renders as
+ * "open", never as a blank — a blank is what the defect above looked like.
  *
  * **Confluence by default** (user's request, 2026-08-19), matching the
  * screener's own default and `cli.py::scan --confluence-only`: membership
@@ -464,12 +520,11 @@ export async function state(ticker: string): Promise<TickerState | null> {
  */
 const EVENTS_SQL = `
   SELECT id, signal_date, signal_type, signal_types_all, signal_strength,
-         is_cluster_head, dd_bucket, entry_date, entry_price,
+         is_cluster_head, dd_bucket, pending, in_trade, entry_date, entry_price,
          exit_date, exit_price, exit_reason, holding_days,
          net_ret, mfe, mae, earnings_in_window
-    FROM v_events
+    FROM v_ticker_events
    WHERE ticker = $1
-     AND entry_kind = 'touch'
      AND ($3::boolean IS TRUE
           OR signal_types_all && ARRAY['confluence_high','confluence_low'])
    ORDER BY signal_date DESC, id
@@ -480,9 +535,8 @@ const EVENTS_SQL = `
  * goes rather than discovering it by scrolling. */
 const EVENTS_COUNT_SQL = `
   SELECT count(*)::int AS n
-    FROM v_events
+    FROM v_ticker_events
    WHERE ticker = $1
-     AND entry_kind = 'touch'
      AND ($2::boolean IS TRUE
           OR signal_types_all && ARRAY['confluence_high','confluence_low'])
 `;
@@ -495,6 +549,8 @@ interface EventRowRaw {
   signal_strength: number | null;
   is_cluster_head: boolean | null;
   dd_bucket: string | null;
+  pending: boolean;
+  in_trade: boolean | null;
   entry_date: Date | null;
   entry_price: string | null;
   exit_date: Date | null;
@@ -563,6 +619,8 @@ export async function events(
     side: sideFor(r.signal_type),
     isClusterHead: r.is_cluster_head,
     ddBucket: r.dd_bucket,
+    pending: r.pending,
+    inTrade: r.in_trade,
     entryDate: r.entry_date ? isoDate(r.entry_date) : null,
     entryPrice: num(r.entry_price),
     exitDate: r.exit_date ? isoDate(r.exit_date) : null,
@@ -649,43 +707,49 @@ export async function searchTickers(term: string, limit = SEARCH_LIMIT): Promise
 }
 
 /**
- * `quotes_live`, one ticker, newest row.
+ * The header's live price — `bars_live`, the same row the candle is drawn
+ * from.
  *
- * `DISTINCT ON` is unnecessary for a single ticker — `ORDER BY ts DESC
- * LIMIT 1` walks the primary key backwards and stops.
+ * **This read `quotes_live` until 2026-08-19 and was wrong most of the
+ * time.** `poll.py` writes `quotes_live` *inside the breach loop*, so a
+ * ticker gets a row only on a tick where it fired. ROST fired at 09:36 ET
+ * and never again; at 13:26 PT, hours after the close, the header still
+ * read 238.72 from that morning quote while the candle beside it showed
+ * the true 234.63. Reported by the user, and the two numbers on one screen
+ * disagreeing is precisely the failure `/api/live` was built to prevent —
+ * except the disagreement was upstream, in which table each came from.
  *
- * The staleness comparison is against `market_date()`, not against the
- * quote's own age: a quote from Friday 15:59 is not stale on Friday
- * evening and is very stale on Tuesday, and only the market's calendar
- * knows the difference.
+ * `bars_live.close` *is* the current price: rewritten every tick, for every
+ * ticker the poller covers (ADR 128). `quotes_live` was a second, sparser
+ * source for the same quantity, so it stops being a display source rather
+ * than being kept in sync. It remains the record of what price a signal
+ * fired at, which is what it is actually for.
+ *
+ * Both shapes now come from one row, so they cannot disagree by
+ * construction rather than by being fetched carefully.
  */
-const LIVE_SQL = `
-  SELECT q.price, q.ts, (q.ts AT TIME ZONE 'America/New_York')::date AS quote_date,
-         market_date() AS today
-    FROM quotes_live q
-   WHERE q.ticker = $1
-   ORDER BY q.ts DESC
-   LIMIT 1
-`;
-
 export async function liveQuote(ticker: string, barDate: string): Promise<LiveQuote | null> {
-  const [row] = await query<{
-    price: string;
-    ts: Date;
-    quote_date: Date;
-    today: Date;
-  }>(LIVE_SQL, [ticker]);
-  if (!row) return null;
+  return toLiveQuote(await liveRowFor(ticker), barDate);
+}
 
-  const price = num(row.price);
+/** The quote shape, from the row. Pure, so a test can feed it one. */
+export function toLiveQuote(row: LiveRow | null, barDate: string): LiveQuote | null {
+  if (!row) return null;
+  // **Nothing is live outside the session.** The poller's last tick lands
+  // before the bell and then stops, so after the close this is a snapshot
+  // ageing in place: TSLA read 349.58 at 15:25 PT against a 351.12 close,
+  // because the final five minutes happened after the last tick. The
+  // candle keeps the row -- it is a real record of the session -- and the
+  // header falls back to the close, which is the answer once trading ends.
+  if (!row.market_is_open) return null;
+  // `close` is `NOT NULL` in the table, so this is a defence against a
+  // future nullable column rather than a case that happens.
+  const price = num(row.close);
   if (price === null) return null;
 
-  const quoteDate = isoDate(row.quote_date);
-  // Only shown when the quote is from the current market date. A quote from
-  // an earlier session is not a live price, and rendering it as one beside
-  // a bar from the same day would be claiming intraday movement that
-  // already closed.
-  if (quoteDate !== isoDate(row.today)) return null;
-
-  return { price, ts: row.ts.toISOString(), aheadOfBar: quoteDate > barDate };
+  // The SQL already pins `session_date = market_date()`, so a row that
+  // exists is today's by construction. The date comparison the old
+  // `quotes_live` read needed is gone with the table it guarded.
+  const sessionDate = isoDate(row.session_date);
+  return { price, ts: row.ts.toISOString(), aheadOfBar: sessionDate > barDate };
 }

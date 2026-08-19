@@ -33,11 +33,31 @@ function typeList(e: TickerEvent): string[] {
  * reached — the poller writes an event the moment it fires and
  * `cscan backtest` fills the outcome hours later.
  */
+/**
+ * The Net column, and the three things "no number" can mean.
+ *
+ * **A blank here used to mean two different things and said neither.**
+ * Until 2026-08-19 the history read the `touch` grain, where a stochastic
+ * signal can never have an entry, so 47% of rows showed an em-dash that
+ * was indistinguishable from a genuinely missing outcome. The view now
+ * reads the grain that was measured, and two flags name the two cases that
+ * legitimately have no number: `pending` (the backtest has not reached this
+ * session) and `in_trade = false` (ADR 122 keeps the event visible and out
+ * of every statistic, so no result is coming).
+ */
 function Outcome({ e }: { e: TickerEvent }) {
   if (e.netRet !== null) {
     return <span className={`num ${e.netRet >= 0 ? "up" : "down"}`}>{signedPct(e.netRet)}</span>;
   }
   if (e.exitDate !== null) return <span className="dim">closed, no return</span>;
+  // The poller saw it; `cscan backtest` has not run since. Said in words,
+  // because "not measured yet" and "still in the trade" are different
+  // facts and only one of them is about the market.
+  if (e.pending) return <span className="dim">not backtested</span>;
+  // ADR 122 keeps these visible and excludes them from every statistical
+  // read, so no outcome exists and none is coming. Saying "open" here
+  // would suggest a result is on its way for 179,286 rows.
+  if (e.inTrade === false) return <span className="dim">outside universe</span>;
   return <span className="dim">open</span>;
 }
 

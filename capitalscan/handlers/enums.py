@@ -42,6 +42,29 @@ HOLDOUT = "holdout"
 # population, `trade` the narrower live one.
 UNIVERSES: tuple[str, ...] = ("train", "trade")
 
+# `grain` selects which *feed* a screener read comes from. The two views
+# hold the same signals at different entry timings and, more importantly,
+# at different freshness:
+#
+# - `next_open` reads `v_screen`. Written only by `cscan backtest`, so it
+#   ends at the last backtest and every row carries a measured outcome.
+#   This is `GRID_ENTRY_KIND` -- the grain every Phase 4 statistic used.
+# - `touch` reads `v_screen_live`. Written by the poller continuously, so
+#   it reaches today.
+#
+# **Default `next_open`, and the default is the compatible one.** Before
+# this argument existed the handler read `v_screen` unconditionally, so a
+# caller asking "what fired today" got the last *backtested* session --
+# 2026-08-13 when the poller had already recorded 2026-08-19. The answer
+# was honest and wrong, and neither view is right for every question, so
+# the caller says which one they mean rather than the handler guessing.
+#
+# Statistics are unaffected: `v_screen_live` joins `cell_stats` on the
+# literal `entry_kind = 'next_open'` by design, because those are the only
+# cells that were measured. A live row's statistics describe what that
+# *kind* of setup historically did, on both grains, identically.
+GRAINS: tuple[str, ...] = ("next_open", "touch")
+
 
 def signal_types() -> tuple[str, ...]:
     """Every signal type in `core.types.SignalType`, in declaration order.
@@ -68,6 +91,17 @@ def dd_buckets(sp: StatsParams | None = None) -> tuple[str, ...]:
     `test_handlers_enums.py` asserts it rather than assuming.
     """
     return dd_bucket_labels(sp or StatsParams())
+
+
+def reach_targets(sp: StatsParams | None = None) -> tuple[float, ...]:
+    """The measured reach targets, as decimal fractions.
+
+    Exists so the MCP tool descriptions can *state* them rather than
+    restate them. Invariant 9 puts the numbers in `core/config.py` and
+    nowhere else; a docstring that spelled `0.02, 0.03, 0.05, 0.1` would be
+    a copy that stops being true the first time the sweep changes.
+    """
+    return tuple(float(t) for t in (sp or StatsParams()).reach_targets)
 
 
 def _reject(name: str, value: object, allowed: tuple[str, ...]) -> None:
@@ -102,6 +136,10 @@ def parse_split(value: str) -> str:
 
 def parse_universe(value: str) -> str:
     return _check_one("universe", value, UNIVERSES)
+
+
+def parse_grain(value: str) -> str:
+    return _check_one("grain", value, GRAINS)
 
 
 def parse_entry_kind(value: str) -> str:
@@ -219,7 +257,7 @@ def parse_target_pct(value: float, sp: StatsParams | None = None) -> float:
     here would be a fourth copy of that number outside `core/config.py`
     (invariant 9). Callers state the target they mean.
     """
-    targets = tuple(float(t) for t in (sp or StatsParams()).reach_targets)
+    targets = reach_targets(sp)
     if float(value) not in targets:
         raise InvalidEnum(
             f"target_pct={value!r} is not measured. Allowed: " + ", ".join(str(t) for t in targets)

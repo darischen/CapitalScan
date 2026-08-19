@@ -453,6 +453,41 @@ CREATE VIEW public.v_ticker_state AS
 #
 # One definition, `STABLE` rather than `IMMUTABLE` because it reads the
 # clock. Every consumer calls it instead of spelling the zone again.
+# Whether a regular session is in progress right now, in ET.
+#
+# **A live price outside the session is a lie with a timestamp on it.**
+# Reported 2026-08-19: TSLA showed 349.58 as "live" at 15:25 PT against an
+# official close of 351.12. The poller's last tick was 15:55:46 ET, five
+# minutes before the bell, and TSLA moved $1.54 after it. `bars_live` was
+# doing its job; the page was showing a session snapshot two and a half
+# hours after the session ended.
+#
+# **The date half was already handled and the clock half was not.**
+# `market_date()` is the ET calendar date, so a weekend or holiday leaves
+# `session_date = market_date()` unmatched and the price disappears on its
+# own. A weekday evening matches, which is exactly the window that was
+# wrong.
+#
+# **The bounds are the poller's**, `poll.py::MARKET_OPEN` and
+# `MARKET_CLOSE`, and `test_market_hours.py` asserts these two agree with
+# those two rather than trusting the pair of literals to stay in step. They
+# cannot be imported -- one is Python and one is SQL -- so the guarantee is
+# a test.
+#
+# Half-days close at 13:00 ET and are not modelled. The cost is a stale
+# price for three hours on roughly nine afternoons a year; modelling them
+# needs a holiday calendar with session lengths, which nothing here has.
+# Recorded rather than silently accepted.
+MARKET_IS_OPEN_DDL = """
+CREATE OR REPLACE FUNCTION public.market_is_open() RETURNS boolean
+    LANGUAGE sql
+    STABLE
+    AS $$ SELECT (now() AT TIME ZONE 'America/New_York')::time
+                 >= TIME '09:30'
+             AND (now() AT TIME ZONE 'America/New_York')::time
+                 <  TIME '16:00' $$
+"""
+
 MARKET_DATE_DDL = """
 CREATE OR REPLACE FUNCTION public.market_date() RETURNS date
     LANGUAGE sql
@@ -622,9 +657,21 @@ CREATE VIEW public.v_screen AS
 #   evening -- measured 2026-08-19, 0 of today's 67 events had one. Left
 #   null rather than back-filled from quotes: an open that is really the
 #   first tick anyone saw is not the session's open.
-# - **`live_price` is the newest `quotes_live` row for the ticker**, with
-#   its timestamp beside it. It is the last price the poller saw, not a
+# - **`live_price` is `bars_live.close` for the current session**, with its
+#   timestamp beside it. It is the last price the poller saw, not a
 #   real-time quote, and `live_price_ts` is what stops those being confused.
+#
+#   **It read `quotes_live` until 2026-08-19 and was usually wrong.**
+#   `poll.py` writes that table inside its breach loop, so a ticker gets a
+#   row only on a tick where it fired -- ROST fired at 09:36 ET, never
+#   again, and hours after the close this column still read its 238.72
+#   against a true 234.63. The lateral had no date bound either, so a
+#   ticker that last fired in July reported a July price as live.
+#
+#   `bars_live` is rewritten every tick for every ticker the poller covers
+#   (ADR 128), so `close` is the current price by construction. An equality
+#   join on its primary key replaces the lateral. Null outside a session
+#   is the honest answer and is new: the old lateral always found *a* row.
 # - **`fired_at` is the first `signal_reports` row for the event**, which is
 #   when the poller detected and notified it. `min()` because a re-notified
 #   event would otherwise report its latest mention rather than its first.
@@ -687,6 +734,7 @@ CREATE VIEW public.v_screen_live AS
     e.k_full,
     e.d_full,
     e.k_cross_up,
+    e.bb_pctb,
     e.dd_52w,
     e.dd_bucket,
     e.above_sma200,
@@ -703,7 +751,7 @@ CREATE VIEW public.v_screen_live AS
     b.low,
     b.close,
     b.volume,
-    lq.price AS live_price,
+        CASE WHEN market_is_open() THEN lq.close ELSE NULL::numeric END AS live_price,
     lq.ts AS live_price_ts,
     fr.fired_at,
     rev.confirmed AS rev_confirmed,
@@ -720,11 +768,8 @@ CREATE VIEW public.v_screen_live AS
          LIMIT 1) ind ON (true)
      LEFT JOIN public.bars b ON ((b.ticker = e.ticker) AND (b.ts = e.signal_date)
          AND (b."interval" = '1d'::text))
-     LEFT JOIN LATERAL ( SELECT q.price, q.ts
-           FROM public.quotes_live q
-          WHERE (q.ticker = e.ticker)
-          ORDER BY q.ts DESC
-         LIMIT 1) lq ON (true)
+     LEFT JOIN public.bars_live lq ON ((lq.ticker = e.ticker)
+         AND (lq.session_date = market_date()))
      LEFT JOIN LATERAL ( SELECT min(r.fired_at) AS fired_at
            FROM public.signal_reports r
           WHERE (r.event_id = e.id)) fr ON (true)
@@ -1104,6 +1149,161 @@ SELECT cell_id,
 # `close` is `NOT NULL` because it is the current price and a row without
 # one describes nothing. Everything else is nullable: pre-market a quote
 # can carry a price and no high, and invariant 4 says absent stays absent.
+
+# `v_ticker_events` -- the ticker page's event history, one row per signal
+# with the outcome that was actually measured.
+#
+# **The page showed a blank entry and exit on 47% of its rows, forever.**
+# Reported 2026-08-19: old events with the horizon long past still read
+# `-- -- --`. Measured across in-trade cluster heads at the `touch` grain:
+#
+#     stoch_overbought  11,780 rows  11,780 with no entry
+#     stoch_oversold     7,438 rows   7,438 with no entry
+#     bb_upper_touch     8,876 rows       0 with no entry
+#
+# Not a data fault. A `touch` entry means *enter at the level you touched*,
+# and a stochastic threshold crossing has no level -- `touch_level` is NULL
+# on every one of those rows by construction, so no entry price exists and
+# no exit can follow. The same signals carry complete outcomes at
+# `next_open`, `touch_5m` and `touch_30m`, where entry does not need a
+# band.
+#
+# So the history read a grain that is undefined for two of the seven signal
+# types, and rendered the undefined half as an em-dash indistinguishable
+# from missing data.
+#
+# **This view reads `next_open` -- the grain every Phase 4 statistic used
+# (`GRID_ENTRY_KIND`) -- and adds back the `touch` rows that have no
+# `next_open` sibling yet.** Those are the poller's fires from sessions
+# `cscan backtest` has not reached, 246 of 41,065 when measured. Reading
+# `next_open` alone would drop today's fires off the page, which is the row
+# a reader most wants; reading `touch` alone is the defect above.
+#
+# **Three outcome states, not two, and the first cut of this view got that
+# wrong.** `pending` initially meant "no `next_open` sibling", which counted
+# 47,310 rows where it should have counted 246. The other 179,286 are
+# `in_trade = false`: events ADR 122 records so they stay visible on the
+# ticker page, and that the backtest deliberately never measures. Calling
+# those "not yet backtested" promises a number that is never coming.
+#
+# So `pending` is `in_trade AND no sibling` -- a session `cscan backtest`
+# has not reached -- and `in_trade` is projected beside it, letting the page
+# separate "measured", "waiting on the backtest", and "outside the trade
+# universe, never measured by design". Caught by checking the counts against
+# the estimate rather than by any test.
+#
+# **Marker alignment survives.** `v_chart` marks bars at `entry_kind =
+# 'touch' AND is_cluster_head IS NOT FALSE`, and every historical touch row
+# has a `next_open` sibling on the same `(ticker, signal_date,
+# signal_type)` -- that four-column tuple plus `entry_kind` is the natural
+# key, so the correspondence is exact rather than approximate. A marker
+# without a history row underneath it remains impossible.
+V_TICKER_EVENTS_DDL = """
+CREATE VIEW public.v_ticker_events AS
+ SELECT
+    e.ticker,
+    t.sector,
+    e.id,
+    e.signal_date,
+    e.signal_type,
+    e.signal_types_all,
+    e.signal_strength,
+    e.cluster_id,
+    e.seq_in_cluster,
+    e.is_cluster_head,
+    e.bb_pctb,
+    e.k_full,
+    e.k_fast,
+    e.dd_52w,
+    e.dd_bucket,
+    e.above_sma200,
+    e.vix_close,
+    e.days_to_earnings,
+    e.entry_kind,
+    e.entry_date,
+    e.entry_price,
+    e.entry_gapped,
+    e.exit_date,
+    e.exit_price,
+    e.exit_reason,
+    e.holding_days,
+    e.ambiguous,
+    e.gross_ret,
+    e.net_ret,
+    e.mfe,
+    e.mae,
+    e.time_to_mfe,
+    e.capture_ratio,
+    e.touched_2pct,
+    e.touched_3pct,
+    e.touched_5pct,
+    e.touched_10pct,
+    e.day_touched_5pct,
+    e.earnings_in_window,
+    e.era,
+    e.split_key,
+    e.in_trade,
+    false AS pending
+   FROM public.events e
+     JOIN public.tickers t ON ((t.ticker = e.ticker))
+  WHERE ((e.config_hash = current_setting('capitalscan.default_config_hash'::text, true))
+     AND (e.entry_kind = 'next_open'::text))
+UNION ALL
+ SELECT
+    e.ticker,
+    t.sector,
+    e.id,
+    e.signal_date,
+    e.signal_type,
+    e.signal_types_all,
+    e.signal_strength,
+    e.cluster_id,
+    e.seq_in_cluster,
+    e.is_cluster_head,
+    e.bb_pctb,
+    e.k_full,
+    e.k_fast,
+    e.dd_52w,
+    e.dd_bucket,
+    e.above_sma200,
+    e.vix_close,
+    e.days_to_earnings,
+    e.entry_kind,
+    e.entry_date,
+    e.entry_price,
+    e.entry_gapped,
+    e.exit_date,
+    e.exit_price,
+    e.exit_reason,
+    e.holding_days,
+    e.ambiguous,
+    e.gross_ret,
+    e.net_ret,
+    e.mfe,
+    e.mae,
+    e.time_to_mfe,
+    e.capture_ratio,
+    e.touched_2pct,
+    e.touched_3pct,
+    e.touched_5pct,
+    e.touched_10pct,
+    e.day_touched_5pct,
+    e.earnings_in_window,
+    e.era,
+    e.split_key,
+    e.in_trade,
+    e.in_trade AS pending
+   FROM public.events e
+     JOIN public.tickers t ON ((t.ticker = e.ticker))
+  WHERE ((e.config_hash = current_setting('capitalscan.default_config_hash'::text, true))
+     AND (e.entry_kind = 'touch'::text)
+     AND (NOT (EXISTS ( SELECT 1
+           FROM public.events n
+          WHERE ((n.config_hash = e.config_hash) AND (n.ticker = e.ticker)
+              AND (n.signal_date = e.signal_date) AND (n.signal_type = e.signal_type)
+              AND (n.entry_kind = 'next_open'::text))))))
+"""
+
 BARS_LIVE_DDL = """CREATE TABLE IF NOT EXISTS public.bars_live (
     ticker        text        NOT NULL REFERENCES public.tickers(ticker),
     session_date  date        NOT NULL,

@@ -3981,6 +3981,205 @@ Fail closed. No evaluation on or before the bar means not tradeable.
 
 ---
 
+## 130. The chat route holds the tool loop, and holds nothing else
+
+**Date:** 2026-08-19. **Status:** Pinned. Implements ADR 118 for `/chat`. Does not amend ADR 070 — no Python runs in the request path.
+
+**Context.**
+
+ADR 118 settled where `/chat` reads from: the MCP server, which calls the handlers, which validate. That leaves the harder question, which is what the route is allowed to *hold*. A chat route is a natural place to accumulate things: a copy of the tool schemas so the model can be given them, a system prompt string, a parse of the tool result so the answer can be shaped, a rounding helper so a rate reads as a percentage. Each is one line and each is a second copy of a contract that already exists.
+
+**Decision.**
+
+Four things the route does not hold, each with the thing that would otherwise drift.
+
+**No tool schemas.** They are read from the server on every request via `listTools`. `mcp/tools.py::SplitArg` has two members and `holdout` is not one of them; a copy in TypeScript would be a second contract, and the way a copy fails is that it keeps working after the original changes. `test_mcp_schemas.py` already asserts the schema is generated from `core.types.SignalType` — reading it at runtime extends that guarantee to the web layer for free.
+
+**No prompt text.** `lib/prompt.ts` reads `docs/SYSTEM_PROMPT.md` and extracts the fenced block under `## The prompt`. The document is where the reasoning behind each rule lives, and Session 18.3 requires the prompt's changes to be reviewable — which holds only while there is one text. The loader **refuses to start** on a prompt that no longer names ADR 112's result, whitespace-normalised so a reflowed paragraph does not read as a deletion. Gate item 6 is enforced rather than checked.
+
+**No parse of a tool result.** `contentToText` joins the server's text blocks and nothing else touches the payload. It reaches the model byte-identical, which is how `n_eff`, the interval, and the q-value survive: not by being carried carefully, but by never being read. A `JSON.parse` round trip would narrow a `numeric` the database stores with more precision than a double holds — the same reason `lib/db.ts` has one `num()` rather than a `parseFloat` per component. A test asserts the module never calls `JSON.parse`, over source with comments stripped, because the comment explaining the rule failed the test checking it.
+
+**No arithmetic, and no arithmetic to reach for.** DESIGN §10.2 forbids the model computing; the loop has no calculator to offer and the handlers return finished numbers.
+
+**Conversation state across a request boundary is text only.** `sanitizeHistory` drops every block that is not a plain string and every role that is not user or assistant. Tool results exist inside one call to `runTurn` and nowhere else, so a browser cannot post a fabricated `tool_result` and have it read with a tool's authority. This is a security property rather than a tidiness one, and it costs the model its tool context between turns — the right trade, because the alternative is trusting the client with the one thing on the page that carries the handlers' guarantee.
+
+**A tool budget of eight per turn, with a documented ending.** At the limit the tools are withdrawn — one final turn with `tool_choice: none` — rather than the request being cut off. The model answers from what it has or says it cannot; both are honest, and neither requires it to invent the fetch it did not get. Every `tool_use` block still receives a `tool_result`, because the API rejects the next request otherwise, and the refusal in that slot names the limit and says *do not estimate the missing number*. The transcript says so too: a reader who cannot see that an answer stopped early has no way to tell it from one that was complete.
+
+**Consequences.**
+
+`tests/boundary.test.ts` gained a carve-out. Session 17's rule was "no web module calls the MCP server", correct while no LLM caller existed; ADR 118 always had two halves and only one was testable. Six files are now exempt, listed by name rather than matched by directory, and the exemption is **asserted from both sides** — a test checks that `lib/mcp.ts` still reaches the server, so deleting the client and querying Postgres from `/chat` cannot leave the suite green by simply not using the exemption.
+
+**A duplicate key in `.env.local` broke this before any of it ran.** The file assigns `MCP_BEARER_TOKEN` twice with different values. `python-dotenv` takes the last, so `cscan mcp serve` came up on one token; `next.config.ts` took the first and skipped every later line for that key, so `/chat` presented the other and got a flat 401 — which the MCP SDK surfaces as a transport failure, reading like a server that is down. Both readers were behaving correctly and neither said the file was ambiguous. The parser moved to `lib/env.ts` (testable, which a config file is not), now resolves last-wins to match `python-dotenv` exactly, and prints the duplicated keys at startup. The process environment still wins over the whole file, so an injected secret is never overwritten.
+
+**Live verification is opt-in, in `tests/mcp.live.test.ts`.** Fakes cover the loop; they cannot show that the generated schemas are ones a model can be given, or that a holdout request raises rather than merely being absent from a `Literal`. Six assertions against a running server, skipped unless `MCP_LIVE=1` so CI stays hermetic. Writing it found that `get_stats` refuses `target_pct=3` and names the four measured values — the handler validating, which is the layer this whole ADR exists to avoid duplicating.
+
+---
+
+## 131. What moves during a session is polled by the client, not re-rendered by the server
+
+**Date:** 2026-08-19. **Status:** Pinned. Completes ADR 128.
+
+**Context.**
+
+ADR 128 put today's session in `bars_live` and drew it on the chart. It rendered correctly and then never changed again.
+
+Every page in this app is a server component with `dynamic = "force-dynamic"`, which means *rendered per request* and not *kept current*. The poller rewrites `bars_live` and `quotes_live` every five minutes; a tab left open all session showed a candle and a live price that were both right when they were drawn and progressively wronger after, **with nothing on screen saying which**. Reported by the user, 2026-08-19: "I don't think the live prices are updating properly in the graph view."
+
+That is the worst shape of stale. `meta.stalenessDays` exists because a database that stopped being updated has to say so; a number that is 40 minutes behind and looks identical to one that is current says nothing at all.
+
+**Decision.**
+
+`GET /api/live?sym=&bar=` returns today's partial candle and the last quote. Two client components poll it every 45 seconds and update in place.
+
+**One endpoint for both, because they must move together.** Refreshing the candle alone would put a close on the chart that disagrees with the number printed above it, and two numbers that disagree read as broken data rather than as a race between two fetches. Two numbers stale in agreement are merely old.
+
+**45 seconds against a five-minute write.** Deliberately faster than the writer rather than matched to it: matching would put the worst-case age at ten minutes. The cost is a primary-key lookup on a 139-row table.
+
+**Only while the tab is visible**, with an immediate refresh on `visibilitychange`. A backgrounded tab polling forever is a request every 45 seconds against a database `cscan backtest` also wants (ADR 039), and returning to the tab is then current rather than up to a poll behind.
+
+**`update()` on the two series that carry it, not a repaint.** `setData` across eight series to move one candle rebuilds the price scale on every tick, and the reader is usually mid-drag somewhere else on the chart.
+
+**Rejected: `revalidate` on the route.** It re-renders the whole page — the chart remounts, the loaded history is discarded, and a reader who dragged back to 2019 is returned to today every 45 seconds. The stale thing is one candle and one number; re-rendering an event table and a 1,300-bar series to move them is the wrong unit.
+
+**Rejected: a websocket or SSE push.** The write cycle is five minutes. A push channel would hold a connection per open tab to deliver twelve messages an hour, and the failure mode of a dropped socket is silence, which is the bug being fixed.
+
+**Consequences.**
+
+`LivePrice` is a new client component, and the ticker page's client boundary is now six files rather than four. That list is asserted whole in `boundary.test.ts` so adding one stays a decision.
+
+The chart's footer says **when** it last re-read, in the accent colour. That line is the actual fix. Polling makes the number current; the timestamp is what makes a *failed* poll legible — the price holds at the last good value and the clock beside it stops advancing, which is an honest report rather than a frozen number pretending to be live.
+
+`liveBar` was extracted from `chart()` so the first paint and every refresh return the same shape from the same query. A second read written separately is a second thing to keep in agreement, which is how the header and the candle would have started disagreeing.
+
+`quotes_live` is still written inside the poller's breach loop, so `quote` is null for most tickers and the header simply omits the live price. ADR 128 fixed exactly this for bars and not for quotes. It is a two-line change to `_write_live_bars` and it is not made here, because it needs a poller restart and the poller is running.
+
+---
+
+## 132. The caller names the grain; the default is the compatible one
+
+**Date:** 2026-08-19. **Status:** Pinned. Closes backlog item 2. Amends no ADR — `GRID_ENTRY_KIND` is unchanged.
+
+**Context.**
+
+`/chat` answered "what fired today" with **2026-08-13** while the poller had already recorded 63 events on 2026-08-19. The model named the date it used, so the answer was honest; it was still the wrong answer to the question.
+
+`handlers/screen.py` read `v_screen` unconditionally. That view is `entry_kind = 'next_open'` and only `cscan backtest` writes it, so it ends at the last backtest. `v_screen_live` is the `touch` grain the poller writes continuously and reaches the current session. The screener has a `trails bars by N` badge for exactly this gap; a chat route has no layout to put one in.
+
+**Decision.**
+
+`screen_signals` takes `grain`, one of `next_open` or `touch`, defaulting to `next_open`.
+
+**The default is the compatible one, not the most recent one.** MCP clients outside this repository call this handler. A default that silently moved them to a different entry timing would change every outcome they had already reported, and would do it without an error anywhere. The caller who wants today says so.
+
+**The view is a dict lookup keyed by a parsed enum, never interpolated.** `_BASE` is a format string with a `{view}` hole, which is the shape that would be an injection site if caller input reached it. `parse_grain` runs first and only two keys exist; a test passes `grain="v_screen; DROP TABLE events"` through the argument and asserts the refusal.
+
+**Rejected: switching the default to `touch`.** It answers "what fired today" correctly and answers "what did this historically do" against a population no statistic was computed on.
+
+**Rejected: a freshness badge in the tool result.** It puts the fix in the model's reading of a field rather than in the query, and `meta` already carries staleness — which describes the *database*, not the feed, and was correct throughout the bug.
+
+**What was checked and turned out to be a non-issue.** The stated risk was that `touch` rows would pair with statistics measured on `next_open`. `v_screen_live` already joins `cell_stats` on the literal `entry_kind = 'next_open'`, deliberately and documented, because those are the only cells measured. A live row's statistics describe what that *kind* of setup historically did, identically on both grains. Now asserted by test rather than assumed.
+
+**Consequences.**
+
+`v_screen_live` gained `bb_pctb` (migration `c1f7d92a6b45`) — the one column that differed between the two feeds. A handler whose row shape changes with the grain would be two contracts wearing one name.
+
+The MCP tool description states the tradeoff, because the model is the caller most likely to want `touch` and least able to discover it: *"`grain` decides how recent the feed is, and the default is not the most recent one."*
+
+---
+
+## 133. The ticker history reads a grain that is defined for every signal type
+
+**Date:** 2026-08-19. **Status:** Pinned. Adds `v_ticker_events`.
+
+**Context.**
+
+Reported by the user: old events, horizon long past, still showing a blank entry and exit. Measured across in-trade cluster heads at the `touch` grain:
+
+```
+stoch_overbought  11,780 rows  11,780 with no entry
+stoch_oversold     7,438 rows   7,438 with no entry
+bb_upper_touch     8,876 rows       0 with no entry
+confluence_low     1,377 rows       0 with no entry
+```
+
+19,218 of 41,065 — **47%** — and every one a stochastic signal.
+
+**Not a data fault.** A `touch` entry means *enter at the level you touched*. A stochastic threshold crossing has no level, so `touch_level` is NULL on every such row by construction, no entry price can be assigned, and no exit can follow. The same events carry complete outcomes at the other three grains, where entry does not need a band:
+
+```
+AMZN 2024-12-31 stoch_oversold
+  next_open  entry 2025-01-02 @ 222.0966  exit 2025-01-10 @ 218.94  timeout  −1.48%
+  touch      —                             —                         —        —
+```
+
+The page read a grain undefined for two of the seven signal types and rendered the undefined half as an em-dash — indistinguishable from data that should be there and is not.
+
+**Decision.**
+
+`v_ticker_events`: `next_open` rows, union the `touch` rows that have no `next_open` sibling.
+
+`next_open` is `GRID_ENTRY_KIND`, the grain every Phase 4 statistic used, so the history's outcomes now match the numbers the screener quotes. That closes the "same event, two entries, two outcomes" wart the previous code apologised for in a comment.
+
+The union adds back the poller's fires from sessions `cscan backtest` has not reached — 246 of 41,065. Reading `next_open` alone would drop today's fires off the page, which is the row a reader most wants.
+
+**Marker alignment survives.** `v_chart` marks bars at `entry_kind = 'touch' AND is_cluster_head IS NOT FALSE`, and `(config_hash, ticker, signal_date, signal_type, entry_kind)` is the natural key — so every historical touch row has an exact sibling and a marker with no history row under it stays impossible.
+
+**Three states, and the first cut got that wrong.**
+
+`pending` initially meant "no `next_open` sibling", which counted **47,310** rows where it should have counted 246. The other 179,286 are `in_trade = false`: events ADR 122 records so they stay visible here, and that the backtest deliberately never measures. Labelling those "not yet backtested" promises a number that is never coming — a different lie from the blank it replaced, but still a lie.
+
+Corrected in `a4b8f2e619c3` twenty minutes after `a8d3e5c17f92` applied. `pending` is `in_trade AND no sibling`; `in_trade` is projected beside it; the page distinguishes **measured**, **not backtested**, and **outside universe**.
+
+**Found by verification, not by a test.** The count after applying was 47,310 against an estimate of 246, and the two orders of magnitude were the whole signal. Nothing in the suite would have caught it: the view was valid, the join was right, and every row rendered.
+
+**Consequences.**
+
+78 in-trade rows still settle with no entry. 77 are the last-backtest boundary — the entry is the *next* open, which had not happened when the backtest ran — and self-heal. The one historical is AET 2018-11-29, acquired by CVS days later, where no next open ever existed. Both are correct and neither is worth a fourth state.
+
+---
+
+## 134. A live price exists only during the session
+
+**Date:** 2026-08-19. **Status:** Pinned. Adds `market_is_open()`. Completes ADR 131.
+
+**Context.**
+
+Reported by the user: TSLA showed **349.58** as its live price at 15:25 PT against an official close of **351.12**.
+
+```
+bars_live  TSLA  last tick 15:55:46 ET  349.58
+bars       TSLA  official close         351.12
+now                          18:25 ET
+```
+
+The poller's final tick landed five minutes before the bell and TSLA moved $1.54 after it. `bars_live` was correct and the page was presenting a session snapshot two and a half hours after the session ended, with nothing on screen to say so.
+
+ADR 131 fixed *staleness within* a session by polling. It did not ask what a live price means once there is no session, and the answer is that it means nothing: after 16:00 ET the poller stops, the row freezes, and the label keeps claiming currency the number no longer has.
+
+**The date half was already handled and the clock half was not.** `market_date()` is the ET calendar date, so a weekend or holiday leaves `session_date = market_date()` unmatched and the price disappears by itself. A weekday evening matches — which is every evening, on every ticker.
+
+**Decision.**
+
+`market_is_open()`: ET `09:30 <= now < 16:00`. `live_price` is NULL outside it, on both surfaces.
+
+**The bounds are the poller's**, `poll.py::MARKET_OPEN` and `MARKET_CLOSE`. They exist twice and cannot be shared — one is a Python `time` the poller compares against its own clock, one is SQL a view evaluates — so `test_market_hours.py` asserts they agree rather than trusting two literals to stay in step. That test also pins `AT TIME ZONE 'America/New_York'`: this machine runs on Pacific, and a missing cast would open the session at 06:30 local, which is a plausible-looking number wrong by three hours (ADR 127's failure, one module over).
+
+**The close is exclusive and the open is not**, deliberately asymmetric with the poller's inclusive bounds. The poller may write one tick at 16:00:00 and that print belongs in the bar; a price *labelled live* may not outlast the session.
+
+**`STABLE`, not `VOLATILE`.** Volatile re-evaluates per row, so one screener scan crossing 16:00:00 could give some rows a live price and others none.
+
+**The candle keeps the row.** It is a real record of the session's OHLCV and remains the only representation of today until the nightly ingest writes the closed bar. Only the *price* goes, because "live" is a claim about now and OHLC is a claim about the day.
+
+**Consequences.**
+
+`live_price_ts` survives the guard, so a reader who wants to know when the last tick landed still can. What goes away is the number pretending to be current.
+
+Both clients stop polling once the database reports the session closed. Nothing rewrites `bars_live` until tomorrow, so a timer left running is a query every 45 seconds for a row that cannot change for seventeen hours.
+
+**Half-days are not modelled.** The market closes at 13:00 ET on roughly nine afternoons a year, and on those the live price stays visible for three hours after trading ends. Modelling them needs a holiday calendar carrying session lengths, which nothing here has. Recorded rather than silently accepted.
+
+---
+
 ## Open items
 
 | Item | Options | Current lean |

@@ -154,6 +154,14 @@ export function StatusStrip({
           </span>
         </>
       )}
+      {/* The other two surfaces. Pushed right rather than given a nav bar of
+          its own: there are three routes, the strip is already the page's
+          one persistent element, and a second horizontal band above a dense
+          table costs a row of signals to save nothing. */}
+      <span className="strip-nav">
+        <a href="/research">research</a>
+        <a href="/chat">chat</a>
+      </span>
     </div>
   );
 }

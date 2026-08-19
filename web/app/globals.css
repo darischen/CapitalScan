@@ -1562,3 +1562,440 @@ table.research tr.dimmed td {
   border-top-style: dotted;
   border-top-color: var(--text);
 }
+
+/* --- chat -------------------------------------------------------------- */
+
+/* The transcript is a ledger, not a messaging app.
+ *
+ * No bubbles, no avatars, no alternating alignment. Those conventions carry
+ * an implicit claim — that this is a conversation between two peers — and
+ * the claim this page needs to make is the opposite one: a model is
+ * narrating a database, and every number it says is checkable against a
+ * payload printed directly underneath. So turns are rows with the
+ * screener's side rail in column one, and tool calls sit inline in call
+ * order as monospace entries rather than being tucked into a sidebar.
+ *
+ * The rail is the one reused signature. Muted for the reader, cool for the
+ * system, and the same 3px it is on the screener.
+ */
+
+/* Wider than `/research`'s 1180 because the answers are tables. The model
+ * writes a screener result as ticker, sector, bucket, %B, %K — five columns
+ * that wrap into unreadable stacks at 900px, which is where this started. */
+.chat-page {
+  max-width: 1180px;
+  padding-top: 14px;
+}
+
+.chat-page .kill {
+  max-width: 76ch;
+  font-size: 12px;
+}
+
+.chat-page .kill a {
+  color: var(--flag);
+  border-bottom: 1px solid color-mix(in srgb, var(--flag) 40%, transparent);
+}
+
+.chat {
+  margin-top: 20px;
+}
+
+.chat-log > * + * {
+  margin-top: 16px;
+}
+
+.turn {
+  display: grid;
+  grid-template-columns: 3px 1fr;
+  gap: 12px;
+}
+
+.turn .rail {
+  display: block;
+  background: var(--muted);
+}
+
+.turn.assistant .rail {
+  background: var(--long);
+}
+
+.turn .body {
+  min-width: 0;
+}
+
+/* The reader's own words, set apart by weight rather than by a box. At 13px
+ * on this ground, medium is enough to find the question again when
+ * scrolling back through three answers. */
+.turn.user .body {
+  font-weight: 500;
+  color: var(--text);
+}
+
+/* The prose is rendered markdown now (`.md` below), which owns paragraph
+ * spacing and does its own whitespace handling. This rule used to set
+ * `white-space: pre-wrap` for raw text and would win on specificity over
+ * `.md p`, so markdown would render *and* keep its source line breaks. */
+.turn.assistant .body > .chat-budget,
+.turn.assistant .body > p {
+  margin: 0 0 10px;
+  max-width: 72ch;
+}
+
+.chat-wait {
+  font-size: 12px;
+}
+
+/* --- tool calls -------------------------------------------------------- */
+
+/* Collapsed to one line: name, arguments, outcome. Expanded, the payload
+ * the handler returned, unmodified. That payload is the point of the whole
+ * surface — it carries `n_eff`, the interval, and the q-value, and it is
+ * what the prose above is answerable to. */
+.tool {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--panel);
+  border-left: 2px solid var(--rule);
+  margin: 0 0 10px;
+}
+
+.tool > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 10px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+}
+
+.tool > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool:hover > summary {
+  background: var(--panel-hover);
+}
+
+.tool-name {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.tool-args {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-state {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tool.err {
+  border-left-color: var(--short);
+}
+
+.tool.err .tool-state {
+  color: var(--short);
+}
+
+/* Capped and scrolled rather than clipped. A suppressed cell's payload is
+ * six lines; `screen_signals` on a busy date is six hundred, and letting it
+ * push the answer off the screen would punish the reader for checking. */
+.tool > pre {
+  margin: 0;
+  padding: 8px 10px 10px;
+  max-height: 320px;
+  overflow: auto;
+  border-top: 1px solid var(--rule);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+/* The documented behaviour when the tool budget runs out, said in the
+ * transcript rather than only to the model. A reader who cannot see that
+ * the answer stopped early has no way to tell it apart from an answer that
+ * was complete. */
+.chat-budget {
+  color: var(--flag);
+  font-size: 11.5px;
+}
+
+.chat-error {
+  border-left: 2px solid var(--short);
+  padding: 4px 0 4px 10px;
+  font-size: 12px;
+}
+
+.chat-error .code {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--short);
+}
+
+/* --- empty state ------------------------------------------------------- */
+
+/* An invitation to act, and the invitations are questions the seven tools
+ * can actually answer. A suggestion the tools cannot serve teaches the
+ * reader the wrong shape of question on their first try. */
+.chat-empty p {
+  max-width: 72ch;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 0 12px;
+}
+
+.chat-empty ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.chat-empty button {
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.chat-empty button:hover {
+  background: var(--panel-hover);
+  border-color: var(--long);
+}
+
+/* --- composer ---------------------------------------------------------- */
+
+.chat-compose {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  gap: 8px;
+  margin-top: 20px;
+  padding: 10px 0;
+  background: var(--ground);
+  border-top: 1px solid var(--rule);
+}
+
+.chat-compose textarea {
+  flex: 1;
+  font: inherit;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 7px 10px;
+  resize: none;
+  /* Grows with the question where supported, and stays a scrolling single
+   * line where it is not. A fixed one-line box for a question about three
+   * tickers hides two-thirds of what was typed. */
+  field-sizing: content;
+  min-height: 34px;
+  max-height: 160px;
+}
+
+.chat-compose textarea:focus {
+  outline: none;
+  border-color: var(--long);
+}
+
+.chat-compose button {
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ground);
+  background: var(--long);
+  border: 0;
+  border-radius: 2px;
+  padding: 0 16px;
+  cursor: pointer;
+}
+
+.chat-compose button:disabled {
+  color: var(--muted);
+  background: var(--panel);
+  cursor: default;
+}
+
+/* When today's candle was last re-read. A live number with no timestamp
+ * beside it cannot be told apart from a frozen one. */
+.live-at {
+  color: var(--long);
+}
+
+/* The other two routes, pushed to the right end of the status strip.
+ * Underlined on hover only: at rest they should read as the strip's last
+ * two words rather than competing with the freshness state, which is what
+ * the strip is for. */
+.strip-nav {
+  margin-left: auto;
+  display: flex;
+  gap: 14px;
+}
+
+.strip-nav a {
+  color: var(--muted);
+  border-bottom: 1px solid transparent;
+}
+
+.strip-nav a:hover {
+  color: var(--text);
+  border-bottom-color: var(--long);
+}
+
+/* --- rendered markdown -------------------------------------------------- */
+
+/* The model writes markdown and this is where it becomes a page.
+ *
+ * Everything below is a narrowing, not a theme: headings shrink toward the
+ * body size, tables lose their chrome, lists tighten. An answer is a
+ * paragraph with a table in it, not a document, and default markdown
+ * styling turns a four-line reply into something with the visual weight of
+ * a report. Numbers get the mono face wherever they appear, because they
+ * are the part that has to be checkable against the payload above. */
+
+.md > *:first-child {
+  margin-top: 0;
+}
+
+.md > *:last-child {
+  margin-bottom: 0;
+}
+
+.md p {
+  margin: 0 0 10px;
+  max-width: 78ch;
+}
+
+/* Two levels, both quieter than the section headers on `/research`. The
+ * model reaches for `##` where a person would start a new paragraph, so
+ * these read as emphasis rather than as structure. */
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  font-family: var(--display);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 16px 0 6px;
+}
+
+.md strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.md ul,
+.md ol {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  max-width: 78ch;
+}
+
+.md li {
+  margin-bottom: 2px;
+}
+
+.md code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--panel);
+  border-radius: 2px;
+  padding: 1px 4px;
+}
+
+.md pre {
+  background: var(--panel);
+  border-left: 2px solid var(--rule);
+  padding: 8px 10px;
+  overflow-x: auto;
+}
+
+.md pre code {
+  background: none;
+  padding: 0;
+}
+
+/* Tables carry the answer, so they get the screener's treatment: hairline
+ * rules, uppercase heads, mono cells, and a hover row. Scrolls inside
+ * itself rather than widening the page — a wide table must not push the
+ * composer off screen. */
+.md .table-wrap,
+.md table {
+  width: 100%;
+}
+
+.md table {
+  border-collapse: collapse;
+  margin: 0 0 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  display: block;
+  overflow-x: auto;
+}
+
+.md th {
+  text-align: left;
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0 10px 5px;
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+}
+
+.md td {
+  padding: 0 10px;
+  height: 24px;
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+}
+
+.md tbody tr:hover {
+  background: var(--panel-hover);
+}
+
+.md blockquote {
+  margin: 0 0 10px;
+  border-left: 2px solid var(--rule);
+  padding-left: 10px;
+  color: var(--muted);
+}
+
+.md hr {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: 14px 0;
+}
+
+.md a {
+  border-bottom: 1px solid var(--rule);
+}
+
+.md a:hover {
+  border-bottom-color: var(--long);
+}
