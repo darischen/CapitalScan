@@ -1499,6 +1499,91 @@ of documenting a broken one.
 
 ---
 
+### Web Tests (web/tests/) — 145 tests, vitest
+
+The routes are TypeScript (ADR 118), so they get their own runner and their
+own CI job. `npm run test`, no database, except for one file that skips
+itself without one.
+
+**`boundary.test.ts` — 63 tests.** The rules that are claims about what the
+code *cannot* do, and therefore invisible in any rendered page. Every one is
+parameterised over the source files rather than written per-file, so a new
+module is covered the moment it is added.
+
+- No module imports `sqlalchemy` or `db_io` (gate 2). Session 16 has the
+  same shape of test for `mcp/`; this is that copy.
+- The stronger version: none shells out, none references port 8787 or the
+  MCP protocol. ADR 118 is not "do not import SQLAlchemy", it is "these
+  routes talk to Postgres and nothing else", and an HTTP call to the MCP
+  server would satisfy the letter and break the decision.
+- No module names `holdout` or `split_key`, and the ticker route exposes no
+  `split` parameter (gate 9). In Python the guarantee is
+  `HoldoutRequested`; here it is that there is nothing to ask.
+- Nothing user-supplied is interpolated into SQL. The check looks for
+  `${...}` inside a template literal that contains `SELECT`, with two named
+  same-file constants allowlisted so the exception is visible.
+- `TickerChart.tsx` is the only `"use client"` module and imports no `pg`.
+
+Comments are stripped before every check. These files document the
+boundaries they respect, so a naive grep would fail on the explanation of a
+rule rather than on a breach of it.
+
+**`states.test.tsx` — 35 tests.** DESIGN §11.6's five states, rendered with
+`renderToStaticMarkup` and asserted. These are the paths that only run when
+something is wrong, which makes them the ones most likely to be broken
+without anyone noticing: every one was written in Session 17 and none was
+verified until this file existed, because the live data has been populated
+and fresh every time it was looked at.
+
+- **Staleness at 1, 2 and 3 days** (gate 7). The rule is *above*
+  `stale_after_days`, so exactly 2 is fresh. Off by one here fires the
+  banner every third day forever, which reads as noise and gets ignored on
+  the day it is real.
+- **Empty state with and without a last fire** (gate 6), including the
+  "no events at all" case, which is a different sentence.
+- **A suppressed cell renders its stored reason and no number**, asserted
+  as the *absence* of any percentage in the markup (gate 4).
+- **A hit rate renders with `n_eff`, the interval and `q=0.849` unrounded**
+  (gate 5). Session 17's plan lists rounding that q-value to "not
+  significant" as a thing not to do.
+- **Determinism** (gate 10): six components render byte-identical twice,
+  and — the sharper half — contain nothing matching today's date. A
+  component reading the clock renders identically twice in the same
+  millisecond and differs across a day boundary, which is the failure that
+  shows up in a screenshot months later and never in a test.
+- The ticker page's own states: not-found without claiming the symbol is
+  invalid, a ticker with no events, an open event told apart from one that
+  closed flat, a poller row marked "pending cluster", and the band gauge
+  pinning at the edge while printing the true %B.
+
+**`ticker.test.ts` — 20 tests.** Marker construction and the pure helpers.
+The one that matters is that a bar carrying a long and a short produces two
+markers pointing opposite ways — ADR 120's reason for making the columns
+arrays. `parseRange` is tested against `__proto__` and that test failed:
+`in` walks the prototype chain, so `?range=__proto__` reached
+`RANGES[range]` and handed an object to `LIMIT $2`.
+
+**`live.test.ts` — 12 tests, skipped without a connection string**, which is
+how CI runs: its container has a migrated schema and no data, and every
+assertion here is about data. The skip is loud — reported as skipped, not
+passed — because a suite that silently passes with nothing connected is the
+shape of test that reports green forever.
+
+- One row per session, on three tickers. Before ADR 120 this was 963 rows
+  for 275 sessions.
+- **Every marker lands on a real signal date**, on three tickers, which is
+  17.3's acceptance criterion. This is the test that would have caught the
+  `timestamptz` date shift: `v_chart.ts` read through local getters put
+  every marker one session left of its own history row, with no error
+  anywhere.
+- The state's as-of matches the newest bar drawn.
+- Both `%K` series carry values *and differ*, so a chart "showing both"
+  cannot be one line drawn on top of itself.
+- The event history is one row per signal, not one per entry kind —
+  `v_events` carries four.
+
+---
+
 ## 6. Statistical verification
 
 Two tests catching a category no unit test can (ADR 087).
@@ -1778,19 +1863,21 @@ independently of whether the pictures are on disk.
       verified end to end against the live database
 - [x] Determinism: identical requests return identical responses
 
-**Sessions 17-18 (routes, chat) — not started.**
+**Session 17 (routes) — passed 2026-08-19. Session 18 (research, chat) — not started.**
 
 - [ ] Validator rejects a crafted naked-probability response
 - [ ] Validator allows a sourced advisory response
-- [ ] `/`, `/ticker/[sym]`, `/research`, and `/chat` render against the live
-      database
-- [ ] No `web/` or chat module imports `sqlalchemy` or `db_io`
-- [ ] The default screener shows the event feed; statistics require a
+- [x] `/` and `/ticker/[sym]` render against the live database; `/research`
+      and `/chat` are Session 18
+- [x] No `web/` module imports `sqlalchemy` or `db_io` (63 boundary tests);
+      the chat module is Session 18
+- [x] The default screener shows the event feed; statistics require a
       deliberate action (ADR 114)
-- [ ] Suppressed cells render their reason and never a number
-- [ ] The staleness banner triggers above `MonitoringThresholds.
-      stale_after_days`
-- [ ] Both `%K` series render on the ticker chart (ADR 110)
+- [x] Suppressed cells render their reason and never a number
+- [x] The staleness banner triggers above `MonitoringThresholds.
+      stale_after_days`, and not at exactly that value
+- [x] Both `%K` series render on the ticker chart, are named in a legend,
+      and are asserted to differ (ADR 110)
 - [ ] Era 2024+ absent everywhere on `/research`
 - [ ] The chat layer performs no arithmetic and cannot query outside the
       seven tools

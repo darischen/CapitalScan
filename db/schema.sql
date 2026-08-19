@@ -859,15 +859,18 @@ CREATE VIEW public.v_chart AS
     i.sma_200,
     i.bb_width_pct,
     i.dd_52w,
-    e.id AS event_id,
-    e.signal_type,
-    e.signal_strength,
-    e.exit_date,
-    e.exit_reason,
-    e.net_ret
+    ev.event_ids,
+    ev.signal_types,
+    ev.sides,
+    ev.signal_strength
    FROM ((public.bars b
      LEFT JOIN public.indicators i ON (((i.ticker = b.ticker) AND (i.ts = b.ts) AND (i."interval" = b."interval"))))
-     LEFT JOIN public.events e ON (((e.ticker = b.ticker) AND (e.signal_date = (b.ts)::date) AND e.is_cluster_head AND (e.entry_kind = 'next_open'::text))))
+     LEFT JOIN LATERAL ( SELECT array_agg(e.id ORDER BY e.id) AS event_ids,
+            array_agg(e.signal_type ORDER BY e.id) AS signal_types,
+            array_agg(e.side ORDER BY e.id) AS sides,
+            max(e.signal_strength) AS signal_strength
+           FROM public.events e
+          WHERE ((e.ticker = b.ticker) AND (e.signal_date = (b.ts)::date) AND (e.entry_kind = 'touch'::text) AND (e.is_cluster_head IS NOT FALSE) AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)))) ev ON (true))
   WHERE (b."interval" = '1d'::text);
 
 

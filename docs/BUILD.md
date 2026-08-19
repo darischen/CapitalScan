@@ -39,6 +39,8 @@ Sessions 0-7 deliver v1 (Phase 1). Sessions 8-9 deliver Phases 2-3. Session 10 i
 
 | 16 | MCP server | Seven tools over streamable HTTP, bearer auth, per-token rate limiting, generated schemas, read-only database role | **Session 16 gate — complete, passed on all 10 items.** Verified end to end against the live database on 2026-08-18: unauthenticated `tools/list` refused, `initialize` and all seven tools answered, `get_stats` returned a real suppressed cell. **No `mcp/` module imports `sqlalchemy` or `db_io`**, and no enum value is spelled as a literal anywhere under it. The read-only role is proven by running each write verb through its own connection. See `RESULTS.md` Session 16 and `MCP_SETUP.md` |
 
+| 17 | Screener and ticker page | `/` and `/ticker/[sym]` in Next 15, `lightweight-charts` price/volume/stochastic panes, the five states, ADR 120's `v_chart` rewrite | **Session 17 gate — 10 of 12 items passed; the two that did not are recorded as findings, not as debt.** Both routes render against the live database: the ticker page at **43 ms median**, the screener at 256 ms after one query rewrite took 871 ms to 265 ms. **`v_chart` was returning 963 rows for 275 sessions** — 22 config hashes on an unfiltered join, plus 116 dates that carry both a long and a short head (ADR 120). Four more defects found by running it, including every chart date landing one session early. 145 web tests, up from 15. See `RESULTS.md` Session 17 |
+
 Sessions 0-2 can run back to back in one sitting. Session 7 is mostly waiting.
 
 **Sessions 17 and 18 were stopped on 2026-08-18 and unblocked the same day by ADR 118.**
@@ -51,7 +53,13 @@ rather than work around, so nothing was built until it was decided.
 MCP server to the handlers. ADR 070 and ADR 076 stand as written; the session plan was
 what needed correcting.
 
-**Session 17 is unblocked.** A second blocker was claimed and was not real: the
+**Session 17 is complete, 2026-08-19.** One migration, `c4a7e91b53d8`, rebuilding
+`v_chart` (ADR 120); `db/schema.sql` regenerated. One dependency,
+`lightweight-charts` 5.2. `/research` and `/chat` remain Session 18's.
+
+What unblocked it, kept because the correction is the useful part:
+
+**Session 17 was unblocked.** A second blocker was claimed and was not real: the
 `frontend-design` skill is installed and enabled as a *plugin* skill, under
 `~/.claude/plugins/` rather than `~/.claude/skills/`. Reading it then showed that
 CLAUDE.md and `DESIGN.md` §11.7 both described it wrongly — it carries general design

@@ -2706,6 +2706,143 @@ Two things worth carrying over anyway.
 
 ---
 
+## Session 17 — screener and ticker page, 2026-08-19
+
+Both routes render against the live database. Gate items 1 through 12, with
+the two that did not pass stated as such rather than rounded up.
+
+### Ticker page load time, measured (gate 11)
+
+`next start`, production build, warm process, `curl` wall clock. Five
+tickers, three requests each.
+
+| Route | Median | Range |
+|---|---|---|
+| `/ticker/[sym]?range=1y` | **43 ms** | 36-90 ms |
+| `/ticker/[sym]?range=5y` | 82 ms | one sample |
+| `/` (screener) | 256 ms | 256-549 ms |
+
+The ticker page runs three queries: `v_ticker_state` at **0.5 ms**,
+`v_chart` at **9.7 ms** for 275 bars with markers, and `v_events` for the
+history. ADR 116's rewrite is why the first number is what it is; the
+Session 15 note that framed the ticker page as the query at risk was wrong
+about which query was slow, and the page is now the *fast* one.
+
+**The screener is six times slower than the ticker page, and one query is
+all of it.** `SELECT max(signal_date) FROM v_screen_live` measured **871 ms**.
+The view carries four `LEFT JOIN LATERAL` subqueries and Postgres does not
+drop an unused one, so `max()` evaluates all four over every row in the view
+before aggregating. Rewriting it as `ORDER BY signal_date DESC LIMIT 1` —
+same answer — took it to **265 ms**, which is the whole difference between
+the 850 ms screener and the 256 ms one.
+
+265 ms is still most of the screener's remaining cost and the cause is the
+same laterals. **Not fixed here.** The fix is an index on
+`events (config_hash, entry_kind, signal_date)` or a narrower view for the
+date, and both are migrations with a decision attached rather than a query
+rewrite. Recorded so the next person measuring the screener does not
+rediscover it.
+
+### ADR 120 — `v_chart` was returning 3.5 rows per bar
+
+Building the chart was the first time anything read the view. Measured on
+TSM's last 400 sessions: **963 rows for 275 trading days.**
+
+| Cause | Measurement |
+|---|---|
+| No `config_hash` predicate on the events join | 22 configs, so a bar with an event joined 22 times |
+| `entry_kind = 'next_open'` | Newest marker 2026-08-13 against events through 2026-08-18 |
+| `AND e.is_cluster_head` | Drops every poller row, which carries NULL |
+| A bar can carry two events | **116 dates** hold both a long and a short head |
+
+The first three are ADR 119's three predicates, arriving one view later. The
+fourth is only a chart's problem and is why the marker columns are now
+arrays: a series library keyed on time silently keeps the last of a
+duplicate key, so the 22x duplication would have rendered as a chart that
+looked entirely correct and drew whichever config's marker sorted last.
+
+After: **275 rows for 275 days**, markers current through 2026-08-18, and
+ADBE 2016-06-22 is one row carrying `{bb_lower_touch, stoch_overbought}`
+with sides `{long, short}`.
+
+### Defects found by running things
+
+Each of these was found with a green suite in front of it.
+
+**Every chart date was one session early.** `v_chart.ts` is a `timestamptz`
+stored at UTC midnight; `pg` builds a `Date` whose *local* getters read the
+previous day anywhere west of Greenwich. Measured in Pacific:
+`2026-08-18T00:00:00Z` came back as `2026-08-17`. So the chart drew every
+bar and every marker one session left of where it belonged, while the event
+history beside it read `signal_date` — a real `date` — and was correct. Two
+panels one day apart, no error anywhere. The same bug reached the shipped
+screener through `band_ts` and the ticker state through `as_of`. Fixed by
+casting `::date` in all three queries, which is the only place the two cases
+are distinguishable: a `Date` object does not remember which type produced
+it.
+
+**`parseRange` accepted `__proto__`.** `raw in RANGES` walks the prototype
+chain, so `?range=__proto__` and `?range=toString` both passed validation
+and handed an object or a function to `LIMIT $2`. `Object.hasOwn` now.
+Caught by a test, not by review.
+
+**The empty state pointed at the wrong view.** `lastFire()` read `v_screen`,
+which filters `entry_kind = 'next_open'` and trails the last backtest. On a
+quiet day it would have said "last fire 2026-08-13" while the feed's own
+view held events from 2026-08-18 — the one line on the page whose job is to
+say when something last happened would have been the one line that was
+wrong. It reads `v_screen_live` now.
+
+**`next start` could not find the database.** The repository keeps one
+`.env.local`, at the root, and Next only looks inside its own directory.
+Every page rendered the error state saying neither variable was set, which
+looks like a broken query and is a missing path. `next.config.ts` reads the
+root file now, without overwriting anything already in the environment.
+
+### What is tested and what is not
+
+145 tests in `web/`, up from 15.
+
+- **63 boundary tests.** No `web/` module imports `sqlalchemy` or `db_io`
+  (gate 2), none shells out or calls the MCP server, none names `holdout`
+  or `split_key` (gate 9), none interpolates anything into SQL, and
+  `TickerChart.tsx` is the only client component.
+- **35 state tests.** The staleness banner at 1, 2 and 3 days (gate 7 — it
+  is *above* 2, so exactly 2 is fresh), the empty state with and without a
+  last fire (gate 6), a suppressed cell rendering its reason and no number
+  (gate 4), a hit rate rendering with `n_eff`, the interval and `q=0.849`
+  unrounded (gate 5), and determinism: six components render byte-identical
+  twice and contain nothing that depends on today's date (gate 10).
+- **12 live-database tests**, skipped when no connection string is present,
+  which is how CI runs. One row per session on three tickers, every marker
+  landing on a real signal date on three tickers (17.3's acceptance), the
+  state's as-of matching the newest bar drawn, and both `%K` series carrying
+  values that are not the same column read twice.
+
+### The two gate items that did not pass
+
+**"A delisted ticker renders its history and says it is delisted" cannot be
+satisfied against this database.** All 96 inactive tickers either carry no
+bars at all (87 of them) or carry three to four bars from 2026-08-12 with no
+indicators (9 of them: UA, FB, FISV, HUBB, NKTR, PCLN, PCS, Q, CPWR). There
+is no delisted ticker with history to render. `v_ticker_state` returns
+nothing for every one of them, so the page shows its not-found state, and
+that state deliberately does not claim the symbol is invalid — it cannot
+tell an unknown symbol from a known one with no indicators.
+
+Two things follow, neither this session's to fix. Those nine 2026-08 bars on
+symbols delisted years ago are a data-quality question about symbol reuse.
+And `tickers.delisted_on` is NULL on all 96 rows while `is_active` is false,
+so the date a listing ended is not recorded anywhere.
+
+**Statistics on the ticker page are absent, not hidden.** ADR 114 puts the
+screener's statistics one action away; the ticker page has no equivalent
+because `cell_stats` has no ticker dimension (ADR 102, ADR 104). A per-cell
+panel would report the same numbers the screener already shows for the same
+signal type and bucket. Left out rather than duplicated.
+
+---
+
 ## ADR 116 — `v_ticker_state` rewritten, 2026-08-18
 
 Not a session. A performance fix taken on its own because Sessions 17 and 18

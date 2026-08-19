@@ -187,8 +187,23 @@ interface ScreenOptions {
  * day before, under a single date in the status strip. The count was worse:
  * an unfiltered `count(*)` reported 290,019, the whole history.
  */
+/*
+ * `ORDER BY ... LIMIT 1`, not `max()`.
+ *
+ * Same answer, and measured 2026-08-19 it is **265 ms against 871 ms**.
+ * `v_screen_live` carries four `LEFT JOIN LATERAL` subqueries, and
+ * Postgres does not drop an unused one, so `max()` runs all four over every
+ * row in the view before aggregating. `LIMIT 1` lets it stop.
+ *
+ * 265 ms is still most of the screener's load, and the remainder is the
+ * same laterals. Recorded in RESULTS.md rather than fixed here: the fix is
+ * an index or a narrower view, which is a migration and a decision, not a
+ * query rewrite.
+ */
 const LATEST_DATE_SQL = `
-  SELECT max(signal_date) AS d FROM v_screen_live
+  SELECT signal_date AS d FROM v_screen_live
+   ORDER BY signal_date DESC
+   LIMIT 1
 `;
 
 /**
@@ -215,7 +230,7 @@ const FEED_SQL = `
   SELECT s.ticker, s.signal_date, s.signal_type, s.signal_types_all,
          s.signal_strength, s.k_full, s.k_fast,
          s.dd_bucket, s.sector, s.cell_id, s.side, s.is_cluster_head,
-         s.bb_lower, s.bb_mid, s.bb_upper, s.band_ts,
+         s.bb_lower, s.bb_mid, s.bb_upper, s.band_ts::date AS band_ts,
          s.open, s.high, s.low, s.close, s.volume,
          s.live_price, s.live_price_ts, s.fired_at
     FROM v_screen_live s
@@ -446,9 +461,20 @@ export async function readMeta(): Promise<Meta> {
   };
 }
 
+/**
+ * `v_screen_live`, the same view the feed reads.
+ *
+ * It said `v_screen` until 2026-08-19, which made the empty state answer a
+ * different question from the page it appears on: `v_screen` filters
+ * `entry_kind = 'next_open'` and trails the last backtest, so on a quiet
+ * day it would have reported "last fire 2026-08-13" while the feed's own
+ * view held events from 2026-08-18. The one line on the page whose job is
+ * to tell you when something last happened would have been the one line
+ * that was wrong.
+ */
 const LAST_FIRE_SQL = `
   SELECT ticker, signal_date
-    FROM v_screen
+    FROM v_screen_live
    ORDER BY signal_date DESC, ticker
    LIMIT 1
 `;
@@ -465,7 +491,24 @@ export async function lastFire(): Promise<{ ticker: string; signalDate: string }
   return row ? { ticker: row.ticker, signalDate: isoDate(row.signal_date) } : null;
 }
 
-/** `pg` returns `date` as a JS Date at local midnight; take the calendar day. */
+/**
+ * `pg` returns `date` as a JS Date at local midnight; take the calendar day.
+ *
+ * **Only ever pass it a `date`.** A `timestamptz` is a different animal and
+ * this function is wrong on one: `bars.ts` is stored at UTC midnight, so
+ * `pg` builds a Date whose *local* getters read the previous day anywhere
+ * west of Greenwich. Measured 2026-08-19 in Pacific — `2026-08-18T00:00:00Z`
+ * came back as `2026-08-17`, so the ticker chart drew every bar one session
+ * left of where it belonged and every marker with it, while the event
+ * history beside it read `signal_date` (a real `date`) and was correct. Two
+ * panels, one day apart, no error anywhere.
+ *
+ * The fix is in the SQL, not here: `v_chart.ts`, `v_ticker_state.as_of` and
+ * `v_screen_live.band_ts` are all selected `::date`. Casting in the query
+ * means the wrong type cannot reach this function, where the two cases are
+ * genuinely indistinguishable — a `date` needs local getters and a
+ * `timestamptz` needs UTC ones, and a `Date` object remembers neither.
+ */
 export function isoDate(value: Date | string): string {
   if (typeof value === "string") return value.slice(0, 10);
   const y = value.getFullYear();

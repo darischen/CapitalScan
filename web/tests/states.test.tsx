@@ -1,0 +1,407 @@
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+
+import { EmptyState, ScreenerTable, StatusStrip } from "@/components/Screener";
+import {
+  BandGauge,
+  ChartLegend,
+  EventHistory,
+  NoTicker,
+  StateRail,
+  TickerHeader,
+} from "@/components/Ticker";
+import { STALE_AFTER_DAYS, type Meta, type ScreenRow } from "@/lib/screen";
+import type { TickerEvent, TickerState } from "@/lib/ticker";
+
+/**
+ * The five states, rendered and asserted.
+ *
+ * These are the paths that only run when something is wrong — an empty day,
+ * a stale database, a suppressed cell — which makes them the ones most
+ * likely to be broken without anyone noticing. Every one of them was
+ * written and none was verified until this file existed: the live data has
+ * been populated and fresh every time it was looked at.
+ *
+ * `renderToStaticMarkup` rather than a DOM library. These are server
+ * components with no state and no effects, so the markup *is* the
+ * behaviour, and a string comparison is what gate item 10 asks for.
+ */
+
+function meta(over: Partial<Meta> = {}): Meta {
+  return {
+    configHash: "86e91448a65aa40b",
+    asOf: "2026-08-18",
+    stalenessDays: 0,
+    stale: false,
+    readOnly: true,
+    ...over,
+  };
+}
+
+function state(over: Partial<TickerState> = {}): TickerState {
+  return {
+    ticker: "TSM",
+    name: "Taiwan Semiconductor",
+    sector: "Technology",
+    asOf: "2026-08-18",
+    close: 413.41,
+    volume: 14_000_000,
+    bbLower: 385.63,
+    bbMid: 413.01,
+    bbUpper: 440.4,
+    bbPctB: 0.507,
+    bbWidthPct: 0.437,
+    kFull: 76.7,
+    dFull: 85.2,
+    kFast: 53.3,
+    kCrossUp: false,
+    kCrossDown: false,
+    sma200: 364.6,
+    atr14: 13.5,
+    rv20d: 0.393,
+    ddPct: -0.134,
+    daysToEarnings: null,
+    vixClose: 15.8,
+    inTrade: true,
+    aboveSma200: true,
+    mcapUsd: 2.1e12,
+    ...over,
+  };
+}
+
+function event(over: Partial<TickerEvent> = {}): TickerEvent {
+  return {
+    id: 1,
+    signalDate: "2026-07-27",
+    signalType: "bb_lower_touch",
+    signalTypesAll: ["bb_lower_touch"],
+    signalStrength: 1,
+    side: "long",
+    isClusterHead: true,
+    ddBucket: "10-20",
+    entryDate: "2026-07-28",
+    entryPrice: 390.93,
+    exitDate: "2026-07-30",
+    exitPrice: 406.57,
+    exitReason: "target",
+    holdingDays: 3,
+    netRet: 0.0394,
+    mfe: 0.041,
+    mae: -0.047,
+    earningsInWindow: false,
+    ...over,
+  };
+}
+
+function row(over: Partial<ScreenRow> = {}): ScreenRow {
+  return {
+    ticker: "TSM",
+    signalDate: "2026-08-18",
+    signalType: "confluence_high",
+    signalTypesAll: ["confluence_high", "bb_upper_touch", "stoch_overbought"],
+    signalStrength: 3,
+    side: "short",
+    bbLower: 385.63,
+    bbMid: 413.01,
+    bbUpper: 440.4,
+    bandTs: "2026-08-17",
+    kFast: 92.1,
+    kSlow: 90.4,
+    open: 410,
+    high: 442,
+    low: 409,
+    close: 441,
+    volume: 14_000_000,
+    livePrice: 441.2,
+    livePriceTs: "2026-08-18T13:35:00.000Z",
+    firedAt: "2026-08-18T13:35:12.000Z",
+    cellId: "cell-1",
+    isClusterHead: null,
+    stats: null,
+    ...over,
+  } as ScreenRow;
+}
+
+/* --- gate 7: staleness ------------------------------------------------- */
+
+describe("gate 7: the staleness banner triggers above 2 days", () => {
+  const strip = (days: number) => {
+    const m = meta({ stalenessDays: days, stale: days > STALE_AFTER_DAYS });
+    return renderToStaticMarkup(<StatusStrip meta={m} fired={4} signalDate="2026-08-18" />);
+  };
+
+  it("does not fire at 1 day", () => {
+    expect(strip(1)).not.toContain("stale ·");
+    expect(strip(1)).toContain("fresh");
+  });
+
+  /** The boundary itself. `MonitoringThresholds.stale_after_days` is 2 and
+   * the rule is *above* 2, so exactly 2 is fresh. Off by one here means the
+   * banner fires every third day forever, which reads as noise and gets
+   * ignored on the day it is real. */
+  it("does not fire at exactly 2 days", () => {
+    expect(strip(STALE_AFTER_DAYS)).toContain("fresh");
+    expect(strip(STALE_AFTER_DAYS)).not.toContain("stale ·");
+  });
+
+  it("fires at 3 days and names the count", () => {
+    const html = strip(3);
+    expect(html).toContain("stale ·");
+    expect(html).toContain("3 sessions since last bar");
+    expect(html).toContain("strip stale");
+  });
+
+  it("reports the read-write role when the read-only one is unset", () => {
+    const html = renderToStaticMarkup(
+      <StatusStrip meta={meta({ readOnly: false })} fired={0} signalDate={null} />,
+    );
+    expect(html).toContain("read-write role");
+  });
+});
+
+/* --- gate 6: empty state ----------------------------------------------- */
+
+describe("gate 6: the empty state carries a last-fire reference", () => {
+  it("names the ticker, the date, and links to it", () => {
+    const html = renderToStaticMarkup(
+      <EmptyState last={{ ticker: "TSM", signalDate: "2026-08-13" }} />,
+    );
+    expect(html).toContain("No signals today.");
+    expect(html).toContain("TSM");
+    expect(html).toContain("2026-08-13");
+    expect(html).toContain('href="/ticker/TSM"');
+  });
+
+  /** A database with no events at all. Distinguished from "nothing today",
+   * because the two mean different things and a blank line under "No
+   * signals today" reads as a failed query. */
+  it("says so when there is no fire to point at", () => {
+    const html = renderToStaticMarkup(<EmptyState last={null} />);
+    expect(html).toContain("No events recorded for this config.");
+  });
+});
+
+/* --- gate 4/5: suppressed and companions -------------------------------- */
+
+describe("gates 4 and 5: statistics render whole or not at all", () => {
+  it("a suppressed cell renders its stored reason and no number", () => {
+    const html = renderToStaticMarkup(
+      <ScreenerTable
+        rows={[
+          row({
+            stats: { kind: "suppressed", cellId: "c", reason: "n_eff 12 < min_n_eff 30", nEff: 12 },
+          }),
+        ]}
+        withStats
+      />,
+    );
+    expect(html).toContain("n_eff 12 &lt; min_n_eff 30");
+    expect(html).not.toMatch(/\d+\.\d%/);
+  });
+
+  /** Invariant 8. A hit rate without its interval is the number this system
+   * exists not to produce. */
+  it("a hit rate renders with n_eff, the interval, and the q-value", () => {
+    const html = renderToStaticMarkup(
+      <ScreenerTable
+        rows={[
+          row({
+            stats: {
+              kind: "cell",
+              cellId: "c",
+              pHit: 0.51,
+              baseline: 0.39,
+              edge: 0.12,
+              ciLow: 0.46,
+              ciHigh: 0.56,
+              qValue: 0.849,
+              nEff: 340,
+              survivesFdr: false,
+            },
+          }),
+        ]}
+        withStats
+      />,
+    );
+    expect(html).toContain("51%");
+    expect(html).toContain("340");
+    expect(html).toContain("46");
+    expect(html).toContain("56");
+    // Full precision. Session 17's plan lists "rounding a q-value of 0.849
+    // to 'not significant' and hiding it" as a thing not to do — the number
+    // is more informative than the label.
+    expect(html).toContain("q=0.849");
+    expect(html).toContain("did not survive FDR correction");
+  });
+});
+
+/* --- ticker page states ------------------------------------------------- */
+
+describe("the ticker page's states", () => {
+  it("renders the not-found state without claiming the symbol is invalid", () => {
+    const html = renderToStaticMarkup(<NoTicker sym="ABMD" />);
+    expect(html).toContain("No indicator history for");
+    expect(html).toContain("ABMD");
+    // It cannot tell an unknown symbol from a known one with no indicators,
+    // so it must not assert either.
+    expect(html).not.toMatch(/not a (valid|real) ticker|does not exist/i);
+  });
+
+  it("renders a ticker with no events without an empty table", () => {
+    const html = renderToStaticMarkup(<EventHistory sym="TSM" events={[]} all={false} />);
+    expect(html).toContain("No events for TSM");
+    expect(html).not.toContain("<tbody>");
+  });
+
+  it("tells an open event apart from one that closed flat", () => {
+    const open = renderToStaticMarkup(
+      <EventHistory
+        sym="TSM"
+        events={[event({ netRet: null, exitDate: null, exitPrice: null, exitReason: null })]}
+        all={false}
+      />,
+    );
+    const closed = renderToStaticMarkup(
+      <EventHistory sym="TSM" events={[event({ netRet: 0 })]} all={false} />,
+    );
+    expect(open).toContain(">open<");
+    expect(closed).toContain("0.0%");
+    expect(closed).not.toContain(">open<");
+  });
+
+  it("marks a row the poller wrote before clustering ran", () => {
+    const html = renderToStaticMarkup(
+      <EventHistory sym="TSM" events={[event({ isClusterHead: null })]} all={false} />,
+    );
+    expect(html).toContain("pending cluster");
+  });
+
+  it("says the outcomes are measured on a different entry from the screener's", () => {
+    const html = renderToStaticMarkup(<EventHistory sym="TSM" events={[event()]} all={false} />);
+    expect(html).toContain("touch");
+    expect(html).toContain("next_open");
+  });
+
+  it("says when a ticker is outside the trade universe", () => {
+    const inside = renderToStaticMarkup(
+      <TickerHeader state={state({ inTrade: true })} meta={meta()} fired={3} />,
+    );
+    const outside = renderToStaticMarkup(
+      <TickerHeader state={state({ inTrade: false })} meta={meta()} fired={3} />,
+    );
+    expect(inside).toContain("in trade universe");
+    expect(outside).toContain("outside trade universe");
+  });
+
+  /** 210 of 712 tickers carry no name. An em-dash where a company name goes
+   * reads as a value that failed to load. */
+  it("omits the company name rather than printing a placeholder", () => {
+    const html = renderToStaticMarkup(
+      <TickerHeader state={state({ name: null })} meta={meta()} fired={0} />,
+    );
+    expect(html).not.toContain("tk-name");
+  });
+
+  it("carries the staleness banner into the ticker header", () => {
+    const html = renderToStaticMarkup(
+      <TickerHeader
+        state={state()}
+        meta={meta({ stale: true, stalenessDays: 4 })}
+        fired={0}
+      />,
+    );
+    expect(html).toContain("4 sessions behind");
+  });
+});
+
+/* --- the band gauge ----------------------------------------------------- */
+
+describe("the band gauge", () => {
+  it("places the tick at the percentage %B names", () => {
+    const html = renderToStaticMarkup(<BandGauge state={state({ bbPctB: 0.25 })} />);
+    expect(html).toContain("left:25%");
+    expect(html).not.toContain("outside");
+  });
+
+  /** Price outside the band is the normal case for a fired signal — %B above
+   * 1 is what `bb_upper_touch` means — so the tick pins to the edge and the
+   * printed number stays exact. */
+  it("pins the tick at the edge but prints the true value", () => {
+    const html = renderToStaticMarkup(<BandGauge state={state({ bbPctB: 1.37 })} />);
+    expect(html).toContain("left:100%");
+    expect(html).toContain("outside");
+    expect(html).toContain("1.370");
+  });
+
+  it("pins the low side too", () => {
+    const html = renderToStaticMarkup(<BandGauge state={state({ bbPctB: -0.2 })} />);
+    expect(html).toContain("left:0%");
+    expect(html).toContain("outside");
+  });
+
+  it("draws no tick at all when %B is unknown", () => {
+    const html = renderToStaticMarkup(<BandGauge state={state({ bbPctB: null })} />);
+    expect(html).not.toContain("gauge-tick");
+    expect(html).toContain("—");
+  });
+});
+
+/* --- gate 8: both %K series --------------------------------------------- */
+
+describe("gate 8: both %K series are named and distinguishable", () => {
+  it("the legend names all three stochastic lines", () => {
+    const html = renderToStaticMarkup(<ChartLegend />);
+    expect(html).toContain("%K fast");
+    expect(html).toContain("%K slow");
+    expect(html).toContain("%D");
+    // Different classes means different colours and dash patterns, which is
+    // what "distinguishable" has to mean for three lines in one panel.
+    expect(html).toContain("ln kfast");
+    expect(html).toContain("ln kfull dash");
+    expect(html).toContain("ln dfull");
+  });
+
+  /** ADR 110 gates the signal on the two agreeing within
+   * `fast_agreement_tol`, so the gap is the quantity that decides whether a
+   * threshold crossing is a signal at all. */
+  it("the state rail prints both and the gap between them", () => {
+    const html = renderToStaticMarkup(<StateRail state={state({ kFast: 53.3, kFull: 76.7 })} />);
+    expect(html).toContain("53.3");
+    expect(html).toContain("76.7");
+    expect(html).toContain("23.4");
+  });
+
+  it("prints no gap when one of them is missing, rather than a wrong one", () => {
+    const html = renderToStaticMarkup(<StateRail state={state({ kFull: null })} />);
+    expect(html).not.toContain("Δ");
+  });
+});
+
+/* --- gate 10: determinism ----------------------------------------------- */
+
+describe("gate 10: identical input renders identically", () => {
+  const cases: [string, () => string][] = [
+    ["StatusStrip", () => renderToStaticMarkup(<StatusStrip meta={meta()} fired={4} signalDate="2026-08-18" />)],
+    ["ScreenerTable", () => renderToStaticMarkup(<ScreenerTable rows={[row()]} withStats={false} />)],
+    ["StateRail", () => renderToStaticMarkup(<StateRail state={state()} />)],
+    ["BandGauge", () => renderToStaticMarkup(<BandGauge state={state()} />)],
+    ["EventHistory", () => renderToStaticMarkup(<EventHistory sym="TSM" events={[event()]} all={false} />)],
+    ["TickerHeader", () => renderToStaticMarkup(<TickerHeader state={state()} meta={meta()} fired={1} />)],
+  ];
+
+  it.each(cases)("%s is a pure function of its props", (_name, render) => {
+    expect(render()).toBe(render());
+  });
+
+  /**
+   * The sharper version. A component reading `Date.now()` or `Math.random()`
+   * renders identically twice in the same millisecond and differs across a
+   * day boundary, which is the failure that shows up in a screenshot
+   * comparison months later and never in a test.
+   */
+  it.each(cases)("%s renders nothing that depends on the current time", (_name, render) => {
+    const html = render();
+    const today = new Date().toISOString().slice(0, 10);
+    expect(html).not.toContain(today);
+  });
+});

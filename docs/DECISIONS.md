@@ -161,6 +161,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 117 | The poller reports every confluence and says how far it is from a reversal | Pinned. Amends 108's display half; diverges from 111 on purpose |
 | 118 | MCP is for LLM callers; deterministic reads go straight to the views | Pinned. Resolves the Session 17 blocker; confirms 070 and 076 |
 | 119 | The screener shows what fired today; `market_date()` defines "today" | Pinned. Adds `v_screen_live`; fixes `v_screen`'s missing config filter |
+| 120 | `v_chart` returns one row per bar; markers are arrays | Pinned. 963 rows for 275 days; applies 119 to the last view missing it |
 
 ---
 
@@ -3537,6 +3538,50 @@ The screener can now show signals *ahead* of bars — the poller writes today's 
 *Put the join in the route.* Considered, and it was the original lean. Rejected once the config-filter defect surfaced: the fix belonged in SQL either way, and having made one view correct there was no reason to put the second one somewhere else.
 
 *Use `CURRENT_DATE` and set the database timezone to ET.* Moves the problem into cluster configuration, where nothing in the repository records it and a restored dump silently reverts it.
+
+---
+
+## 120. `v_chart` returns one row per bar; markers are arrays
+
+**Date:** 2026-08-19. **Status:** Pinned. Applies ADR 119's three predicates to the last serving view missing them. Amends DESIGN §8.2's `v_chart` DDL.
+
+**Context.**
+
+DESIGN §8.2 introduces the view as "bars + indicators + event markers, **one row per bar**". Building `/ticker/[sym]` was the first time anything read it. Measured 2026-08-19 on TSM's last 400 sessions: **963 rows for 275 trading days.**
+
+Four causes, three of them the ones ADR 119 had just found next door.
+
+**No `config_hash` predicate.** The events join matched every sweep config, and there are **22** of them on `next_open`. A bar that ever produced an event joined once per config, so a chart would stack 22 candles and 22 markers on one date. `v_events` has always filtered config and ADR 119 fixed `v_screen`; this was the third and last serving view missing it.
+
+**`entry_kind = 'next_open'`.** Only `cscan backtest` writes that kind, so markers stopped at 2026-08-13 while events had fired through 2026-08-18. A chart whose newest marker is five sessions old is not showing what fired.
+
+**`AND e.is_cluster_head`.** The poller cannot cluster — ADR 054's gap window needs the whole session — so its rows carry NULL and a bare truth test drops every one of them.
+
+**And one that is only a chart's problem: a bar can carry two events.** Measured, **116 dates** hold both a long and a short head under the live config. ADBE 2016-06-22 is `bb_lower_touch` (long) and `stoch_overbought` (short) on the same bar. Both fired. No predicate removes them, because removing either would be dropping a signal.
+
+**Decision.**
+
+The three predicates change to match `v_screen_live`: config-scoped, `entry_kind = 'touch'`, `is_cluster_head IS NOT FALSE`.
+
+The marker columns become arrays — `event_ids`, `signal_types`, `sides` — aggregated in a `LEFT JOIN LATERAL`, and the bar stays one row. An aggregate with no `GROUP BY` returns exactly one row over zero input, so a bar with no events is one row of NULLs rather than a missing row.
+
+`exit_date`, `exit_reason` and `net_ret` are **dropped**. They are per-event outcomes, and carrying per-event columns on a bar grain is the shape mismatch that produced the duplication. `v_events` has them keyed by event, and the ticker page reads it for the history table under the chart.
+
+**Why the grain matters more here than on a table.** A duplicated row in a table is visible: you see the same ticker twice. A charting library indexes its series by time and keeps the last value for a duplicate key, silently. The 22x duplication would have rendered as a chart that looked entirely correct and drew whichever config's marker sorted last. That is the failure this view has to be structurally incapable of, not merely free of today.
+
+**Consequences.**
+
+The column change breaks no caller: grep across `capitalscan/`, `web/` and `db/` at the time of writing finds no consumer other than this session's ticker page.
+
+The ticker page needs two queries where the plan assumed one — series from `v_chart`, outcomes from `v_events`. Measured at 9.7 ms for 275 bars with markers, against `events_config_hash_ticker_signal_date_signal_type_entry_kin_key`, so the second query is not the cost.
+
+**Rejected.**
+
+*Pick one event per bar with a deterministic ranking.* One line, and it drops a real signal on 116 dates while the chart still looks complete. The 116 are exactly the bars where both sides fired, which is the most interesting thing a bar can do.
+
+*Keep the scalars and let the page deduplicate.* Puts the grain contract in TypeScript, where the next consumer will not know it exists. ADR 076 puts query logic in the view for this reason.
+
+*A `jsonb` marker column.* One column instead of three and it reads well, but it takes every marker out of the type system and out of `\d v_chart`, which is where someone looks first.
 
 ---
 

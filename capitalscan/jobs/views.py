@@ -739,3 +739,124 @@ CREATE VIEW public.v_screen AS
 # in every other respect to the ADR 115/116 version above; only the two
 # date comparisons change.
 V_POSITIONS_DDL_MARKET_DATE = V_POSITIONS_DDL.replace("CURRENT_DATE", "public.market_date()")
+
+
+# ---------------------------------------------------------------------------
+# v_chart (ADR 120)
+# ---------------------------------------------------------------------------
+#
+# **DESIGN §8.2 says "one row per bar". The deployed view was not.**
+#
+# Measured 2026-08-19 on TSM's last 400 days: **963 rows for 275 trading
+# days**. The event join carried no `config_hash` predicate, so every bar
+# that ever produced an event joined once per sweep config -- 22 of them --
+# and a chart drawn from it would stack 22 candles and 22 markers on one
+# date. `v_events` filters config and `v_screen` was fixed by ADR 119; this
+# view was the third and last one missing it.
+#
+# Three changes, the same three ADR 119 made to `v_screen`, plus one this
+# view needs on its own.
+#
+# **The config predicate.** The 22x duplication above.
+#
+# **`entry_kind = 'touch'`, not `next_open`.** Only `cscan backtest` writes
+# `next_open`, so markers stopped at 2026-08-13 while events had fired
+# through 2026-08-18. A chart whose newest marker is five sessions old is
+# not showing what fired.
+#
+# **`is_cluster_head IS NOT FALSE`.** ADR 054's gap window needs the whole
+# session, so the poller cannot cluster and writes NULL. `AND
+# e.is_cluster_head` drops every intraday row -- 67 of them on the day this
+# was measured. NULL means "not yet clustered", not "not a head".
+#
+# **And the one that is only a chart problem: a bar can carry two events.**
+# Measured: **116 dates** hold both a long and a short head under the live
+# config, ADBE 2016-06-22 being `bb_lower_touch` (long) and
+# `stoch_overbought` (short) on the same bar. Both are real. No predicate
+# removes them, because removing one would be dropping a signal that fired.
+#
+# So the marker columns become arrays and the bar stays one row. This is the
+# grain the view was documented to have and the grain a chart requires: a
+# series library indexes by time and silently keeps the last of a duplicate
+# key, which is the failure mode where the chart looks right and shows the
+# wrong marker.
+#
+# **`exit_date`, `exit_reason` and `net_ret` are dropped.** They are
+# per-event outcomes, and carrying per-event columns on a bar grain is
+# exactly the shape mismatch that produced the duplication. `v_events` has
+# them at full fidelity, keyed by event, and the ticker page reads it for
+# the history table under the chart.
+V_CHART_DDL = """
+CREATE VIEW public.v_chart AS
+ SELECT b.ticker,
+    b.ts,
+    b.open,
+    b.high,
+    b.low,
+    b.close,
+    b.volume,
+    i.bb_lower,
+    i.bb_mid,
+    i.bb_upper,
+    i.k_full,
+    i.d_full,
+    i.k_fast,
+    i.sma_200,
+    i.bb_width_pct,
+    i.dd_52w,
+    ev.event_ids,
+    ev.signal_types,
+    ev.sides,
+    ev.signal_strength
+   FROM public.bars b
+     LEFT JOIN public.indicators i ON ((i.ticker = b.ticker) AND (i.ts = b.ts)
+         AND (i."interval" = b."interval"))
+     LEFT JOIN LATERAL ( SELECT array_agg(e.id ORDER BY e.id) AS event_ids,
+            array_agg(e.signal_type ORDER BY e.id) AS signal_types,
+            array_agg(e.side ORDER BY e.id) AS sides,
+            max(e.signal_strength) AS signal_strength
+           FROM public.events e
+          WHERE ((e.ticker = b.ticker) AND (e.signal_date = (b.ts)::date)
+              AND (e.entry_kind = 'touch'::text)
+              AND (e.is_cluster_head IS NOT FALSE)
+              AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)))
+         ) ev ON true
+  WHERE (b."interval" = '1d'::text)
+"""
+
+# `v_chart` as 6d86bf1f668e created it, captured with `pg_get_viewdef` from
+# the deployed database rather than retyped, so `downgrade()` restores what
+# was actually there -- duplication included, because a downgrade that
+# quietly kept the fix would not be a downgrade.
+V_CHART_DDL_PRE_120 = """
+CREATE VIEW public.v_chart AS
+ SELECT b.ticker,
+    b.ts,
+    b.open,
+    b.high,
+    b.low,
+    b.close,
+    b.volume,
+    i.bb_lower,
+    i.bb_mid,
+    i.bb_upper,
+    i.k_full,
+    i.d_full,
+    i.k_fast,
+    i.sma_200,
+    i.bb_width_pct,
+    i.dd_52w,
+    e.id AS event_id,
+    e.signal_type,
+    e.signal_strength,
+    e.exit_date,
+    e.exit_reason,
+    e.net_ret
+   FROM ((public.bars b
+     LEFT JOIN public.indicators i ON (((i.ticker = b.ticker) AND (i.ts = b.ts)
+         AND (i."interval" = b."interval"))))
+     LEFT JOIN public.events e ON (((e.ticker = b.ticker)
+         AND (e.signal_date = (b.ts)::date) AND e.is_cluster_head
+         AND (e.entry_kind = 'next_open'::text))))
+  WHERE (b."interval" = '1d'::text)
+"""

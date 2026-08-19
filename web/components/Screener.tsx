@@ -1,3 +1,4 @@
+import { SIGNAL_LABELS, clock, fmt, pct, sessionsBetween, vol } from "@/lib/format";
 import type { CellStats, Meta, ScreenRow, Suppressed } from "@/lib/screen";
 
 /**
@@ -8,27 +9,6 @@ import type { CellStats, Meta, ScreenRow, Suppressed } from "@/lib/screen";
  * the server component awaits; the other four are here.
  */
 
-const SIGNAL_LABELS: Record<string, string> = {
-  bb_lower_touch: "bb lower",
-  bb_upper_touch: "bb upper",
-  stoch_oversold: "oversold",
-  stoch_overbought: "overbought",
-  confluence_low: "confluence low",
-  confluence_high: "confluence high",
-  bear_close_above_upper: "bear close",
-};
-
-function fmt(value: number | null, digits = 2): string {
-  return value === null ? "—" : value.toFixed(digits);
-}
-
-/**
- * Whether the bar closed above or below its own open.
- *
- * Null-safe on purpose: a row with no bar yet must render unstyled rather
- * than picking a direction from two nulls, which would colour every
- * intraday row as if it had closed flat.
- */
 /**
  * Every signal type on the row, most specific first.
  *
@@ -52,48 +32,9 @@ function dayClass(row: ScreenRow): string {
   return "";
 }
 
-/** Volume, abbreviated. A ten-digit share count in a dense row is noise. */
-function vol(value: number | null): string {
-  if (value === null) return "—";
-  if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
-  if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
-  if (value >= 1e3) return `${(value / 1e3).toFixed(0)}K`;
-  return String(value);
-}
 
-/**
- * A timestamp as market-clock time.
- *
- * ET, not the viewer's zone: the reader is looking at a trading session and
- * "09:35" has to mean the open regardless of where they are sitting.
- */
-function clock(iso: string): string {
-  return new Date(iso).toLocaleTimeString("en-US", {
-    timeZone: "America/New_York",
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
 
-function pct(value: number | null): string {
-  return value === null ? "—" : `${(value * 100).toFixed(0)}%`;
-}
 
-/**
- * Calendar days between two ISO dates, as a rough "how far behind".
- *
- * Deliberately not trading days: this is a gap between two *artifacts*, not
- * a staleness measure, and the exactness would imply a precision the number
- * does not have. `meta.stalenessDays` is the one counted in sessions.
- */
-function sessionsBetween(from: string | null, to: string | null): string {
-  if (!from || !to) return "?";
-  const days = Math.round(
-    (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000,
-  );
-  return `${days}d`;
-}
 
 export function StatusStrip({
   meta,
@@ -372,10 +313,21 @@ export function EmptyState({
  * that renders a traceback is a page that shows a connection string to
  * whoever is standing behind you.
  */
-export function ErrorState({ code, message }: { code: string; message: string }) {
+export function ErrorState({
+  code,
+  message,
+  what = "the screener",
+}: {
+  code: string;
+  message: string;
+  /** What failed. The ticker page reuses this component, and a chart error
+   * announcing "could not load the screener" sends the reader to look at
+   * the wrong page. */
+  what?: string;
+}) {
   return (
     <div className="error" role="alert">
-      <h2>Could not load the screener</h2>
+      <h2>Could not load {what}</h2>
       <p>{message}</p>
       <p>
         <code>{code}</code>
