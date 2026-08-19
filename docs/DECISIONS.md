@@ -3546,7 +3546,6 @@ The screener can now show signals *ahead* of bars — the poller writes today's 
 |---|---|---|
 | **`cscan nightly` never ingests the session it runs after** | Pass `end + 1 day` to the fetcher, or make `_download_daily`'s `end` inclusive to match every other date range in the codebase | Make it inclusive — see below |
 | **`v_forward` exposes probabilities with no interval or q-value** | Add `cell_ci_low`/`cell_ci_high`/`cell_q_value` to the view, or have the model carry its own interval | Whichever ADR 113's model produces. **Blocks `/forward`, not Phase 5.** Recorded in `test_serving_view_contract.py::KNOWN_GAPS` |
-| **`events.sector` is NULL on all 13,479,819 rows; `v_screen` and `v_screen_live` project it anyway** | Join `tickers` in both views the way `v_events` already does, or populate `events.sector` at write time | Join the view. `tickers.sector` has 502 populated rows, so the data exists and only the copy is missing; a join needs no backfill of 13.5M rows |
 | Point-in-time index membership | Scrape Wikipedia history, or accept survivorship bias and state it | Scrape, note residual error in RESULTS.md |
 | Historical earnings dates | Finnhub free tier, Nasdaq scrape, or drop the feature | Finnhub, since earnings contamination is the largest 5-day confound |
 | Point-in-time market cap | Shares outstanding from filings, or price-times-current-shares approximation | Filings where available, approximation flagged elsewhere |
@@ -3665,7 +3664,19 @@ The third is the current lean. It brushes against ADR 076's "query logic
 lives in views" and that tension should be settled in whatever ADR resolves
 this rather than left implicit.
 
-### `events.sector` has never held a value, found 2026-08-19
+### `events.sector` has never held a value — RESOLVED 2026-08-19
+
+**Fixed in migration `b8f31c204e7a`.** Both screener views now join
+`tickers` and select `t.sector`, matching `v_events`. Sector went from 0
+to 38,685 of 40,906 rows with no change in row count, so the inner join
+dropped nothing. `events.sector` stays in the table unread; dropping a
+column is a separate decision.
+
+`test_serving_view_contract.py` now fails on **any** serving-view column
+that is null on every row, with an allowlist for the `predictions`
+columns that wait on Phase 6. That guard is the durable part: this one
+survived because nothing checked, not because it was hard to see.
+
 
 `v_screen` and `v_screen_live` both project `e.sector`. It is **NULL on all
 13,479,819 rows** — measured, not sampled. `tickers.sector` carries 502

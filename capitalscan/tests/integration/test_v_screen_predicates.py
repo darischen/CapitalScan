@@ -109,6 +109,24 @@ def scoped():
             (signal_ticker, "bb_lower_touch", "0-10"),
             (other_ticker, "stoch_oversold", "10-20"),
         ):
+            # The ticker row, added 2026-08-19. `v_screen` and
+            # `v_screen_live` inner-join `tickers` for `sector` (migration
+            # b8f31c204e7a), matching `v_events`, so an event whose ticker
+            # is absent no longer reaches either view.
+            #
+            # That is the right join and this was the wrong fixture: zero of
+            # 13,479,819 production events lack a ticker row, so an orphan
+            # event is a state the system does not produce. It passed
+            # locally only because a previous run had committed the ticker;
+            # on CI's empty container every predicate test failed at once.
+            conn.execute(
+                text(
+                    "INSERT INTO tickers (ticker, name, sector, is_active) "
+                    "VALUES (:ticker, :ticker, 'Test Sector', true) "
+                    "ON CONFLICT (ticker) DO NOTHING"
+                ),
+                {"ticker": ticker},
+            )
             conn.execute(
                 _EVENT_SQL,
                 {
@@ -145,6 +163,10 @@ def scoped():
                 {"a": config_a, "b": config_b},
             )
             conn.execute(text("DELETE FROM runs WHERE run_id = :run_id"), {"run_id": run_id})
+            conn.execute(
+                text("DELETE FROM tickers WHERE ticker IN (:a, :b)"),
+                {"a": signal_ticker, "b": other_ticker},
+            )
 
 
 def _add_cell(

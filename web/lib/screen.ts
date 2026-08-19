@@ -181,7 +181,7 @@ const LATEST_DATE_SQL = `
 const FEED_SQL = `
   SELECT s.ticker, s.signal_date, s.signal_type, s.signal_types_all,
          s.signal_strength, s.k_full, s.k_fast,
-         s.dd_bucket, s.cell_id, s.side, s.is_cluster_head,
+         s.dd_bucket, s.sector, s.cell_id, s.side, s.is_cluster_head,
          s.bb_lower, s.bb_mid, s.bb_upper, s.band_ts,
          s.open, s.high, s.low, s.close, s.volume,
          s.live_price, s.live_price_ts, s.fired_at
@@ -219,6 +219,7 @@ interface FeedRowRaw {
   k_full: string | null;
   k_fast: string | null;
   dd_bucket: string | null;
+  sector: string | null;
   cell_id: string | null;
   side: string;
   is_cluster_head: boolean | null;
@@ -260,6 +261,7 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
     // stored value rather than a re-derivation. `sideFor` stays as the
     // fallback and is still tested: it is what a caller without the column
     // would need, and the two must agree.
+    sector: r.sector,
     side: (r.side === "short" || r.side === "long" ? r.side : sideFor(r.signal_type)) as Side,
     bbLower: num(r.bb_lower),
     bbMid: num(r.bb_mid),
