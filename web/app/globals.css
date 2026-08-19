@@ -127,9 +127,12 @@ button:focus-visible,
 
 /* --- table ------------------------------------------------------------- */
 
+/* Eleven columns since 2026-08-19 (bands, OHLC, live, fired). Wider
+ * than the original 1180 and still capped: past ~1500 the eye loses the
+ * row it is on between the ticker and the last column. */
 .wrap {
   padding: 0 16px 32px;
-  max-width: 1180px;
+  max-width: 1480px;
 }
 
 table.screen {
@@ -323,6 +326,8 @@ td.rail span[data-side="short"] {
   table.screen tr {
     display: grid;
     grid-template-columns: 3px 1fr 1fr;
+    /* Eleven columns do not fit two-up on a phone; the labels carry the
+     * meaning and the grid just wraps. */
     gap: 0 10px;
     padding: 8px 0;
     border-bottom: 1px solid var(--rule);

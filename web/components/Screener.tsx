@@ -22,6 +22,30 @@ function fmt(value: number | null, digits = 2): string {
   return value === null ? "—" : value.toFixed(digits);
 }
 
+/** Volume, abbreviated. A ten-digit share count in a dense row is noise. */
+function vol(value: number | null): string {
+  if (value === null) return "—";
+  if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(0)}K`;
+  return String(value);
+}
+
+/**
+ * A timestamp as market-clock time.
+ *
+ * ET, not the viewer's zone: the reader is looking at a trading session and
+ * "09:35" has to mean the open regardless of where they are sitting.
+ */
+function clock(iso: string): string {
+  return new Date(iso).toLocaleTimeString("en-US", {
+    timeZone: "America/New_York",
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function pct(value: number | null): string {
   return value === null ? "—" : `${(value * 100).toFixed(0)}%`;
 }
@@ -150,10 +174,18 @@ export function ScreenerTable({
           <th>Ticker</th>
           <th>Signal</th>
           <th className="r">Str</th>
-          <th className="r">%B</th>
-          <th className="r">%K</th>
-          <th>DD</th>
-          <th className="r">Cofire</th>
+          <th className="r" title="Bollinger bands at t-1, the row the signal compared against. Mid is the 20-day SMA.">
+            Bollinger Lower / Mid / Upper
+          </th>
+          <th className="r" title="Raw %K is the trigger (ADR 110); smoothed must agree within tolerance">
+            fast / slow Stochastic
+          </th>
+          <th className="r" title="The signal date's own bar. Empty until that night's ingest.">
+            O / H / L / C
+          </th>
+          <th className="r">Vol</th>
+          <th className="r" title="Newest price the poller saw">Live</th>
+          <th className="r">Fired</th>
           {withStats && <th>Cell</th>}
         </tr>
       </thead>
@@ -181,22 +213,53 @@ export function ScreenerTable({
             <td className="r num" data-label="Str">
               {row.signalStrength}
             </td>
-            <td className="r num" data-label="%B">
-              {fmt(row.bbPctb)}
+            {/* The t-1 bands, which is the row the signal compared against
+                (invariant 3). `bb_mid` is the 20-day SMA as
+                `core/indicators.py` computed it; nothing is recomputed
+                here. `title` carries the session so a reader can confirm
+                which one it is without a column for it. */}
+            <td className="r num" data-label="Bollinger" title={row.bandTs ? `bands at ${row.bandTs}` : undefined}>
+              {fmt(row.bbLower)}
+              <span className="dim"> / </span>
+              {fmt(row.bbMid)}
+              <span className="dim"> / </span>
+              {fmt(row.bbUpper)}
             </td>
             {/* Both %K series. ADR 110 made the agreement between them part
-                of the signal definition: `k_fast` is the trigger and
-                `k_full` must agree within `fast_agreement_tol`, so showing
-                one is showing half the rule. */}
-            <td className="r num" data-label="%K">
+                of the signal definition: the raw one is the trigger and the
+                smoothed one must agree within `fast_agreement_tol`, so
+                showing one is showing half the rule. */}
+            <td className="r num" data-label="Stochastic">
               {fmt(row.kFast, 1)}
-              <span className="dim"> / {fmt(row.kFull, 1)}</span>
+              <span className="dim"> / {fmt(row.kSlow, 1)}</span>
             </td>
-            <td data-label="DD">
-              <span className="num">{row.ddBucket ?? "—"}</span>
+            {/* Empty intraday, and that is the honest rendering: bars are
+                ingested nightly, so a signal that fired at 09:35 has no bar
+                until that evening. Back-filling from quotes would put a
+                first-tick price in a column labelled "open". */}
+            <td className="r num" data-label="OHLC">
+              {row.open === null ? (
+                <span className="dim" title="no bar yet; ingested tonight">—</span>
+              ) : (
+                <>
+                  {fmt(row.open)}
+                  <span className="dim"> / </span>
+                  {fmt(row.high)}
+                  <span className="dim"> / </span>
+                  {fmt(row.low)}
+                  <span className="dim"> / </span>
+                  {fmt(row.close)}
+                </>
+              )}
             </td>
-            <td className="r num" data-label="Cofire">
-              {row.cofireCount ?? "—"}
+            <td className="r num" data-label="Vol">
+              {vol(row.volume)}
+            </td>
+            <td className="r num" data-label="Live" title={row.livePriceTs ? `as of ${clock(row.livePriceTs)}` : undefined}>
+              {fmt(row.livePrice)}
+            </td>
+            <td className="r num" data-label="Fired">
+              {row.firedAt ? clock(row.firedAt) : <span className="dim">—</span>}
             </td>
             {withStats && (
               <td data-label="Cell">

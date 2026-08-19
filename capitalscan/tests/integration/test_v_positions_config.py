@@ -306,12 +306,19 @@ def test_days_held_counts_sessions_not_calendar_days(settings):
 
     with engine.connect() as conn:
         sessions = conn.execute(
-            text("SELECT count(*) FROM trading_days WHERE d > :entry AND d <= CURRENT_DATE"),
+            # `market_date()`, not `CURRENT_DATE` (ADR 119). The database runs
+            # Etc/UTC, so between 00:00 UTC and midnight ET the two differ by a
+            # day and this assertion is off by one session -- which is the defect
+            # the view was changed to fix, and how this test caught the change.
+            text("SELECT count(*) FROM trading_days WHERE d > :entry AND d <= market_date()"),
             {"entry": entry},
         ).scalar_one()
     row = _view_row(engine, opened["id"])
     assert row["days_held"] == sessions
-    assert row["days_held"] <= (date.today() - entry).days
+    # Sessions never exceed calendar days. `date.today()` is the *client's*
+    # day, which is Pacific and can trail the market's by one in the other
+    # direction, so the bound is generous by a day rather than exact.
+    assert row["days_held"] <= (date.today() - entry).days + 1
 
 
 # ---------------------------------------------------------------------------

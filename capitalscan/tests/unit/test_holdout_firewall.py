@@ -35,7 +35,12 @@ import pytest
 SCHEMA = Path(__file__).resolve().parents[3] / "db" / "schema.sql"
 
 # Views that attach statistics to events. These must pin the split.
-EVENT_JOINED_STAT_VIEWS = {"v_screen"}
+#
+# `v_screen_live` joined the set on 2026-08-19 (ADR 119). It attaches the
+# same `validate` cell to a detection-time feed, so it needs the same pins
+# and gets them from the same shared join clause in `jobs/views.py`. This
+# test is what required it to be declared rather than inherited quietly.
+EVENT_JOINED_STAT_VIEWS = {"v_screen", "v_screen_live"}
 
 # What ADR 088 requires pinned wherever cell_stats is joined to events.
 REQUIRED_PINS = {

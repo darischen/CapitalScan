@@ -218,6 +218,17 @@ class TestConfigHashPredicate:
         against the identical two rows. Two results here and one above is
         the whole content of ADR 100. If this ever returns 1, the fixture
         has stopped reproducing the defect and the test above is worthless.
+
+        **Scoped by `c.run_id` since 2026-08-19.** Without it the join had
+        no `config_hash` *and* no ticker predicate on `cell_stats`, so it
+        counted every production cell sharing the fixture's signature --
+        measured, 6 of them locally -- and the assertion held only on an
+        empty database. It passed in CI and failed on any developer machine
+        with real statistics, which is the worst place for a test to be
+        selective about.
+
+        `run_id` rather than `config_hash`: the absent config predicate is
+        the thing under test and must stay absent.
         """
         engine = scoped["engine"]
         with engine.begin() as conn:
@@ -237,25 +248,55 @@ class TestConfigHashPredicate:
                           AND c.horizon_days    = 5
                           AND c.target_pct      = 0.03
                           AND c.arm             = 'signal'
+                          AND c.run_id          = :run_id
                     WHERE e.is_cluster_head AND e.entry_kind = 'next_open'
                       AND e.ticker = :ticker
                 """),
-                {"ticker": scoped["signal_ticker"]},
+                {"ticker": scoped["signal_ticker"], "run_id": scoped["run_id"]},
             ).scalar_one()
         assert unguarded == 2
 
-    def test_an_unset_config_hash_nulls_the_stats_but_keeps_the_event(self, scoped):
-        """`current_setting(..., true)` returns NULL when the GUC is unset,
-        and `c.config_hash = NULL` is never true. The event must still
-        appear with null statistics: the LEFT JOIN is what stops an
-        unconfigured database from serving an empty screener."""
+    def test_an_unset_config_hash_serves_nothing(self, scoped):
+        """**Changed 2026-08-19 by ADR 119, and the old behaviour was the bug.**
+
+        This asserted the opposite: that an unset GUC kept the event and
+        nulled only the statistics, because "the LEFT JOIN is what stops an
+        unconfigured database from serving an empty screener".
+
+        It stopped it by serving a *wrong* one. The predicate was on the
+        `cell_stats` join only and never on `events`, so an unconfigured
+        database did not show one config's events without statistics -- it
+        showed **every** config's events at once. Measured on the live
+        database before the fix: 23 distinct `config_hash` values and
+        799,455 rows, of which 46 were on the newest date and 17 of those
+        belonged to a superseded generation.
+
+        Empty is the answer the rest of the system already gives.
+        `v_events` filters `e.config_hash = current_setting(...)`.
+        `compute.scan` returns an empty frame and says why: "guessing a
+        config is worse than admitting there is nothing to show".
+        `handlers/_db.py::resolve_config_hash` goes further and raises, so
+        the misconfiguration is loud rather than silent.
+        """
         engine = scoped["engine"]
         with engine.begin() as conn:
             _add_cell(conn, scoped, config_hash=scoped["config_a"], arm="signal")
             conn.execute(text("SELECT set_config(:name, '', true)"), {"name": GUC})
             rows = _screen_rows(conn, scoped["signal_ticker"])
-        assert len(rows) == 1
-        assert rows[0].cell_id is None
+        assert rows == []
+
+    def test_only_the_default_configs_events_are_served(self, scoped):
+        """The other half of the same predicate, and the defect itself.
+
+        An event belonging to a superseded config must not appear at all,
+        rather than appearing with null statistics beside a live-config row.
+        """
+        engine = scoped["engine"]
+        with engine.begin() as conn:
+            _add_cell(conn, scoped, config_hash=scoped["config_a"], arm="signal")
+            _set_guc(conn, scoped["config_b"])
+            rows = _screen_rows(conn, scoped["signal_ticker"])
+        assert rows == []
 
     def test_a_non_default_config_does_not_leak_its_statistics(self, scoped):
         engine = scoped["engine"]
