@@ -21,13 +21,12 @@ running, to clear the poller window (`scripts/wait_and_poll.ps1` fires at
 every hit in memory and writes once at the end, so an interrupted run
 leaves zero partial rows and a `runs` row marked `interrupted`.
 
-**If it is killed, the fallback is written and ready:**
-
-    uv run python scripts/rebuild_events_chunked.py
-
-One `run_events` call per year, each its own transaction, so a stop costs
-one year instead of everything and a re-run upserts completed years to
-identical values. **Run it after 13:00 PT**, not before.
+**It finished, so the chunked fallback was deleted** (user's call,
+2026-08-19). 178 minutes, 1,312,935 rows, `cell_stats` digest unchanged.
+`scripts/rebuild_events_chunked.py` was speculative tooling for a job that
+turned out to work; if a future rebuild needs restartability it is twenty
+minutes to write again, and writing it then means writing it against
+whatever `run_events` looks like then.
 
 **Why the monolithic run may not make it.** 2,386,193 bars in the window
 across 625 tickers. The old gated run took 140 min calling `detect()` on

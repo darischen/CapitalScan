@@ -1663,6 +1663,12 @@ null replications. All ten gate items pass.
 | train | **+383.66%** | +108.37% | +83.95% | **+205.77%** | below |
 | validate | **−3.69%** | −10.10% | −13.99% | **+3.02%** | below |
 
+> **Superseded and unresolved, 2026-08-19.** The live config's benchmark run
+> (2026-08-16, `86e91448a65aa40b`) puts validate at **+12.63% against a
+> 97.5th percentile of +6.36%** — above, not below. The table here is from
+> the 2026-08-13 run under `1835688bf7d760ba`. See "OPEN: the benchmark
+> record and the database disagree" above; **do not read either as settled.**
+
 The signal arm is **below the 97.5th percentile of its own randomization null on both
 splits**, and below buy-and-hold on both. On train it does clear the null's *median*
 (+108% against +84%), which is worth stating precisely: entry timing is very slightly
@@ -2703,6 +2709,60 @@ Two things worth carrying over anyway.
   27 ms for the whole view and 1.4 ms for one ticker, and the Session 15
   note that framed this as a ticker-page problem was wrong about which
   query was slow.
+
+---
+
+## OPEN: the benchmark record and the database disagree, 2026-08-19
+
+**Found by building `/research`.** The page renders the signal arm against
+its randomization null and put validate at the **100th percentile**.
+`RESULTS.md` §Session 13 records the opposite.
+
+| | `RESULTS.md` | Database now |
+|---|---|---|
+| Signal, validate | −10.10% | **+12.63%** |
+| Null 97.5th, validate | +3.02% | **+6.36%** |
+| Signal, train | +108.37% | +85.75% |
+| Null 97.5th, train | +205.77% | +216.70% |
+| Verdict, validate | below | **above** |
+
+They are different runs under different configs:
+
+```
+benchmarks_20260813T172347   1835688bf7d760ba   2026-08-13
+benchmarks_20260814T095544   697f3ae71428d392   2026-08-14
+benchmarks_20260816T183906   86e91448a65aa40b   2026-08-16   ← live
+```
+
+`RESULTS.md`'s table was written from the 08-13 run. The live config's
+benchmark run is 08-16 and nothing updated the record.
+
+**Why this is not a rendering decision.** The page reports what the
+database holds, which is the only thing it can honestly do. Deciding which
+number is right means understanding what moved between `1835688bf7d760ba`
+and `86e91448a65aa40b` — the config changes in that window include ADR
+108's seventh signal type and ADR 110's `require_fast_agreement`, either of
+which changes the event population the arms trade.
+
+**The page says so rather than picking one.** A `.conflict` banner renders
+whenever the signal arm exceeds the null's 97.5th percentile, naming
+`RESULTS.md` and saying the discrepancy is unresolved.
+
+**What would settle it.** Re-run `cscan benchmarks` under the live config
+and compare against the 08-16 rows. If they reproduce, `RESULTS.md`'s table
+is stale and should be re-measured with the config hash recorded beside it.
+If they do not, something is non-deterministic in the arms and that is a
+much larger finding.
+
+**Not to be resolved by editing `RESULTS.md` to match the database.** The
+record is the account of what was measured; changing it to agree with a
+later run erases the fact that the result moved.
+
+**Related, and possibly the same cause.** ADR 112's kill criterion fired on
+`cell_stats`, which the live config's rebuild did *not* move — the digest
+is byte-identical before and after ADR 122. So the cells are stable across
+the config change and the arms are not, which is itself worth understanding
+before trusting either.
 
 ---
 

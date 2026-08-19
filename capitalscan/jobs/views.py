@@ -1073,3 +1073,47 @@ SELECT cell_id,
     suppress_reason
    FROM cell_stats
 """
+
+
+# ---------------------------------------------------------------------------
+# bars_live (ADR 128)
+# ---------------------------------------------------------------------------
+#
+# Today's partial candle, from the quote the poller already fetches.
+#
+# **A separate table, and that is the whole design.** The obvious place is
+# `bars` with a partial row, and it would be a silent look-ahead bug:
+# `cscan indicators` computes on whatever is in `bars`, so a partial row
+# gets an indicator row, and the poller's t-1 lookup then reads *today's*
+# unfinished indicators instead of yesterday's closed ones. Every band
+# would tighten around a price that had not finished happening, and
+# nothing would raise.
+#
+# Invariant 3 stays structural this way. No consumer needs a new predicate
+# -- which is the alternative, and it is ADR 122's problem shape: a flag on
+# `bars` would need eighteen readers to carry it and nothing would fail
+# loudly when one forgot.
+#
+# **One row per ticker per session, upserted.** Yahoo's
+# `regularMarketDayHigh`/`Low` are cumulative session extremes rather than
+# interval values, so each tick overwrites with a strictly better answer.
+# There is no accumulation to get wrong and no missed tick to reconstruct:
+# a poller that was down for an hour still writes the correct session high
+# on its next quote. ~141 rows a day rather than ~11,000.
+#
+# `close` is `NOT NULL` because it is the current price and a row without
+# one describes nothing. Everything else is nullable: pre-market a quote
+# can carry a price and no high, and invariant 4 says absent stays absent.
+BARS_LIVE_DDL = """CREATE TABLE IF NOT EXISTS public.bars_live (
+    ticker        text        NOT NULL REFERENCES public.tickers(ticker),
+    session_date  date        NOT NULL,
+    ts            timestamptz NOT NULL,
+    open          numeric(12,4),
+    high          numeric(12,4),
+    low           numeric(12,4),
+    close         numeric(12,4) NOT NULL,
+    volume        bigint,
+    run_id        text,
+    PRIMARY KEY (ticker, session_date)
+)
+"""

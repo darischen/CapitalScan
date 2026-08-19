@@ -305,6 +305,9 @@ export function ChartLegend() {
         <i className="ln kfull" /> slow
         <span className="grp-name">Stochastic</span>
       </span>
+      <span className="grp">
+        <i className="ln hollow" /> today, still open
+      </span>
     </div>
   );
 }

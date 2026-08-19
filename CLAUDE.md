@@ -15,6 +15,7 @@ If a task appears to require contradicting one, **stop and ask.** Do not work ar
 | Question | Document |
 |---|---|
 | Why is it this way? | `docs/DECISIONS.md` |
+| What is known and not done? | `docs/BACKLOG.md` |
 | What is it? | `docs/DESIGN.md` |
 | What do I build next? | `docs/BUILD.md` |
 | How do I know it works? | `docs/TESTS.md` |

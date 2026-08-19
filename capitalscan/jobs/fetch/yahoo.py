@@ -50,7 +50,20 @@ _ACTIONS_COLUMNS = ["ticker", "ts", "action_type", "value"]
 # quote without `regularMarketOpen` yields NaN rather than dropping the
 # quote, because the band signals do not need it and dropping would blind
 # the poller to an ordinary breach over a missing field it never uses.
-_QUOTE_COLUMNS = ["ticker", "ts", "price", "day_open"]
+# ADR 128 adds the three session aggregates Yahoo was already sending and
+# this parser was discarding. `regularMarketDayHigh`/`Low` are cumulative
+# extremes for the session, not the last interval, so a poller that missed
+# an hour still gets the correct high on its next tick -- there is nothing
+# to accumulate and no gap to reconstruct.
+_QUOTE_COLUMNS = [
+    "ticker",
+    "ts",
+    "price",
+    "day_open",
+    "day_high",
+    "day_low",
+    "day_volume",
+]
 
 
 def _empty_bars_frame() -> pd.DataFrame:
@@ -348,6 +361,17 @@ def fetch_actions(ticker: str) -> pd.DataFrame:
     return pd.DataFrame(records, columns=_ACTIONS_COLUMNS)
 
 
+def _opt_float(value: object) -> float:
+    """`float(value)` or NaN, never a default (invariant 4).
+
+    Yahoo omits a field rather than sending null when a session has not
+    produced it -- pre-market, a halted name. Absent must stay absent: a
+    volume of 0 and an unknown volume are different facts, and only one of
+    them can be drawn.
+    """
+    return float(value) if value is not None else float("nan")  # type: ignore[arg-type]
+
+
 def _download_quotes(symbols: list[str]) -> dict:
     """One HTTP GET against Yahoo's batch quote endpoint.
 
@@ -416,6 +440,13 @@ def fetch_quotes(tickers: list[str], *, now: pd.Timestamp | None = None) -> pd.D
                     # `_is_bear_reversal`, which treats it as "cannot
                     # evaluate" rather than as a passing comparison.
                     "day_open": float(day_open) if day_open is not None else float("nan"),
+                    # Same absent-stays-absent rule (invariant 4). A quote
+                    # without a high is not a quote with a high equal to
+                    # the price -- the partial candle simply cannot be
+                    # drawn, and NaN says so.
+                    "day_high": _opt_float(quote.get("regularMarketDayHigh")),
+                    "day_low": _opt_float(quote.get("regularMarketDayLow")),
+                    "day_volume": _opt_float(quote.get("regularMarketVolume")),
                 }
             )
     return pd.DataFrame(rows, columns=_QUOTE_COLUMNS)

@@ -26,21 +26,40 @@ SCHEDULE: dict[str, tuple[time, str]] = {
 
 
 def _scheduled_for(job: str, as_of: datetime) -> datetime:
-    """The most recent intended fire time at or before `as_of`."""
+    """The most recent intended fire time at or before `as_of`.
+
+    **Every candidate carries `as_of`'s tzinfo.** `datetime.combine` returns
+    a naive value unless one is supplied, and every branch here compares a
+    candidate against `as_of`. ADR 127 made `poll._now_et` aware, and this
+    raised on the first tick:
+
+        TypeError: can't compare offset-naive and offset-aware datetimes
+
+    Which is the right failure. The alternative — a naive comparison that
+    silently treats an ET wall clock as UTC — is the bug ADR 127 fixed, and
+    it would have reappeared here four hours wide.
+
+    A naive `as_of` still works: `tzinfo` is then `None` and `combine`
+    behaves as before, so callers that pass a naive clock are unaffected.
+    """
     time_of_day, cadence = SCHEDULE[job]
-    candidate = datetime.combine(as_of.date(), time_of_day)
+    candidate = datetime.combine(as_of.date(), time_of_day, tzinfo=as_of.tzinfo)
     if cadence == "daily":
         return candidate if candidate <= as_of else candidate - timedelta(days=1)
     if cadence == "weekly":
         days_since_sunday = (as_of.weekday() + 1) % 7  # Monday=0 -> Sunday=6
-        candidate = datetime.combine(as_of.date() - timedelta(days=days_since_sunday), time_of_day)
+        candidate = datetime.combine(
+            as_of.date() - timedelta(days=days_since_sunday), time_of_day, tzinfo=as_of.tzinfo
+        )
         return candidate if candidate <= as_of else candidate - timedelta(days=7)
     if cadence == "monthly":
-        first_of_month = datetime.combine(as_of.date().replace(day=1), time_of_day)
+        first_of_month = datetime.combine(
+            as_of.date().replace(day=1), time_of_day, tzinfo=as_of.tzinfo
+        )
         if first_of_month <= as_of:
             return first_of_month
         prev_month_end = first_of_month.date() - timedelta(days=1)
-        return datetime.combine(prev_month_end.replace(day=1), time_of_day)
+        return datetime.combine(prev_month_end.replace(day=1), time_of_day, tzinfo=as_of.tzinfo)
     raise ValueError(cadence)  # pragma: no cover - SCHEDULE is closed above
 
 

@@ -1340,3 +1340,225 @@ table.screen td.rail span[data-side="short"] {
   font-size: 10px;
   text-align: center;
 }
+
+/* --- research page ------------------------------------------------------ */
+
+/* Desktop-only (DESIGN §11.9) and it says so rather than reflowing into
+ * something unreadable. The page is a set of wide tables whose columns
+ * carry meaning by position; stacking them into cards loses the comparison
+ * that is the point. */
+
+.research-page {
+  max-width: 1180px;
+  padding-top: 14px;
+}
+
+.rs-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.rs-head h1 {
+  font-size: 20px;
+}
+
+.research-page section {
+  margin-top: 28px;
+}
+
+.research-page h2 {
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.research-page h3 {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 18px 0 4px;
+}
+
+.research-page p {
+  max-width: 76ch;
+  font-size: 12px;
+}
+
+/* The headline. Bordered in the flag colour rather than the short colour:
+ * a null result is not an error, and colouring it as one would be the page
+ * editorialising against its own subject. */
+.kill {
+  border-left: 2px solid var(--flag);
+  padding: 2px 0 2px 12px;
+  margin-top: 18px;
+}
+
+.kill h2 {
+  border: 0;
+  padding: 0;
+  color: var(--flag);
+}
+
+/* --- the edge bar ------------------------------------------------------- */
+
+/* DESIGN §11.2: edge as a bar with CI width, not a number. On this data
+ * most bars span zero, and the zero line is drawn so that reads instantly
+ * rather than requiring the reader to compare two printed bounds. */
+
+table.research td.edge-col,
+table.research th.edge-col {
+  width: 180px;
+}
+
+.edgebar {
+  position: relative;
+  display: block;
+  height: 12px;
+}
+
+/* The baseline the interval is measured against — the null value for a
+ * hit-rate interval, where zero would be the null value for an edge. The
+ * stored interval is on the rate (`wilson_ci(p_hit * n_eff, n_eff)`), so
+ * drawing a zero line here would invite the wrong comparison. */
+.edgebar .base {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  width: 1px;
+  background: var(--flag);
+}
+
+.edgebar .ci {
+  position: absolute;
+  top: 5px;
+  height: 2px;
+  background: var(--long);
+  border-radius: 1px;
+}
+
+/* An interval containing its baseline is the normal case here, so it is
+ * muted rather than flagged — colouring nearly every row as a warning would
+ * make the colour meaningless. The few that do *not* contain their baseline
+ * get the accent, which is the right way round: those are the rows worth
+ * looking at twice. */
+.edgebar .ci.spans {
+  background: var(--muted);
+}
+
+.edgebar .point {
+  position: absolute;
+  top: 2px;
+  width: 2px;
+  height: 8px;
+  margin-left: -1px;
+  background: var(--text);
+}
+
+table.research tr.dimmed td {
+  color: var(--muted);
+}
+
+/* --- null distribution --------------------------------------------------- */
+
+.nulldist {
+  margin: 10px 0 20px;
+  max-width: 560px;
+}
+
+.nulldist .bars {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 84px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.nulldist .bars i {
+  flex: 1;
+  background: var(--panel-hover);
+  min-height: 1px;
+}
+
+/* Where the signal arm falls inside the null — the one thing the histogram
+ * exists to show, so it gets the only saturated colour in it. */
+.nulldist .marker {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--flag);
+}
+
+.nulldist .scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+.ddgroup {
+  margin-top: 14px;
+}
+
+.rs-foot {
+  margin-top: 32px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+}
+
+@media (max-width: 900px) {
+  /* §11.9: desktop-only, and it says so. */
+  .research-page::before {
+    content: "This page is designed for a desktop screen. Tables below scroll horizontally.";
+    display: block;
+    padding: 8px 10px;
+    margin-bottom: 12px;
+    border: 1px solid var(--flag);
+    border-radius: 2px;
+    color: var(--flag);
+    font-size: 11.5px;
+  }
+
+  .research-page table {
+    display: block;
+    overflow-x: auto;
+  }
+}
+
+/* A page-level contradiction with the written record. Bordered in the flag
+ * colour and stated plainly: the alternative is silently picking whichever
+ * number the page happens to query, which is how a record and a system
+ * drift apart without anyone noticing. */
+.conflict {
+  border: 1px solid var(--flag);
+  border-radius: 2px;
+  padding: 8px 10px;
+  margin-top: 8px;
+  color: var(--flag);
+  font-size: 11.5px;
+}
+
+.split-tag {
+  display: block;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  font-weight: 400;
+}
+
+/* Today's partial candle: hollow body, so it reads as unfinished without a
+ * second colour. Its close is the current price and it carries no bands or
+ * stochastic, because indicators are computed on closed bars only. */
+.legend .ln.hollow {
+  border-top-style: dotted;
+  border-top-color: var(--text);
+}
