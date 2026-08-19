@@ -6,42 +6,15 @@ being forgotten.
 
 Ordered by when it blocks something, not by size.
 
----
-
-## 1. ~~Poller timestamps four hours early~~ — DONE 2026-08-19 11:20 PT
-
-All four coupled steps landed together, which is the only way they could:
-
-1. Poller stopped, its `runs` row closed as `interrupted`.
-2. `backfill_poller_timestamps.py --apply` shifted **1,752 rows** — 876
-   `signal_reports`, 876 `quotes_live`.
-3. The three-step chain came out of `wait_and_poll.ps1`.
-4. `test_poller_clock.py` inverted to assert one conversion.
-
-Verified from both consumers afterwards: the CSV query reads `06:30:40 PT`
-and the screener's Fired column reads `09:41` ET for the same session. The
-first fire of the day is the 09:30 open, which is what it always was.
+**Closed 2026-08-19**: the poller's four-hour timestamp offset (ADR 127,
+1,752 rows corrected) and today's live candle (ADR 128, `bars_live`). Both
+are recorded in `DECISIONS.md` and `RESULTS.md`; they are gone from here
+rather than marked done, because a backlog of finished work is a changelog
+wearing the wrong name.
 
 ---
 
-## 2. ~~Today's bar on the ticker chart~~ — DONE 2026-08-19 (ADR 128)
-
-Live, verified against a real session. TSM at 11:23 PT: open 418.13, high
-419.60, low 407.88, close 411.24 on 5.5M shares, drawn hollow beside the
-closed bars with its bands stopping at yesterday.
-
-No new data source and no new request — `fetch_quotes` was already
-receiving the session aggregates and discarding them, then writing
-`quotes_live` only for tickers that fired. 139 rows now, one per in-trade
-ticker, all self-consistent (`low <= close <= high`).
-
-`bars_live` is a separate table, not a flag on `bars`.
-`test_bars_live_isolation.py` keeps it invisible to anything that computes
-an indicator.
-
----
-
-## 3. The benchmark record and the database disagree
+## 1. The benchmark record and the database disagree
 
 `RESULTS.md` records the signal arm below its randomization null's 97.5th
 percentile on both splits. The live config's run puts validate **above** it.
@@ -68,7 +41,7 @@ itself worth understanding.
 
 ---
 
-## 4. Held by the user, not to be acted on unilaterally
+## 2. Held by the user, not to be acted on unilaterally
 
 **The 17,919 fail-open events.** 11.4% of the live config's `touch` rows,
 across 512 tickers, entered `train` before the first universe snapshot
@@ -82,7 +55,7 @@ gets synced" is a real design decision with an ADR attached.
 
 ---
 
-## 5. Small and unblocked
+## 3. Small and unblocked
 
 **No edge interval exists in the schema.** `cell_stats` stores a Wilson
 interval on `p_hit`; `edge` is `p_hit − baseline` with no interval of its
