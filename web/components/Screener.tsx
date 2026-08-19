@@ -29,6 +29,22 @@ function fmt(value: number | null, digits = 2): string {
  * than picking a direction from two nulls, which would colour every
  * intraday row as if it had closed flat.
  */
+/**
+ * Every signal type on the row, most specific first.
+ *
+ * Falls back to `signal_type` alone when `signal_types_all` is empty, which
+ * the type system allows even though the detector never produces it. Puts
+ * `signal_type` first if it is somehow not already there, so the emphasis
+ * always lands on the type that names the row rather than on whichever
+ * element happened to sort first.
+ */
+function typeList(row: ScreenRow): string[] {
+  const all = row.signalTypesAll;
+  if (all.length === 0) return [row.signalType];
+  if (all[0] === row.signalType) return all;
+  return [row.signalType, ...all.filter((t) => t !== row.signalType)];
+}
+
 function dayClass(row: ScreenRow): string {
   if (row.close === null || row.open === null) return "";
   if (row.close > row.open) return "up";
@@ -220,14 +236,24 @@ export function ScreenerTable({
             <td className="ticker" data-label="Ticker">
               <a href={`/ticker/${row.ticker}`}>{row.ticker}</a>
             </td>
+            {/* Every type, spelled out (user's request, 2026-08-19). The
+                previous `+2` made the reader hover to learn what a
+                confluence was made of, and left the column narrow enough
+                that a gap opened before Str.
+
+                `signal_types_all` is already in ADR 057's specificity
+                order, with `signal_type` first -- verified against the live
+                data rather than assumed -- so the leading label is the one
+                that names the row and the rest are dimmed as context. */}
             <td className="sig" data-label="Signal">
-              {SIGNAL_LABELS[row.signalType] ?? row.signalType}
-              {row.signalTypesAll.length > 1 && (
-                <span className="dim" title={row.signalTypesAll.join(", ")}>
-                  {" "}
-                  +{row.signalTypesAll.length - 1}
+              {typeList(row).map((t, i) => (
+                <span key={t}>
+                  {i > 0 && <span className="sep-dot"> · </span>}
+                  <span className={i === 0 ? undefined : "dim"}>
+                    {SIGNAL_LABELS[t] ?? t}
+                  </span>
                 </span>
-              )}
+              ))}
             </td>
             <td className="r num" data-label="Str">
               {row.signalStrength}
