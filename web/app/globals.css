@@ -1187,3 +1187,25 @@ table.screen td.rail span[data-side="short"] {
   border-radius: 2px;
   white-space: nowrap;
 }
+
+/* The poller's live judgement, distinguished from the close-confirmed one.
+ * Dashed, because it is a statement about a moment rather than a settled
+ * fact about a finished session — the two are different kinds of claim and
+ * a reader deciding on a short needs to know which they are reading. */
+.reversal.live {
+  border-style: dashed;
+}
+
+/* Evaluated and not reversing, carrying its distance. Muted and unbordered:
+ * it is context for a row that already earned its place, not a second thing
+ * competing with the signal labels. */
+.reversal.near {
+  border: 0;
+  padding: 0;
+  margin-left: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
+}

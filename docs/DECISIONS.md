@@ -164,6 +164,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 120 | `v_chart` returns one row per bar; markers are arrays | Pinned. 963 rows for 275 days; applies 119 to the last view missing it |
 | 121 | The ticker chart pages its own history through an API route | Pinned. Right edge stops at today; dragging left fetches a year |
 | 122 | Detection records trade-universe membership instead of being filtered by it | Pinned. SMCI: 192 band touches, 0 events. Statistics population unchanged |
+| 123 | The screener shows the poller's intraday reversal, marked as intraday | Pinned. Surfaces 117's live judgement; three renderings, not two |
 
 ---
 
@@ -3686,6 +3687,52 @@ Membership stops being a filter on detection and becomes a column on the detecti
 *Gate on `in_train` instead of `in_trade`.* Narrower blast radius, and it just moves the same wall: the next name someone wants to look at is the one outside the train universe.
 
 *Recompute the statistics over the wider population.* A different study, not a fix. ADR 001's two-universe split exists so what you look at is narrower than what you measure on; this ADR widens neither of those, it widens what is *recorded*.
+
+---
+
+## 123. The screener shows the poller's intraday reversal, marked as intraday
+
+**Date:** 2026-08-19. **Status:** Pinned. Surfaces ADR 117's live judgement. Does not amend ADR 108, ADR 111, or ADR 117.
+
+**Context.**
+
+Two different things carry the word "reversal", and the screener could only ever see one of them.
+
+`bear_close_above_upper` is **close-confirmed** (ADR 108, ADR 109): `open > close AND close >= bb_upper[t−1]`, resolvable only once the session ends. It reaches `events.signal_types_all` when `cscan events` runs that night.
+
+`poll.py::reversal_state` is the **live analogue** (ADR 117): price above the band but below today's open, evaluated on every quote and written to `signal_reports.state_json->'bear_reversal'`.
+
+`v_screen_live` joined `signal_reports` for `min(fired_at)` and never touched `state_json`. So during a session the poller's terminal printed `no reversal (+0.42 ATR vs open)` and the home page could say nothing at all. The badge appeared the following morning, about a session that had already closed.
+
+Measured on OKE, 2026-08-18: open 96.54, low 96.40, close 97.07, prior `bb_upper` 95.62. The intraday window is (95.62, 96.54) and **the low sits inside it** — price was in reversal territory during the session. The close-confirmed flag is correctly false, because it closed at 97.07, back above its open. One bar, two honest answers.
+
+**Decision.**
+
+`v_screen_live` projects `rev_confirmed`, `rev_above_band`, `rev_open_gap_atr` and `rev_ts` from the newest `signal_reports` row for the event.
+
+**The newest report, not the first.** `fired_at` keeps `min()` — when the signal was first detected — while the reversal takes the latest row, because it describes where price is *now* and the session's earliest quote is the least useful one. Two laterals, for exactly that reason.
+
+**Three renderings, not two.** Close-confirmed is a solid badge. Live-confirmed is the same badge dashed and prefixed `live`. A row the poller evaluated and found *not* reversing renders its distance in ATR — muted, unbordered, no badge.
+
+That third state is the whole point. ADR 117 chose to show every confluence and say how far each was from confirming rather than hide the near-misses, and a badge that appeared only on confirmation would quietly put that decision back.
+
+**Close-confirmed wins when both exist.** It is a settled fact about a finished session; the poller's is a statement about a moment, and once the close has spoken the moment no longer matters.
+
+**Consequences.**
+
+`state_json ? 'bear_reversal'` guards the lateral. ADR 117 merged 2026-08-18 11:18 PT and the last poller run wrote at 08:34 PT, so **every existing report lacks the key**. Without the guard a missing key casts to NULL and renders as "not reversing", which is a claim the data does not support — the distinction between *evaluated and false* and *never evaluated* is the one this view has to preserve, and it is why presence is decided by `rev_ts` rather than by `rev_confirmed`.
+
+The ticker page does not get this. Its chart is a history of closed sessions and its event history is close-confirmed outcomes; a live intraday judgement on that page would be the only thing on it that changed between refreshes.
+
+`v_screen` is untouched. It is the `next_open` statistics grain and has no live half.
+
+**Rejected.**
+
+*One badge, whichever reversal is available.* Simpler, and it hides which kind of claim the reader is looking at. ADR 111 makes the close-confirmed one the actionable condition; a reader deciding on a short needs to know whether the badge in front of them is settled or provisional.
+
+*Store the live judgement on `events`.* It would need a write per quote against a 13.5M-row table, and it is a property of a moment rather than of the event. `signal_reports` is already the per-quote record.
+
+*Recompute the reversal in the view from `quotes_live` and `bars.open`.* Second implementation of a rule `core`/`jobs` already owns, and it would drift the first time `is_bear_reversal` changed. Invariant 2's reasoning applies to the live half too.
 
 ---
 

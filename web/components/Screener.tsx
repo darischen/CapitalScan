@@ -205,6 +205,63 @@ function StatsCell({ stats }: { stats: CellStats | Suppressed | null }) {
   );
 }
 
+
+/**
+ * The reversal state, in whichever of its two forms this row has.
+ *
+ * **Close-confirmed wins when both exist.** `bear_close_above_upper` is a
+ * settled fact about a finished session (ADR 108/109); the poller's
+ * judgement is a statement about a moment, and once the close has spoken
+ * the moment no longer matters.
+ *
+ * The live form is styled apart from it — dashed, prefixed `live` — because
+ * the two carry different certainty and a reader deciding on a short needs
+ * to know which one they are looking at. ADR 111 makes the *confirmed* one
+ * the actionable condition.
+ *
+ * The near-miss renders too, with its distance. ADR 117 chose to show every
+ * confluence and say how far each is from confirming rather than hide the
+ * ones that had not; a badge that appeared only on confirmation would put
+ * that decision back.
+ */
+function ReversalBadge({ row }: { row: ScreenRow }) {
+  if (row.signalTypesAll.includes("bear_close_above_upper")) {
+    return (
+      <span className="reversal" title="closed above the band and below its open: ADR 111's confirming reversal">
+        ↓ reversal
+      </span>
+    );
+  }
+
+  const rev = row.reversal;
+  if (!rev) return null;
+
+  // Negative is below the open and therefore reversing.
+  const gap = rev.openGapAtr === null ? null : `${rev.openGapAtr.toFixed(2)} ATR vs open`;
+
+  if (rev.confirmed) {
+    return (
+      <span
+        className="reversal live"
+        title={`poller at ${clock(rev.ts)} ET: above the band and below today's open${gap ? ` (${gap})` : ""}`}
+      >
+        ↓ live reversal
+      </span>
+    );
+  }
+
+  // Evaluated and not reversing. Muted, and it carries the distance — this
+  // is the row a reader checks to see how close it came.
+  return (
+    <span
+      className="reversal near"
+      title={`poller at ${clock(rev.ts)} ET: not reversing${gap ? ` (${gap})` : ""}`}
+    >
+      {gap ?? "no reversal"}
+    </span>
+  );
+}
+
 export function ScreenerTable({
   rows,
   withStats,
@@ -279,11 +336,7 @@ export function ScreenerTable({
 
                   Rare enough to earn the treatment: 116 of 4,306
                   confluences. */}
-              {row.signalTypesAll.includes("bear_close_above_upper") && (
-                <span className="reversal" title="closed back inside the band: ADR 111's confirming reversal">
-                  ↓ reversal
-                </span>
-              )}
+              <ReversalBadge row={row} />
             </td>
             <td className="r num" data-label="Str">
               {row.signalStrength}

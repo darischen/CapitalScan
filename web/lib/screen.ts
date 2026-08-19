@@ -51,6 +51,17 @@ export interface ScreenRow {
   livePriceTs: string | null;
   /** When the poller detected and notified this signal. */
   firedAt: string | null;
+  /**
+   * The poller's **intraday** reversal judgement (ADR 117, surfaced by
+   * ADR 123), or `null` when no quote has been evaluated for this event.
+   *
+   * Deliberately not the same thing as `bear_close_above_upper` in
+   * `signalTypesAll`. That one is close-confirmed and only exists after
+   * that night's `cscan events`; this one says where price is sitting
+   * right now relative to today's open, and only exists while the poller
+   * runs.
+   */
+  reversal: Reversal | null;
   cellId: string | null;
   /**
    * `null` while the poller has written the row and clustering has not run.
@@ -60,6 +71,24 @@ export interface ScreenRow {
   isClusterHead: boolean | null;
   /** Populated only when `withStats` is requested. See ADR 114. */
   stats: CellStats | Suppressed | null;
+}
+
+export interface Reversal {
+  /** Price is above the band **and** below today's open. */
+  confirmed: boolean;
+  /** Price is above the band at all. A confluence with `aboveBand` false
+   * has fallen back inside since it fired. */
+  aboveBand: boolean;
+  /**
+   * Distance from today's open in ATR units. **Negative is below the open**
+   * and therefore reversing; positive is not.
+   *
+   * The number is the point: ADR 117 chose to show every confluence and say
+   * how far each is from confirming, rather than hiding the near-misses.
+   */
+  openGapAtr: number | null;
+  /** The quote this judgement was made on. */
+  ts: string;
 }
 
 export interface CellStats {
@@ -266,7 +295,8 @@ const FEED_SQL = `
          s.dd_bucket, s.sector, s.cell_id, s.side, s.is_cluster_head,
          s.bb_lower, s.bb_mid, s.bb_upper, s.band_ts::date AS band_ts,
          s.open, s.high, s.low, s.close, s.volume,
-         s.live_price, s.live_price_ts, s.fired_at
+         s.live_price, s.live_price_ts, s.fired_at,
+         s.rev_confirmed, s.rev_above_band, s.rev_open_gap_atr, s.rev_ts
     FROM v_screen_live s
     JOIN v_universe u ON u.ticker = s.ticker
    WHERE u.in_trade
@@ -316,6 +346,10 @@ interface FeedRowRaw {
   live_price: string | null;
   live_price_ts: Date | null;
   fired_at: Date | null;
+  rev_confirmed: boolean | null;
+  rev_above_band: boolean | null;
+  rev_open_gap_atr: string | null;
+  rev_ts: Date | null;
 }
 
 export async function screen(options: ScreenOptions = {}): Promise<ScreenResult> {
@@ -374,6 +408,18 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
     livePrice: num(r.live_price),
     livePriceTs: r.live_price_ts ? r.live_price_ts.toISOString() : null,
     firedAt: r.fired_at ? r.fired_at.toISOString() : null,
+    // `rev_ts` decides presence, not `rev_confirmed`. A false `confirmed`
+    // is a real judgement -- "evaluated, not reversing" -- and collapsing
+    // it into `null` would lose exactly the near-miss ADR 117 exists to
+    // show.
+    reversal: r.rev_ts
+      ? {
+          confirmed: r.rev_confirmed === true,
+          aboveBand: r.rev_above_band === true,
+          openGapAtr: num(r.rev_open_gap_atr),
+          ts: r.rev_ts.toISOString(),
+        }
+      : null,
     ddBucket: r.dd_bucket,
     cellId: r.cell_id,
     isClusterHead: r.is_cluster_head,

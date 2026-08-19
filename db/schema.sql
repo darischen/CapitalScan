@@ -356,6 +356,7 @@ CREATE TABLE public.events (
     peak_ret_3d numeric(12,6),
     peak_ret_5d numeric(12,6),
     peak_ret_10d numeric(12,6),
+    in_trade boolean DEFAULT true NOT NULL,
     CONSTRAINT events_side_check CHECK ((side = ANY (ARRAY['long'::text, 'short'::text]))),
     CONSTRAINT events_split_key_check CHECK ((split_key = ANY (ARRAY['train'::text, 'validate'::text, 'holdout'::text])))
 );
@@ -1162,7 +1163,7 @@ CREATE VIEW public.v_screen AS
      JOIN public.tickers t ON ((t.ticker = e.ticker)))
      LEFT JOIN public.cell_stats c ON (((c.signal_type = e.signal_type) AND (c.side = e.side) AND (c.dd_bucket = e.dd_bucket) AND (c.signal_strength IS NULL) AND (c.entry_kind = 'next_open'::text) AND (c.split_key = 'validate'::text) AND (c.era IS NULL) AND (c.horizon_days = 5) AND (c.target_pct = 0.03) AND (c.config_hash = current_setting('capitalscan.default_config_hash'::text, true)) AND (c.arm = 'signal'::text))))
      LEFT JOIN public.predictions p ON (((p.ticker = e.ticker) AND (p.as_of = e.signal_date))))
-  WHERE (e.is_cluster_head AND (e.entry_kind = 'next_open'::text) AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)));
+  WHERE (e.is_cluster_head AND (e.entry_kind = 'next_open'::text) AND e.in_trade AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)));
 
 
 ALTER VIEW public.v_screen OWNER TO capscan;
@@ -1203,6 +1204,10 @@ CREATE VIEW public.v_screen_live AS
     lq.price AS live_price,
     lq.ts AS live_price_ts,
     fr.fired_at,
+    rev.confirmed AS rev_confirmed,
+    rev.above_band AS rev_above_band,
+    rev.open_gap_atr AS rev_open_gap_atr,
+    rev.rev_ts,
     c.cell_id,
         CASE
             WHEN c.suppressed THEN NULL::numeric
@@ -1234,7 +1239,7 @@ CREATE VIEW public.v_screen_live AS
     p.p_touch_5,
     p.p_adverse_3,
     p.model_version
-   FROM (((((((public.events e
+   FROM ((((((((public.events e
      LEFT JOIN LATERAL ( SELECT i2.bb_lower,
             i2.bb_mid,
             i2.bb_upper,
@@ -1253,10 +1258,18 @@ CREATE VIEW public.v_screen_live AS
      LEFT JOIN LATERAL ( SELECT min(r.fired_at) AS fired_at
            FROM public.signal_reports r
           WHERE (r.event_id = e.id)) fr ON (true))
+     LEFT JOIN LATERAL ( SELECT (((r2.state_json -> 'bear_reversal'::text) ->> 'confirmed'::text))::boolean AS confirmed,
+            (((r2.state_json -> 'bear_reversal'::text) ->> 'above_band'::text))::boolean AS above_band,
+            (((r2.state_json -> 'bear_reversal'::text) ->> 'open_gap_atr'::text))::numeric AS open_gap_atr,
+            r2.fired_at AS rev_ts
+           FROM public.signal_reports r2
+          WHERE ((r2.event_id = e.id) AND (r2.state_json ? 'bear_reversal'::text))
+          ORDER BY r2.fired_at DESC
+         LIMIT 1) rev ON (true))
      JOIN public.tickers t ON ((t.ticker = e.ticker)))
      LEFT JOIN public.cell_stats c ON (((c.signal_type = e.signal_type) AND (c.side = e.side) AND (c.dd_bucket = e.dd_bucket) AND (c.signal_strength IS NULL) AND (c.entry_kind = 'next_open'::text) AND (c.split_key = 'validate'::text) AND (c.era IS NULL) AND (c.horizon_days = 5) AND (c.target_pct = 0.03) AND (c.config_hash = current_setting('capitalscan.default_config_hash'::text, true)) AND (c.arm = 'signal'::text))))
      LEFT JOIN public.predictions p ON (((p.ticker = e.ticker) AND (p.as_of = e.signal_date))))
-  WHERE ((e.entry_kind = 'touch'::text) AND (e.is_cluster_head IS NOT FALSE) AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)));
+  WHERE ((e.entry_kind = 'touch'::text) AND (e.is_cluster_head IS NOT FALSE) AND e.in_trade AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)));
 
 
 ALTER VIEW public.v_screen_live OWNER TO capscan;
@@ -1655,6 +1668,13 @@ CREATE INDEX benchmarks_lookup ON public.benchmarks USING btree (run_id, arm, sp
 --
 
 CREATE INDEX events_cluster ON public.events USING btree (cluster_id, seq_in_cluster);
+
+
+--
+-- Name: events_in_trade; Type: INDEX; Schema: public; Owner: capscan
+--
+
+CREATE INDEX events_in_trade ON public.events USING btree (config_hash, split_key, signal_type) WHERE in_trade;
 
 
 --

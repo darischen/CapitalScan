@@ -127,6 +127,7 @@ function row(over: Partial<ScreenRow> = {}): ScreenRow {
     firedAt: "2026-08-18T13:35:12.000Z",
     cellId: "cell-1",
     isClusterHead: null,
+    reversal: null,
     stats: null,
     ...over,
   } as ScreenRow;
@@ -235,6 +236,76 @@ describe("gate 6: the empty state carries a last-fire reference", () => {
   it("says so when there is no fire to point at", () => {
     const html = renderToStaticMarkup(<EmptyState last={null} />);
     expect(html).toContain("No events recorded for this config.");
+  });
+});
+
+/* --- reversals (ADR 117, ADR 123) --------------------------------------- */
+
+describe("the two reversals are told apart", () => {
+  const render = (over: Partial<ScreenRow>) =>
+    renderToStaticMarkup(<ScreenerTable rows={[row(over)]} withStats={false} />);
+
+  it("shows the close-confirmed reversal as a solid badge", () => {
+    const html = render({
+      signalTypesAll: ["bear_close_above_upper", "confluence_high", "bb_upper_touch"],
+    });
+    expect(html).toContain("↓ reversal");
+    expect(html).not.toContain("live reversal");
+  });
+
+  it("shows the poller's live reversal, marked as live", () => {
+    const html = render({
+      reversal: {
+        confirmed: true,
+        aboveBand: true,
+        openGapAtr: -0.31,
+        ts: "2026-08-19T14:05:00.000Z",
+      },
+    });
+    expect(html).toContain("↓ live reversal");
+    expect(html).toContain("reversal live");
+  });
+
+  /**
+   * Close-confirmed wins. It is a settled fact about a finished session;
+   * the poller's is a statement about a moment, and once the close has
+   * spoken the moment no longer matters.
+   */
+  it("prefers the close-confirmed one when both exist", () => {
+    const html = render({
+      signalTypesAll: ["bear_close_above_upper", "confluence_high"],
+      reversal: {
+        confirmed: true,
+        aboveBand: true,
+        openGapAtr: -0.31,
+        ts: "2026-08-19T14:05:00.000Z",
+      },
+    });
+    expect(html).toContain("↓ reversal");
+    expect(html).not.toContain("live reversal");
+  });
+
+  /**
+   * The near-miss is the reason ADR 117 chose option B: show every
+   * confluence and say how far each is from confirming. A badge that
+   * appeared only on confirmation would put that decision back.
+   */
+  it("renders a near miss with its distance rather than nothing", () => {
+    const html = render({
+      reversal: {
+        confirmed: false,
+        aboveBand: true,
+        openGapAtr: 0.42,
+        ts: "2026-08-19T14:05:00.000Z",
+      },
+    });
+    expect(html).toContain("0.42 ATR vs open");
+    expect(html).toContain("reversal near");
+  });
+
+  it("shows nothing when the poller has not evaluated the row", () => {
+    const html = render({ reversal: null });
+    expect(html).not.toContain("reversal");
   });
 });
 

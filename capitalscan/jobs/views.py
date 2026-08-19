@@ -631,6 +631,32 @@ CREATE VIEW public.v_screen AS
 #
 # All four are LATERAL-with-LIMIT or an equality join on a primary key, and
 # the `indicators_daily_latest` index (ADR 116) serves the band lookup.
+# **ADR 123 adds the poller's intraday reversal judgement.**
+#
+# Two different things carry the word "reversal" and they answer different
+# questions at different times:
+#
+# - `bear_close_above_upper` is close-confirmed (ADR 108/109). It lands in
+#   `signal_types_all` and only exists after that night's `cscan events`.
+# - `poll.py::reversal_state` is the live analogue (ADR 117): price above
+#   the band but below today's open. It exists only while the poller runs
+#   and only in `signal_reports.state_json`.
+#
+# The screener joined `signal_reports` for `min(fired_at)` and never read
+# `state_json`, so during a session the poller's terminal knew a confluence
+# was sitting below its open and the home page could not say so. The badge
+# could only appear the next morning.
+#
+# **The newest report, not the first.** `fired_at` deliberately takes
+# `min()` -- when the signal was first detected -- while the reversal takes
+# the latest row, because it is a statement about where price is *now* and
+# the earliest quote of the session is the least useful one. Two laterals
+# rather than one for exactly that reason.
+#
+# `state_json ? 'bear_reversal'` skips rows written before ADR 117 merged
+# (2026-08-18 11:18 PT); every report older than that lacks the key, and a
+# missing key would otherwise cast to NULL and read as "not a reversal"
+# rather than as "not recorded".
 V_SCREEN_LIVE_DDL = f"""
 CREATE VIEW public.v_screen_live AS
  SELECT e.ticker,
@@ -664,6 +690,10 @@ CREATE VIEW public.v_screen_live AS
     lq.price AS live_price,
     lq.ts AS live_price_ts,
     fr.fired_at,
+    rev.confirmed AS rev_confirmed,
+    rev.above_band AS rev_above_band,
+    rev.open_gap_atr AS rev_open_gap_atr,
+    rev.rev_ts,
 {_STATS_PROJECTION}
    FROM public.events e
      LEFT JOIN LATERAL ( SELECT i2.bb_lower, i2.bb_mid, i2.bb_upper, i2.ts
@@ -682,6 +712,16 @@ CREATE VIEW public.v_screen_live AS
      LEFT JOIN LATERAL ( SELECT min(r.fired_at) AS fired_at
            FROM public.signal_reports r
           WHERE (r.event_id = e.id)) fr ON (true)
+     LEFT JOIN LATERAL ( SELECT
+              (r2.state_json -> 'bear_reversal' ->> 'confirmed')::boolean AS confirmed,
+              (r2.state_json -> 'bear_reversal' ->> 'above_band')::boolean AS above_band,
+              (r2.state_json -> 'bear_reversal' ->> 'open_gap_atr')::numeric AS open_gap_atr,
+              r2.fired_at AS rev_ts
+           FROM public.signal_reports r2
+          WHERE ((r2.event_id = e.id)
+              AND (r2.state_json ? 'bear_reversal'))
+          ORDER BY r2.fired_at DESC
+         LIMIT 1) rev ON (true)
 {_CELL_JOIN}
   WHERE ((e.entry_kind = 'touch'::text) AND (e.is_cluster_head IS NOT FALSE)
      AND e.in_trade
