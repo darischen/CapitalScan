@@ -53,9 +53,30 @@ rather than work around, so nothing was built until it was decided.
 MCP server to the handlers. ADR 070 and ADR 076 stand as written; the session plan was
 what needed correcting.
 
-**Session 17 is complete, 2026-08-19.** One migration, `c4a7e91b53d8`, rebuilding
-`v_chart` (ADR 120); `db/schema.sql` regenerated. One dependency,
-`lightweight-charts` 5.2. `/research` and `/chat` remain Session 18's.
+**Session 17 is complete, 2026-08-19**, and the night after it produced
+five more ADRs from *using* the pages. **Four migrations**, not one:
+`c4a7e91b53d8` (v_chart, ADR 120), `f2d16b47c093` (events.in_trade,
+ADR 122), `a7c519d3e8b4` (live reversal, ADR 123), `c8e2f60a4b17` (cluster
+filter out of the view, ADR 124). `db/schema.sql` regenerated. One
+dependency, `lightweight-charts` 5.2. `/research` and `/chat` remain
+Session 18's.
+
+**A full `cscan events` rebuild ran under ADR 122**: 178 minutes,
+**1,312,935 rows**, and every measured number unchanged — `cell_stats`
+digest, cell count and `v_screen` all identical to the pre-change baseline.
+That comparison is what made the change safe to keep, and it is the only
+thing that would have caught a missed consumer.
+
+**ADR 125 came from CI, not from a developer machine.** Migrations imported
+DDL constants from `jobs/views.py`; ADR 122 changed a view and four earlier
+migrations began emitting SQL for a column that does not exist at their
+point in the chain. Every from-scratch replay failed. A developer applies
+only the new migrations, so the path is never taken locally.
+
+**Before touching a migration, replay the chain.** Create a scratch
+database, `alembic upgrade head`, and compare an md5 over `pg_get_viewdef`
+for every view against the live database. Nothing about reading a migration
+establishes that it reproduces the schema.
 
 What unblocked it, kept because the correction is the useful part:
 

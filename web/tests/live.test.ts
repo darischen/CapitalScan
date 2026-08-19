@@ -113,14 +113,21 @@ describe.skipIf(!connected)("against the live database", () => {
   });
 
   it("the default history is confluence only, with no reversal requirement", async () => {
-    const { events } = await import("@/lib/ticker");
-    const [confluence, everything] = await Promise.all([
+    const { countEvents, events } = await import("@/lib/ticker");
+    // **Counts, not list lengths.** Both lists are capped at
+    // `MAX_EVENT_LIMIT`, and after ADR 122's rebuild TSM has 377
+    // confluences against 2,292 total — so comparing two 200-element lists
+    // asserted `200 < 200` and failed. The cap is the thing under test
+    // everywhere else; here it hides the property.
+    const [nConfluence, nAll, confluence] = await Promise.all([
+      countEvents("TSM", false),
+      countEvents("TSM", true),
       events("TSM", { limit: 200 }),
-      events("TSM", { limit: 200, all: true }),
     ]);
 
+    expect(nConfluence).toBeGreaterThan(0);
+    expect(nConfluence).toBeLessThan(nAll);
     expect(confluence.length).toBeGreaterThan(0);
-    expect(confluence.length).toBeLessThan(everything.length);
     // Membership of `signal_types_all`, not of `signal_type` — ADR 057
     // stores only the most specific type there, so a bar that fired both
     // `bear_close_above_upper` and `confluence_high` keeps the reversal and

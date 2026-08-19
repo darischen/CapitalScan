@@ -2706,6 +2706,223 @@ Two things worth carrying over anyway.
 
 ---
 
+## Overnight 2026-08-19 — what using the pages found
+
+Session 17 closed on its gate the night before. Everything here came from
+*operating* the result rather than building more of it, which is the honest
+explanation for five ADRs and seven defects in one night.
+
+### The rebuild, and the verification that mattered
+
+`cscan events` re-detected 2010-01-01 → 2026-08-18 under ADR 122's change.
+
+| | |
+|---|---|
+| Duration | **178 min** |
+| Rows written | **1,312,935** (8.4x the gated 157,168) |
+| Bars in window | 2,386,193 across 625 tickers |
+| Null-indicator bars skipped | 2,824 |
+
+**Nothing measured moved**, which was the entire risk:
+
+| Check | Before | After |
+|---|---|---|
+| `cell_stats` digest | `96af3a8dd09438c4c62cc162fdc0fdff` | identical |
+| `cell_stats` live cells | 448 | 448 |
+| `v_screen` | 40,819 | 40,819 |
+
+1,154,851 out-of-trade events now exist and no statistic changed.
+
+**It holds no locks while it works.** Measured mid-run: the connection was
+`idle`, last query `ROLLBACK`, 8,658 seconds earlier. All the time is
+Python on one core. The all-or-nothing failure mode is the real hazard —
+every hit is held in memory until a single final upsert, so an interrupt
+leaves zero rows. `scripts/rebuild_events_chunked.py` runs one year per
+call for next time.
+
+### ADR 122 — 481 of 622 tickers had no events at all
+
+Building `/ticker/[sym]` made a ten-year-old behaviour visible. SMCI's
+event history stops at **2010-03-24** under a chart showing price clearing
+its upper band repeatedly through 2026.
+
+| SMCI since 2024-01-01 | |
+|---|---|
+| Bars | 659 |
+| Lower-band touches | 72 |
+| Upper-band touches | 120 |
+| Events stored | **0** |
+
+It has never been in the trade universe: 0 of 66 quarterly snapshots.
+
+**The 2010 block is an artifact of a fail-open default.** The earliest
+`universe` snapshot is 2010-03-31 and `core.universe.in_trade` returns
+`True` when no evaluation exists on or before the bar — the documented v1
+simplification. Every bar before that date passed a filter with nothing to
+evaluate. **187 tickers** have a dense block of 2010 Q1 events and nothing
+after, and **17,919 events — 11.4% of the live config's `touch` rows across
+512 tickers** — entered the training population through a vacuous check.
+
+**That 11.4% is recorded and not acted on.** Closing the branch drops them
+and moves every measured cell. The user's decision.
+
+### The guarantee moved from one place to eighteen
+
+Before ADR 122, `events` could not contain an out-of-trade row, so no
+consumer needed a predicate and none had one. After it, **eighteen reads**
+widen by roughly 4.4x without one — and nothing about the output looks
+wrong. `cell_stats` returns more events per cell, `n_eff` rises, and every
+number stays internally consistent.
+
+`jobs/compute.py::scan` was the trap: its docstring named the skip as the
+reason it accepted a `universe` argument without filtering on it, so
+`cscan scan` would have started listing untradeable names silently.
+
+`test_events_in_trade_filter.py` **immediately caught a false pass** in
+itself: the file-level sweep matched `jobs/views.py` on `v_ticker_state`'s
+projected `u.in_trade` column rather than on any predicate. The four
+serving views are now asserted one at a time, including the two that must
+*not* filter — adding it to `v_chart` is the obvious thing for someone to
+do later and would undo the whole ADR.
+
+### ADR 125 — CI caught what a developer machine cannot
+
+Migrations imported DDL constants from `jobs/views.py`. The constant is the
+*current* definition; a migration is a statement about one point in
+history. ADR 122 added `events.in_trade`, and four migrations that run
+before it began emitting `AND e.in_trade` against a table without the
+column. Every from-scratch replay died:
+
+```
+ProgrammingError: column e.in_trade does not exist
+```
+
+**Invisible locally by construction.** A developer applies only the new
+migrations, so the broken path is never taken. Only a replay from empty
+hits it — CI, and any new deployment. It ran green locally and failed on
+the first CI run.
+
+Fixed in all seven, not the four that broke: `a3c8e15d40b7`,
+`c4a7e91b53d8` and `d7f4b91c26ea` were the same defect waiting on the next
+edit to `v_ticker_state`, `v_chart` or `v_positions`.
+
+**Verified by replay, not by reading.** Scratch database, `alembic upgrade
+head`, md5 over `pg_get_viewdef` for every view against production:
+`fac6d6b13ea438277600a88f8d6dfc0e` both ways. Then `downgrade -4` and back
+up, same digest. That comparison is the only check that proves the chain
+reproduces the live schema.
+
+### ADR 124 — 19 fires became 4 overnight
+
+`v_screen_live` filtered `is_cluster_head IS NOT FALSE`: right intraday,
+wrong the next morning. The poller cannot cluster (ADR 054's gap window
+needs the whole session) so its rows carry NULL and all pass; `cscan
+events` clusters overnight and repeats become `false`.
+
+Measured Thursday 2026-08-06: **19 confluence fires, 4 heads, 15 repeats.**
+A reader watching live saw 19 and came back to 4.
+
+ADR 054 is untouched — clustering is a measurement device and `v_screen`,
+`cell_stats` and the benchmarks keep it. A feed is not a sample.
+
+### A poller CSV and the screener are not comparable across a config change
+
+Looks like data loss and is not. The 2026-08-05 CSV records **30
+confluences**; the live config finds **13** on the same bars.
+
+ADR 110's `require_fast_agreement` refuses to call a bar a confluence when
+raw and smoothed %K differ by more than `fast_agreement_tol` = 5. Nineteen
+of the thirty were that wide:
+
+| Ticker | %K fast | %K slow | Gap |
+|---|---|---|---|
+| NUE | 99.1 | 81.8 | 17.3 |
+| CSCO | 98.9 | 83.3 | 15.6 |
+| HLT | 2.9 | 18.3 | 15.4 |
+
+Both records are honest. The CSV is a decision made at a moment under a
+rule; the page recomputes under the current one. This is why `config_hash`
+is part of the natural key rather than metadata.
+
+### The first poll of the day is a backlog, not a burst
+
+Asked whether signals cluster at the open. They do not; the *first tick*
+does. 2026-08-13:
+
+```
+09:30:43   63 fires    ← first tick
+09:36:18    9
+09:41:21    1
+…singles for the rest of the session
+```
+
+The first poll evaluates every ticker and catches everyone already outside
+their band. The poller then debounces, so later ticks only catch new
+crossings.
+
+### Seven defects, each found by using a page
+
+**Every chart date was one session early.** `v_chart.ts` is a `timestamptz`
+at UTC midnight; `pg` builds a `Date` whose *local* getters read the
+previous day. The event history beside it read a real `date` and was
+correct — two panels one day apart, no error anywhere. Fixed by casting
+`::date` in the queries, the only place the two cases stay distinguishable.
+
+**`?range=__proto__` reached `LIMIT $2`.** `in` walks the prototype chain.
+
+**The empty state named the wrong date.** `lastFire()` read the trailing
+view, so the one line whose job is to say when something last happened
+would have been the one line that was wrong.
+
+**`next start` could not find the database.** `.env.local` is at the repo
+root and Next only looks in its own directory.
+
+**A 500 on every `/` render**, from passing a function as a prop to a
+client component. `tsc` was happy — the prop type is a function and the
+value is a function. `next build` was happy — it compiles, and the fault
+only exists once a render serializes. The component tests use
+`renderToStaticMarkup`, which never serializes.
+
+**The guard for it took three attempts, and that is the finding.** The
+first matched `<Name[^>]*`, and `[^>]*` stops at the `>` inside `=>`. The
+second built the regex in a template literal where `\b` is a backspace
+character. **Both passed against the exact code they were written to
+catch.** The third is verified by re-injecting the bad line, watching it
+fail, and restoring it. Two green suites in a row had already lied.
+
+**Two accidental `cscan events` runs** fired from backticks in a
+`git commit -m` string being command-substituted by bash. Harmless — 835
+rows over a five-day window, upserted to the same values by the rebuild —
+and it produced the first live proof of ADR 122: 218 out-of-trade events on
+a single date. Every commit message since uses a heredoc.
+
+### BUG, logged and deliberately not fixed: poller timestamps are 4 hours early
+
+`poll.py::_now_et()` returns a **naive** datetime holding ET wall-clock,
+written to `signal_reports.fired_at` and `quotes_live.ts` — both
+`timestamptz` — on a database running `Etc/UTC`.
+
+One moment, two tables:
+
+```
+runs.started_at          2026-08-13 13:30:41+00   (SQL wrote it)
+signal_reports.fired_at  2026-08-13 09:30:43+00   (the poller did)
+```
+
+Two seconds apart in reality, four hours apart in storage.
+
+The screener's "Fired" column renders `clock()` in ET over an already-ET
+value, so it shows 05:30 for a 09:30 fire. The CSV is right only by
+accident: `wait_and_poll.ps1` subtracts 3 hours, which happens to undo
+ET→PT, so fixing the poller without fixing the script makes the CSV wrong.
+
+Not fixed because `_now_et` also feeds session timing and a naive/aware
+mismatch throws, with the poller starting at 06:30. Needs an ADR: it
+changes what a stored timestamp means, and there are ~800 `quotes_live`
+rows and a few hundred `signal_reports` to decide about.
+
+---
+
 ## Session 17 — screener and ticker page, 2026-08-19
 
 Both routes render against the live database. Gate items 1 through 12, with
