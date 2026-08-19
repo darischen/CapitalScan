@@ -1,5 +1,5 @@
 import DatePicker from "./DatePicker";
-import { SIGNAL_LABELS, clock, fmt, pct, sessionsBetween, vol } from "@/lib/format";
+import { SIGNAL_LABELS, clock, fmt, pct, screenHref, sessionsBetween, vol } from "@/lib/format";
 import type { CellStats, Meta, ScreenRow, Suppressed } from "@/lib/screen";
 
 /**
@@ -36,28 +36,6 @@ function dayClass(row: ScreenRow): string {
 
 
 
-
-/**
- * The URL for another date, keeping whichever toggles are on.
- *
- * Rebuilt rather than mutated: a link that dropped `?all=1` would silently
- * change the filter as well as the date, and the reader would read the
- * difference in row count as a change in the market.
- */
-function dateHref(
-  date: string | null,
-  { withStats, confluenceOnly }: { withStats: boolean; confluenceOnly: boolean },
-): string {
-  const q = new URLSearchParams();
-  // `null` means "the newest date", which is the *absence* of the
-  // parameter. Setting it empty would send `?date=` and the route would
-  // hand `""` to the query, where it is neither a date nor missing.
-  if (date) q.set("date", date);
-  if (withStats) q.set("stats", "1");
-  if (!confluenceOnly) q.set("all", "1");
-  const query = q.toString();
-  return query ? `/?${query}` : "/";
-}
 
 export function StatusStrip({
   meta,
@@ -96,7 +74,7 @@ export function StatusStrip({
       <span className="datenav">
         {prevDate ? (
           <a
-            href={dateHref(prevDate, { withStats, confluenceOnly })}
+            href={screenHref(prevDate, { withStats, confluenceOnly })}
             title={`previous date with rows: ${prevDate}`}
             aria-label={`Previous date with signals, ${prevDate}`}
           >
@@ -110,15 +88,15 @@ export function StatusStrip({
         {signalDate ? (
           <DatePicker
             date={signalDate}
+            withStats={withStats}
             confluenceOnly={confluenceOnly}
-            href={(d) => dateHref(d, { withStats, confluenceOnly })}
           />
         ) : (
           <strong className="num">signals —</strong>
         )}
         {nextDate ? (
           <a
-            href={dateHref(nextDate, { withStats, confluenceOnly })}
+            href={screenHref(nextDate, { withStats, confluenceOnly })}
             title={`next date with rows: ${nextDate}`}
             aria-label={`Next date with signals, ${nextDate}`}
           >
@@ -132,7 +110,7 @@ export function StatusStrip({
         {/* Only when you are not on it. On the newest date it would be a
             link to the page you are already reading. */}
         {nextDate && (
-          <a className="latest" href={dateHref(null, { withStats, confluenceOnly })}>
+          <a className="latest" href={screenHref(null, { withStats, confluenceOnly })}>
             latest
           </a>
         )}

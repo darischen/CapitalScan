@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { screenHref } from "@/lib/format";
+
 /**
  * The screener's date, as a button that opens a month calendar.
  *
@@ -46,17 +48,26 @@ const MONTH_NAME = (d: Date) =>
 
 export default function DatePicker({
   date,
+  withStats,
   confluenceOnly,
-  href,
 }: {
   /** The date currently on screen. */
   date: string;
-  /** Passed to the API so the calendar's counts match the table's filters —
-   * a day it calls populated must be populated under what the reader is
-   * actually looking at. */
+  /**
+   * The toggles, as booleans rather than as a URL-building callback.
+   *
+   * A function cannot be a prop on a client component — React serializes
+   * props into the RSC payload and there is no wire form for a closure.
+   * Passing one threw `Functions cannot be passed directly to Client
+   * Components` at request time, which `next build` compiles happily
+   * because it is a serialization fault and not a type error.
+   *
+   * `confluenceOnly` also goes to the API, so the calendar's counts match
+   * the table's filters — a day it calls populated must be populated under
+   * what the reader is actually looking at.
+   */
+  withStats: boolean;
   confluenceOnly: boolean;
-  /** Builds the URL for a chosen date, keeping the other toggles. */
-  href: (date: string) => string;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -167,7 +178,7 @@ export default function DatePicker({
                 );
               }
               return (
-                <a className={cls} key={i} href={href(key)} title={`${n} row${n === 1 ? "" : "s"}`}>
+                <a className={cls} key={i} href={screenHref(key, { withStats, confluenceOnly })} title={`${n} row${n === 1 ? "" : "s"}`}>
                   {d.getUTCDate()}
                   {/* The count as a bar rather than a number: at this size a
                       two-digit figure competes with the date it belongs to,
