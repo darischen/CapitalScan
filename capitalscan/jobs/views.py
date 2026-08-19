@@ -657,6 +657,22 @@ CREATE VIEW public.v_screen AS
 # (2026-08-18 11:18 PT); every report older than that lacks the key, and a
 # missing key would otherwise cast to NULL and read as "not a reversal"
 # rather than as "not recorded".
+# **ADR 124 moves the cluster-head filter out of this view.**
+#
+# It read `is_cluster_head IS NOT FALSE`, which was correct intraday and
+# wrong the next morning. The poller cannot cluster (ADR 054's gap window
+# needs the whole session) so its rows carry NULL and all of them passed;
+# overnight `cscan events` clustered them and the repeats became `false`,
+# so **rows visibly disappeared from a date between the session and the
+# next morning.**
+#
+# Measured on Thursday 2026-08-06: 19 confluence fires, 4 heads and 15
+# repeats. A reader watching live saw 19 and came back to 4, with nothing
+# on the page accounting for the other 15.
+#
+# `is_cluster_head` is still projected, so the caller decides. The screener
+# defaults to heads and offers every fire, which is the same shape the
+# ticker page's history already uses.
 V_SCREEN_LIVE_DDL = f"""
 CREATE VIEW public.v_screen_live AS
  SELECT e.ticker,
@@ -723,7 +739,7 @@ CREATE VIEW public.v_screen_live AS
           ORDER BY r2.fired_at DESC
          LIMIT 1) rev ON (true)
 {_CELL_JOIN}
-  WHERE ((e.entry_kind = 'touch'::text) AND (e.is_cluster_head IS NOT FALSE)
+  WHERE ((e.entry_kind = 'touch'::text)
      AND e.in_trade
      AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)))
 """

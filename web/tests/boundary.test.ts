@@ -136,15 +136,16 @@ describe("the client boundary", () => {
    * external, which turns a stray import into a build error, and this is the
    * cheaper check that says which file did it.
    */
-  it("the client components are exactly the three that need a browser", () => {
+  it("the client components are exactly the four that need a browser", () => {
     const clients = sources()
       .filter((p) => /^\s*["']use client["']/.test(read(p)))
       .map((p) => relative(ROOT, p).split(sep).join("/"))
       .sort();
-    // Each earns it: a canvas chart, an IntersectionObserver, and a
-    // keyboard-driven menu. The list is asserted whole rather than as a
-    // count so that adding a fourth is a decision someone makes here.
+    // Each earns it: a popover calendar, an IntersectionObserver, a canvas
+    // chart, and a keyboard-driven menu. The list is asserted whole rather
+    // than as a count, so adding one is a decision someone makes here.
     expect(clients).toEqual([
+      "components/DatePicker.tsx",
       "components/EventRows.tsx",
       "components/TickerChart.tsx",
       "components/TickerSearch.tsx",

@@ -1209,3 +1209,134 @@ table.screen td.rail span[data-side="short"] {
   letter-spacing: 0;
   color: var(--muted);
 }
+
+/* --- date picker -------------------------------------------------------- */
+
+/* The date is the button. It sits where the label already was, so the strip
+ * does not grow a control — the thing you were reading becomes the thing
+ * you click. */
+
+.picker {
+  position: relative;
+}
+
+.picker-btn {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dotted var(--rule);
+  color: var(--text);
+  font-weight: 500;
+  font-size: 12px;
+  padding: 0 0 1px;
+  cursor: pointer;
+}
+
+.picker-btn:hover {
+  border-bottom-color: var(--long);
+}
+
+.cal {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 232px;
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.cal-head strong {
+  font-family: var(--display);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.cal-head button {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 6px;
+}
+
+.cal-head button:hover {
+  color: var(--text);
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+}
+
+.cal-dow {
+  text-align: center;
+  font-size: 9px;
+  color: var(--rule);
+  text-transform: uppercase;
+  padding-bottom: 2px;
+}
+
+.cal-day,
+.cal-pad {
+  position: relative;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  border-radius: 2px;
+}
+
+/* Days with nothing are rendered and dimmed, never removed: the month keeps
+ * its shape, and an empty week reads as an empty week rather than as a
+ * calendar that failed to draw. */
+.cal-day.none {
+  color: var(--rule);
+  cursor: default;
+}
+
+.cal-day.has {
+  color: var(--text);
+  background: var(--ground);
+}
+
+.cal-day.has:hover {
+  background: var(--panel-hover);
+}
+
+.cal-day.on {
+  outline: 1px solid var(--long);
+}
+
+/* The count, as a bar along the bottom of the cell. At this size a
+ * two-digit number competes with the date it belongs to, and the shape of
+ * the month is what the eye is scanning for. */
+.cal-day i {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  height: 2px;
+  background: var(--long);
+  border-radius: 1px;
+  opacity: 0.75;
+}
+
+.cal-foot {
+  margin-top: 6px;
+  font-size: 10px;
+  text-align: center;
+}

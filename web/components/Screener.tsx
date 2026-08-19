@@ -1,3 +1,4 @@
+import DatePicker from "./DatePicker";
 import { SIGNAL_LABELS, clock, fmt, pct, sessionsBetween, vol } from "@/lib/format";
 import type { CellStats, Meta, ScreenRow, Suppressed } from "@/lib/screen";
 
@@ -106,9 +107,15 @@ export function StatusStrip({
             ←
           </span>
         )}
-        <strong className="num" title="signal date shown">
-          signals {signalDate ?? "—"}
-        </strong>
+        {signalDate ? (
+          <DatePicker
+            date={signalDate}
+            confluenceOnly={confluenceOnly}
+            href={(d) => dateHref(d, { withStats, confluenceOnly })}
+          />
+        ) : (
+          <strong className="num">signals —</strong>
+        )}
         {nextDate ? (
           <a
             href={dateHref(nextDate, { withStats, confluenceOnly })}
