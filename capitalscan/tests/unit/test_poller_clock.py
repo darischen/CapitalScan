@@ -74,24 +74,20 @@ def test_now_et_agrees_with_the_wall_clock() -> None:
     assert delta < 5, f"_now_et is {delta}s from the real ET clock"
 
 
-def test_the_csv_script_still_compensates_for_uncorrected_rows() -> None:
-    """The other half of the coupling, and it is **not** done yet.
+def test_the_csv_script_does_one_conversion() -> None:
+    """The other half of the coupling, and it landed with the backfill.
 
-    `_now_et` is aware now, so rows written from here on are true instants.
-    Every row written *before* the fix is still ET wearing a UTC label, and
-    the CSV script's three-step chain is what makes those read correctly.
+    `_now_et` is aware and `scripts/backfill_poller_timestamps.py` shifted
+    the 1,752 rows written before it, so `fired_at` is a true instant
+    everywhere. One `AT TIME ZONE 'America/Los_Angeles'` is correct.
 
-    Measured 2026-08-19 on a real row: stored `09:30:39+00`, the chain
-    gives `06:30` PT (the actual 9:30 ET open), a single
-    `AT TIME ZONE 'America/Los_Angeles'` gives `02:30` PT.
+    It was a three-step chain compensating for naive ET stored in a
+    `timestamptz`. Measured before the backfill: stored `09:30:39+00`, the
+    chain gave `06:30` PT (right), a single conversion gave `02:30` PT.
+    After it: stored `13:30:39+00`, single conversion gives `06:30` PT.
 
-    **The chain comes out in the same step as
-    `scripts/backfill_poller_timestamps.py`, not before.** Removing it
-    early shifts the operator's CSV four hours, which is the failure this
-    test exists to prevent -- it was briefly committed that way.
-
-    When the backfill runs, invert this test: assert exactly one
-    conversion.
+    **The two were coupled and were briefly committed apart**, which is
+    what this test now pins.
     """
     text = SCRIPT.read_text(encoding="utf-8-sig")
     query = next(
@@ -101,10 +97,10 @@ def test_the_csv_script_still_compensates_for_uncorrected_rows() -> None:
     assert query is not None, "no $query line found in wait_and_poll.ps1"
 
     conversions = re.findall(r"AT TIME ZONE '([^']+)'", query)
-    assert conversions == ["UTC", "America/New_York", "America/Los_Angeles"], (
-        f"the CSV query does {conversions} on fired_at. While uncorrected "
-        "rows remain, the three-step chain is what makes them read right. "
-        "Change it together with the backfill, never before."
+    assert conversions == ["America/Los_Angeles"], (
+        f"the CSV query does {conversions} on fired_at. `fired_at` is a "
+        "true instant since ADR 127's backfill, so exactly one conversion "
+        "is right; a compensating chain would now shift the CSV four hours."
     )
 
 

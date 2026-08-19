@@ -8,31 +8,19 @@ Ordered by when it blocks something, not by size.
 
 ---
 
-## 1. Blocked on the poller quiet window — do at 13:00 PT, 2026-08-19
+## 1. ~~Poller timestamps four hours early~~ — DONE 2026-08-19 11:20 PT
 
-**The poller's stored timestamps are four hours early** (ADR 127). The
-clock is fixed, so rows written from the next poller restart are true
-instants. Every row before that is ET wall-clock wearing a `+00` label.
+All four coupled steps landed together, which is the only way they could:
 
-Four steps, and they are coupled — **do all four or none**:
+1. Poller stopped, its `runs` row closed as `interrupted`.
+2. `backfill_poller_timestamps.py --apply` shifted **1,752 rows** — 876
+   `signal_reports`, 876 `quotes_live`.
+3. The three-step chain came out of `wait_and_poll.ps1`.
+4. `test_poller_clock.py` inverted to assert one conversion.
 
-1. Stop the poller.
-2. `uv run python scripts/backfill_poller_timestamps.py --before '<the moment the poller last started on the old code>' --apply`
-   Dry run today: **876 `signal_reports` rows, 876 `quotes_live` rows.**
-3. Drop the three-step conversion in `scripts/wait_and_poll.ps1` down to a
-   single `AT TIME ZONE 'America/Los_Angeles'`.
-4. Invert `test_poller_clock.py::test_the_csv_script_still_compensates_for_uncorrected_rows`
-   to assert one conversion instead of three.
-
-**Why coupled.** The script's chain compensates for the bad data, which is
-why its CSV reads correctly while the screener does not. Fixing either side
-alone moves the CSV four hours. Measured on a real row: stored
-`09:30:39+00`, three-step gives `06:30` PT (right), single gives `02:30` PT.
-
-**The cutoff must be a timestamp you can name.** The script shifts rows at
-or before it and cannot tell a corrected row from an uncorrected one, so
-running it twice with the same cutoff double-shifts. Use the poller's own
-`runs.started_at`.
+Verified from both consumers afterwards: the CSV query reads `06:30:40 PT`
+and the screener's Fired column reads `09:41` ET for the same session. The
+first fire of the day is the 09:30 open, which is what it always was.
 
 ---
 
