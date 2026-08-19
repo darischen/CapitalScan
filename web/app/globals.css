@@ -1,0 +1,352 @@
+/* Design tokens. DESIGN §11.7 pins the direction; these are the values.
+ *
+ * Dense instrument panel, not a marketing page. Small type, tight rows, no
+ * hero. Monospace for every number so columns align and a digit change is
+ * visible. Colour carries meaning and nothing else.
+ *
+ * **Not near-black plus one bright accent.** That is one of the three looks
+ * that read as generated rather than chosen, and §11.7's direction sits
+ * close enough to it to need a deliberate step away. The ground is a cool
+ * graphite rather than #000, and the accents are spent on *state* rather
+ * than on chrome: nothing here is coloured because it is a button.
+ */
+
+:root {
+  /* Ground. Slightly blue rather than neutral, so the warm short accent
+   * reads as warm rather than as "less grey". */
+  --ground: #14171a;
+  --panel: #1b1f24;
+  --panel-hover: #21262d;
+  --rule: #2a3038;
+
+  --text: #d6dbe1;
+  --muted: #7a848f;
+
+  /* Direction, cool against warm. Not green/red: that pairing is the
+   * trading-terminal cliché and it fails for the ~8% of men with a
+   * red-green deficiency, who are a meaningful share of one audience of
+   * one. Blue/orange separates on both luminance and hue. */
+  --long: #4fa8d8;
+  --short: #d8734f;
+
+  /* Did not survive FDR correction. Used on a small marker, never as a
+   * background: on the live config this is every cell that returns
+   * (ADR 112), so a loud treatment would colour the entire page. */
+  --flag: #c9a227;
+
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: "Inter Tight", Inter, system-ui, -apple-system, sans-serif;
+  --display: "IBM Plex Sans Condensed", "IBM Plex Sans", var(--sans);
+
+  /* One superfamily across mono and display, a different face for prose.
+   * Headers and data then look related rather than pasted together. */
+
+  --row: 26px;
+  --gap: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--ground);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Every number, everywhere. `tabular-nums` is the part that matters: without
+ * it a column of prices jitters as digits change width, which on a page
+ * refreshing through a session is the difference between reading a column
+ * and re-reading it. */
+.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--display);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+a:focus-visible,
+button:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--long);
+  outline-offset: 1px;
+}
+
+/* --- status strip ------------------------------------------------------ */
+
+.strip {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 12px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.strip strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.strip .sep {
+  color: var(--rule);
+}
+
+.strip.stale {
+  border-bottom-color: var(--flag);
+}
+
+.strip .stale-badge {
+  color: var(--flag);
+  border: 1px solid var(--flag);
+  border-radius: 2px;
+  padding: 0 6px;
+}
+
+/* --- table ------------------------------------------------------------- */
+
+.wrap {
+  padding: 0 16px 32px;
+  max-width: 1180px;
+}
+
+table.screen {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 14px;
+}
+
+table.screen th {
+  text-align: left;
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0 10px 6px;
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+}
+
+table.screen th.r,
+table.screen td.r {
+  text-align: right;
+}
+
+table.screen td {
+  padding: 0 10px;
+  height: var(--row);
+  border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+}
+
+table.screen tbody tr:hover {
+  background: var(--panel-hover);
+}
+
+/* The signature element.
+ *
+ * A 3px vertical rail in column one, cool for long and warm for short, and
+ * the only saturated colour in a default row. On a morning with five shorts
+ * and no longs it reads as one warm stripe down the page before a word is
+ * read. It encodes side, which is information, rather than decorating.
+ *
+ * Padding rather than a border so it butts against the row edge with no
+ * hairline between it and the row above. */
+td.rail {
+  padding: 0;
+  width: 3px;
+  min-width: 3px;
+}
+
+td.rail span {
+  display: block;
+  width: 3px;
+  height: var(--row);
+  background: var(--muted);
+}
+
+td.rail span[data-side="long"] {
+  background: var(--long);
+}
+
+td.rail span[data-side="short"] {
+  background: var(--short);
+}
+
+.ticker {
+  font-family: var(--mono);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.sig {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.dim {
+  color: var(--muted);
+}
+
+/* --- empty state ------------------------------------------------------- */
+
+/* Most days nothing fires (DESIGN §11.2), so this is the common view and
+ * has to look composed rather than like a failure. It gets the same rail
+ * as a row, in `--muted`: the page's structure holds whether or not there
+ * is anything in it. */
+.empty {
+  display: flex;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 0;
+}
+
+.empty .rail {
+  width: 3px;
+  min-width: 3px;
+  background: var(--muted);
+  border-radius: 1px;
+}
+
+.empty .body {
+  padding: 10px 0;
+}
+
+.empty .body p {
+  margin: 0 0 4px;
+}
+
+.empty .body .last {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* --- suppressed / statistics ------------------------------------------- */
+
+/* Never a number and never a blank (ADR 026, DESIGN §11.6). Grey, with the
+ * stored reason. */
+.suppressed {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.flag {
+  color: var(--flag);
+  font-size: 11px;
+  margin-left: 6px;
+}
+
+/* --- error ------------------------------------------------------------- */
+
+.error {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--short);
+  border-radius: 2px;
+  background: var(--panel);
+}
+
+.error h2 {
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.error code {
+  font-family: var(--mono);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* --- loading ----------------------------------------------------------- */
+
+/* A skeleton matching the final layout, not a spinner (DESIGN §11.6). The
+ * row height and column count are the real ones, so the page does not jump
+ * when data arrives. */
+.skel {
+  display: block;
+  height: 9px;
+  border-radius: 1px;
+  background: var(--panel);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skel {
+    animation: none;
+  }
+}
+
+/* --- mobile ------------------------------------------------------------ */
+
+/* DESIGN §11.9: the screener is the mobile case. A push says TSM fired and
+ * you open it on a phone. Cards, not a horizontally scrolling table. */
+@media (max-width: 720px) {
+  table.screen thead {
+    display: none;
+  }
+
+  table.screen tr {
+    display: grid;
+    grid-template-columns: 3px 1fr 1fr;
+    gap: 0 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  table.screen td {
+    border: 0;
+    height: auto;
+    padding: 1px 0;
+  }
+
+  table.screen td.rail {
+    grid-row: 1 / -1;
+  }
+
+  table.screen td.rail span {
+    height: 100%;
+  }
+
+  table.screen td[data-label]::before {
+    content: attr(data-label) " ";
+    color: var(--muted);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+}
