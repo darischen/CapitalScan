@@ -101,28 +101,35 @@ while ($true) {
         try {
             # Query for new events since last check.
             #
-            # ADR 127. This was a **three-step** conversion:
+            # **Three steps, and it is compensating for stored data that is
+            # wrong.** ADR 127.
             #
-            #   ((s.fired_at AT TIME ZONE 'UTC')
-            #     AT TIME ZONE 'America/New_York'
-            #     AT TIME ZONE 'America/Los_Angeles')
+            #   strip the false UTC label -> naive ET
+            #   attach the true one       -> a real instant
+            #   convert to Pacific        -> what the operator reads
             #
-            # Strip a false label, attach the true one, convert to Pacific.
-            # It compensated for `jobs/poll.py::_now_et` returning a naive
-            # datetime holding ET wall-clock, which Postgres stored in a
-            # `timestamptz` as UTC -- every row was ET wearing a UTC label.
-            # That is why this CSV read correctly while the screener, which
-            # formats in ET, was four hours early.
+            # `jobs/poll.py::_now_et` used to return a naive datetime holding
+            # ET wall clock, and it is written to `signal_reports.fired_at`,
+            # a `timestamptz` on a UTC database. Postgres read the naive
+            # value as UTC, so every row is ET wearing a `+00` label -- four
+            # hours early as an instant. That is why this CSV is correct
+            # while the screener, which formats in ET, showed a 09:30 open
+            # as 05:30.
             #
-            # The comment here said: "delete this chain if `_now_et` is
-            # fixed to return an aware datetime -- it becomes wrong the
-            # moment the stored data is right." That is exactly what
-            # happened, so it is deleted.
+            # **`_now_et` is fixed (aware) but the stored rows are not.**
+            # Measured 2026-08-19 on a real row: stored 09:30:39+00, this
+            # chain gives 06:30 PT (right), a single
+            # `AT TIME ZONE 'America/Los_Angeles'` gives 02:30 PT (wrong).
             #
-            # Named zone, not a fixed offset, so DST comes from Postgres
+            # So this stays until `scripts/backfill_poller_timestamps.py`
+            # has run with the poller stopped. **Change it in the same step
+            # as the backfill, not before** -- the two are coupled and
+            # fixing either alone shifts the CSV four hours.
+            #
+            # Named zones, not fixed offsets, so DST comes from Postgres
             # tzdata. ORDER BY stays on the raw `timestamptz`, which sorts
-            # identically either way.
-            $query = "SELECT s.event_id, (s.fired_at AT TIME ZONE 'America/Los_Angeles'), e.ticker, e.signal_type, e.entry_price::text, e.side, e.touch_level::text, e.k_full::text, e.d_full::text, e.k_fast::text, e.atr_14::text, e.vix_close::text, e.spx_ret_1d::text, s.channels_sent, s.state_json->>'day_open', s.state_json->'bear_reversal'->>'confirmed', s.state_json->'bear_reversal'->>'open_gap_atr' FROM events e JOIN signal_reports s ON e.id = s.event_id WHERE DATE(e.signal_date) = CURRENT_DATE AND e.id > $lastEventId ORDER BY s.fired_at ASC;"
+            # identically.
+            $query = "SELECT s.event_id, ((s.fired_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York' AT TIME ZONE 'America/Los_Angeles'), e.ticker, e.signal_type, e.entry_price::text, e.side, e.touch_level::text, e.k_full::text, e.d_full::text, e.k_fast::text, e.atr_14::text, e.vix_close::text, e.spx_ret_1d::text, s.channels_sent, s.state_json->>'day_open', s.state_json->'bear_reversal'->>'confirmed', s.state_json->'bear_reversal'->>'open_gap_atr' FROM events e JOIN signal_reports s ON e.id = s.event_id WHERE DATE(e.signal_date) = CURRENT_DATE AND e.id > $lastEventId ORDER BY s.fired_at ASC;"
 
             $newEvents = & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -h localhost -U capscan -d capitalscan -t -c $query
 
