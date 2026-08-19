@@ -22,6 +22,20 @@ function fmt(value: number | null, digits = 2): string {
   return value === null ? "—" : value.toFixed(digits);
 }
 
+/**
+ * Whether the bar closed above or below its own open.
+ *
+ * Null-safe on purpose: a row with no bar yet must render unstyled rather
+ * than picking a direction from two nulls, which would colour every
+ * intraday row as if it had closed flat.
+ */
+function dayClass(row: ScreenRow): string {
+  if (row.close === null || row.open === null) return "";
+  if (row.close > row.open) return "up";
+  if (row.close < row.open) return "down";
+  return "";
+}
+
 /** Volume, abbreviated. A ten-digit share count in a dense row is noise. */
 function vol(value: number | null): string {
   if (value === null) return "—";
@@ -181,7 +195,12 @@ export function ScreenerTable({
             fast / slow Stochastic
           </th>
           <th className="r" title="The signal date's own bar. Empty until that night's ingest.">
-            O / H / L / C
+            Open
+          </th>
+          <th className="r">High</th>
+          <th className="r">Low</th>
+          <th className="r" title="Coloured against the open: cool closed up, warm closed down">
+            Close
           </th>
           <th className="r">Vol</th>
           <th className="r" title="Newest price the poller saw">Live</th>
@@ -237,20 +256,36 @@ export function ScreenerTable({
                 ingested nightly, so a signal that fired at 09:35 has no bar
                 until that evening. Back-filling from quotes would put a
                 first-tick price in a column labelled "open". */}
-            <td className="r num" data-label="OHLC">
+            {/* Four columns rather than one slash-separated cell (user's
+                request, 2026-08-19). Separate columns let the eye scan one
+                series down the page, which a joined cell does not.
+
+                Empty intraday and that is the honest rendering: bars are
+                ingested nightly, so a signal that fired at 09:35 has no bar
+                until that evening. The dash carries the reason on hover. */}
+            <td className="r num" data-label="Open">
               {row.open === null ? (
-                <span className="dim" title="no bar yet; ingested tonight">—</span>
+                <span className="dim" title="no bar yet; ingested tonight">
+                  —
+                </span>
               ) : (
-                <>
-                  {fmt(row.open)}
-                  <span className="dim"> / </span>
-                  {fmt(row.high)}
-                  <span className="dim"> / </span>
-                  {fmt(row.low)}
-                  <span className="dim"> / </span>
-                  {fmt(row.close)}
-                </>
+                fmt(row.open)
               )}
+            </td>
+            <td className="r num dim" data-label="High">
+              {fmt(row.high)}
+            </td>
+            <td className="r num dim" data-label="Low">
+              {fmt(row.low)}
+            </td>
+            {/* The one coloured number in the bar. Cool closed above its
+                open, warm closed below -- the same cool/warm the side rail
+                uses, so one palette carries direction everywhere rather
+                than two conventions competing. Green/red is avoided for the
+                reason §11.7 gives: it fails for a red-green deficiency and
+                separates on hue alone. */}
+            <td className={`r num ${dayClass(row)}`} data-label="Close">
+              {fmt(row.close)}
             </td>
             <td className="r num" data-label="Vol">
               {vol(row.volume)}

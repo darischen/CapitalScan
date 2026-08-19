@@ -86,6 +86,7 @@ export interface ScreenResult {
   rows: ScreenRow[];
   totalMatched: number;
   withStats: boolean;
+  confluenceOnly: boolean;
   /**
    * The signal date actually being displayed, which is **not** the same as
    * `meta.asOf`.
@@ -145,6 +146,18 @@ export function clampLimit(value: number | undefined): number {
 interface ScreenOptions {
   date?: string;
   /**
+   * ADR 111's `--confluence-only`, applied by default (user's request,
+   * 2026-08-19).
+   *
+   * Matches `cli.py::scan`'s flag exactly: membership of `confluence_low`
+   * or `confluence_high` in **`signal_types_all`**, not in `signal_type`.
+   * The latter carries only the most specific type per ADR 057, so a bar
+   * that fired both `bear_close_above_upper` and `confluence_high` stores
+   * the reversal and would be dropped by a filter on the single column --
+   * which is the row a short-side reader most wants.
+   */
+  confluenceOnly?: boolean;
+  /**
    * ADR 114. The default is the event feed: what fired, on what ticker, in
    * what state. The statistical fields sit behind a deliberate action.
    *
@@ -178,6 +191,26 @@ const LATEST_DATE_SQL = `
   SELECT max(signal_date) AS d FROM v_screen_live
 `;
 
+/**
+ * `confluence_high` first, then `confluence_low`, then everything else.
+ *
+ * A short-side confluence is the row that needs a decision soonest: ADR 111
+ * makes it actionable only with a confirming reversal, so it is the one a
+ * reader has to look at rather than merely note. Fire time orders within
+ * each group, newest first, so the feed still reads chronologically where
+ * the ranking does not separate rows.
+ */
+const CONFLUENCE_RANK = `
+  CASE WHEN 'confluence_high' = ANY(s.signal_types_all) THEN 0
+       WHEN 'confluence_low'  = ANY(s.signal_types_all) THEN 1
+       ELSE 2 END
+`;
+
+const CONFLUENCE_FILTER = `
+  AND ($3::boolean IS NOT TRUE
+       OR s.signal_types_all && ARRAY['confluence_high','confluence_low'])
+`;
+
 const FEED_SQL = `
   SELECT s.ticker, s.signal_date, s.signal_type, s.signal_types_all,
          s.signal_strength, s.k_full, s.k_fast,
@@ -189,7 +222,8 @@ const FEED_SQL = `
     JOIN v_universe u ON u.ticker = s.ticker
    WHERE u.in_trade
      AND s.signal_date = $1::date
-   ORDER BY s.fired_at DESC NULLS LAST, s.ticker
+     ${CONFLUENCE_FILTER}
+   ORDER BY ${CONFLUENCE_RANK}, s.fired_at DESC NULLS LAST, s.ticker
    LIMIT $2
 `;
 
@@ -199,6 +233,8 @@ const COUNT_SQL = `
     JOIN v_universe u ON u.ticker = s.ticker
    WHERE u.in_trade
      AND s.signal_date = $1::date
+     AND ($2::boolean IS NOT TRUE
+          OR s.signal_types_all && ARRAY['confluence_high','confluence_low'])
 `;
 
 /**
@@ -235,6 +271,8 @@ interface FeedRowRaw {
 
 export async function screen(options: ScreenOptions = {}): Promise<ScreenResult> {
   const limit = clampLimit(options.limit);
+  // Default on. `?all=1` clears it, so nothing is unreachable.
+  const confluenceOnly = options.confluenceOnly !== false;
 
   // Resolved before the feed runs, so the rows and the count describe the
   // same day. `null` here means the view is empty, which the caller renders
@@ -242,12 +280,19 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
   const date =
     options.date ?? (await query<{ d: Date | null }>(LATEST_DATE_SQL))[0]?.d ?? null;
   if (date === null) {
-    return { rows: [], totalMatched: 0, withStats: false, signalDate: null, meta: await readMeta() };
+    return {
+      rows: [],
+      totalMatched: 0,
+      withStats: false,
+      confluenceOnly,
+      signalDate: null,
+      meta: await readMeta(),
+    };
   }
 
   const [rowsRaw, countRows, meta] = await Promise.all([
-    query<FeedRowRaw>(FEED_SQL, [date, limit]),
-    query<{ n: number }>(COUNT_SQL, [date]),
+    query<FeedRowRaw>(FEED_SQL, [date, limit, confluenceOnly]),
+    query<{ n: number }>(COUNT_SQL, [date, confluenceOnly]),
     readMeta(),
   ]);
 
@@ -291,6 +336,7 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
     rows,
     totalMatched: countRows[0]?.n ?? 0,
     withStats: Boolean(options.withStats),
+    confluenceOnly,
     signalDate: typeof date === "string" ? date : isoDate(date),
     meta,
   };
