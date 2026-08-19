@@ -216,6 +216,12 @@ td.rail span[data-side="short"] {
   color: var(--muted);
 }
 
+/* The separator between signal types. Dimmer than `--muted` so the eye
+ * groups the labels rather than reading the dots as content. */
+.sep-dot {
+  color: var(--rule);
+}
+
 /* Direction on a closing price, in the same cool/warm the side rail uses.
  *
  * One palette carries direction everywhere rather than two conventions
