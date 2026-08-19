@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 
+import { mcap } from "@/lib/format";
 import type { TickerHit } from "@/lib/ticker";
 
 /**
@@ -21,13 +22,6 @@ import type { TickerHit } from "@/lib/ticker";
 /** Enough that a fast typist does not fire a request per keystroke, short
  * enough that the menu feels attached to the keyboard. */
 const DEBOUNCE_MS = 130;
-
-function mcap(value: number | null): string {
-  if (value === null) return "";
-  if (value >= 1e12) return `${(value / 1e12).toFixed(2)}T`;
-  if (value >= 1e9) return `${(value / 1e9).toFixed(0)}B`;
-  return `${(value / 1e6).toFixed(0)}M`;
-}
 
 export default function TickerSearch() {
   const router = useRouter();

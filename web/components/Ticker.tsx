@@ -3,9 +3,9 @@ import Link from "next/link";
 import EventRows from "./EventRows";
 import TickerSearch from "./TickerSearch";
 
-import { NONE, SIGNAL_LABELS, fmt, pct, signedPct, vol } from "@/lib/format";
+import { NONE, SIGNAL_LABELS, clock, fmt, mcap, pct, signedPct, vol } from "@/lib/format";
 import type { Meta } from "@/lib/screen";
-import type { Range, TickerEvent, TickerState } from "@/lib/ticker";
+import type { ChartBar, LiveQuote, Range, TickerEvent, TickerState } from "@/lib/ticker";
 import { RANGES } from "@/lib/ticker";
 
 /**
@@ -23,10 +23,29 @@ export function TickerHeader({
   state,
   meta,
   fired,
+  live,
+  latest,
 }: {
   state: TickerState;
   meta: Meta;
   fired: number;
+  /** The poller's newest price, when there is one for the current session
+   * (user's request, 2026-08-19). The screener already showed this and the
+   * ticker page did not, so during a session the same ticker read as two
+   * different prices on two pages. */
+  live?: LiveQuote | null;
+  /**
+   * The newest bar on the chart, for the compact OHLC beside the as-of
+   * date (user's request, 2026-08-19).
+   *
+   * **Taken from the chart series, not from `v_ticker_state`.** That view
+   * projects `close` and `volume` and no other price — adding three
+   * columns to it is a migration, and one is not available right now with
+   * a `cscan events` rebuild holding the table. The page already loaded
+   * these bars, so this costs nothing and cannot disagree with the candles
+   * above it, which a second read of the same data eventually would.
+   */
+  latest?: ChartBar | null;
 }) {
   const distance =
     state.close !== null && state.sma200 !== null ? state.close / state.sma200 - 1 : null;
@@ -52,7 +71,26 @@ export function TickerHeader({
       <TickerSearch />
 
       <div className="tk-price">
-        <span className="num big">{fmt(state.close)}</span>
+        {/* Two prices when the poller has one, and each says which it is.
+            The live quote leads because during a session it is the answer
+            to "what is it now"; the close stays beside it because every
+            indicator, band, and signal on this page was computed from the
+            close and not from the quote. */}
+        {live && (
+          <>
+            <span className="k">live</span>
+            <span
+              className={`num big ${
+                state.close !== null && live.price >= state.close ? "up" : "down"
+              }`}
+              title={`polled ${clock(live.ts)} ET`}
+            >
+              {fmt(live.price)}
+            </span>
+          </>
+        )}
+        <span className="k">close</span>
+        <span className={live ? "num" : "num big"}>{fmt(state.close)}</span>
         <span className={`num ${distance !== null && distance >= 0 ? "up" : "down"}`}>
           {signedPct(distance)} vs 200d
         </span>
@@ -69,6 +107,27 @@ export function TickerHeader({
             length, which would understate it by the page size. */}
         <span className="tag">{fired} events</span>
         <span className="tag dim">as of {state.asOf}</span>
+        {/* The session's own bar, compact. The gauge above says where the
+            close sits between the bands; this says what the day did to get
+            there, which is the next question and was a click away on the
+            chart. */}
+        {latest && (
+          <span className="tag ohlc num">
+            <b>O:</b>
+            {fmt(latest.open)} <b>H:</b>
+            {fmt(latest.high)} <b>L:</b>
+            {fmt(latest.low)} <b>C:</b>
+            <span
+              className={
+                latest.close !== null && latest.open !== null && latest.close >= latest.open
+                  ? "up"
+                  : "down"
+              }
+            >
+              {fmt(latest.close)}
+            </span>
+          </span>
+        )}
         {meta.stale && (
           <span className="tag flagged">
             {meta.stalenessDays} sessions behind {meta.asOf ?? "?"}
@@ -159,13 +218,30 @@ export function StateRail({ state }: { state: TickerState }) {
 
   return (
     <section className="rail-strip">
-      <Stat k="%K fast" v={fmt(state.kFast, 1)} />
-      <Stat k="%K slow" v={fmt(state.kFull, 1)} note={gap === null ? undefined : `Δ${gap.toFixed(1)}`} />
-      <Stat k="%D" v={fmt(state.dFull, 1)} />
+      {/* "fast stochastic" / "slow stochastic", not "%K fast" / "%K slow"
+          (user's request, 2026-08-19). `%K` is the textbook name and it
+          tells a reader nothing they do not already know from the number
+          being 0-100. `%D` is gone here for the same reason it is gone from
+          the chart: nothing in the system reads it. */}
+      <Stat k="fast stochastic" v={fmt(state.kFast, 1)} />
+      <Stat
+        k="slow stochastic"
+        v={fmt(state.kFull, 1)}
+        note={gap === null ? undefined : `Δ${gap.toFixed(1)}`}
+      />
+      {/* The %K/%D crossover: `k_full` crossing its own moving average.
+          A turn, not a level — it can fire anywhere in 0-100.
+
+          **It reads off `d_full`, which is no longer drawn** (the chart
+          shows fast and slow %K only, 2026-08-19). Kept because the signal
+          engine still computes it and `events.k_cross_up` is stored on
+          every row; noted because a reader cannot check it against the
+          panel above. */}
       <Stat
         k="cross"
         v={state.kCrossUp ? "up" : state.kCrossDown ? "down" : "—"}
         cls={state.kCrossUp ? "up" : state.kCrossDown ? "down" : ""}
+        note={state.kCrossUp || state.kCrossDown ? "%K vs %D" : undefined}
       />
       <Stat k="drawdown" v={pct(state.ddPct, 1)} />
       <Stat k="band width" v={pct(state.bbWidthPct, 1)} />
@@ -185,6 +261,15 @@ export function StateRail({ state }: { state: TickerState }) {
       />
       <Stat k="VIX" v={fmt(state.vixClose, 1)} />
       <Stat k="volume" v={vol(state.volume)} />
+      {/* Market cap, at the end of the rail (user's request, 2026-08-19).
+          It is the one number here that is about the company rather than
+          about the bar, which is why it sits last and next to the gauge
+          rather than among the indicators.
+
+          From `universe.mcap_usd` at the snapshot in force on the state
+          row's session — point-in-time, like everything else on this page,
+          so a name that has since doubled does not retro-date its size. */}
+      <Stat k="market cap" v={mcap(state.mcapUsd)} />
     </section>
   );
 }
@@ -195,9 +280,14 @@ export function StateRail({ state }: { state: TickerState }) {
  * What each line on the chart is.
  *
  * Gate item 8 is not "both `%K` series render", it is that they render *and
- * are distinguishable*. Three lines in one panel, two of them within five
- * points of each other by construction (ADR 110's `fast_agreement_tol`), is
- * exactly the case where a reader cannot name a line without being told.
+ * are distinguishable*. Two lines within five points of each other by
+ * construction (ADR 110's `fast_agreement_tol`) is exactly the case where a
+ * reader cannot name a line without being told.
+ *
+ * **`%D` is not here because it is not on the chart** (user's request,
+ * 2026-08-19). It is a moving average of the slow `%K`, and nothing in the
+ * system reads it: no signal, no exit, no cell dimension. A third line that
+ * decides nothing is a third line to tell apart from the two that do.
  *
  * HTML rather than a canvas overlay: it is text, it selects, it reads to a
  * screen reader, and it stays in the same stylesheet as everything else.
@@ -211,9 +301,9 @@ export function ChartLegend() {
         <i className="ln sma" /> 200-day
       </span>
       <span className="grp">
-        <i className="ln kfast" /> %K fast <em>trigger</em>
-        <i className="ln kfull dash" /> %K slow
-        <i className="ln dfull" /> %D
+        <i className="ln kfast" /> fast
+        <i className="ln kfull" /> slow
+        <span className="grp-name">Stochastic</span>
       </span>
     </div>
   );
@@ -336,7 +426,7 @@ export function EventHistory({
         <h2>Event history</h2>
         <nav className="toggles">
           <Link href={`/ticker/${sym}`} className={all ? undefined : "on"}>
-            cluster heads
+            confluence
           </Link>
           <Link href={`/ticker/${sym}?all=1`} className={all ? "on" : undefined}>
             every fire

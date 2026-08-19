@@ -875,7 +875,9 @@ Runs quarterly, evaluating each ticker as of the quarter-end using only prior da
 per ticker, per bar in range:
   1. read bar t and indicator row t−1
   2. skip if any required indicator field is null → bar_rejects
-  3. skip if universe.in_trade is false for the enclosing quarter
+  3. record universe.in_trade for the enclosing quarter onto the row
+     -- ADR 122: this was `skip if false`, and it meant a train-universe
+        name had bars, indicators, real band touches, and no events at all
   4. core.signals.detect(bar_t, ind_{t−1}, SIGNAL_PARAMS)
   5. debounce on the explicit key (ticker, signal_date, bound)
      -- never on the SignalHit dataclass itself
@@ -884,6 +886,21 @@ per ticker, per bar in range:
 ```
 
 Step 1's t−1 read is the look-ahead guard from §3.6, enforced **again** here at the job level. Two layers, because this is the highest-risk silent failure in the system.
+
+**Step 3 records, it does not filter (ADR 122).** It read `skip if
+universe.in_trade is false` until 2026-08-19, when building `/ticker/[sym]`
+showed what that cost: SMCI has 659 bars and 192 band touches since 2024,
+zero events, and has never been in the trade universe across 66 quarterly
+snapshots. A signal that fired is a fact about the ticker; whether you would
+have traded it is a separate fact, and `events.in_trade` stores the second
+so each consumer decides for itself.
+
+**Everything except the ticker page keeps the population it had**, and that
+is enforced rather than intended. `cscan scan`, the poller, both screener
+views, and every statistical read carry an explicit `in_trade` predicate;
+`test_events_in_trade_filter.py` fails on any read of `events` that neither
+filters nor is allowlisted with a reason. `v_chart` and `v_events` carry no
+predicate on purpose — they are what the ticker page reads.
 
 **Debounce keys on a tuple, not the dataclass.** The key is `(ticker, signal_date, bound)`. Deduping on the whole `SignalHit` is an implementation temptation that was never the spec, and it fails on any float field: a NaN member hashes stably but compares unequal, so a set silently keeps duplicates. Keying explicitly is immune to future field additions.
 

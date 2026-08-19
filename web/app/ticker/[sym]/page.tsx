@@ -11,7 +11,7 @@ import {
 import TickerChart from "@/components/TickerChart";
 import { normalizeSymbol } from "@/lib/format";
 import { readMeta } from "@/lib/screen";
-import { chart, countEvents, events, parseRange, state } from "@/lib/ticker";
+import { chart, countEvents, events, liveQuote, parseRange, state } from "@/lib/ticker";
 
 /**
  * `/ticker/[sym]` — chart, current state, event history.
@@ -60,16 +60,23 @@ export default async function TickerPage({
       );
     }
 
-    const [bars, history, total, meta] = await Promise.all([
+    const [bars, history, total, live, meta] = await Promise.all([
       chart(sym, range),
       events(sym, { all, limit: query.limit ? Number(query.limit) : undefined }),
       countEvents(sym, all),
+      liveQuote(sym, current.asOf),
       readMeta(),
     ]);
 
     return (
       <main className="wrap tk">
-        <TickerHeader state={current} meta={meta} fired={total} />
+        <TickerHeader
+          state={current}
+          meta={meta}
+          fired={total}
+          live={live}
+          latest={bars[bars.length - 1] ?? null}
+        />
         <div className="tk-top">
           <StateRail state={current} />
           <BandGauge state={current} />

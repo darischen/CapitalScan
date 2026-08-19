@@ -51,6 +51,17 @@ export interface ScreenRow {
   livePriceTs: string | null;
   /** When the poller detected and notified this signal. */
   firedAt: string | null;
+  /**
+   * The poller's **intraday** reversal judgement (ADR 117, surfaced by
+   * ADR 123), or `null` when no quote has been evaluated for this event.
+   *
+   * Deliberately not the same thing as `bear_close_above_upper` in
+   * `signalTypesAll`. That one is close-confirmed and only exists after
+   * that night's `cscan events`; this one says where price is sitting
+   * right now relative to today's open, and only exists while the poller
+   * runs.
+   */
+  reversal: Reversal | null;
   cellId: string | null;
   /**
    * `null` while the poller has written the row and clustering has not run.
@@ -60,6 +71,24 @@ export interface ScreenRow {
   isClusterHead: boolean | null;
   /** Populated only when `withStats` is requested. See ADR 114. */
   stats: CellStats | Suppressed | null;
+}
+
+export interface Reversal {
+  /** Price is above the band **and** below today's open. */
+  confirmed: boolean;
+  /** Price is above the band at all. A confluence with `aboveBand` false
+   * has fallen back inside since it fired. */
+  aboveBand: boolean;
+  /**
+   * Distance from today's open in ATR units. **Negative is below the open**
+   * and therefore reversing; positive is not.
+   *
+   * The number is the point: ADR 117 chose to show every confluence and say
+   * how far each is from confirming, rather than hiding the near-misses.
+   */
+  openGapAtr: number | null;
+  /** The quote this judgement was made on. */
+  ts: string;
 }
 
 export interface CellStats {
@@ -87,6 +116,7 @@ export interface ScreenResult {
   totalMatched: number;
   withStats: boolean;
   confluenceOnly: boolean;
+  headsOnly: boolean;
   /**
    * The signal date actually being displayed, which is **not** the same as
    * `meta.asOf`.
@@ -102,6 +132,17 @@ export interface ScreenResult {
    * reported the fresher of the two beside the older rows.
    */
   signalDate: string | null;
+  /**
+   * The dates on either side that actually have rows, for the previous/next
+   * links (user's request, 2026-08-19).
+   *
+   * **Dates with events, not adjacent trading days.** Most sessions fire
+   * nothing, so stepping by calendar or by `trading_days` would walk a
+   * reader through a run of empty screens to reach the next one that is
+   * not. `null` at either end of the history.
+   */
+  prevDate: string | null;
+  nextDate: string | null;
   meta: Meta;
 }
 
@@ -173,8 +214,39 @@ interface ScreenOptions {
    * a bug.
    */
   withStats?: boolean;
+  /**
+   * Show only cluster heads. **Off by default** (user's decision,
+   * 2026-08-19): the feed is a record of what the poller saw that day, and
+   * ADR 054's clustering is a statistical device, not a display one.
+   *
+   * It used to be on, inside the view, and it made rows *disappear*. The
+   * poller cannot cluster, so its rows carry NULL and all of them showed
+   * live; overnight `cscan events` clustered and the repeats became false.
+   * Measured on 2026-08-06: 19 confluence fires live, 4 the next morning.
+   */
+  headsOnly?: boolean;
   limit?: number;
 }
+
+/**
+ * The feed's domain, restated from `v_screen_live`'s own WHERE clause.
+ *
+ * Every *date* question reads `events` directly rather than the view. The
+ * view carries four `LEFT JOIN LATERAL` subqueries and Postgres cannot drop
+ * an unused one, so asking it "what is the newest date" runs all four over
+ * the whole history. Measured after ADR 122's rebuild took the live `touch`
+ * slice from 157k to 1.31M rows: **23.3 s** through the view, **0.17 ms**
+ * against the table, with `events_feed_latest` serving it.
+ *
+ * The duplication is deliberate. These ask a question *about* the feed's
+ * domain rather than reading the feed, and paying four laterals per row to
+ * learn a date is the wrong trade.
+ */
+const FEED_DOMAIN = `
+  entry_kind = 'touch'
+  AND in_trade
+  AND config_hash = current_setting('capitalscan.default_config_hash', true)
+`;
 
 /**
  * The date to show when the caller does not name one.
@@ -201,9 +273,8 @@ interface ScreenOptions {
  * query rewrite.
  */
 const LATEST_DATE_SQL = `
-  SELECT signal_date AS d FROM v_screen_live
-   ORDER BY signal_date DESC
-   LIMIT 1
+  SELECT max(signal_date) AS d FROM events
+   WHERE ${FEED_DOMAIN}
 `;
 
 /**
@@ -215,6 +286,27 @@ const LATEST_DATE_SQL = `
  * each group, newest first, so the feed still reads chronologically where
  * the ranking does not separate rows.
  */
+/**
+ * The nearest date each way that has rows under the same filters.
+ *
+ * Takes the confluence flag so the arrows agree with the table: with
+ * confluence-only on, "previous" must mean the previous day that had a
+ * confluence, or a click lands on an empty screen.
+ */
+const NEIGHBOURS_SQL = `
+  SELECT
+    (SELECT max(signal_date) FROM events
+      WHERE ${FEED_DOMAIN}
+        AND signal_date < $1::date
+        AND ($2::boolean IS NOT TRUE
+             OR signal_types_all && ARRAY['confluence_high','confluence_low'])) AS prev,
+    (SELECT min(signal_date) FROM events
+      WHERE ${FEED_DOMAIN}
+        AND signal_date > $1::date
+        AND ($2::boolean IS NOT TRUE
+             OR signal_types_all && ARRAY['confluence_high','confluence_low'])) AS next
+`;
+
 const CONFLUENCE_RANK = `
   CASE WHEN 'confluence_high' = ANY(s.signal_types_all) THEN 0
        WHEN 'confluence_low'  = ANY(s.signal_types_all) THEN 1
@@ -226,17 +318,31 @@ const CONFLUENCE_FILTER = `
        OR s.signal_types_all && ARRAY['confluence_high','confluence_low'])
 `;
 
+/**
+ * **No `v_universe` join, and no cluster-head filter** (ADR 124).
+ *
+ * The join was redundant once ADR 122 put point-in-time `in_trade` on the
+ * event, and worse than redundant: `v_universe` is `DISTINCT ON (ticker)
+ * ORDER BY as_of DESC`, i.e. membership *now*, so it silently dropped a
+ * historical row whose ticker had left the universe since. The view's own
+ * predicate answers the right question — was it tradeable *on that bar*.
+ *
+ * The cluster filter is gone because the feed is a record of what the
+ * poller saw (user's decision, 2026-08-19). `is_cluster_head` is still
+ * projected and repeats are marked, so nothing is hidden and nothing is
+ * unlabelled.
+ */
 const FEED_SQL = `
   SELECT s.ticker, s.signal_date, s.signal_type, s.signal_types_all,
          s.signal_strength, s.k_full, s.k_fast,
          s.dd_bucket, s.sector, s.cell_id, s.side, s.is_cluster_head,
          s.bb_lower, s.bb_mid, s.bb_upper, s.band_ts::date AS band_ts,
          s.open, s.high, s.low, s.close, s.volume,
-         s.live_price, s.live_price_ts, s.fired_at
+         s.live_price, s.live_price_ts, s.fired_at,
+         s.rev_confirmed, s.rev_above_band, s.rev_open_gap_atr, s.rev_ts
     FROM v_screen_live s
-    JOIN v_universe u ON u.ticker = s.ticker
-   WHERE u.in_trade
-     AND s.signal_date = $1::date
+   WHERE s.signal_date = $1::date
+     AND ($4::boolean IS NOT TRUE OR s.is_cluster_head IS NOT FALSE)
      ${CONFLUENCE_FILTER}
    ORDER BY ${CONFLUENCE_RANK}, s.fired_at DESC NULLS LAST, s.ticker
    LIMIT $2
@@ -245,9 +351,8 @@ const FEED_SQL = `
 const COUNT_SQL = `
   SELECT count(*)::int AS n
     FROM v_screen_live s
-    JOIN v_universe u ON u.ticker = s.ticker
-   WHERE u.in_trade
-     AND s.signal_date = $1::date
+   WHERE s.signal_date = $1::date
+     AND ($3::boolean IS NOT TRUE OR s.is_cluster_head IS NOT FALSE)
      AND ($2::boolean IS NOT TRUE
           OR s.signal_types_all && ARRAY['confluence_high','confluence_low'])
 `;
@@ -282,12 +387,17 @@ interface FeedRowRaw {
   live_price: string | null;
   live_price_ts: Date | null;
   fired_at: Date | null;
+  rev_confirmed: boolean | null;
+  rev_above_band: boolean | null;
+  rev_open_gap_atr: string | null;
+  rev_ts: Date | null;
 }
 
 export async function screen(options: ScreenOptions = {}): Promise<ScreenResult> {
   const limit = clampLimit(options.limit);
   // Default on. `?all=1` clears it, so nothing is unreachable.
   const confluenceOnly = options.confluenceOnly !== false;
+  const headsOnly = options.headsOnly === true;
 
   // Resolved before the feed runs, so the rows and the count describe the
   // same day. `null` here means the view is empty, which the caller renders
@@ -300,14 +410,18 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
       totalMatched: 0,
       withStats: false,
       confluenceOnly,
+      headsOnly,
       signalDate: null,
+      prevDate: null,
+      nextDate: null,
       meta: await readMeta(),
     };
   }
 
-  const [rowsRaw, countRows, meta] = await Promise.all([
-    query<FeedRowRaw>(FEED_SQL, [date, limit, confluenceOnly]),
-    query<{ n: number }>(COUNT_SQL, [date, confluenceOnly]),
+  const [rowsRaw, countRows, neighbours, meta] = await Promise.all([
+    query<FeedRowRaw>(FEED_SQL, [date, limit, confluenceOnly, headsOnly]),
+    query<{ n: number }>(COUNT_SQL, [date, confluenceOnly, headsOnly]),
+    query<{ prev: Date | null; next: Date | null }>(NEIGHBOURS_SQL, [date, confluenceOnly]),
     readMeta(),
   ]);
 
@@ -337,6 +451,18 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
     livePrice: num(r.live_price),
     livePriceTs: r.live_price_ts ? r.live_price_ts.toISOString() : null,
     firedAt: r.fired_at ? r.fired_at.toISOString() : null,
+    // `rev_ts` decides presence, not `rev_confirmed`. A false `confirmed`
+    // is a real judgement -- "evaluated, not reversing" -- and collapsing
+    // it into `null` would lose exactly the near-miss ADR 117 exists to
+    // show.
+    reversal: r.rev_ts
+      ? {
+          confirmed: r.rev_confirmed === true,
+          aboveBand: r.rev_above_band === true,
+          openGapAtr: num(r.rev_open_gap_atr),
+          ts: r.rev_ts.toISOString(),
+        }
+      : null,
     ddBucket: r.dd_bucket,
     cellId: r.cell_id,
     isClusterHead: r.is_cluster_head,
@@ -352,7 +478,10 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
     totalMatched: countRows[0]?.n ?? 0,
     withStats: Boolean(options.withStats),
     confluenceOnly,
+    headsOnly,
     signalDate: typeof date === "string" ? date : isoDate(date),
+    prevDate: neighbours[0]?.prev ? isoDate(neighbours[0].prev) : null,
+    nextDate: neighbours[0]?.next ? isoDate(neighbours[0].next) : null,
     meta,
   };
 }
@@ -515,4 +644,57 @@ export function isoDate(value: Date | string): string {
   const m = String(value.getMonth() + 1).padStart(2, "0");
   const d = String(value.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
+}
+
+/* --- the calendar ------------------------------------------------------- */
+
+/**
+ * Every date in a month that has rows, with how many.
+ *
+ * **Counts, not just dates.** A calendar that only knew which days were
+ * clickable would still make you click one to find out whether it was worth
+ * it. The count turns the picker into a density map of the month, which is
+ * the actual question — "when did things fire" — rather than a date entry
+ * widget.
+ *
+ * Takes the confluence flag for the same reason the arrows do: a day the
+ * calendar calls populated must be populated under the filters the reader
+ * is currently using, or clicking it lands on an empty screen.
+ */
+const MONTH_SQL = `
+  SELECT signal_date AS d, count(*)::int AS n
+    FROM events
+   WHERE ${FEED_DOMAIN}
+     AND signal_date >= $1::date
+     AND signal_date < ($1::date + interval '1 month')
+     AND ($2::boolean IS NOT TRUE
+          OR signal_types_all && ARRAY['confluence_high','confluence_low'])
+   GROUP BY 1
+   ORDER BY 1
+`;
+
+export interface DayCount {
+  date: string;
+  n: number;
+}
+
+/** `month` is any date inside it; the query floors to the first. */
+export async function monthCounts(month: string, confluenceOnly = true): Promise<DayCount[]> {
+  const rows = await query<{ d: Date; n: number }>(MONTH_SQL, [month, confluenceOnly]);
+  return rows.map((r) => ({ date: isoDate(r.d), n: r.n }));
+}
+
+/**
+ * The first and last dates the feed has anything for, so the calendar can
+ * stop offering months that cannot contain a row.
+ */
+const SPAN_SQL = `
+  SELECT min(signal_date) AS lo, max(signal_date) AS hi FROM events
+   WHERE ${FEED_DOMAIN}
+`;
+
+export async function feedSpan(): Promise<{ lo: string; hi: string } | null> {
+  const [row] = await query<{ lo: Date | null; hi: Date | null }>(SPAN_SQL);
+  if (!row?.lo || !row?.hi) return null;
+  return { lo: isoDate(row.lo), hi: isoDate(row.hi) };
 }

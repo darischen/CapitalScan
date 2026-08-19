@@ -132,6 +132,7 @@ export default function EventRows({
             <th className="rail" />
             <th>Date</th>
             <th>Signal</th>
+            <th>Side</th>
             <th className="r">Entry</th>
             <th className="r">Exit</th>
             <th>Reason</th>
@@ -152,17 +153,44 @@ export default function EventRows({
                 {e.signalDate}
               </td>
               <td className="sig" data-label="Signal">
-                {typeList(e).map((t, i) => (
-                  <span key={t}>
-                    {i > 0 && <span className="sep-dot"> · </span>}
-                    <span className={i === 0 ? undefined : "dim"}>{SIGNAL_LABELS[t] ?? t}</span>
-                  </span>
-                ))}
+                {typeList(e)
+                  .filter((t) => t !== "bear_close_above_upper")
+                  .map((t, i) => (
+                    <span key={t}>
+                      {i > 0 && <span className="sep-dot"> · </span>}
+                      <span className={i === 0 ? undefined : "dim"}>{SIGNAL_LABELS[t] ?? t}</span>
+                    </span>
+                  ))}
                 {/* NULL means the poller wrote it and clustering has not
                     run yet (ADR 054, ADR 119), which is not the same as
                     "not a head". */}
+                {/* ADR 111's confirming reversal, badged rather than left
+                    as a word in the list — same treatment as the screener,
+                    because it is the one label that changes what a reader
+                    does rather than describing what fired. */}
+                {e.signalTypesAll.includes("bear_close_above_upper") && (
+                  <span className="reversal" title="closed above the band and below its open">
+                    ↓ reversal
+                  </span>
+                )}
+                {/* NULL means the poller wrote it and clustering has not
+                    run yet (ADR 054, ADR 119); `false` means it ran and
+                    this is a repeat within a cluster. Different facts, so
+                    different labels — collapsing them would make an
+                    un-clustered row look like a duplicate. */}
                 {e.isClusterHead === null && <span className="flag">pending cluster</span>}
+                {e.isClusterHead === false && <span className="flag dim">repeat</span>}
                 {e.earningsInWindow && <span className="flag">earnings</span>}
+              </td>
+              {/* After the signal, not before it (user's request,
+                  2026-08-19). The signal type is what identifies the row;
+                  the side follows from it and reads as its consequence.
+
+                  `long`/`short` is the position direction and nothing more.
+                  It says which way the signal points, not what instrument
+                  expresses it. */}
+              <td className={`side ${e.side}`} data-label="Side">
+                {e.side}
               </td>
               <td className="num r" data-label="Entry">
                 {fmt(e.entryPrice)}
@@ -191,7 +219,7 @@ export default function EventRows({
           {/* Inside the table so it scrolls with the rows. Zero height, so
               it adds nothing to the layout. */}
           <tr ref={sentinel} className="sentinel" aria-hidden="true">
-            <td colSpan={11} />
+            <td colSpan={12} />
           </tr>
         </tbody>
       </table>

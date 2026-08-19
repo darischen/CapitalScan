@@ -71,6 +71,24 @@ export interface ChartBar {
   signalStrength: number | null;
 }
 
+/**
+ * The newest price the poller saw, with the time it saw it.
+ *
+ * A separate read rather than a column on `v_ticker_state`: that view is
+ * the last *closed* session, and joining an intraday quote onto it would
+ * make one row mean two different times. `null` outside market hours and
+ * for any ticker the poller does not cover — it polls
+ * `_load_in_trade_tickers`, so a train-universe name never has one.
+ */
+export interface LiveQuote {
+  price: number;
+  ts: string;
+  /** Sessions between the quote and the state row's bar. `0` means the
+   * quote is intraday against today's close-not-yet-written, which is the
+   * normal case during a session. */
+  aheadOfBar: boolean;
+}
+
 export interface TickerState {
   ticker: string;
   name: string | null;
@@ -340,10 +358,23 @@ export async function state(ticker: string): Promise<TickerState | null> {
  * measured on `next_open` (`GRID_ENTRY_KIND`). Same event, two entries, two
  * outcomes. The column header says which.
  *
- * `is_cluster_head IS NOT FALSE` by default, not `is_cluster_head`: the
- * poller writes NULL because ADR 054's gap window needs the whole session
- * (ADR 119). `$3 = true` drops the filter and shows every row in the
- * cluster.
+ * **Confluence by default** (user's request, 2026-08-19), matching the
+ * screener's own default and `cli.py::scan --confluence-only`: membership
+ * of `confluence_low` or `confluence_high` in **`signal_types_all`**, not
+ * in `signal_type`. The latter carries only the most specific type per ADR
+ * 057, so a bar that fired both `bear_close_above_upper` and
+ * `confluence_high` stores the reversal and would be dropped by a filter on
+ * the single column — the row a short-side reader most wants.
+ *
+ * **No reversal requirement.** ADR 111's `--actionable` makes a short
+ * actionable only with a confirming bear reversal; this filter deliberately
+ * does not, so every confluence shows and the reader judges. That is the
+ * same call ADR 117 made for the poller.
+ *
+ * `$3 = true` drops the filter and shows every fire, cluster heads and
+ * repeats alike. Neither mode filters on `is_cluster_head` any more: the
+ * page is for looking at what happened, and a cluster's second and third
+ * days are things that happened.
  */
 const EVENTS_SQL = `
   SELECT id, signal_date, signal_type, signal_types_all, signal_strength,
@@ -353,7 +384,8 @@ const EVENTS_SQL = `
     FROM v_events
    WHERE ticker = $1
      AND entry_kind = 'touch'
-     AND ($3::boolean IS TRUE OR is_cluster_head IS NOT FALSE)
+     AND ($3::boolean IS TRUE
+          OR signal_types_all && ARRAY['confluence_high','confluence_low'])
    ORDER BY signal_date DESC, id
    LIMIT $2 OFFSET $4
 `;
@@ -365,7 +397,8 @@ const EVENTS_COUNT_SQL = `
     FROM v_events
    WHERE ticker = $1
      AND entry_kind = 'touch'
-     AND ($2::boolean IS TRUE OR is_cluster_head IS NOT FALSE)
+     AND ($2::boolean IS TRUE
+          OR signal_types_all && ARRAY['confluence_high','confluence_low'])
 `;
 
 interface EventRowRaw {
@@ -527,4 +560,46 @@ export async function searchTickers(term: string, limit = SEARCH_LIMIT): Promise
     mcapUsd: num(r.mcap_usd),
     inTrade: r.in_trade,
   }));
+}
+
+/**
+ * `quotes_live`, one ticker, newest row.
+ *
+ * `DISTINCT ON` is unnecessary for a single ticker — `ORDER BY ts DESC
+ * LIMIT 1` walks the primary key backwards and stops.
+ *
+ * The staleness comparison is against `market_date()`, not against the
+ * quote's own age: a quote from Friday 15:59 is not stale on Friday
+ * evening and is very stale on Tuesday, and only the market's calendar
+ * knows the difference.
+ */
+const LIVE_SQL = `
+  SELECT q.price, q.ts, (q.ts AT TIME ZONE 'America/New_York')::date AS quote_date,
+         market_date() AS today
+    FROM quotes_live q
+   WHERE q.ticker = $1
+   ORDER BY q.ts DESC
+   LIMIT 1
+`;
+
+export async function liveQuote(ticker: string, barDate: string): Promise<LiveQuote | null> {
+  const [row] = await query<{
+    price: string;
+    ts: Date;
+    quote_date: Date;
+    today: Date;
+  }>(LIVE_SQL, [ticker]);
+  if (!row) return null;
+
+  const price = num(row.price);
+  if (price === null) return null;
+
+  const quoteDate = isoDate(row.quote_date);
+  // Only shown when the quote is from the current market date. A quote from
+  // an earlier session is not a live price, and rendering it as one beside
+  // a bar from the same day would be claiming intraday movement that
+  // already closed.
+  if (quoteDate !== isoDate(row.today)) return null;
+
+  return { price, ts: row.ts.toISOString(), aheadOfBar: quoteDate > barDate };
 }

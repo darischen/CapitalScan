@@ -69,11 +69,7 @@ import sqlalchemy as sa
 from alembic import op
 
 from capitalscan.jobs.views import (
-    SERVING_CONFIG_DDL,
-    SERVING_CONFIG_UPSERT,
-    V_POSITIONS_DDL,
     V_POSITIONS_DDL_PRE_115,
-    serving_config_values,
 )
 
 revision: str = "d7f4b91c26ea"
@@ -81,24 +77,158 @@ down_revision: Union[str, Sequence[str], None] = "b2e57f3a91c4"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
+# The row this migration seeds, as `ExitParams` stood at this revision.
+#
+# It called `serving_config_values()` — the live builder — so a field added
+# to `ExitParams` later would change what this migration inserts, and a
+# field *removed* would make it insert a key the frozen upsert above does
+# not name. `cscan db sync-config` is what keeps the row current; this is
+# only the initial value, and it should be the initial value it always was.
+_SEED_AT_THIS_REVISION = {
+    "config_hash": "",
+    "exit_on_mid_band": False,
+    "exit_on_stoch_80": True,
+    "exit_on_upper_band": True,
+    "exit_stoch_source": "k_full",
+    "exit_stoch_threshold": 80.0,
+    "exit_stoch_threshold_short": 20.0,
+    "max_hold_days": 5,
+}
+
+# ---------------------------------------------------------------------------
+# Frozen DDL. **Do not import these from `jobs/views.py`.**
+# ---------------------------------------------------------------------------
+#
+# A migration is a statement about one point in history; `jobs/views.py`
+# holds the *current* definition. Importing the live constant makes an old
+# migration emit tomorrow's SQL, and it breaks the moment a later migration
+# changes the object.
+#
+# It did, on 2026-08-19: ADR 122 added `events.in_trade`, and four earlier
+# migrations that imported `V_SCREEN_LIVE_DDL` began emitting
+# `AND e.in_trade` against a table without the column. Every from-scratch
+# replay failed with `UndefinedColumn`. **Invisible locally** -- a developer
+# applies only the new migrations, and only a full replay hits it, which is
+# what CI and any new deployment do.
+#
+# These are literals, captured as the objects stood at this revision.
+# `test_migrations_freeze_ddl.py` refuses any new import of a live one.
+
+_SERVING_CONFIG_DDL_AT_THIS_REVISION = """CREATE TABLE IF NOT EXISTS public.serving_config (
+    only_row boolean PRIMARY KEY DEFAULT true CHECK (only_row),
+    config_hash text NOT NULL,
+    exit_stoch_source text NOT NULL,
+    exit_stoch_threshold numeric(12,4) NOT NULL,
+    exit_stoch_threshold_short numeric(12,4) NOT NULL,
+    exit_on_stoch_80 boolean NOT NULL,
+    exit_on_upper_band boolean NOT NULL,
+    exit_on_mid_band boolean NOT NULL,
+    max_hold_days integer NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT serving_config_stoch_source_check
+        CHECK (exit_stoch_source = ANY (ARRAY['k_full'::text, 'k_fast'::text]))
+)
+"""
+
+_SERVING_CONFIG_UPSERT_AT_THIS_REVISION = """INSERT INTO public.serving_config (
+    only_row, config_hash, exit_stoch_source,
+    exit_stoch_threshold, exit_stoch_threshold_short,
+    exit_on_stoch_80, exit_on_upper_band, exit_on_mid_band,
+    max_hold_days, updated_at
+) VALUES (
+    true, :config_hash, :exit_stoch_source,
+    :exit_stoch_threshold, :exit_stoch_threshold_short,
+    :exit_on_stoch_80, :exit_on_upper_band, :exit_on_mid_band,
+    :max_hold_days, now()
+)
+ON CONFLICT (only_row) DO UPDATE SET
+    config_hash = EXCLUDED.config_hash,
+    exit_stoch_source = EXCLUDED.exit_stoch_source,
+    exit_stoch_threshold = EXCLUDED.exit_stoch_threshold,
+    exit_stoch_threshold_short = EXCLUDED.exit_stoch_threshold_short,
+    exit_on_stoch_80 = EXCLUDED.exit_on_stoch_80,
+    exit_on_upper_band = EXCLUDED.exit_on_upper_band,
+    exit_on_mid_band = EXCLUDED.exit_on_mid_band,
+    max_hold_days = EXCLUDED.max_hold_days,
+    updated_at = now()
+"""
+
+_V_POSITIONS_DDL_AT_THIS_REVISION = """CREATE VIEW public.v_positions AS
+ SELECT p.id,
+    p.user_id,
+    p.ticker,
+    p.side,
+    p.entry_date,
+    p.entry_price,
+    p.quantity,
+    p.source,
+    p.status,
+    p.exit_date,
+    p.exit_price,
+    p.exit_reason,
+    p.realized_ret,
+    p.idempotency_key,
+    p.created_at,
+    s.close AS current_price,
+        CASE
+            WHEN (p.status = 'open'::text) THEN ((s.close - p.entry_price) / p.entry_price)
+            ELSE p.realized_ret
+        END AS unrealized_or_realized_ret,
+    ( SELECT count(*) AS count
+        FROM public.trading_days td
+       WHERE ((td.d > p.entry_date) AND (td.d <= CURRENT_DATE))) AS days_held,
+        CASE
+            WHEN (NOT c.exit_on_stoch_80) THEN NULL::boolean
+            WHEN (p.side = 'short'::text) THEN ((CASE
+                    WHEN (c.exit_stoch_source = 'k_fast'::text) THEN s.k_fast
+                    ELSE s.k_full
+                END) <= c.exit_stoch_threshold_short)
+            ELSE ((CASE
+                    WHEN (c.exit_stoch_source = 'k_fast'::text) THEN s.k_fast
+                    ELSE s.k_full
+                END) >= c.exit_stoch_threshold)
+        END AS exit_signal_stoch,
+        CASE
+            WHEN (NOT c.exit_on_upper_band) THEN NULL::boolean
+            WHEN (p.side = 'short'::text) THEN (s.close <= s.bb_lower)
+            ELSE (s.close >= s.bb_upper)
+        END AS exit_signal_upper_band,
+        CASE
+            WHEN (NOT c.exit_on_mid_band) THEN NULL::boolean
+            WHEN (p.side = 'short'::text) THEN (s.close <= s.bb_mid)
+            ELSE (s.close >= s.bb_mid)
+        END AS exit_signal_mid_band,
+    (( SELECT count(*) AS count
+         FROM public.trading_days td
+        WHERE ((td.d > p.entry_date) AND (td.d <= CURRENT_DATE)))
+        >= c.max_hold_days) AS exit_signal_timeout,
+        CASE
+            WHEN (c.exit_stoch_source = 'k_fast'::text) THEN s.k_fast
+            ELSE s.k_full
+        END AS exit_stoch_k
+   FROM ((public.positions p
+     LEFT JOIN public.v_ticker_state s ON ((s.ticker = p.ticker)))
+     LEFT JOIN public.serving_config c ON (true))
+"""
+
 
 def upgrade() -> None:
     # 1. The settings table, seeded from `ExitParams()` defaults. Seeded
     #    rather than left empty: the view LEFT JOINs it, so an empty table
     #    would render every exit flag NULL until someone ran a CLI command
     #    nobody had been told about yet.
-    op.execute(SERVING_CONFIG_DDL)
+    op.execute(_SERVING_CONFIG_DDL_AT_THIS_REVISION)
 
     # `config_hash` is left empty here on purpose. Computing it needs
     # `jobs.config.config_hash`, and a migration that pins a hash pins the
     # config as of the day it was written - which is exactly the staleness
     # this whole change exists to remove. `cscan db sync-config` fills it.
-    values = serving_config_values()
-    op.get_bind().execute(sa.text(SERVING_CONFIG_UPSERT), values)
+    values = dict(_SEED_AT_THIS_REVISION)
+    op.get_bind().execute(sa.text(_SERVING_CONFIG_UPSERT_AT_THIS_REVISION), values)
 
     # 2. The view.
     op.execute("DROP VIEW IF EXISTS public.v_positions")
-    op.execute(V_POSITIONS_DDL)
+    op.execute(_V_POSITIONS_DDL_AT_THIS_REVISION)
 
 
 def downgrade() -> None:

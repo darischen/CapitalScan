@@ -56,19 +56,75 @@ from typing import Union
 
 from alembic import op
 
-from capitalscan.jobs.views import V_CHART_DDL, V_CHART_DDL_PRE_120
+from capitalscan.jobs.views import V_CHART_DDL_PRE_120
 
 revision: str = "c4a7e91b53d8"
 down_revision: Union[str, Sequence[str], None] = "b8f31c204e7a"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
+# ---------------------------------------------------------------------------
+# Frozen DDL. **Do not import these from `jobs/views.py`.**
+# ---------------------------------------------------------------------------
+#
+# A migration is a statement about one point in history; `jobs/views.py`
+# holds the *current* definition. Importing the live constant makes an old
+# migration emit tomorrow's SQL, and it breaks the moment a later migration
+# changes the object.
+#
+# It did, on 2026-08-19: ADR 122 added `events.in_trade`, and four earlier
+# migrations that imported `V_SCREEN_LIVE_DDL` began emitting
+# `AND e.in_trade` against a table without the column. Every from-scratch
+# replay failed with `UndefinedColumn`. **Invisible locally** -- a developer
+# applies only the new migrations, and only a full replay hits it, which is
+# what CI and any new deployment do.
+#
+# These are literals, captured as the objects stood at this revision.
+# `test_migrations_freeze_ddl.py` refuses any new import of a live one.
+
+_V_CHART_DDL_AT_THIS_REVISION = """CREATE VIEW public.v_chart AS
+ SELECT b.ticker,
+    b.ts,
+    b.open,
+    b.high,
+    b.low,
+    b.close,
+    b.volume,
+    i.bb_lower,
+    i.bb_mid,
+    i.bb_upper,
+    i.k_full,
+    i.d_full,
+    i.k_fast,
+    i.sma_200,
+    i.bb_width_pct,
+    i.dd_52w,
+    ev.event_ids,
+    ev.signal_types,
+    ev.sides,
+    ev.signal_strength
+   FROM public.bars b
+     LEFT JOIN public.indicators i ON ((i.ticker = b.ticker) AND (i.ts = b.ts)
+         AND (i."interval" = b."interval"))
+     LEFT JOIN LATERAL ( SELECT array_agg(e.id ORDER BY e.id) AS event_ids,
+            array_agg(e.signal_type ORDER BY e.id) AS signal_types,
+            array_agg(e.side ORDER BY e.id) AS sides,
+            max(e.signal_strength) AS signal_strength
+           FROM public.events e
+          WHERE ((e.ticker = b.ticker) AND (e.signal_date = (b.ts)::date)
+              AND (e.entry_kind = 'touch'::text)
+              AND (e.is_cluster_head IS NOT FALSE)
+              AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)))
+         ) ev ON true
+  WHERE (b."interval" = '1d'::text)
+"""
+
 
 def upgrade() -> None:
     # Dropped and recreated rather than replaced: `CREATE OR REPLACE VIEW`
     # cannot drop a column or change one's type, and this does both.
     op.execute("DROP VIEW IF EXISTS public.v_chart")
-    op.execute(V_CHART_DDL)
+    op.execute(_V_CHART_DDL_AT_THIS_REVISION)
 
 
 def downgrade() -> None:

@@ -38,6 +38,21 @@ export function signedPct(value: number | null | undefined, digits = 1): string 
   return value > 0 ? `+${s}%` : `${s}%`;
 }
 
+/**
+ * Market capitalisation, abbreviated.
+ *
+ * Two decimals at T and none below, because the interesting comparison
+ * changes scale: among trillion-dollar names the difference between 2.56T
+ * and 2.61T is the story, while at 195B nobody is reading the last digit.
+ */
+export function mcap(value: number | null | undefined): string {
+  if (value === null || value === undefined) return NONE;
+  if (value >= 1e12) return `${(value / 1e12).toFixed(2)}T`;
+  if (value >= 1e9) return `${(value / 1e9).toFixed(0)}B`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(0)}M`;
+  return String(Math.round(value));
+}
+
 /** Volume, abbreviated. A ten-digit share count in a dense row is noise. */
 export function vol(value: number | null | undefined): string {
   if (value === null || value === undefined) return NONE;
@@ -87,4 +102,31 @@ export function sessionsBetween(from: string | null, to: string | null): string 
  */
 export function normalizeSymbol(raw: string): string {
   return raw.toUpperCase().replace(/[^A-Z0-9.\-]/g, "").slice(0, 12);
+}
+
+/**
+ * The screener's URL for a given date, keeping the toggles.
+ *
+ * **Lives here rather than in `Screener.tsx` because a client component
+ * needs it too**, and a function cannot cross the server/client boundary as
+ * a prop — React has to serialize props into the RSC payload, and there is
+ * no wire form for a closure. Passing `href` to `DatePicker` threw
+ * `Functions cannot be passed directly to Client Components` at request
+ * time; `next build` compiles it happily, because it is a serialization
+ * fault rather than a type error.
+ *
+ * `null` means the newest date, which is the *absence* of the parameter.
+ * Setting it empty would send `?date=` and the route would receive `""`,
+ * which is neither a date nor missing.
+ */
+export function screenHref(
+  date: string | null,
+  { withStats, confluenceOnly }: { withStats: boolean; confluenceOnly: boolean },
+): string {
+  const q = new URLSearchParams();
+  if (date) q.set("date", date);
+  if (withStats) q.set("stats", "1");
+  if (!confluenceOnly) q.set("all", "1");
+  const query = q.toString();
+  return query ? `/?${query}` : "/";
 }

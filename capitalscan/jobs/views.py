@@ -527,6 +527,21 @@ _STATS_PROJECTION = """
 # pinned `'next_open'`. For this view they are the same value - it filters
 # `e.entry_kind = 'next_open'` - so the join is unchanged in behaviour and
 # now says *why* it is that kind.
+# **ADR 122 adds `e.in_trade` to both screener views.**
+#
+# Detection now records trade-universe membership rather than filtering on
+# it, so `events` holds roughly 4.4x the rows it used to and a screener
+# reading it unfiltered would list names outside the trade universe.
+#
+# Both consumers already join `v_universe` and filter there, so this is
+# defence in depth — but `v_universe` carries *current* membership while
+# the column carries membership **as of the bar**, which is the correct
+# question for a historical row. A name that left the universe in 2019
+# should keep its 2015 rows on the screener's own terms.
+#
+# `v_chart` and `v_events` deliberately do **not** take this predicate:
+# they are what `/ticker/[sym]` reads, and showing every firing on a name
+# you do not trade is the entire point of ADR 122.
 V_SCREEN_DDL = f"""
 CREATE VIEW public.v_screen AS
  SELECT e.ticker,
@@ -549,6 +564,7 @@ CREATE VIEW public.v_screen AS
    FROM public.events e
 {_CELL_JOIN}
   WHERE (e.is_cluster_head AND (e.entry_kind = 'next_open'::text)
+     AND e.in_trade
      AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)))
 """
 
@@ -615,6 +631,48 @@ CREATE VIEW public.v_screen AS
 #
 # All four are LATERAL-with-LIMIT or an equality join on a primary key, and
 # the `indicators_daily_latest` index (ADR 116) serves the band lookup.
+# **ADR 123 adds the poller's intraday reversal judgement.**
+#
+# Two different things carry the word "reversal" and they answer different
+# questions at different times:
+#
+# - `bear_close_above_upper` is close-confirmed (ADR 108/109). It lands in
+#   `signal_types_all` and only exists after that night's `cscan events`.
+# - `poll.py::reversal_state` is the live analogue (ADR 117): price above
+#   the band but below today's open. It exists only while the poller runs
+#   and only in `signal_reports.state_json`.
+#
+# The screener joined `signal_reports` for `min(fired_at)` and never read
+# `state_json`, so during a session the poller's terminal knew a confluence
+# was sitting below its open and the home page could not say so. The badge
+# could only appear the next morning.
+#
+# **The newest report, not the first.** `fired_at` deliberately takes
+# `min()` -- when the signal was first detected -- while the reversal takes
+# the latest row, because it is a statement about where price is *now* and
+# the earliest quote of the session is the least useful one. Two laterals
+# rather than one for exactly that reason.
+#
+# `state_json ? 'bear_reversal'` skips rows written before ADR 117 merged
+# (2026-08-18 11:18 PT); every report older than that lacks the key, and a
+# missing key would otherwise cast to NULL and read as "not a reversal"
+# rather than as "not recorded".
+# **ADR 124 moves the cluster-head filter out of this view.**
+#
+# It read `is_cluster_head IS NOT FALSE`, which was correct intraday and
+# wrong the next morning. The poller cannot cluster (ADR 054's gap window
+# needs the whole session) so its rows carry NULL and all of them passed;
+# overnight `cscan events` clustered them and the repeats became `false`,
+# so **rows visibly disappeared from a date between the session and the
+# next morning.**
+#
+# Measured on Thursday 2026-08-06: 19 confluence fires, 4 heads and 15
+# repeats. A reader watching live saw 19 and came back to 4, with nothing
+# on the page accounting for the other 15.
+#
+# `is_cluster_head` is still projected, so the caller decides. The screener
+# defaults to heads and offers every fire, which is the same shape the
+# ticker page's history already uses.
 V_SCREEN_LIVE_DDL = f"""
 CREATE VIEW public.v_screen_live AS
  SELECT e.ticker,
@@ -648,6 +706,10 @@ CREATE VIEW public.v_screen_live AS
     lq.price AS live_price,
     lq.ts AS live_price_ts,
     fr.fired_at,
+    rev.confirmed AS rev_confirmed,
+    rev.above_band AS rev_above_band,
+    rev.open_gap_atr AS rev_open_gap_atr,
+    rev.rev_ts,
 {_STATS_PROJECTION}
    FROM public.events e
      LEFT JOIN LATERAL ( SELECT i2.bb_lower, i2.bb_mid, i2.bb_upper, i2.ts
@@ -666,8 +728,19 @@ CREATE VIEW public.v_screen_live AS
      LEFT JOIN LATERAL ( SELECT min(r.fired_at) AS fired_at
            FROM public.signal_reports r
           WHERE (r.event_id = e.id)) fr ON (true)
+     LEFT JOIN LATERAL ( SELECT
+              (r2.state_json -> 'bear_reversal' ->> 'confirmed')::boolean AS confirmed,
+              (r2.state_json -> 'bear_reversal' ->> 'above_band')::boolean AS above_band,
+              (r2.state_json -> 'bear_reversal' ->> 'open_gap_atr')::numeric AS open_gap_atr,
+              r2.fired_at AS rev_ts
+           FROM public.signal_reports r2
+          WHERE ((r2.event_id = e.id)
+              AND (r2.state_json ? 'bear_reversal'))
+          ORDER BY r2.fired_at DESC
+         LIMIT 1) rev ON (true)
 {_CELL_JOIN}
-  WHERE ((e.entry_kind = 'touch'::text) AND (e.is_cluster_head IS NOT FALSE)
+  WHERE ((e.entry_kind = 'touch'::text)
+     AND e.in_trade
      AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)))
 """
 
@@ -859,4 +932,144 @@ CREATE VIEW public.v_chart AS
          AND (e.signal_date = (b.ts)::date) AND e.is_cluster_head
          AND (e.entry_kind = 'next_open'::text))))
   WHERE (b."interval" = '1d'::text)
+"""
+
+
+# ---------------------------------------------------------------------------
+# v_stats (ADR 126)
+# ---------------------------------------------------------------------------
+#
+# **The view predates `cell_stats.arm` and never gained it.** ADR 105 added
+# the column to separate a measured arm from a recommended one; `v_stats`
+# was written before that and DESIGN §8.2's DDL still omits it.
+#
+# So the serving surface for statistics could not express the one predicate
+# that keeps the control and benchmark arms out of a rate. `v_screen` and
+# `v_screen_live` join `cell_stats` directly and pin `arm = 'signal'`
+# themselves, which hid it: every path that mattered had its own copy of
+# the filter, and the view nobody had queried yet did not.
+#
+# Found when `/` first ran with `?stats=1` against the live database --
+# `web/lib/screen.ts` filters `arm = 'signal'` on `v_stats` and every
+# request returned `column "arm" does not exist`. The toggle had been
+# broken since Session 17 shipped, because the statistics panel was only
+# ever tested against a fixture.
+V_STATS_DDL = """CREATE VIEW public.v_stats AS
+SELECT cell_id,
+    run_id,
+    config_hash,
+    signal_type,
+    dd_bucket,
+    signal_strength,
+    side,
+    entry_kind,
+    arm,
+    split_key,
+    era,
+    horizon_days,
+    target_pct,
+    n_events,
+    n_eff,
+    n_tickers,
+    mean_cofire,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE p_hit
+        END AS p_hit,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE baseline_empirical
+        END AS baseline,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE edge
+        END AS edge,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE ci_low
+        END AS ci_low,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE ci_high
+        END AS ci_high,
+    q_value,
+    p_value_randomization,
+    mean_ret,
+    median_ret,
+    ret_p25,
+    ret_p75,
+    mean_mfe,
+    mean_mae,
+    median_time_to_mfe,
+    capture_ratio,
+    p_touch_2pct,
+    p_touch_3pct,
+    p_touch_5pct,
+    p_touch_10pct,
+    median_day_touch_5pct,
+    exit_mix,
+    earnings_frac,
+    suppressed,
+    suppress_reason
+   FROM cell_stats
+"""
+
+# `v_stats` as it stood before ADR 126, for `downgrade()`.
+V_STATS_DDL_PRE_126 = """CREATE VIEW public.v_stats AS
+SELECT cell_id,
+    run_id,
+    config_hash,
+    signal_type,
+    dd_bucket,
+    signal_strength,
+    side,
+    entry_kind,
+    split_key,
+    era,
+    horizon_days,
+    target_pct,
+    n_events,
+    n_eff,
+    n_tickers,
+    mean_cofire,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE p_hit
+        END AS p_hit,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE baseline_empirical
+        END AS baseline,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE edge
+        END AS edge,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE ci_low
+        END AS ci_low,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE ci_high
+        END AS ci_high,
+    q_value,
+    p_value_randomization,
+    mean_ret,
+    median_ret,
+    ret_p25,
+    ret_p75,
+    mean_mfe,
+    mean_mae,
+    median_time_to_mfe,
+    capture_ratio,
+    p_touch_2pct,
+    p_touch_3pct,
+    p_touch_5pct,
+    p_touch_10pct,
+    median_day_touch_5pct,
+    exit_mix,
+    earnings_frac,
+    suppressed,
+    suppress_reason
+   FROM cell_stats
 """

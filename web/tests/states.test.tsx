@@ -127,6 +127,7 @@ function row(over: Partial<ScreenRow> = {}): ScreenRow {
     firedAt: "2026-08-18T13:35:12.000Z",
     cellId: "cell-1",
     isClusterHead: null,
+    reversal: null,
     stats: null,
     ...over,
   } as ScreenRow;
@@ -161,6 +162,53 @@ describe("gate 7: the staleness banner triggers above 2 days", () => {
     expect(html).toContain("strip stale");
   });
 
+  it("links to the neighbouring dates that have rows", () => {
+    const html = renderToStaticMarkup(
+      <StatusStrip
+        meta={meta()}
+        fired={4}
+        signalDate="2026-08-18"
+        prevDate="2026-08-13"
+        nextDate={null}
+      />,
+    );
+    expect(html).toContain("date=2026-08-13");
+    // No next date means the newest screen, so no "latest" shortcut to the
+    // page you are already reading.
+    expect(html).not.toContain(">latest<");
+  });
+
+  /**
+   * The arrows must carry the filters. A link that dropped `?all=1` would
+   * change the filter as well as the date, and the reader would read the
+   * difference in row count as a change in the market.
+   */
+  it("keeps the toggles when stepping to another date", () => {
+    const html = renderToStaticMarkup(
+      <StatusStrip
+        meta={meta()}
+        fired={4}
+        signalDate="2026-08-18"
+        prevDate="2026-08-13"
+        nextDate="2026-08-19"
+        withStats
+        confluenceOnly={false}
+      />,
+    );
+    expect(html).toContain("stats=1");
+    expect(html).toContain("all=1");
+    // And "latest" is the absence of a date, never an empty one.
+    expect(html).not.toContain("date=&");
+    expect(html).not.toMatch(/date=(?=["&])/);
+  });
+
+  it("renders a disabled arrow at the end of the history rather than removing it", () => {
+    const html = renderToStaticMarkup(
+      <StatusStrip meta={meta()} fired={0} signalDate="2010-01-05" prevDate={null} nextDate="2010-01-06" />,
+    );
+    expect(html).toContain('class="off"');
+  });
+
   it("reports the read-write role when the read-only one is unset", () => {
     const html = renderToStaticMarkup(
       <StatusStrip meta={meta({ readOnly: false })} fired={0} signalDate={null} />,
@@ -188,6 +236,76 @@ describe("gate 6: the empty state carries a last-fire reference", () => {
   it("says so when there is no fire to point at", () => {
     const html = renderToStaticMarkup(<EmptyState last={null} />);
     expect(html).toContain("No events recorded for this config.");
+  });
+});
+
+/* --- reversals (ADR 117, ADR 123) --------------------------------------- */
+
+describe("the two reversals are told apart", () => {
+  const render = (over: Partial<ScreenRow>) =>
+    renderToStaticMarkup(<ScreenerTable rows={[row(over)]} withStats={false} />);
+
+  it("shows the close-confirmed reversal as a solid badge", () => {
+    const html = render({
+      signalTypesAll: ["bear_close_above_upper", "confluence_high", "bb_upper_touch"],
+    });
+    expect(html).toContain("↓ reversal");
+    expect(html).not.toContain("live reversal");
+  });
+
+  it("shows the poller's live reversal, marked as live", () => {
+    const html = render({
+      reversal: {
+        confirmed: true,
+        aboveBand: true,
+        openGapAtr: -0.31,
+        ts: "2026-08-19T14:05:00.000Z",
+      },
+    });
+    expect(html).toContain("↓ live reversal");
+    expect(html).toContain("reversal live");
+  });
+
+  /**
+   * Close-confirmed wins. It is a settled fact about a finished session;
+   * the poller's is a statement about a moment, and once the close has
+   * spoken the moment no longer matters.
+   */
+  it("prefers the close-confirmed one when both exist", () => {
+    const html = render({
+      signalTypesAll: ["bear_close_above_upper", "confluence_high"],
+      reversal: {
+        confirmed: true,
+        aboveBand: true,
+        openGapAtr: -0.31,
+        ts: "2026-08-19T14:05:00.000Z",
+      },
+    });
+    expect(html).toContain("↓ reversal");
+    expect(html).not.toContain("live reversal");
+  });
+
+  /**
+   * The near-miss is the reason ADR 117 chose option B: show every
+   * confluence and say how far each is from confirming. A badge that
+   * appeared only on confirmation would put that decision back.
+   */
+  it("renders a near miss with its distance rather than nothing", () => {
+    const html = render({
+      reversal: {
+        confirmed: false,
+        aboveBand: true,
+        openGapAtr: 0.42,
+        ts: "2026-08-19T14:05:00.000Z",
+      },
+    });
+    expect(html).toContain("0.42 ATR vs open");
+    expect(html).toContain("reversal near");
+  });
+
+  it("shows nothing when the poller has not evaluated the row", () => {
+    const html = render({ reversal: null });
+    expect(html).not.toContain("reversal");
   });
 });
 
@@ -335,6 +453,73 @@ describe("the ticker page's states", () => {
     expect(html).toContain("next_open");
   });
 
+  it("labels the headline price as a close, and shows the session's OHLC", () => {
+    const bar = {
+      ts: "2026-08-18",
+      open: 410,
+      high: 416.2,
+      low: 409.1,
+      close: 413.41,
+      volume: 14_000_000,
+      bbLower: null,
+      bbMid: null,
+      bbUpper: null,
+      kFull: null,
+      dFull: null,
+      kFast: null,
+      sma200: null,
+      eventIds: [],
+      signalTypes: [],
+      sides: [],
+      signalStrength: null,
+    };
+    const html = renderToStaticMarkup(
+      <TickerHeader state={state()} meta={meta()} fired={3} latest={bar} />,
+    );
+    expect(html).toContain(">close<");
+    expect(html).toContain("410.00");
+    expect(html).toContain("416.20");
+    expect(html).toContain("409.10");
+  });
+
+  /** The chart can be empty — a symbol with state but no bars in range —
+   * and the header must render without it rather than print four dashes. */
+  it("omits the OHLC when there is no bar", () => {
+    const html = renderToStaticMarkup(
+      <TickerHeader state={state()} meta={meta()} fired={3} latest={null} />,
+    );
+    expect(html).not.toContain("tag ohlc");
+    expect(html).toContain(">close<");
+  });
+
+  /** The screener already showed a live price and the ticker page did not,
+   * so during a session the same ticker read as two different numbers on
+   * two pages. */
+  it("leads with the poller's price when there is one, and still shows the close", () => {
+    const html = renderToStaticMarkup(
+      <TickerHeader
+        state={state()}
+        meta={meta()}
+        fired={3}
+        live={{ price: 415.22, ts: "2026-08-18T17:35:00.000Z", aheadOfBar: false }}
+      />,
+    );
+    expect(html).toContain(">live<");
+    expect(html).toContain("415.22");
+    // The close never disappears: every band, indicator and signal on the
+    // page was computed from it and not from the quote.
+    expect(html).toContain(">close<");
+    expect(html).toContain("413.41");
+  });
+
+  it("shows only the close when the poller has nothing for this session", () => {
+    const html = renderToStaticMarkup(
+      <TickerHeader state={state()} meta={meta()} fired={3} live={null} />,
+    );
+    expect(html).not.toContain(">live<");
+    expect(html).toContain("num big");
+  });
+
   it("says when a ticker is outside the trade universe", () => {
     const inside = renderToStaticMarkup(
       <TickerHeader state={state({ inTrade: true })} meta={meta()} fired={3} />,
@@ -402,16 +587,19 @@ describe("the band gauge", () => {
 /* --- gate 8: both %K series --------------------------------------------- */
 
 describe("gate 8: both %K series are named and distinguishable", () => {
-  it("the legend names all three stochastic lines", () => {
+  it("the legend names both stochastic lines", () => {
     const html = renderToStaticMarkup(<ChartLegend />);
-    expect(html).toContain("%K fast");
-    expect(html).toContain("%K slow");
-    expect(html).toContain("%D");
-    // Different classes means different colours and dash patterns, which is
-    // what "distinguishable" has to mean for three lines in one panel.
+    expect(html).toContain("fast");
+    expect(html).toContain("slow");
+    expect(html).toContain("Stochastic");
+    // Different classes means different colours, which is what
+    // "distinguishable" has to mean for two lines that sit within
+    // `fast_agreement_tol` of each other by construction.
     expect(html).toContain("ln kfast");
-    expect(html).toContain("ln kfull dash");
-    expect(html).toContain("ln dfull");
+    expect(html).toContain("ln kfull");
+    // %D is deliberately gone: nothing in the system reads it.
+    expect(html).not.toContain("%D");
+    expect(html).not.toContain("dfull");
   });
 
   /** ADR 110 gates the signal on the two agreeing within
@@ -422,6 +610,23 @@ describe("gate 8: both %K series are named and distinguishable", () => {
     expect(html).toContain("53.3");
     expect(html).toContain("76.7");
     expect(html).toContain("23.4");
+  });
+
+  it("shows market cap at the end of the rail", () => {
+    const html = renderToStaticMarkup(<StateRail state={state({ mcapUsd: 2.476e12 })} />);
+    expect(html).toContain("market cap");
+    expect(html).toContain("2.48T");
+  });
+
+  /** A name with no `universe` snapshot has no cap. The placeholder is the
+   * same em-dash every other missing value uses, never a zero. */
+  it("renders the placeholder when there is no market cap", () => {
+    const html = renderToStaticMarkup(<StateRail state={state({ mcapUsd: null })} />);
+    // Scoped to the cell. A looser `not.toContain("0M")` fails on the
+    // volume beside it, which legitimately renders `14.0M`.
+    const cell = html.slice(html.indexOf("market cap"));
+    expect(cell.slice(0, 80)).toContain("—");
+    expect(cell.slice(0, 80)).not.toMatch(/\d/);
   });
 
   it("prints no gap when one of them is missing, rather than a wrong one", () => {

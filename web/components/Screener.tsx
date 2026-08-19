@@ -1,4 +1,5 @@
-import { SIGNAL_LABELS, clock, fmt, pct, sessionsBetween, vol } from "@/lib/format";
+import DatePicker from "./DatePicker";
+import { SIGNAL_LABELS, clock, fmt, pct, screenHref, sessionsBetween, vol } from "@/lib/format";
 import type { CellStats, Meta, ScreenRow, Suppressed } from "@/lib/screen";
 
 /**
@@ -40,10 +41,21 @@ export function StatusStrip({
   meta,
   fired,
   signalDate,
+  prevDate,
+  nextDate,
+  withStats = false,
+  confluenceOnly = true,
 }: {
   meta: Meta;
   fired: number;
   signalDate: string | null;
+  /** The nearest dates each way that actually have rows. `null` at the ends
+   * of the history, where the arrow renders disabled rather than absent —
+   * a control that disappears makes the strip reflow. */
+  prevDate?: string | null;
+  nextDate?: string | null;
+  withStats?: boolean;
+  confluenceOnly?: boolean;
 }) {
   // Two dates, deliberately. `signalDate` is what is on screen; `asOf` is how
   // current the database is. They diverge whenever the last backtest is
@@ -52,9 +64,57 @@ export function StatusStrip({
   const trailing = signalDate !== null && meta.asOf !== null && signalDate < meta.asOf;
   return (
     <div className={meta.stale ? "strip stale" : "strip"}>
-      <strong className="num" title="signal date shown">
-        signals {signalDate ?? "—"}
-      </strong>
+      {/* Date navigation (user's request, 2026-08-19). Steps to the next
+          date that *has rows under the current filters*, not to the next
+          trading day: most sessions fire nothing, and stepping by calendar
+          would walk a reader through a run of empty screens.
+
+          `←` is older and `→` is newer, matching the chart's time axis
+          rather than a browser's history. */}
+      <span className="datenav">
+        {prevDate ? (
+          <a
+            href={screenHref(prevDate, { withStats, confluenceOnly })}
+            title={`previous date with rows: ${prevDate}`}
+            aria-label={`Previous date with signals, ${prevDate}`}
+          >
+            ←
+          </a>
+        ) : (
+          <span className="off" aria-hidden="true">
+            ←
+          </span>
+        )}
+        {signalDate ? (
+          <DatePicker
+            date={signalDate}
+            withStats={withStats}
+            confluenceOnly={confluenceOnly}
+          />
+        ) : (
+          <strong className="num">signals —</strong>
+        )}
+        {nextDate ? (
+          <a
+            href={screenHref(nextDate, { withStats, confluenceOnly })}
+            title={`next date with rows: ${nextDate}`}
+            aria-label={`Next date with signals, ${nextDate}`}
+          >
+            →
+          </a>
+        ) : (
+          <span className="off" aria-hidden="true">
+            →
+          </span>
+        )}
+        {/* Only when you are not on it. On the newest date it would be a
+            link to the page you are already reading. */}
+        {nextDate && (
+          <a className="latest" href={screenHref(null, { withStats, confluenceOnly })}>
+            latest
+          </a>
+        )}
+      </span>
       {trailing && (
         <span className="stale-badge num" title="v_screen shows entry_kind='next_open', which only cscan backtest writes">
           trails bars by {sessionsBetween(signalDate, meta.asOf)}
@@ -130,6 +190,63 @@ function StatsCell({ stats }: { stats: CellStats | Suppressed | null }) {
   );
 }
 
+
+/**
+ * The reversal state, in whichever of its two forms this row has.
+ *
+ * **Close-confirmed wins when both exist.** `bear_close_above_upper` is a
+ * settled fact about a finished session (ADR 108/109); the poller's
+ * judgement is a statement about a moment, and once the close has spoken
+ * the moment no longer matters.
+ *
+ * The live form is styled apart from it — dashed, prefixed `live` — because
+ * the two carry different certainty and a reader deciding on a short needs
+ * to know which one they are looking at. ADR 111 makes the *confirmed* one
+ * the actionable condition.
+ *
+ * The near-miss renders too, with its distance. ADR 117 chose to show every
+ * confluence and say how far each is from confirming rather than hide the
+ * ones that had not; a badge that appeared only on confirmation would put
+ * that decision back.
+ */
+function ReversalBadge({ row }: { row: ScreenRow }) {
+  if (row.signalTypesAll.includes("bear_close_above_upper")) {
+    return (
+      <span className="reversal" title="closed above the band and below its open: ADR 111's confirming reversal">
+        ↓ reversal
+      </span>
+    );
+  }
+
+  const rev = row.reversal;
+  if (!rev) return null;
+
+  // Negative is below the open and therefore reversing.
+  const gap = rev.openGapAtr === null ? null : `${rev.openGapAtr.toFixed(2)} ATR vs open`;
+
+  if (rev.confirmed) {
+    return (
+      <span
+        className="reversal live"
+        title={`poller at ${clock(rev.ts)} ET: above the band and below today's open${gap ? ` (${gap})` : ""}`}
+      >
+        ↓ live reversal
+      </span>
+    );
+  }
+
+  // Evaluated and not reversing. Muted, and it carries the distance — this
+  // is the row a reader checks to see how close it came.
+  return (
+    <span
+      className="reversal near"
+      title={`poller at ${clock(rev.ts)} ET: not reversing${gap ? ` (${gap})` : ""}`}
+    >
+      {gap ?? "no reversal"}
+    </span>
+  );
+}
+
 export function ScreenerTable({
   rows,
   withStats,
@@ -187,14 +304,24 @@ export function ScreenerTable({
                 data rather than assumed -- so the leading label is the one
                 that names the row and the rest are dimmed as context. */}
             <td className="sig" data-label="Signal">
-              {typeList(row).map((t, i) => (
-                <span key={t}>
-                  {i > 0 && <span className="sep-dot"> · </span>}
-                  <span className={i === 0 ? undefined : "dim"}>
-                    {SIGNAL_LABELS[t] ?? t}
+              {typeList(row)
+                .filter((t) => t !== "bear_close_above_upper")
+                .map((t, i) => (
+                  <span key={t}>
+                    {i > 0 && <span className="sep-dot"> · </span>}
+                    <span className={i === 0 ? undefined : "dim"}>{SIGNAL_LABELS[t] ?? t}</span>
                   </span>
-                </span>
-              ))}
+                ))}
+              {/* Pulled out of the list and badged (user's request,
+                  2026-08-19). ADR 111 makes a short actionable only with a
+                  confirming reversal, so this is the one label that changes
+                  what a reader does rather than describing what fired — and
+                  as the fourth word in a list of four it read like the
+                  least important of them.
+
+                  Rare enough to earn the treatment: 116 of 4,306
+                  confluences. */}
+              <ReversalBadge row={row} />
             </td>
             <td className="r num" data-label="Str">
               {row.signalStrength}

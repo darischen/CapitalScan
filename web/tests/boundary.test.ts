@@ -117,6 +117,7 @@ describe("parameterisation", () => {
     "${CONFLUENCE_RANK}",
     "${CONFLUENCE_FILTER}",
     "${CHART_COLUMNS}",
+    "${FEED_DOMAIN}",
   ]);
 
   it.each(sources())("%s interpolates nothing user-supplied into SQL", (path) => {
@@ -136,21 +137,81 @@ describe("the client boundary", () => {
    * external, which turns a stray import into a build error, and this is the
    * cheaper check that says which file did it.
    */
-  it("the client components are exactly the three that need a browser", () => {
+  it("the client components are exactly the four that need a browser", () => {
     const clients = sources()
       .filter((p) => /^\s*["']use client["']/.test(read(p)))
       .map((p) => relative(ROOT, p).split(sep).join("/"))
       .sort();
-    // Each earns it: a canvas chart, an IntersectionObserver, and a
-    // keyboard-driven menu. The list is asserted whole rather than as a
-    // count so that adding a fourth is a decision someone makes here.
+    // Each earns it: a popover calendar, an IntersectionObserver, a canvas
+    // chart, and a keyboard-driven menu. The list is asserted whole rather
+    // than as a count, so adding one is a decision someone makes here.
     expect(clients).toEqual([
+      "components/DatePicker.tsx",
       "components/EventRows.tsx",
       "components/TickerChart.tsx",
       "components/TickerSearch.tsx",
     ]);
     for (const path of sources().filter((p) => /^\s*["']use client["']/.test(read(p)))) {
       expect(code(path)).not.toMatch(/from "pg"|@\/lib\/db/);
+    }
+  });
+});
+
+describe("props crossing the server/client boundary", () => {
+  /**
+   * **A function cannot be a prop on a client component.** React serializes
+   * props into the RSC payload and there is no wire form for a closure, so
+   * it throws `Functions cannot be passed directly to Client Components` at
+   * request time — every page render, in production.
+   *
+   * Nothing else catches it. `tsc` is happy: the prop type is a function
+   * and the value is a function. `next build` is happy: it compiles, and
+   * the fault only exists once a render serializes. The component tests use
+   * `renderToStaticMarkup`, which does not serialize at all.
+   *
+   * Shipped once, on `DatePicker`, and took a 500 with an opaque digest to
+   * find.
+   *
+   * **The first version of this test did not work**, which is worth
+   * recording: it matched the tag as `<Name[^>]*`, and `[^>]*` stops at the
+   * `>` inside `=>`. It passed against the exact code it was written to
+   * catch. A window of characters after the tag name has no such hole.
+   */
+  const CLIENT = ["DatePicker", "EventRows", "TickerChart", "TickerSearch"];
+
+  /** Long enough to cover a multi-line JSX tag, short enough not to run
+   * into the next element's props. */
+  const WINDOW = 500;
+
+  it.each(sources())("%s passes no function into a client component", (path) => {
+    const text = code(path);
+    for (const name of CLIENT) {
+      // `\\b`, not `\b`. In a template literal `\b` is a backspace
+      // character, so the first version of this matched nothing and passed
+      // against the exact code it was written to catch.
+      const open = new RegExp(`<${name}\\b`, "g");
+      let m: RegExpExecArray | null;
+      while ((m = open.exec(text)) !== null) {
+        // Up to the tag's own close, or a fixed window when the close is
+        // further than any real prop list would be.
+        const rest = text.slice(m.index, m.index + WINDOW);
+        const close = rest.search(/\/>|>\s*$/m);
+        const tag = close === -1 ? rest : rest.slice(0, close);
+        expect(tag, `${relative(ROOT, path)} passes a closure to <${name}>`).not.toMatch(
+          /=\{\s*(?:\([^)]*\)|\w+)\s*=>/,
+        );
+        expect(tag, `${relative(ROOT, path)} passes a function to <${name}>`).not.toMatch(
+          /=\{\s*(?:async\s+)?function/,
+        );
+      }
+    }
+  });
+
+  it("finds the client components it claims to check", () => {
+    // Guards the list above against a rename making every assertion vacuous.
+    for (const name of CLIENT) {
+      const file = join(ROOT, "components", `${name}.tsx`);
+      expect(readFileSync(file, "utf8")).toMatch(/^\s*["']use client["']/);
     }
   });
 });

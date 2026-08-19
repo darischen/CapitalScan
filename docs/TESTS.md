@@ -1863,6 +1863,134 @@ independently of whether the pictures are on disk.
       verified end to end against the live database
 - [x] Determinism: identical requests return identical responses
 
+## Overnight 2026-08-19: three guards, and what they cost to get right
+
+Three tests written after three defects, and two of them were wrong on the
+first attempt in ways worth recording — a test written to catch a specific
+bug is worthless until you have watched it fail on that bug.
+
+### `test_events_in_trade_filter.py` — 27 tests
+
+ADR 122 moved a guarantee out of one place and spread it across eighteen.
+Before it, `events` could not contain an out-of-trade row, so no consumer
+needed a predicate. After it, every read widens ~4.4x without one and
+**nothing about the output looks wrong** — `cell_stats` returns more events
+per cell, `n_eff` rises, every number stays internally consistent.
+
+- A sweep over `jobs/`, `research/` and `handlers/`: any module reading
+  `FROM events` either filters `in_trade` or appears in `KNOWN_UNFILTERED`
+  with a stated reason. Seven entries, each keyed on something narrower
+  than a population — one event id, one run, one ticker.
+- A test that every allowlist entry **still reads `events`**, the
+  `threshold_lint.KNOWN_EXCEPTIONS` pattern: an exemption kept past its fix
+  hides a working thing instead of documenting a broken one.
+- `scan` and `run_events` asserted **by name**, not left to the sweep,
+  because `scan`'s docstring used to say it did not need the predicate.
+- The four serving views asserted one at a time, **including the two that
+  must not filter**. `v_chart` and `v_events` feed the ticker page; adding
+  the predicate there is the obvious thing for someone to do later and
+  would undo the ADR entirely.
+
+**The file-level sweep false-passed on `jobs/views.py`**, matching
+`v_ticker_state`'s projected `u.in_trade` column rather than any predicate.
+That is why the per-view assertions exist: a sweep that can pass for the
+wrong reason is worth exactly as much as the reason.
+
+### `test_migrations_freeze_ddl.py` — 27 tests
+
+ADR 125. Parses every migration's imports and refuses a live name from
+`jobs/views.py`; a second test asserts anything named `_AT_THIS_REVISION`
+is `literal_eval`-able, so the name cannot be attached to a computed value
+and keep the defect.
+
+It found **four latent instances** beyond the four that had broken —
+`a3c8e15d40b7`, `c4a7e91b53d8`, `d7f4b91c26ea` were waiting on the next
+edit to `v_ticker_state`, `v_chart` or `v_positions`.
+
+**The real verification is a replay, and the test does not replace it.**
+Scratch database, `alembic upgrade head`, md5 over `pg_get_viewdef` for
+every view against production: `fac6d6b13ea438277600a88f8d6dfc0e` both
+ways; then `downgrade -4` and back up, same digest. Nothing about reading a
+migration establishes that.
+
+### `web/tests/boundary.test.ts` — the function-prop guard
+
+A function cannot be a prop on a client component: React serializes props
+into the RSC payload and there is no wire form for a closure. It throws at
+**request time**, on every render.
+
+Nothing in the pipeline catches it. `tsc` is happy — the prop type is a
+function and the value is a function. `next build` is happy — it compiles,
+and the fault only exists once a render serializes. The component tests use
+`renderToStaticMarkup`, which does not serialize at all.
+
+**Two attempts passed against the exact code they were written to catch.**
+
+1. Matched the tag as `<Name[^>]*`. `[^>]*` stops at the `>` inside `=>`,
+   so it never saw the arrow.
+2. Built the tag regex in a template literal, where `\b` is a backspace
+   character rather than a word boundary. It matched nothing at all.
+
+The third works and was verified the only way that means anything:
+re-inject the bad line, watch it fail with the right message, restore it,
+watch it pass.
+
+Both failures were escaping collapsing through layers — Python heredoc,
+shell, file, JS template literal, regex. Writing the file directly instead
+of generating it would have avoided both.
+
+### `web/tests/legend.test.ts` — 7 tests
+
+The legend's swatches and the chart's series must resolve to the same
+token. The slow stochastic was recoloured in `TickerChart.tsx` and its
+swatch was not, so the legend showed a blue line the chart never painted.
+Neither file was wrong on its own.
+
+The test reads source rather than rendering: the chart is a canvas, so the
+colour never becomes a DOM property, and a screenshot diff would be
+comparing anti-aliased pixels to catch a token rename. It also asserts the
+two stochastic lines resolve to *different* tokens — they sit within
+`fast_agreement_tol` of each other by construction, so identical colours
+would draw one line on top of itself and pass every other test.
+
+It immediately found a second instance: the band swatch had no rule of its
+own and inherited `--muted`. Right colour, and an inherited colour is not a
+promise anything can check.
+
+### Web suite totals
+
+| File | Tests |
+|---|---|
+| `boundary.test.ts` | 118 |
+| `states.test.tsx` | 52 |
+| `ticker.test.ts` | 24 |
+| `live.test.ts` | 17 |
+| `screen.test.ts` | 15 |
+| `legend.test.ts` | 7 |
+| **Total** | **233** |
+
+`live.test.ts` skips itself without a connection string, which is how CI
+runs — its container has a migrated schema and no data. The skip is loud
+rather than silent, because a suite that passes with nothing connected is
+the shape of test that reports green forever.
+
+---
+
+
+### One more thing the rebuild broke, which is the right kind of failure
+
+`live.test.ts` asserted `confluence.length < everything.length` on two
+lists capped at `MAX_EVENT_LIMIT`. After ADR 122's rebuild TSM has **377
+confluences against 2,292 total**, so both lists came back at 200 and the
+assertion read `200 < 200`.
+
+The property is real; the measurement was not. It compares `countEvents`
+now, which is uncapped. Worth noting because a data-dependent test that
+passes only while a limit does not bind is a test with an expiry date on
+it, and nothing marks the date.
+
+---
+
 **Session 17 (routes) — passed 2026-08-19. Session 18 (research, chat) — not started.**
 
 - [ ] Validator rejects a crafted naked-probability response

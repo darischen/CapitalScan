@@ -784,15 +784,25 @@ table.screen td.rail span[data-side="short"] {
   border-top-color: var(--flag);
 }
 
+/* Declared rather than inherited from `.legend .ln`, even though the base
+ * rule already resolves to `--muted`. An inherited colour is not a promise
+ * anything can check, and `legend.test.ts` compares this against the token
+ * the band series is drawn in. */
+.legend .ln.band {
+  border-top-color: var(--muted);
+}
+
 .legend .ln.kfast {
   border-top-color: var(--text);
 }
 
+/* Grey, matching the line. It was `--long` while the chart drew the slow
+ * series in blue; the chart moved to grey and this did not, so the legend
+ * spent a day claiming a colour the chart never painted.
+ *
+ * A swatch is a promise about a pixel somewhere else on the page, and
+ * nothing enforces it — `test_chart_legend_colors.ts` now does. */
 .legend .ln.kfull {
-  border-top-color: var(--long);
-}
-
-.legend .ln.dfull {
   border-top-color: var(--muted);
 }
 
@@ -977,4 +987,356 @@ table.screen td.rail span[data-side="short"] {
   .search-menu {
     min-width: 100%;
   }
+}
+
+/* --- crosshair readouts ------------------------------------------------ */
+
+/* HTML over the canvas, not drawn into it: text that selects, inherits the
+ * page's tokens, and needs no font loaded into a chart config.
+ *
+ * `pointer-events: none` throughout. The chart's whole interaction model is
+ * a drag, and an overlay that swallows a mousedown breaks it in a way that
+ * feels like the chart is broken rather than the label. */
+
+.chart-holder {
+  position: relative;
+}
+
+.chart-hover {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* The day's bar. Semi-translucent so the candles stay readable underneath —
+ * the box sits over the series it describes, and an opaque panel would hide
+ * the shape the reader is tracing. */
+.ohlcv {
+  position: absolute;
+  top: 8px;
+  /* Wider now the labels are words. Still capped: it sits over the candles
+     and a panel that covers a quarter of the pane hides the shape the
+     reader is tracing. */
+  background: rgba(27, 31, 36, 0.82);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 5px 8px;
+  backdrop-filter: blur(3px);
+  min-width: 150px;
+}
+
+.ohlcv .d {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+
+.ohlcv dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0 10px;
+  margin: 0;
+  font-size: 11.5px;
+}
+
+/* Word labels, so the sans face rather than the mono one — the mono is for
+ * numbers, and setting a word in it makes the label compete with the value
+ * beside it. */
+.ohlcv dt {
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 11px;
+}
+
+.ohlcv dd {
+  margin: 0;
+  text-align: right;
+  color: var(--text);
+}
+
+/* Beside the dots. Coloured to match its own line, so a value is matched to
+ * a series by colour rather than by reading a label — which is the whole
+ * reason the two lines are white and grey. */
+.stoch-tag {
+  position: absolute;
+  transform: translateY(-50%);
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 2px;
+  background: rgba(20, 23, 26, 0.78);
+}
+
+.stoch-tag.fast {
+  color: var(--text);
+}
+
+.stoch-tag.slow {
+  color: var(--muted);
+}
+
+.legend .grp-name {
+  margin-left: 4px;
+  color: var(--muted);
+}
+
+.stoch-tag.band {
+  color: var(--muted);
+}
+
+.stoch-tag.sma {
+  color: var(--flag);
+}
+
+/* "close", left of the price. Sized and coloured as a label so it reads as
+ * one, not as part of the number. */
+.tk-price .k {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* The session's OHLC in the tag row. Letters dimmer than the numbers, so
+ * the eye lands on the values and uses the letters only to locate one. */
+.tag.ohlc {
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+
+/* The colon belongs to the label, so no right margin: `O:410.00` reads as
+ * one token, which is what makes four of them scannable in a row. */
+.tag.ohlc b {
+  font-weight: 400;
+  color: var(--muted);
+  margin-left: 7px;
+}
+
+.tag.ohlc b:first-child {
+  margin-left: 0;
+}
+
+/* The side column. Same two colours as the rail beside it and as every
+ * other direction cue on the page — one palette carries direction
+ * everywhere, so a warm word under a warm rail is agreement rather than
+ * two conventions competing. */
+.side {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.side.long {
+  color: var(--long);
+}
+
+.side.short {
+  color: var(--short);
+}
+
+/* --- date navigation --------------------------------------------------- */
+
+/* The arrows bracket the date they move, so the control reads as one thing
+ * rather than as two links that happen to sit near a label. */
+
+.datenav {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.datenav a {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.datenav a:hover {
+  color: var(--text);
+}
+
+/* Rendered, not removed, at the ends of the history. A control that
+ * disappears makes the whole strip reflow, and the reader reads the shift
+ * as something having changed in the data. */
+.datenav .off {
+  color: var(--rule);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.datenav .latest {
+  font-size: 11px;
+  border-bottom: 1px solid var(--rule);
+}
+
+/* The confirming reversal (ADR 111). Warm, because it only occurs on the
+ * short side, and bordered so it reads as a badge rather than as another
+ * word in the signal list — it is the one label that changes what a reader
+ * does rather than describing what fired. */
+.reversal {
+  margin-left: 8px;
+  padding: 0 5px;
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--short);
+  border: 1px solid var(--short);
+  border-radius: 2px;
+  white-space: nowrap;
+}
+
+/* The poller's live judgement, distinguished from the close-confirmed one.
+ * Dashed, because it is a statement about a moment rather than a settled
+ * fact about a finished session — the two are different kinds of claim and
+ * a reader deciding on a short needs to know which they are reading. */
+.reversal.live {
+  border-style: dashed;
+}
+
+/* Evaluated and not reversing, carrying its distance. Muted and unbordered:
+ * it is context for a row that already earned its place, not a second thing
+ * competing with the signal labels. */
+.reversal.near {
+  border: 0;
+  padding: 0;
+  margin-left: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+
+/* --- date picker -------------------------------------------------------- */
+
+/* The date is the button. It sits where the label already was, so the strip
+ * does not grow a control — the thing you were reading becomes the thing
+ * you click. */
+
+.picker {
+  position: relative;
+}
+
+.picker-btn {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dotted var(--rule);
+  color: var(--text);
+  font-weight: 500;
+  font-size: 12px;
+  padding: 0 0 1px;
+  cursor: pointer;
+}
+
+.picker-btn:hover {
+  border-bottom-color: var(--long);
+}
+
+.cal {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 232px;
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.cal-head strong {
+  font-family: var(--display);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.cal-head button {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 6px;
+}
+
+.cal-head button:hover {
+  color: var(--text);
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+}
+
+.cal-dow {
+  text-align: center;
+  font-size: 9px;
+  color: var(--rule);
+  text-transform: uppercase;
+  padding-bottom: 2px;
+}
+
+.cal-day,
+.cal-pad {
+  position: relative;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  border-radius: 2px;
+}
+
+/* Days with nothing are rendered and dimmed, never removed: the month keeps
+ * its shape, and an empty week reads as an empty week rather than as a
+ * calendar that failed to draw. */
+.cal-day.none {
+  color: var(--rule);
+  cursor: default;
+}
+
+.cal-day.has {
+  color: var(--text);
+  background: var(--ground);
+}
+
+.cal-day.has:hover {
+  background: var(--panel-hover);
+}
+
+.cal-day.on {
+  outline: 1px solid var(--long);
+}
+
+/* The count, as a bar along the bottom of the cell. At this size a
+ * two-digit number competes with the date it belongs to, and the shape of
+ * the month is what the eye is scanning for. */
+.cal-day i {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  height: 2px;
+  background: var(--long);
+  border-radius: 1px;
+  opacity: 0.75;
+}
+
+.cal-foot {
+  margin-top: 6px;
+  font-size: 10px;
+  text-align: center;
 }

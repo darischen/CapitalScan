@@ -55,7 +55,11 @@ describe.skipIf(!connected)("against the live database", () => {
     const { chart, events } = await import("@/lib/ticker");
     const [bars, history] = await Promise.all([
       chart(ticker, "1y"),
-      events(ticker, { limit: 200 }),
+      // `all: true`. The default is confluence-only (user's request,
+      // 2026-08-19) while the chart marks every event, so the default set
+      // is a strict subset of the markers and this comparison would fail on
+      // correct data.
+      events(ticker, { limit: 200, all: true }),
     ]);
 
     const marked = bars.filter((b) => b.eventIds.length > 0).map((b) => b.ts);
@@ -108,6 +112,72 @@ describe.skipIf(!connected)("against the live database", () => {
     expect([...page].sort((a, b) => a.ts.localeCompare(b.ts))).toEqual(page);
   });
 
+  it("the default history is confluence only, with no reversal requirement", async () => {
+    const { countEvents, events } = await import("@/lib/ticker");
+    // **Counts, not list lengths.** Both lists are capped at
+    // `MAX_EVENT_LIMIT`, and after ADR 122's rebuild TSM has 377
+    // confluences against 2,292 total — so comparing two 200-element lists
+    // asserted `200 < 200` and failed. The cap is the thing under test
+    // everywhere else; here it hides the property.
+    const [nConfluence, nAll, confluence] = await Promise.all([
+      countEvents("TSM", false),
+      countEvents("TSM", true),
+      events("TSM", { limit: 200 }),
+    ]);
+
+    expect(nConfluence).toBeGreaterThan(0);
+    expect(nConfluence).toBeLessThan(nAll);
+    expect(confluence.length).toBeGreaterThan(0);
+    // Membership of `signal_types_all`, not of `signal_type` — ADR 057
+    // stores only the most specific type there, so a bar that fired both
+    // `bear_close_above_upper` and `confluence_high` keeps the reversal and
+    // a filter on the single column would drop it.
+    for (const e of confluence) {
+      expect(e.signalTypesAll.some((t) => t.startsWith("confluence"))).toBe(true);
+    }
+    // ADR 111 makes a short actionable only with a confirming reversal.
+    // This filter deliberately does not, so a confluence with no
+    // `bear_close_above_upper` must still be here.
+    expect(
+      confluence.some((e) => !e.signalTypesAll.includes("bear_close_above_upper")),
+    ).toBe(true);
+  });
+
+  /**
+   * **The `?stats=1` path, which shipped broken.** `screen.ts` filters
+   * `arm = 'signal'` on `v_stats`, and `v_stats` did not project `arm`
+   * until ADR 126 — so every request returned `column "arm" does not
+   * exist` and rendered the error state.
+   *
+   * `states.test.tsx` covers the *component* with a `CellStats` fixture and
+   * never runs the query, which is exactly why a fixture test is not a
+   * substitute for one round trip against the real view.
+   */
+  it("attaches cell statistics without throwing", async () => {
+    const { screen } = await import("@/lib/screen");
+    const result = await screen({ withStats: true, confluenceOnly: false, limit: 20 });
+
+    expect(result.rows.length).toBeGreaterThan(0);
+    const withCell = result.rows.filter((r) => r.cellId !== null);
+    expect(withCell.length).toBeGreaterThan(0);
+
+    // ADR 112: zero cells survive correction, so a real cell here is
+    // either suppressed or carries a q-value above `fdr_alpha`. Both are
+    // valid; a bare probability is not.
+    for (const row of withCell) {
+      if (row.stats === null) continue;
+      if (row.stats.kind === "suppressed") {
+        expect(row.stats.reason).toBeTruthy();
+      } else {
+        // Invariant 8: never a rate without its companions.
+        expect(row.stats.nEff).not.toBeNull();
+        expect(row.stats.ciLow).not.toBeNull();
+        expect(row.stats.ciHigh).not.toBeNull();
+        expect(row.stats.qValue).not.toBeNull();
+      }
+    }
+  });
+
   it("returns an empty page at the start of history, which is how paging stops", async () => {
     const { chartBefore } = await import("@/lib/ticker");
     expect(await chartBefore("TSM", "1900-01-01", 10)).toEqual([]);
@@ -115,7 +185,7 @@ describe.skipIf(!connected)("against the live database", () => {
 
   it("the event history is one row per signal, not one per entry kind", async () => {
     const { events } = await import("@/lib/ticker");
-    const history = await events("TSM", { limit: 200 });
+    const history = await events("TSM", { limit: 200, all: true });
     const keys = history.map((e) => `${e.signalDate}|${e.signalType}`);
     // `v_events` carries four entry kinds. Unfiltered, every signal would
     // appear four times.
