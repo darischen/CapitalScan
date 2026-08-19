@@ -152,3 +152,40 @@ Unchanged from `session16-18-phase5.md` §17.4, plus:
     recorded in `RESULTS.md`, whatever it is.
 12. The stack decision above is recorded as an ADR before any component is
     written.
+
+---
+
+## 3. Result, 2026-08-19
+
+**Ten of twelve passed. The two that did not are findings, not debt.**
+
+| # | Item | |
+|---|---|---|
+| 1 | `/` and `/ticker/[sym]` render against the live database | pass |
+| 2 | No `web/` module imports `sqlalchemy` or `db_io` | pass, 63 tests |
+| 3 | Default screener shows the event feed | pass (ADR 114) |
+| 4 | Suppressed renders its reason, never a number | pass |
+| 5 | A hit rate renders with `n_eff`, interval, q-value | pass |
+| 6 | Empty state with a correct last-fire reference | pass, after a fix |
+| 7 | Staleness banner above 2 days | pass, and not at exactly 2 |
+| 8 | Both `%K` series render on the ticker chart | pass, with a legend |
+| 9 | No route reads holdout | pass, asserted on the source |
+| 10 | Determinism | pass, six components |
+| 11 | Ticker page load time in `RESULTS.md` | pass, **43 ms median** |
+| 12 | The stack decision as an ADR | pass (ADR 118) |
+
+**17.3's "a delisted ticker renders its history and says it is delisted"
+cannot be satisfied against this database.** All 96 inactive tickers either
+carry no bars or carry three to four with no indicators, so there is no
+delisted ticker with history to render. The not-found state handles them and
+deliberately does not claim the symbol is invalid, because it cannot tell an
+unknown symbol from a known one with no indicators. Full numbers in
+`RESULTS.md`.
+
+**Statistics on the ticker page are absent, not hidden.** `cell_stats` has no
+ticker dimension (ADR 102, ADR 104), so a panel here would repeat the
+screener's numbers for the same signal type and bucket.
+
+**One migration, `c4a7e91b53d8` (ADR 120).** `v_chart` was returning 963 rows
+for 275 trading sessions. Four more defects found by running it, including
+every chart date landing one session early. `RESULTS.md` has all of them.

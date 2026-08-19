@@ -1897,19 +1897,30 @@ WHERE i.interval = '1d'
 ORDER BY i.ticker, i.ts DESC;
 
 -- 3. Chart series: bars + indicators + event markers, one row per bar.
+--    ADR 120. The marker columns are arrays because a bar can carry two
+--    events: 116 dates hold both a long and a short head. The predicates
+--    match `v_screen_live` (ADR 119) so markers are current and
+--    config-scoped. Per-event outcomes live on `v_events`, not here.
 CREATE VIEW v_chart AS
 SELECT b.ticker, b.ts, b.open, b.high, b.low, b.close, b.volume,
        i.bb_lower, i.bb_mid, i.bb_upper,
        i.k_full, i.d_full, i.k_fast,
        i.sma_200, i.bb_width_pct, i.dd_52w,
-       e.id AS event_id, e.signal_type, e.signal_strength,
-       e.exit_date, e.exit_reason, e.net_ret
+       ev.event_ids, ev.signal_types, ev.sides, ev.signal_strength
 FROM bars b
 LEFT JOIN indicators i
        ON i.ticker = b.ticker AND i.ts = b.ts AND i.interval = b.interval
-LEFT JOIN events e
-       ON e.ticker = b.ticker AND e.signal_date = b.ts::date
-      AND e.is_cluster_head AND e.entry_kind = 'next_open'
+LEFT JOIN LATERAL (
+    SELECT array_agg(e.id          ORDER BY e.id) AS event_ids,
+           array_agg(e.signal_type ORDER BY e.id) AS signal_types,
+           array_agg(e.side        ORDER BY e.id) AS sides,
+           max(e.signal_strength)                 AS signal_strength
+    FROM events e
+    WHERE e.ticker = b.ticker AND e.signal_date = b.ts::date
+      AND e.entry_kind = 'touch'
+      AND e.is_cluster_head IS NOT FALSE
+      AND e.config_hash = current_setting('capitalscan.default_config_hash', true)
+) ev ON true
 WHERE b.interval = '1d';
 
 -- 4. Cell statistics with suppression applied IN SQL.
@@ -2465,9 +2476,21 @@ The practical payoff is the research workflow: instead of writing a script to ch
 Ticker | Signal | Str | %B | %K | DD | Cell hit rate | n_eff | Edge | P(+3%) | P(−3%)
 ```
 
+**As shipped, ADR 114 and 2026-08-19.** The statistical half moved behind
+`?stats=1`, because ADR 112 measured zero cells surviving correction and
+four always-empty columns teach a reader to skip the row. What remains is
+the event feed, widened where the original was cryptic: `%B` became the
+three band prices it is computed from, `%K` became `fast / slow`, and the
+signal date's OHLCV plus the poller's live price and fire time were added.
+The default is also confluence-only, one click from every signal.
+
 - Edge renders as a **bar with CI width**, not a number. A wide bar reads as uncertainty faster than "CI 34-56."
 - Suppressed cells render "insufficient data," greyed. Never a number.
-- `signal_strength = 2` gets visual weight — the dual-alignment case.
+- ~~`signal_strength = 2` gets visual weight — the dual-alignment case.~~
+  **That value does not exist.** `signal_strength` is
+  `len(signal_types_all)`, so confluence is 3 and everything else is 1.
+  ADR 102 removed it as a grid dimension for the same reason. This line
+  predates that finding.
 - Row click expands inline (signal_types_all, crossover flags, days-to-earnings, VIX, cofire count) before navigating.
 - **Default: all signal types shown,** with a toggle and count badge for filtering down.
 
@@ -2488,6 +2511,51 @@ Three stacked panels on a shared x-axis with a synchronized crosshair:
 Legend text top-left of each panel showing values at the crosshair. Light grid lines, price axis right, date axis bottom only.
 
 Right rail shows current state, cell membership with `n_eff`/CI/q-value, and the three-part prediction (terminal quantiles, reachability ladder, adverse ladder).
+
+**As built, 2026-08-19.** The layout above is the design intent; five things
+shipped differently and each is a decision rather than a shortfall.
+
+**Three panes, and the third is not the one above.** Price (60%), volume
+(13%), stochastic (27%). The spec's third panel — bandwidth percentile and
+drawdown from the 52-week high — is not a pane. Both are single current
+values, not series a reader traces, so they sit in the state strip above the
+chart where they can be read without measuring against an axis. Volume gets
+its own pane rather than sitting at the base of price, because overlaying it
+forces a second price scale onto the pane whose scale matters most.
+
+**`%K fast` is the heavy line, not the lighter one.** ADR 045 made it
+informational; **ADR 110 made it the trigger**, with `k_full` required to
+agree within `fast_agreement_tol`. The line weights follow the current rule:
+`k_fast` solid in the text colour, `k_full` dashed, `%D` in the muted
+colour. The state strip prints both and the gap between them, because the
+gap is what decides whether a threshold crossing is a signal at all.
+
+**Markers are arrows, placed by side.** A long fires at a low and a short at
+a high, so the marker sits on the side of the bar the signal came from
+rather than always below it. Confluence carries a `C`; nothing else carries
+a glyph, because labelling all seven types turns the price pane into a wall
+of text. Hover detail is on the history table below rather than on the
+marker: `lightweight-charts` markers hold one text field, and entry, exit,
+reason and return are four columns.
+
+**A bar can carry two markers.** 116 dates hold both a long and a short
+head. ADR 120 made `v_chart`'s marker columns arrays for this, and the
+renderer emits one marker per event rather than one per bar.
+
+**No right rail, and no per-cell statistics.** The state reads as a
+horizontal strip above the chart: at 1480px a rail costs a quarter of the
+chart width, and the chart is what the page is for. Cell membership is
+absent rather than empty — `cell_stats` has no ticker dimension (ADR 102,
+ADR 104), so a panel here would report the same numbers the screener
+already shows for the same signal type and bucket. The three-part
+prediction is Phase 6's and `predictions` is empty.
+
+**The one element added.** A band-position gauge: `bb_pctb` as a tick on a
+track between the lower and upper bands, rather than as a number. Every
+signal in this system is a statement about that position, and a number
+between 0 and 1 has to be decoded where a tick against an edge does not.
+Price outside the band is the normal case for a fired signal, so the tick
+pins at the edge, changes colour, and the printed value stays exact.
 
 ### 11.4 Research page
 

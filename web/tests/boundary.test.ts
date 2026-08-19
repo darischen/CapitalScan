@@ -1,0 +1,143 @@
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join, relative, sep } from "node:path";
+
+import { describe, expect, it } from "vitest";
+
+/**
+ * The two structural guarantees this app makes, asserted against the source
+ * rather than trusted.
+ *
+ * Session 16 has the same shape of test for `mcp/`, and the plan for
+ * Session 17 says to copy it. This is that copy, plus the holdout guard,
+ * because both are claims about what the code *cannot* do and neither is
+ * visible in any rendered page.
+ */
+
+const ROOT = join(__dirname, "..");
+const DIRS = ["app", "components", "lib"];
+
+function sources(): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name);
+      if (statSync(path).isDirectory()) {
+        walk(path);
+      } else if (/\.(ts|tsx)$/.test(name)) {
+        out.push(path);
+      }
+    }
+  };
+  for (const d of DIRS) walk(join(ROOT, d));
+  return out;
+}
+
+function read(path: string): string {
+  return readFileSync(path, "utf8");
+}
+
+/** The file's code with block and line comments removed.
+ *
+ * Every guard below is about what the code *does*, and these files document
+ * the boundaries they respect. `lib/ticker.ts` explains in prose why it
+ * never reads `split_key`, and a naive grep would fail on the explanation
+ * of the rule rather than on a breach of it. */
+function code(path: string): string {
+  return read(path)
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/^\s*\/\/.*$/gm, " ");
+}
+
+describe("gate 2: no web module imports the Python data layer (ADR 118)", () => {
+  it("finds source files to check, so the sweep cannot pass vacuously", () => {
+    const files = sources();
+    expect(files.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it.each(sources())("%s imports neither sqlalchemy nor db_io", (path) => {
+    const text = code(path);
+    expect(text).not.toMatch(/\bsqlalchemy\b/i);
+    expect(text).not.toMatch(/\bdb_io\b/);
+  });
+
+  /**
+   * The stronger version of the same rule. ADR 118 is not "do not import
+   * SQLAlchemy", it is "these routes talk to Postgres and nothing else", so
+   * an HTTP call to the MCP server or a spawned Python process would satisfy
+   * the letter and break the decision.
+   */
+  it.each(sources())("%s does not shell out or call the MCP server", (path) => {
+    const text = code(path);
+    expect(text).not.toMatch(/child_process|spawnSync|execSync/);
+    expect(text).not.toMatch(/8787|mcp\/v1|modelcontextprotocol/i);
+  });
+});
+
+describe("gate 9: no route reads holdout (ADR 019, ADR 033)", () => {
+  /**
+   * `v_events` projects `split_key` and `v_stats` is keyed by it, so the
+   * column is one `WHERE` clause away at all times. The Python handlers
+   * refuse a holdout request by raising `HoldoutRequested`; here the
+   * guarantee is that no query mentions the word and no route accepts a
+   * parameter that could carry it.
+   *
+   * Invariant 5b is the other half and lives in SQL: the serving views
+   * hardcode `split_key = 'validate'` on their statistics join rather than
+   * inheriting an event's own key, which on a live event is `holdout`.
+   */
+  it.each(sources())("%s never names holdout", (path) => {
+    expect(code(path)).not.toMatch(/holdout/i);
+  });
+
+  it.each(sources())("%s never filters or selects split_key", (path) => {
+    expect(code(path)).not.toMatch(/split_key/);
+  });
+
+  it("the ticker route exposes no split parameter", () => {
+    const page = read(join(ROOT, "app", "ticker", "[sym]", "page.tsx"));
+    const params = page.slice(page.indexOf("searchParams: Promise<"));
+    expect(params.slice(0, 200)).not.toMatch(/split|era|arm/);
+  });
+});
+
+describe("parameterisation", () => {
+  /**
+   * Every query is parameterised. A template literal is how these SQL
+   * constants are written, so the check is for an *interpolation* inside
+   * one — `${...}` in a string that also contains SELECT — rather than for
+   * backticks, which are everywhere and benign.
+   *
+   * `screen.ts` interpolates two named fragments into its SQL on purpose
+   * (`CONFLUENCE_RANK`, `CONFLUENCE_FILTER`), and both are constants
+   * defined in the same file with no argument reaching them. They are
+   * listed here so the exception is visible rather than silent.
+   */
+  const ALLOWED = new Set(["${CONFLUENCE_RANK}", "${CONFLUENCE_FILTER}"]);
+
+  it.each(sources())("%s interpolates nothing user-supplied into SQL", (path) => {
+    const text = code(path);
+    for (const block of text.match(/`[^`]*`/g) ?? []) {
+      if (!/\bSELECT\b/i.test(block)) continue;
+      for (const hole of block.match(/\$\{[^}]*\}/g) ?? []) {
+        expect(ALLOWED, `${relative(ROOT, path)} interpolates ${hole}`).toContain(hole);
+      }
+    }
+  });
+});
+
+describe("the client boundary", () => {
+  /**
+   * `pg` must never reach a browser bundle. `next.config.ts` marks it
+   * external, which turns a stray import into a build error, and this is the
+   * cheaper check that says which file did it.
+   */
+  it("only the chart is a client component, and it does not import pg", () => {
+    const clients = sources().filter((p) => /^\s*["']use client["']/.test(read(p)));
+    expect(clients.map((p) => relative(ROOT, p).split(sep).join("/"))).toEqual([
+      "components/TickerChart.tsx",
+    ]);
+    for (const path of clients) {
+      expect(code(path)).not.toMatch(/from "pg"|@\/lib\/db/);
+    }
+  });
+});
