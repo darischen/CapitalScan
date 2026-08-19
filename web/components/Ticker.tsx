@@ -3,7 +3,7 @@ import Link from "next/link";
 import EventRows from "./EventRows";
 import TickerSearch from "./TickerSearch";
 
-import { NONE, SIGNAL_LABELS, clock, fmt, pct, signedPct, vol } from "@/lib/format";
+import { NONE, SIGNAL_LABELS, clock, fmt, mcap, pct, signedPct, vol } from "@/lib/format";
 import type { Meta } from "@/lib/screen";
 import type { ChartBar, LiveQuote, Range, TickerEvent, TickerState } from "@/lib/ticker";
 import { RANGES } from "@/lib/ticker";
@@ -229,10 +229,19 @@ export function StateRail({ state }: { state: TickerState }) {
         v={fmt(state.kFull, 1)}
         note={gap === null ? undefined : `Δ${gap.toFixed(1)}`}
       />
+      {/* The %K/%D crossover: `k_full` crossing its own moving average.
+          A turn, not a level — it can fire anywhere in 0-100.
+
+          **It reads off `d_full`, which is no longer drawn** (the chart
+          shows fast and slow %K only, 2026-08-19). Kept because the signal
+          engine still computes it and `events.k_cross_up` is stored on
+          every row; noted because a reader cannot check it against the
+          panel above. */}
       <Stat
         k="cross"
         v={state.kCrossUp ? "up" : state.kCrossDown ? "down" : "—"}
         cls={state.kCrossUp ? "up" : state.kCrossDown ? "down" : ""}
+        note={state.kCrossUp || state.kCrossDown ? "%K vs %D" : undefined}
       />
       <Stat k="drawdown" v={pct(state.ddPct, 1)} />
       <Stat k="band width" v={pct(state.bbWidthPct, 1)} />
@@ -252,6 +261,15 @@ export function StateRail({ state }: { state: TickerState }) {
       />
       <Stat k="VIX" v={fmt(state.vixClose, 1)} />
       <Stat k="volume" v={vol(state.volume)} />
+      {/* Market cap, at the end of the rail (user's request, 2026-08-19).
+          It is the one number here that is about the company rather than
+          about the bar, which is why it sits last and next to the gauge
+          rather than among the indicators.
+
+          From `universe.mcap_usd` at the snapshot in force on the state
+          row's session — point-in-time, like everything else on this page,
+          so a name that has since doubled does not retro-date its size. */}
+      <Stat k="market cap" v={mcap(state.mcapUsd)} />
     </section>
   );
 }

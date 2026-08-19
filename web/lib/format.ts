@@ -38,6 +38,21 @@ export function signedPct(value: number | null | undefined, digits = 1): string 
   return value > 0 ? `+${s}%` : `${s}%`;
 }
 
+/**
+ * Market capitalisation, abbreviated.
+ *
+ * Two decimals at T and none below, because the interesting comparison
+ * changes scale: among trillion-dollar names the difference between 2.56T
+ * and 2.61T is the story, while at 195B nobody is reading the last digit.
+ */
+export function mcap(value: number | null | undefined): string {
+  if (value === null || value === undefined) return NONE;
+  if (value >= 1e12) return `${(value / 1e12).toFixed(2)}T`;
+  if (value >= 1e9) return `${(value / 1e9).toFixed(0)}B`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(0)}M`;
+  return String(Math.round(value));
+}
+
 /** Volume, abbreviated. A ten-digit share count in a dense row is noise. */
 export function vol(value: number | null | undefined): string {
   if (value === null || value === undefined) return NONE;

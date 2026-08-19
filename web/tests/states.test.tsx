@@ -612,6 +612,23 @@ describe("gate 8: both %K series are named and distinguishable", () => {
     expect(html).toContain("23.4");
   });
 
+  it("shows market cap at the end of the rail", () => {
+    const html = renderToStaticMarkup(<StateRail state={state({ mcapUsd: 2.476e12 })} />);
+    expect(html).toContain("market cap");
+    expect(html).toContain("2.48T");
+  });
+
+  /** A name with no `universe` snapshot has no cap. The placeholder is the
+   * same em-dash every other missing value uses, never a zero. */
+  it("renders the placeholder when there is no market cap", () => {
+    const html = renderToStaticMarkup(<StateRail state={state({ mcapUsd: null })} />);
+    // Scoped to the cell. A looser `not.toContain("0M")` fails on the
+    // volume beside it, which legitimately renders `14.0M`.
+    const cell = html.slice(html.indexOf("market cap"));
+    expect(cell.slice(0, 80)).toContain("—");
+    expect(cell.slice(0, 80)).not.toMatch(/\d/);
+  });
+
   it("prints no gap when one of them is missing, rather than a wrong one", () => {
     const html = renderToStaticMarkup(<StateRail state={state({ kFull: null })} />);
     expect(html).not.toContain("Δ");

@@ -165,6 +165,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 121 | The ticker chart pages its own history through an API route | Pinned. Right edge stops at today; dragging left fetches a year |
 | 122 | Detection records trade-universe membership instead of being filtered by it | Pinned. SMCI: 192 band touches, 0 events. Statistics population unchanged |
 | 123 | The screener shows the poller's intraday reversal, marked as intraday | Pinned. Surfaces 117's live judgement; three renderings, not two |
+| 124 | The screener is a record of the session, not a clustered sample | Pinned. 19 fires became 4 overnight; a feed is not a sample |
 
 ---
 
@@ -3733,6 +3734,46 @@ The ticker page does not get this. Its chart is a history of closed sessions and
 *Store the live judgement on `events`.* It would need a write per quote against a 13.5M-row table, and it is a property of a moment rather than of the event. `signal_reports` is already the per-quote record.
 
 *Recompute the reversal in the view from `quotes_live` and `bars.open`.* Second implementation of a rule `core`/`jobs` already owns, and it would drift the first time `is_bear_reversal` changed. Invariant 2's reasoning applies to the live half too.
+
+---
+
+## 124. The screener is a record of the session, not a clustered sample
+
+**Date:** 2026-08-19. **Status:** Pinned. Amends ADR 054's reach, not its rule. Amends ADR 119's `v_screen_live` predicate.
+
+**Context.**
+
+`v_screen_live` filtered `is_cluster_head IS NOT FALSE`. That predicate was correct intraday and wrong the next morning, and the gap between the two is visible to anyone watching.
+
+The poller **cannot** cluster: ADR 054's gap window needs the whole session, which does not exist at 09:35. So its rows carry NULL, `IS NOT FALSE` admits them, and every fire is on the screener while the session runs. Overnight `cscan events` clusters, the repeats become `false`, and they disappear.
+
+Measured on Thursday 2026-08-06: **19 confluence fires, 4 heads, 15 repeats.** A reader watching live saw 19 and came back the next morning to 4, with nothing on the page accounting for the other 15. The report that prompted this was "i remember having way more".
+
+**Decision.**
+
+The predicate leaves the view. `is_cluster_head` is still projected, so nothing is lost, and the screener shows every fire with repeats marked.
+
+**ADR 054 is untouched.** Clustering exists so a name hugging a band for three weeks is not counted as fifteen independent observations — that reasoning is about *measurement*, and `v_screen`, `cell_stats`, `benchmarks` and the rest keep it. What this ADR says is narrower: **a feed is not a sample.** The screener answers "what happened today", and the second day of a cluster happened.
+
+Two things fall out and both are improvements.
+
+**The `v_universe` join goes too.** The screener query joined `v_universe` and filtered `u.in_trade`, which is `DISTINCT ON (ticker) ORDER BY as_of DESC` — membership *now*. So a historical row whose ticker had since left the universe was silently dropped. ADR 122 put point-in-time `in_trade` on the event itself, which answers the right question: was it tradeable *on that bar*. The join was redundant and worse.
+
+**The neighbour and calendar queries take the same predicates.** A date the arrows or the calendar call populated must be populated under the filters the reader is using, or a click lands on an empty screen.
+
+**Consequences.**
+
+Row counts on historical dates rise. On 2026-08-18: 5 poller rows plus 3 repeats the nightly added, where before only the heads showed. That is the intended effect and it makes the page agree with the poller's own log.
+
+**A poller CSV and the screener are still not comparable across a config change**, and this ADR does not fix that. Measured on 2026-08-05: the CSV records 30 confluences detected under `1835688bf7d760ba`; the live config finds 13 on the same bars, because ADR 110's `require_fast_agreement` refuses to call it a confluence when raw and smoothed %K differ by more than `fast_agreement_tol`. NUE that day was 99.1 against 81.8. Both records are honest; they answer questions asked under different rules.
+
+**Rejected.**
+
+*Keep heads-only and add a toggle, defaulting to heads.* The safe change, and it preserves the defect: a reader would still watch 19 become 4 overnight unless they knew to flip something. The default is the thing that was wrong.
+
+*Cluster the poller's rows intraday.* Impossible without the session, which is ADR 054's own reasoning.
+
+*Show heads and count the repeats in a badge.* Considered. It compresses well and it hides which ticker repeated, which is the part a reader wants when a name fires three times in a morning.
 
 ---
 
