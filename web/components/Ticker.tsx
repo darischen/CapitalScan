@@ -1,5 +1,8 @@
 import Link from "next/link";
 
+import EventRows from "./EventRows";
+import TickerSearch from "./TickerSearch";
+
 import { NONE, SIGNAL_LABELS, fmt, pct, signedPct, vol } from "@/lib/format";
 import type { Meta } from "@/lib/screen";
 import type { Range, TickerEvent, TickerState } from "@/lib/ticker";
@@ -43,6 +46,11 @@ export function TickerHeader({
         {state.sector && <span className="tk-sector">{state.sector}</span>}
       </div>
 
+      {/* Between the identity and the price (user's request, 2026-08-19).
+          It sits with the thing it changes — the ticker — rather than in a
+          global bar, because this is the only route it navigates within. */}
+      <TickerSearch />
+
       <div className="tk-price">
         <span className="num big">{fmt(state.close)}</span>
         <span className={`num ${distance !== null && distance >= 0 ? "up" : "down"}`}>
@@ -57,10 +65,9 @@ export function TickerHeader({
         <span className={state.inTrade ? "tag on" : "tag off"}>
           {state.inTrade ? "in trade universe" : "outside trade universe"}
         </span>
-        {/* The number *listed*, which the history query caps. Saying
-            "events" unqualified would read as the ticker's whole history
-            and be wrong by the limit. */}
-        <span className="tag">{fired} events listed</span>
+        {/* The ticker's whole history, from a count query — not the page
+            length, which would understate it by the page size. */}
+        <span className="tag">{fired} events</span>
         <span className="tag dim">as of {state.asOf}</span>
         {meta.stale && (
           <span className="tag flagged">
@@ -255,15 +262,74 @@ function Outcome({ e }: { e: TickerEvent }) {
   return <span className="dim">open</span>;
 }
 
+/**
+ * Why the history stops where it does.
+ *
+ * **`run_events` only writes an event for a bar where the ticker was in the
+ * *trade* universe that day** (`compute.py`, DESIGN §4.7 step 3). A
+ * train-universe name therefore has bars, indicators, and band touches, and
+ * no events at all — which on this page looked exactly like a broken job.
+ * SMCI: 192 band touches since 2024, zero events, and it has never once
+ * been in the trade universe across 66 quarterly snapshots.
+ *
+ * The second half is stranger and is the one worth printing. The earliest
+ * `universe` snapshot is **2010-03-31**, and `core.universe.in_trade` fails
+ * open when no evaluation exists on or before the bar — the documented v1
+ * simplification. So for every bar before that date the filter is vacuous
+ * and *every* ticker passes. That is why a name with no trade-universe
+ * membership still has a dense block of 2010 Q1 events and nothing after.
+ */
+function WhyEmpty({ sym, inTrade }: { sym: string; inTrade: boolean | null }) {
+  if (inTrade) {
+    return (
+      <p className="dim pad">
+        No events for {sym} under the current config. The chart above is the full
+        series; nothing in it crossed a band or a threshold.
+      </p>
+    );
+  }
+  return (
+    <div className="empty">
+      <span className="rail" />
+      <div className="body">
+        <p>
+          <strong className="num">{sym}</strong> is outside the trade universe, so no
+          events are recorded for it.
+        </p>
+        <p className="last">
+          Detection runs only on bars where the ticker was in the trade universe that
+          day (DESIGN §4.7). The chart above is the full price series and its bands are
+          real — the signals simply are not stored, and re-running{" "}
+          <code>cscan events</code> will not add them.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export function EventHistory({
   sym,
   events,
   all,
+  total,
+  inTrade = true,
 }: {
   sym: string;
   events: TickerEvent[];
   all: boolean;
+  /** Every event the ticker has, not the page length. The reader is told
+   * how deep the list goes rather than discovering it by scrolling. */
+  total: number;
+  /** From `v_ticker_state`. Decides which explanation an empty or stale
+   * history gets, because the two have different causes and only one of
+   * them is worth acting on. */
+  inTrade?: boolean | null;
 }) {
+  // A history that stops years before the newest bar has the same cause as
+  // an empty one, and reads far more like a bug. Both get the note.
+  const newest = events[0]?.signalDate ?? null;
+  const stopped = !inTrade && newest !== null;
+
   return (
     <section className="history">
       <div className="history-head">
@@ -278,76 +344,20 @@ export function EventHistory({
         </nav>
       </div>
 
-      {events.length === 0 ? (
-        <p className="dim pad">
-          No events for {sym} under the current config. The chart above is the full
-          series; nothing in it crossed a band or a threshold.
+      {stopped && (
+        <p className="note-gate">
+          Detection stopped at <span className="num">{newest}</span>: {sym} is outside
+          the trade universe, and events are only recorded for bars where a ticker was
+          in it that day (DESIGN §4.7). Rows before 2010-03-31 predate the first
+          universe snapshot, where the check has nothing to evaluate and admits every
+          ticker.
         </p>
+      )}
+
+      {events.length === 0 ? (
+        <WhyEmpty sym={sym} inTrade={inTrade} />
       ) : (
-        <table className="screen">
-          <thead>
-            <tr>
-              <th className="rail" />
-              <th>Date</th>
-              <th>Signal</th>
-              <th className="r">Entry</th>
-              <th className="r">Exit</th>
-              <th>Reason</th>
-              <th className="r">Hold</th>
-              <th className="r">Net</th>
-              <th className="r">MFE</th>
-              <th className="r">MAE</th>
-              <th>Bucket</th>
-            </tr>
-          </thead>
-          <tbody>
-            {events.map((e) => (
-              <tr key={e.id}>
-                <td className="rail">
-                  <span data-side={e.side} />
-                </td>
-                <td className="num" data-label="Date">
-                  {e.signalDate}
-                </td>
-                <td className="sig" data-label="Signal">
-                  {typeList(e).map((t, i) => (
-                    <span key={t}>
-                      {i > 0 && <span className="sep-dot"> · </span>}
-                      <span className={i === 0 ? undefined : "dim"}>{SIGNAL_LABELS[t] ?? t}</span>
-                    </span>
-                  ))}
-                  {/* NULL means the poller wrote it and clustering has not
-                      run yet (ADR 054, ADR 119), which is not the same as
-                      "not a head". */}
-                  {e.isClusterHead === null && <span className="flag">pending cluster</span>}
-                  {e.earningsInWindow && <span className="flag">earnings</span>}
-                </td>
-                <td className="num r" data-label="Entry">
-                  {fmt(e.entryPrice)}
-                </td>
-                <td className="num r" data-label="Exit">
-                  {fmt(e.exitPrice)}
-                </td>
-                <td data-label="Reason">{e.exitReason ?? <span className="dim">{NONE}</span>}</td>
-                <td className="num r" data-label="Hold">
-                  {e.holdingDays === null ? NONE : `${e.holdingDays}d`}
-                </td>
-                <td className="num r" data-label="Net">
-                  <Outcome e={e} />
-                </td>
-                <td className="num r" data-label="MFE">
-                  {signedPct(e.mfe)}
-                </td>
-                <td className="num r" data-label="MAE">
-                  {signedPct(e.mae)}
-                </td>
-                <td className="dim" data-label="Bucket">
-                  {e.ddBucket ?? NONE}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <EventRows sym={sym} initial={events} all={all} total={total} />
       )}
 
       <p className="foot dim">

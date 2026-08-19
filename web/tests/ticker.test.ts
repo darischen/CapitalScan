@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { markers } from "@/components/TickerChart";
+import { markers, prepend } from "@/components/TickerChart";
 import { fmt, normalizeSymbol, pct, signedPct, vol } from "@/lib/format";
 import { sideFor } from "@/lib/screen";
 import {
   DEFAULT_EVENT_LIMIT,
   DEFAULT_RANGE,
   MAX_EVENT_LIMIT,
+  MAX_PAGE_SESSIONS,
+  PAGE_SESSIONS,
   RANGES,
   clampEvents,
+  clampPage,
   parseRange,
   type ChartBar,
 } from "@/lib/ticker";
@@ -195,5 +198,49 @@ describe("symbol normalisation", () => {
   it("drops everything else and bounds the length", () => {
     expect(normalizeSymbol("TSM'; DROP TABLE bars--")).toBe("TSMDROPTABLE");
     expect(normalizeSymbol("A".repeat(50))).toHaveLength(12);
+  });
+});
+
+describe("history paging (ADR 121)", () => {
+  it("caps a page and takes the default for nonsense", () => {
+    expect(clampPage(undefined)).toBe(PAGE_SESSIONS);
+    expect(clampPage(Number.NaN)).toBe(PAGE_SESSIONS);
+    expect(clampPage(10_000)).toBe(MAX_PAGE_SESSIONS);
+    expect(clampPage(0)).toBe(1);
+  });
+
+  it("puts an older page in front, oldest first", () => {
+    const older = [bar({ ts: "2026-08-14" }), bar({ ts: "2026-08-17" })];
+    const loaded = [bar({ ts: "2026-08-18" })];
+    expect(prepend(older, loaded).map((b) => b.ts)).toEqual([
+      "2026-08-14",
+      "2026-08-17",
+      "2026-08-18",
+    ]);
+  });
+
+  /**
+   * The query is strict, so an overlap should not happen. `setData` throws
+   * on a duplicate timestamp, which would blank the chart on a scroll
+   * gesture rather than skip one bar, so it is guarded anyway.
+   */
+  it("drops a bar it already holds rather than duplicating a timestamp", () => {
+    const loaded = [bar({ ts: "2026-08-17" }), bar({ ts: "2026-08-18" })];
+    const older = [bar({ ts: "2026-08-14" }), bar({ ts: "2026-08-17" })];
+    const merged = prepend(older, loaded);
+    expect(merged.map((b) => b.ts)).toEqual(["2026-08-14", "2026-08-17", "2026-08-18"]);
+    expect(new Set(merged.map((b) => b.ts)).size).toBe(merged.length);
+  });
+
+  /**
+   * How the caller learns to stop asking. An identity return means nothing
+   * new arrived, and the component flips its exhausted flag on it — without
+   * that check, the start of a ticker's history requests the same page on
+   * every frame forever.
+   */
+  it("returns the same array when the page adds nothing", () => {
+    const loaded = [bar({ ts: "2026-08-18" })];
+    expect(prepend([], loaded)).toBe(loaded);
+    expect(prepend([bar({ ts: "2026-08-18" })], loaded)).toBe(loaded);
   });
 });

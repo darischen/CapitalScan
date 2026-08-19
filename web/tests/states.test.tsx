@@ -1,5 +1,15 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+/**
+ * `TickerHeader` renders the search box, which calls `useRouter`. Outside a
+ * Next request there is no router mounted and the hook throws, so it is
+ * stubbed — this file tests the server-rendered markup, and navigation is
+ * the one thing on this page that is not part of it.
+ */
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: () => {}, replace: () => {}, prefetch: () => {} }),
+}));
 
 import { EmptyState, ScreenerTable, StatusStrip } from "@/components/Screener";
 import {
@@ -248,9 +258,51 @@ describe("the ticker page's states", () => {
   });
 
   it("renders a ticker with no events without an empty table", () => {
-    const html = renderToStaticMarkup(<EventHistory sym="TSM" events={[]} all={false} />);
+    const html = renderToStaticMarkup(<EventHistory sym="TSM" events={[]} all={false} total={0} />);
     expect(html).toContain("No events for TSM");
     expect(html).not.toContain("<tbody>");
+  });
+
+  /**
+   * `run_events` only writes an event for a bar where the ticker was in the
+   * *trade* universe that day (DESIGN §4.7 step 3). SMCI has 192 band
+   * touches since 2024, zero events, and has never been in the trade
+   * universe across 66 quarterly snapshots — so the page must say why
+   * rather than let an absence read as a broken job.
+   */
+  it("explains an empty history on a ticker outside the trade universe", () => {
+    const html = renderToStaticMarkup(
+      <EventHistory sym="SMCI" events={[]} all={false} total={0} inTrade={false} />,
+    );
+    expect(html).toContain("outside the trade universe");
+    expect(html).toContain("will not add them");
+    // Not the other explanation. "Nothing crossed a band" would be false:
+    // plenty did.
+    expect(html).not.toContain("nothing in it crossed a band");
+  });
+
+  /** A history that stops years before the newest bar has the same cause as
+   * an empty one and reads far more like a bug, so it gets the note too. */
+  it("explains a history that stops, naming the date it stopped", () => {
+    const html = renderToStaticMarkup(
+      <EventHistory
+        sym="SMCI"
+        events={[event({ signalDate: "2010-03-24" })]}
+        all={false}
+        total={1}
+        inTrade={false}
+      />,
+    );
+    expect(html).toContain("Detection stopped at");
+    expect(html).toContain("2010-03-24");
+    expect(html).toContain("2010-03-31");
+  });
+
+  it("says nothing about the universe for a ticker that is in it", () => {
+    const html = renderToStaticMarkup(
+      <EventHistory sym="TSM" events={[event()]} all={false} total={1} inTrade={true} />,
+    );
+    expect(html).not.toContain("Detection stopped at");
   });
 
   it("tells an open event apart from one that closed flat", () => {
@@ -259,10 +311,11 @@ describe("the ticker page's states", () => {
         sym="TSM"
         events={[event({ netRet: null, exitDate: null, exitPrice: null, exitReason: null })]}
         all={false}
+        total={1}
       />,
     );
     const closed = renderToStaticMarkup(
-      <EventHistory sym="TSM" events={[event({ netRet: 0 })]} all={false} />,
+      <EventHistory sym="TSM" events={[event({ netRet: 0 })]} all={false} total={1} />,
     );
     expect(open).toContain(">open<");
     expect(closed).toContain("0.0%");
@@ -271,13 +324,13 @@ describe("the ticker page's states", () => {
 
   it("marks a row the poller wrote before clustering ran", () => {
     const html = renderToStaticMarkup(
-      <EventHistory sym="TSM" events={[event({ isClusterHead: null })]} all={false} />,
+      <EventHistory sym="TSM" events={[event({ isClusterHead: null })]} all={false} total={1} />,
     );
     expect(html).toContain("pending cluster");
   });
 
   it("says the outcomes are measured on a different entry from the screener's", () => {
-    const html = renderToStaticMarkup(<EventHistory sym="TSM" events={[event()]} all={false} />);
+    const html = renderToStaticMarkup(<EventHistory sym="TSM" events={[event()]} all={false} total={1} />);
     expect(html).toContain("touch");
     expect(html).toContain("next_open");
   });
@@ -385,7 +438,7 @@ describe("gate 10: identical input renders identically", () => {
     ["ScreenerTable", () => renderToStaticMarkup(<ScreenerTable rows={[row()]} withStats={false} />)],
     ["StateRail", () => renderToStaticMarkup(<StateRail state={state()} />)],
     ["BandGauge", () => renderToStaticMarkup(<BandGauge state={state()} />)],
-    ["EventHistory", () => renderToStaticMarkup(<EventHistory sym="TSM" events={[event()]} all={false} />)],
+    ["EventHistory", () => renderToStaticMarkup(<EventHistory sym="TSM" events={[event()]} all={false} total={1} />)],
     ["TickerHeader", () => renderToStaticMarkup(<TickerHeader state={state()} meta={meta()} fired={1} />)],
   ];
 
