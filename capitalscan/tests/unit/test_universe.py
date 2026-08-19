@@ -9,6 +9,8 @@ log has to be able to tell them apart (DESIGN §4.6).
 
 from __future__ import annotations
 
+from datetime import date
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -164,3 +166,69 @@ def test_is_tradeable_rejects_an_unknown_required_criterion():
     # A typo in an ablation config must fail loudly, not silently pass.
     with pytest.raises(KeyError):
         uni.is_tradeable(_healthy(), required={"crit_typo"})
+
+
+# ---------------------------------------------------------------------------
+# `in_trade` fails closed (ADR 129)
+# ---------------------------------------------------------------------------
+
+
+def _flags(rows: list[tuple[str, date, bool]]) -> pd.DataFrame:
+    return pd.DataFrame(rows, columns=["ticker", "as_of", "in_trade"])
+
+
+def test_no_evaluation_means_not_tradeable():
+    """The whole of ADR 129, in one assertion.
+
+    This returned True until 2026-08-19 — a v1 simplification so
+    `run_events` worked before `run_universe` had ever run for a name. It
+    admitted 18,805 training events on 566 tickers to the trade population
+    without ever evaluating them for it, 11.9% of the split.
+
+    Membership is a claim that a name passed four criteria. Absent evidence
+    is not that claim.
+    """
+    assert uni.in_trade(_flags([]), "TSLA", date(2015, 6, 30)) is False
+
+
+def test_an_evaluation_after_the_signal_does_not_count():
+    """The check is `as_of <= signal_date`, so a later evaluation is not
+    evidence about an earlier bar.
+
+    **This is why the population was 18,805 and not a few hundred.** The
+    first measurement assumed the gap was the pre-2010 window; it is per
+    *ticker*, so a name that entered the universe in 2021 failed open
+    across every one of its earlier signals.
+    """
+    flags = _flags([("TSLA", date(2021, 3, 31), True)])
+    assert uni.in_trade(flags, "TSLA", date(2015, 6, 30)) is False
+    assert uni.in_trade(flags, "TSLA", date(2021, 6, 30)) is True
+
+
+def test_another_tickers_evaluation_is_not_evidence():
+    flags = _flags([("AAPL", date(2015, 3, 31), True)])
+    assert uni.in_trade(flags, "TSLA", date(2015, 6, 30)) is False
+
+
+def test_the_most_recent_evaluation_on_or_before_the_signal_decides():
+    """Not the newest row overall — the newest one that had happened yet.
+
+    TSLA is the live example: in the trade universe at 2026-06-30 and out
+    of it for all of 2024 and 2025 on `crit_rel_return`. Reading the wrong
+    row would backdate a membership it did not have.
+    """
+    flags = _flags(
+        [
+            ("TSLA", date(2024, 12, 31), False),
+            ("TSLA", date(2025, 12, 31), True),
+            ("TSLA", date(2026, 6, 30), True),
+        ]
+    )
+    assert uni.in_trade(flags, "TSLA", date(2025, 6, 30)) is False
+    assert uni.in_trade(flags, "TSLA", date(2026, 1, 15)) is True
+
+
+def test_an_evaluation_exactly_on_the_signal_date_counts():
+    """`<=`, not `<`. A quarter-end evaluation governs that day's signals."""
+    flags = _flags([("TSLA", date(2026, 6, 30), True)])
+    assert uni.in_trade(flags, "TSLA", date(2026, 6, 30)) is True

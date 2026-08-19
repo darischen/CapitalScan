@@ -11,6 +11,8 @@ No live database: same read-stubbing pattern as `test_backtest_worker.py`.
 
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 import pytest
 
@@ -76,7 +78,17 @@ def _empty_market() -> pd.DataFrame:
 
 
 def _empty_universe() -> pd.DataFrame:
-    return pd.DataFrame(columns=["ticker", "as_of", "in_trade"])
+    """One evaluation saying the fixture ticker is tradeable.
+
+    Was genuinely empty until 2026-08-19. ADR 129 made an empty frame mean
+    *not* tradeable, so it produced zero events and every assertion below
+    passed vacuously or failed on an empty list. The name is kept because
+    the point of the fixture is "nothing interesting in the universe", and
+    that now has to be said with a row.
+    """
+    return pd.DataFrame(
+        [{"ticker": t, "as_of": date(2000, 1, 1), "in_trade": True} for t in (TICKER,)]
+    )
 
 
 def _empty_hourly() -> pd.DataFrame:

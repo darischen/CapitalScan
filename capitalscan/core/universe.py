@@ -99,11 +99,22 @@ def evaluate_criteria(
 def in_trade(universe_flags: pd.DataFrame, ticker: str, signal_date: date) -> bool:
     """Whether `ticker` is in the trade universe as of `signal_date`.
 
-    True when no universe evaluation exists yet for that ticker on or
-    before `signal_date` — the v1 fail-open simplification, so a caller
-    (`jobs.compute.run_events`) works before `jobs.compute.run_universe` has
-    ever run for a name. Otherwise, the most recent evaluation on or before
-    `signal_date` decides.
+    **False when no universe evaluation exists** for that ticker on or
+    before `signal_date` (ADR 129). Otherwise the most recent evaluation on
+    or before `signal_date` decides.
+
+    This fails **closed**. It failed open until 2026-08-19 — a v1
+    simplification so `jobs.compute.run_events` worked before
+    `run_universe` had ever run for a name — and the cost of that was
+    18,805 training events on 566 tickers admitted to the trade population
+    without ever being evaluated for it, 11.9% of the split. The check is
+    per *ticker*, so a name that entered the universe late failed open
+    across all of its earlier history, not merely the pre-2010 window where
+    it was first assumed to live.
+
+    Membership is a claim that a name passed four criteria. Absent evidence
+    is not that claim, and defaulting to True made "we never looked" and
+    "it passed" the same value in the same column.
 
     This is the single home for what used to be two identical copies —
     `jobs/compute.py:_in_trade` and `research/candidates.py:_in_trade`
@@ -120,7 +131,7 @@ def in_trade(universe_flags: pd.DataFrame, ticker: str, signal_date: date) -> bo
         (universe_flags["ticker"] == ticker) & (universe_flags["as_of"] <= signal_date)
     ]
     if rows.empty:
-        return True
+        return False
     return bool(rows.sort_values("as_of").iloc[-1]["in_trade"])
 
 

@@ -101,7 +101,24 @@ def _empty_market() -> pd.DataFrame:
 
 
 def _empty_universe() -> pd.DataFrame:
+    """No evaluation at all — which, since ADR 129, means **not tradeable**.
+
+    Kept for the tests that want that case explicitly. Everything else uses
+    `_universe()`: `in_trade` fails closed now, so a fixture with no rows
+    produces zero events and every assertion about the output shape passes
+    vacuously or fails confusingly. It failed confusingly, on fifteen tests
+    at once, which is how this was found.
+    """
     return pd.DataFrame(columns=["ticker", "as_of", "in_trade"])
+
+
+def _universe(ticker: str = "TSM", *, in_trade: bool = True) -> pd.DataFrame:
+    """One evaluation, well before any fixture bar, saying the name is in.
+
+    Explicit because the behaviour under test is what the backtest does with
+    a tradeable name, not whether it considers it tradeable.
+    """
+    return pd.DataFrame([{"ticker": ticker, "as_of": date(2000, 1, 1), "in_trade": in_trade}])
 
 
 def _empty_hourly() -> pd.DataFrame:
@@ -118,7 +135,7 @@ def stub_reads(monkeypatch):
     monkeypatch.setattr(backtest, "_read_bars", fake_read_bars)
     monkeypatch.setattr(backtest, "_read_indicators", lambda engine, ticker, start: _indicators())
     monkeypatch.setattr(backtest, "_read_market_days", lambda engine: _empty_market())
-    monkeypatch.setattr(backtest, "_read_universe_flags", lambda engine, ticker: _empty_universe())
+    monkeypatch.setattr(backtest, "_read_universe_flags", lambda engine, ticker: _universe(ticker))
     # The tests below call `_backtest_one_ticker(..., database_url=None)`,
     # and `None` means "resolve from `DATABASE_URL_RESEARCH`". Without this
     # stub they pass only on a machine holding a local `.env.local` and fail
@@ -187,7 +204,7 @@ class TestBacktestOneTicker:
         monkeypatch.setattr(backtest, "_read_bars", lambda *a, **k: pd.DataFrame())
         monkeypatch.setattr(backtest, "_read_indicators", lambda *a, **k: pd.DataFrame())
         monkeypatch.setattr(backtest, "_read_market_days", lambda *a, **k: _empty_market())
-        monkeypatch.setattr(backtest, "_read_universe_flags", lambda *a, **k: _empty_universe())
+        monkeypatch.setattr(backtest, "_read_universe_flags", lambda *a, **k: _universe())
         # Stubs its own reads rather than taking `stub_reads`, so it needs the
         # same placeholder engine for the same reason.
         monkeypatch.setattr(backtest.db_io, "get_engine", lambda *a, **k: _FakeEngine())
