@@ -3546,6 +3546,7 @@ The screener can now show signals *ahead* of bars — the poller writes today's 
 |---|---|---|
 | **`cscan nightly` never ingests the session it runs after** | Pass `end + 1 day` to the fetcher, or make `_download_daily`'s `end` inclusive to match every other date range in the codebase | Make it inclusive — see below |
 | **`v_forward` exposes probabilities with no interval or q-value** | Add `cell_ci_low`/`cell_ci_high`/`cell_q_value` to the view, or have the model carry its own interval | Whichever ADR 113's model produces. **Blocks `/forward`, not Phase 5.** Recorded in `test_serving_view_contract.py::KNOWN_GAPS` |
+| **`events.sector` is NULL on all 13,479,819 rows; `v_screen` and `v_screen_live` project it anyway** | Join `tickers` in both views the way `v_events` already does, or populate `events.sector` at write time | Join the view. `tickers.sector` has 502 populated rows, so the data exists and only the copy is missing; a join needs no backfill of 13.5M rows |
 | Point-in-time index membership | Scrape Wikipedia history, or accept survivorship bias and state it | Scrape, note residual error in RESULTS.md |
 | Historical earnings dates | Finnhub free tier, Nasdaq scrape, or drop the feature | Finnhub, since earnings contamination is the largest 5-day confound |
 | Point-in-time market cap | Shares outstanding from filings, or price-times-current-shares approximation | Filings where available, approximation flagged elsewhere |
@@ -3663,6 +3664,26 @@ ADR 076 and changing it moves `handlers/screen.py` too:
 The third is the current lean. It brushes against ADR 076's "query logic
 lives in views" and that tension should be settled in whatever ADR resolves
 this rather than left implicit.
+
+### `events.sector` has never held a value, found 2026-08-19
+
+`v_screen` and `v_screen_live` both project `e.sector`. It is **NULL on all
+13,479,819 rows** — measured, not sampled. `tickers.sector` carries 502
+populated rows, so the data exists and was simply never copied onto the
+event.
+
+`v_events` gets this right: it joins `tickers` and selects `t.sector`. The
+two screener views select the events column instead, so any consumer reading
+sector off them gets null and has no way to tell that apart from a ticker
+whose sector is genuinely unknown.
+
+Not fixed on the spot because it is a view change and `cscan nightly` was
+running — CLAUDE.md forbids migrating against a live writer. The web route's
+dead read was removed the same day so nothing depends on the null.
+
+The fix is a join, not a backfill: copying sector onto 13.5M existing rows
+would be a large write for data that a join already has, and it would go
+stale the next time a ticker is reclassified.
 
 ### The nightly ingest gap, found 2026-08-17
 

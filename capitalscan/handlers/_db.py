@@ -102,10 +102,16 @@ def trading_days_since(engine: Engine, since: date | None, until: date | None = 
     """
     if since is None:
         return None
+    # `market_date()`, not `CURRENT_DATE` (ADR 119). The database runs
+    # `Etc/UTC`, so between 00:00 UTC and midnight ET the two differ by a
+    # day and this over-counts by one session. Measured live at 2026-08-19
+    # 03:06 UTC: 2 sessions reported against a true 1, with the banner
+    # firing above `stale_after_days` = 2 -- so it would have raised a full
+    # day early, which is the failure mode a staleness banner has to avoid.
     found = rows(
         engine,
         "SELECT count(*) AS n FROM trading_days "
-        "WHERE d > :since AND d <= COALESCE(:until, CURRENT_DATE)",
+        "WHERE d > :since AND d <= COALESCE(:until, public.market_date())",
         {"since": since, "until": until},
     )
     return int(found[0]["n"]) if found else None

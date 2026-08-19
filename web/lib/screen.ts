@@ -31,7 +31,6 @@ export interface ScreenRow {
   signalTypesAll: string[];
   signalStrength: number;
   side: Side;
-  sector: string | null;
   /** The t-1 bands the signal compared against (invariant 3). */
   bbLower: number | null;
   bbMid: number | null;
@@ -182,7 +181,7 @@ const LATEST_DATE_SQL = `
 const FEED_SQL = `
   SELECT s.ticker, s.signal_date, s.signal_type, s.signal_types_all,
          s.signal_strength, s.k_full, s.k_fast,
-         s.dd_bucket, s.sector, s.cell_id, s.side, s.is_cluster_head,
+         s.dd_bucket, s.cell_id, s.side, s.is_cluster_head,
          s.bb_lower, s.bb_mid, s.bb_upper, s.band_ts,
          s.open, s.high, s.low, s.close, s.volume,
          s.live_price, s.live_price_ts, s.fired_at
@@ -220,7 +219,6 @@ interface FeedRowRaw {
   k_full: string | null;
   k_fast: string | null;
   dd_bucket: string | null;
-  sector: string | null;
   cell_id: string | null;
   side: string;
   is_cluster_head: boolean | null;
@@ -263,7 +261,6 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
     // fallback and is still tested: it is what a caller without the column
     // would need, and the two must agree.
     side: (r.side === "short" || r.side === "long" ? r.side : sideFor(r.signal_type)) as Side,
-    sector: r.sector,
     bbLower: num(r.bb_lower),
     bbMid: num(r.bb_mid),
     bbUpper: num(r.bb_upper),
@@ -366,12 +363,19 @@ async function attachStats(rows: ScreenRow[]): Promise<void> {
   }
 }
 
+/**
+ * `market_date()`, not `CURRENT_DATE` (ADR 119). The database runs
+ * `Etc/UTC`, so between 00:00 UTC and midnight ET the two differ by a day
+ * and the staleness count is one session high. Measured live at 2026-08-19
+ * 03:06 UTC: 2 reported against a true 1, and the banner fires above
+ * `stale_after_days` = 2, so it would have raised a full day early.
+ */
 const META_SQL = `
   SELECT current_setting('capitalscan.default_config_hash', true) AS config_hash,
          (SELECT max(ts)::date FROM bars WHERE interval = '1d') AS as_of,
          (SELECT count(*)::int FROM trading_days
            WHERE d > (SELECT max(ts)::date FROM bars WHERE interval = '1d')
-             AND d <= CURRENT_DATE) AS staleness_days
+             AND d <= market_date()) AS staleness_days
 `;
 
 /** `MonitoringThresholds.stale_after_days`. */
