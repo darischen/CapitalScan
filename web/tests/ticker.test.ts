@@ -13,7 +13,10 @@ import {
   clampEvents,
   clampPage,
   parseRange,
+  toLiveBar,
+  toLiveQuote,
   type ChartBar,
+  type LiveRow,
 } from "@/lib/ticker";
 
 /** A bar with nothing on it, so each test names only what it cares about. */
@@ -242,5 +245,72 @@ describe("history paging (ADR 121)", () => {
     const loaded = [bar({ ts: "2026-08-18" })];
     expect(prepend([], loaded)).toBe(loaded);
     expect(prepend([bar({ ts: "2026-08-18" })], loaded)).toBe(loaded);
+  });
+});
+
+/**
+ * The header's live price and the chart's candle come from one row.
+ *
+ * **They came from two tables until 2026-08-19.** `poll.py` writes
+ * `quotes_live` inside its breach loop, so a ticker gets a row only on a
+ * tick where it fired; ROST fired at 09:36 ET and never again, and hours
+ * after the close the header still read 238.72 from that morning while the
+ * candle beside it showed the true 234.63. Two numbers describing the same
+ * quantity, on one screen, disagreeing by four dollars.
+ *
+ * `bars_live.close` is the current price for every polled ticker. These
+ * assert the two shapes are built from the same row, which is what makes
+ * the disagreement unrepresentable rather than merely unlikely.
+ */
+describe("the live row is one source for two shapes", () => {
+  const row = (over: Partial<LiveRow> = {}): LiveRow => ({
+    // **Local midnight, not `...T00:00:00Z`.** `pg` parses a `date` column
+    // into a `Date` at local midnight and `isoDate` reads it back with
+    // local getters, so a UTC-midnight fixture is the *previous* day on
+    // this machine and every date assertion below silently shifts. The
+    // same one-session offset ADR 120's chart markers hit.
+    session_date: new Date(2026, 7, 19),
+    ts: new Date("2026-08-19T19:55:46Z"),
+    open: "233.5900",
+    high: "239.6700",
+    low: "232.5600",
+    close: "234.6300",
+    volume: "2070108",
+    ...over,
+  });
+
+  it("the quote's price is the candle's close", () => {
+    const source = row();
+    expect(toLiveQuote(source, "2026-08-18")?.price).toBe(toLiveBar(source)?.close);
+  });
+
+  it("reads the close, not any other price on the row", () => {
+    // The regression in one line: 238.715 was a *different* number from a
+    // different table, and no arrangement of this row can produce it.
+    const quote = toLiveQuote(row(), "2026-08-18");
+    expect(quote?.price).toBe(234.63);
+    expect(quote?.ts).toBe("2026-08-19T19:55:46.000Z");
+  });
+
+  it("is ahead of the bar during a session and level with it after ingest", () => {
+    expect(toLiveQuote(row(), "2026-08-18")?.aheadOfBar).toBe(true);
+    // Once the nightly writes today's closed bar, the live price is no
+    // longer ahead of anything.
+    expect(toLiveQuote(row(), "2026-08-19")?.aheadOfBar).toBe(false);
+  });
+
+  it("both are null when the session is closed or the poller skips the ticker", () => {
+    expect(toLiveBar(null)).toBeNull();
+    expect(toLiveQuote(null, "2026-08-18")).toBeNull();
+  });
+
+  /** The candle stays partial: it has no indicators and must never grow
+   * any, or invariant 3 is broken one layer up. */
+  it("the candle carries prices and no indicators", () => {
+    const bar = toLiveBar(row())!;
+    expect(bar.partial).toBe(true);
+    for (const field of ["bbLower", "bbMid", "bbUpper", "kFast", "kFull", "sma200"] as const) {
+      expect(bar[field], `${field} must be null on a partial bar`).toBeNull();
+    }
   });
 });

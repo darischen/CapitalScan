@@ -93,7 +93,7 @@ export interface ChartBar {
  * The newest price the poller saw, with the time it saw it.
  *
  * A separate read rather than a column on `v_ticker_state`: that view is
- * the last *closed* session, and joining an intraday quote onto it would
+ * the last *closed* session, and joining an intraday price onto it would
  * make one row mean two different times. `null` outside market hours and
  * for any ticker the poller does not cover — it polls
  * `_load_in_trade_tickers`, so a train-universe name never has one.
@@ -268,11 +268,33 @@ function toBar(r: ChartRowRaw): ChartBar {
  * one.
  */
 const LIVE_BAR_SQL = `
-  SELECT session_date, open, high, low, close, volume
+  SELECT session_date, ts, open, high, low, close, volume
     FROM bars_live
    WHERE ticker = $1
      AND session_date = market_date()
 `;
+
+export interface LiveRow {
+  session_date: Date;
+  ts: Date;
+  open: string | null;
+  high: string | null;
+  low: string | null;
+  close: string | null;
+  volume: string | null;
+}
+
+/**
+ * The one row that describes the open session, read once.
+ *
+ * Both the chart's candle and the header's live price are built from this,
+ * and that is the point — see `liveQuote` below for what happened when
+ * they came from two tables.
+ */
+export async function liveRowFor(ticker: string): Promise<LiveRow | null> {
+  const rows = await query<LiveRow>(LIVE_BAR_SQL, [ticker]);
+  return rows[0] ?? null;
+}
 
 /**
  * Today's partial candle, or null outside a session.
@@ -287,16 +309,11 @@ const LIVE_BAR_SQL = `
  * refresh after it.
  */
 export async function liveBar(ticker: string): Promise<ChartBar | null> {
-  const rows = await query<{
-    session_date: Date;
-    open: string | null;
-    high: string | null;
-    low: string | null;
-    close: string | null;
-    volume: string | null;
-  }>(LIVE_BAR_SQL, [ticker]);
+  return toLiveBar(await liveRowFor(ticker));
+}
 
-  const today = rows[0];
+/** The candle shape, from the row. Pure, so a test can feed it one. */
+export function toLiveBar(today: LiveRow | null): ChartBar | null {
   if (!today) return null;
 
   return {
@@ -665,43 +682,42 @@ export async function searchTickers(term: string, limit = SEARCH_LIMIT): Promise
 }
 
 /**
- * `quotes_live`, one ticker, newest row.
+ * The header's live price — `bars_live`, the same row the candle is drawn
+ * from.
  *
- * `DISTINCT ON` is unnecessary for a single ticker — `ORDER BY ts DESC
- * LIMIT 1` walks the primary key backwards and stops.
+ * **This read `quotes_live` until 2026-08-19 and was wrong most of the
+ * time.** `poll.py` writes `quotes_live` *inside the breach loop*, so a
+ * ticker gets a row only on a tick where it fired. ROST fired at 09:36 ET
+ * and never again; at 13:26 PT, hours after the close, the header still
+ * read 238.72 from that morning quote while the candle beside it showed
+ * the true 234.63. Reported by the user, and the two numbers on one screen
+ * disagreeing is precisely the failure `/api/live` was built to prevent —
+ * except the disagreement was upstream, in which table each came from.
  *
- * The staleness comparison is against `market_date()`, not against the
- * quote's own age: a quote from Friday 15:59 is not stale on Friday
- * evening and is very stale on Tuesday, and only the market's calendar
- * knows the difference.
+ * `bars_live.close` *is* the current price: rewritten every tick, for every
+ * ticker the poller covers (ADR 128). `quotes_live` was a second, sparser
+ * source for the same quantity, so it stops being a display source rather
+ * than being kept in sync. It remains the record of what price a signal
+ * fired at, which is what it is actually for.
+ *
+ * Both shapes now come from one row, so they cannot disagree by
+ * construction rather than by being fetched carefully.
  */
-const LIVE_SQL = `
-  SELECT q.price, q.ts, (q.ts AT TIME ZONE 'America/New_York')::date AS quote_date,
-         market_date() AS today
-    FROM quotes_live q
-   WHERE q.ticker = $1
-   ORDER BY q.ts DESC
-   LIMIT 1
-`;
-
 export async function liveQuote(ticker: string, barDate: string): Promise<LiveQuote | null> {
-  const [row] = await query<{
-    price: string;
-    ts: Date;
-    quote_date: Date;
-    today: Date;
-  }>(LIVE_SQL, [ticker]);
-  if (!row) return null;
+  return toLiveQuote(await liveRowFor(ticker), barDate);
+}
 
-  const price = num(row.price);
+/** The quote shape, from the row. Pure, so a test can feed it one. */
+export function toLiveQuote(row: LiveRow | null, barDate: string): LiveQuote | null {
+  if (!row) return null;
+  // `close` is `NOT NULL` in the table, so this is a defence against a
+  // future nullable column rather than a case that happens.
+  const price = num(row.close);
   if (price === null) return null;
 
-  const quoteDate = isoDate(row.quote_date);
-  // Only shown when the quote is from the current market date. A quote from
-  // an earlier session is not a live price, and rendering it as one beside
-  // a bar from the same day would be claiming intraday movement that
-  // already closed.
-  if (quoteDate !== isoDate(row.today)) return null;
-
-  return { price, ts: row.ts.toISOString(), aheadOfBar: quoteDate > barDate };
+  // The SQL already pins `session_date = market_date()`, so a row that
+  // exists is today's by construction. The date comparison the old
+  // `quotes_live` read needed is gone with the table it guarded.
+  const sessionDate = isoDate(row.session_date);
+  return { price, ts: row.ts.toISOString(), aheadOfBar: sessionDate > barDate };
 }
