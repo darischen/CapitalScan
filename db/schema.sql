@@ -1269,7 +1269,7 @@ CREATE VIEW public.v_screen_live AS
      JOIN public.tickers t ON ((t.ticker = e.ticker)))
      LEFT JOIN public.cell_stats c ON (((c.signal_type = e.signal_type) AND (c.side = e.side) AND (c.dd_bucket = e.dd_bucket) AND (c.signal_strength IS NULL) AND (c.entry_kind = 'next_open'::text) AND (c.split_key = 'validate'::text) AND (c.era IS NULL) AND (c.horizon_days = 5) AND (c.target_pct = 0.03) AND (c.config_hash = current_setting('capitalscan.default_config_hash'::text, true)) AND (c.arm = 'signal'::text))))
      LEFT JOIN public.predictions p ON (((p.ticker = e.ticker) AND (p.as_of = e.signal_date))))
-  WHERE ((e.entry_kind = 'touch'::text) AND (e.is_cluster_head IS NOT FALSE) AND e.in_trade AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)));
+  WHERE ((e.entry_kind = 'touch'::text) AND e.in_trade AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)));
 
 
 ALTER VIEW public.v_screen_live OWNER TO capscan;
@@ -1287,6 +1287,7 @@ CREATE VIEW public.v_stats AS
     signal_strength,
     side,
     entry_kind,
+    arm,
     split_key,
     era,
     horizon_days,
@@ -1668,6 +1669,13 @@ CREATE INDEX benchmarks_lookup ON public.benchmarks USING btree (run_id, arm, sp
 --
 
 CREATE INDEX events_cluster ON public.events USING btree (cluster_id, seq_in_cluster);
+
+
+--
+-- Name: events_feed_latest; Type: INDEX; Schema: public; Owner: capscan
+--
+
+CREATE INDEX events_feed_latest ON public.events USING btree (config_hash, entry_kind, signal_date DESC) WHERE in_trade;
 
 
 --

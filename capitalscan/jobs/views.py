@@ -933,3 +933,143 @@ CREATE VIEW public.v_chart AS
          AND (e.entry_kind = 'next_open'::text))))
   WHERE (b."interval" = '1d'::text)
 """
+
+
+# ---------------------------------------------------------------------------
+# v_stats (ADR 126)
+# ---------------------------------------------------------------------------
+#
+# **The view predates `cell_stats.arm` and never gained it.** ADR 105 added
+# the column to separate a measured arm from a recommended one; `v_stats`
+# was written before that and DESIGN §8.2's DDL still omits it.
+#
+# So the serving surface for statistics could not express the one predicate
+# that keeps the control and benchmark arms out of a rate. `v_screen` and
+# `v_screen_live` join `cell_stats` directly and pin `arm = 'signal'`
+# themselves, which hid it: every path that mattered had its own copy of
+# the filter, and the view nobody had queried yet did not.
+#
+# Found when `/` first ran with `?stats=1` against the live database --
+# `web/lib/screen.ts` filters `arm = 'signal'` on `v_stats` and every
+# request returned `column "arm" does not exist`. The toggle had been
+# broken since Session 17 shipped, because the statistics panel was only
+# ever tested against a fixture.
+V_STATS_DDL = """CREATE VIEW public.v_stats AS
+SELECT cell_id,
+    run_id,
+    config_hash,
+    signal_type,
+    dd_bucket,
+    signal_strength,
+    side,
+    entry_kind,
+    arm,
+    split_key,
+    era,
+    horizon_days,
+    target_pct,
+    n_events,
+    n_eff,
+    n_tickers,
+    mean_cofire,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE p_hit
+        END AS p_hit,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE baseline_empirical
+        END AS baseline,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE edge
+        END AS edge,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE ci_low
+        END AS ci_low,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE ci_high
+        END AS ci_high,
+    q_value,
+    p_value_randomization,
+    mean_ret,
+    median_ret,
+    ret_p25,
+    ret_p75,
+    mean_mfe,
+    mean_mae,
+    median_time_to_mfe,
+    capture_ratio,
+    p_touch_2pct,
+    p_touch_3pct,
+    p_touch_5pct,
+    p_touch_10pct,
+    median_day_touch_5pct,
+    exit_mix,
+    earnings_frac,
+    suppressed,
+    suppress_reason
+   FROM cell_stats
+"""
+
+# `v_stats` as it stood before ADR 126, for `downgrade()`.
+V_STATS_DDL_PRE_126 = """CREATE VIEW public.v_stats AS
+SELECT cell_id,
+    run_id,
+    config_hash,
+    signal_type,
+    dd_bucket,
+    signal_strength,
+    side,
+    entry_kind,
+    split_key,
+    era,
+    horizon_days,
+    target_pct,
+    n_events,
+    n_eff,
+    n_tickers,
+    mean_cofire,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE p_hit
+        END AS p_hit,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE baseline_empirical
+        END AS baseline,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE edge
+        END AS edge,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE ci_low
+        END AS ci_low,
+        CASE
+            WHEN suppressed THEN NULL::numeric
+            ELSE ci_high
+        END AS ci_high,
+    q_value,
+    p_value_randomization,
+    mean_ret,
+    median_ret,
+    ret_p25,
+    ret_p75,
+    mean_mfe,
+    mean_mae,
+    median_time_to_mfe,
+    capture_ratio,
+    p_touch_2pct,
+    p_touch_3pct,
+    p_touch_5pct,
+    p_touch_10pct,
+    median_day_touch_5pct,
+    exit_mix,
+    earnings_frac,
+    suppressed,
+    suppress_reason
+   FROM cell_stats
+"""

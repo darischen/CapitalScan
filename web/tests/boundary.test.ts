@@ -117,6 +117,7 @@ describe("parameterisation", () => {
     "${CONFLUENCE_RANK}",
     "${CONFLUENCE_FILTER}",
     "${CHART_COLUMNS}",
+    "${FEED_DOMAIN}",
   ]);
 
   it.each(sources())("%s interpolates nothing user-supplied into SQL", (path) => {

@@ -143,6 +143,41 @@ describe.skipIf(!connected)("against the live database", () => {
     ).toBe(true);
   });
 
+  /**
+   * **The `?stats=1` path, which shipped broken.** `screen.ts` filters
+   * `arm = 'signal'` on `v_stats`, and `v_stats` did not project `arm`
+   * until ADR 126 — so every request returned `column "arm" does not
+   * exist` and rendered the error state.
+   *
+   * `states.test.tsx` covers the *component* with a `CellStats` fixture and
+   * never runs the query, which is exactly why a fixture test is not a
+   * substitute for one round trip against the real view.
+   */
+  it("attaches cell statistics without throwing", async () => {
+    const { screen } = await import("@/lib/screen");
+    const result = await screen({ withStats: true, confluenceOnly: false, limit: 20 });
+
+    expect(result.rows.length).toBeGreaterThan(0);
+    const withCell = result.rows.filter((r) => r.cellId !== null);
+    expect(withCell.length).toBeGreaterThan(0);
+
+    // ADR 112: zero cells survive correction, so a real cell here is
+    // either suppressed or carries a q-value above `fdr_alpha`. Both are
+    // valid; a bare probability is not.
+    for (const row of withCell) {
+      if (row.stats === null) continue;
+      if (row.stats.kind === "suppressed") {
+        expect(row.stats.reason).toBeTruthy();
+      } else {
+        // Invariant 8: never a rate without its companions.
+        expect(row.stats.nEff).not.toBeNull();
+        expect(row.stats.ciLow).not.toBeNull();
+        expect(row.stats.ciHigh).not.toBeNull();
+        expect(row.stats.qValue).not.toBeNull();
+      }
+    }
+  });
+
   it("returns an empty page at the start of history, which is how paging stops", async () => {
     const { chartBefore } = await import("@/lib/ticker");
     expect(await chartBefore("TSM", "1900-01-01", 10)).toEqual([]);

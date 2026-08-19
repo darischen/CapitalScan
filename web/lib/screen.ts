@@ -229,6 +229,26 @@ interface ScreenOptions {
 }
 
 /**
+ * The feed's domain, restated from `v_screen_live`'s own WHERE clause.
+ *
+ * Every *date* question reads `events` directly rather than the view. The
+ * view carries four `LEFT JOIN LATERAL` subqueries and Postgres cannot drop
+ * an unused one, so asking it "what is the newest date" runs all four over
+ * the whole history. Measured after ADR 122's rebuild took the live `touch`
+ * slice from 157k to 1.31M rows: **23.3 s** through the view, **0.17 ms**
+ * against the table, with `events_feed_latest` serving it.
+ *
+ * The duplication is deliberate. These ask a question *about* the feed's
+ * domain rather than reading the feed, and paying four laterals per row to
+ * learn a date is the wrong trade.
+ */
+const FEED_DOMAIN = `
+  entry_kind = 'touch'
+  AND in_trade
+  AND config_hash = current_setting('capitalscan.default_config_hash', true)
+`;
+
+/**
  * The date to show when the caller does not name one.
  *
  * **The screener is a one-day view**, so "no date given" has to resolve to a
@@ -253,9 +273,8 @@ interface ScreenOptions {
  * query rewrite.
  */
 const LATEST_DATE_SQL = `
-  SELECT signal_date AS d FROM v_screen_live
-   ORDER BY signal_date DESC
-   LIMIT 1
+  SELECT max(signal_date) AS d FROM events
+   WHERE ${FEED_DOMAIN}
 `;
 
 /**
@@ -268,24 +287,24 @@ const LATEST_DATE_SQL = `
  * the ranking does not separate rows.
  */
 /**
- * The nearest date each way that has at least one row under the same
- * filters the feed is using.
+ * The nearest date each way that has rows under the same filters.
  *
- * Passed the confluence flag so the arrows agree with the table: with
+ * Takes the confluence flag so the arrows agree with the table: with
  * confluence-only on, "previous" must mean the previous day that had a
- * confluence, not the previous day that had any event at all — otherwise a
- * click lands on an empty screen while the date strip claims rows exist.
+ * confluence, or a click lands on an empty screen.
  */
 const NEIGHBOURS_SQL = `
   SELECT
-    (SELECT max(s.signal_date) FROM v_screen_live s
-      WHERE s.signal_date < $1::date
+    (SELECT max(signal_date) FROM events
+      WHERE ${FEED_DOMAIN}
+        AND signal_date < $1::date
         AND ($2::boolean IS NOT TRUE
-             OR s.signal_types_all && ARRAY['confluence_high','confluence_low'])) AS prev,
-    (SELECT min(s.signal_date) FROM v_screen_live s
-      WHERE s.signal_date > $1::date
+             OR signal_types_all && ARRAY['confluence_high','confluence_low'])) AS prev,
+    (SELECT min(signal_date) FROM events
+      WHERE ${FEED_DOMAIN}
+        AND signal_date > $1::date
         AND ($2::boolean IS NOT TRUE
-             OR s.signal_types_all && ARRAY['confluence_high','confluence_low'])) AS next
+             OR signal_types_all && ARRAY['confluence_high','confluence_low'])) AS next
 `;
 
 const CONFLUENCE_RANK = `
@@ -643,12 +662,13 @@ export function isoDate(value: Date | string): string {
  * is currently using, or clicking it lands on an empty screen.
  */
 const MONTH_SQL = `
-  SELECT s.signal_date AS d, count(*)::int AS n
-    FROM v_screen_live s
-   WHERE s.signal_date >= $1::date
-     AND s.signal_date < ($1::date + interval '1 month')
+  SELECT signal_date AS d, count(*)::int AS n
+    FROM events
+   WHERE ${FEED_DOMAIN}
+     AND signal_date >= $1::date
+     AND signal_date < ($1::date + interval '1 month')
      AND ($2::boolean IS NOT TRUE
-          OR s.signal_types_all && ARRAY['confluence_high','confluence_low'])
+          OR signal_types_all && ARRAY['confluence_high','confluence_low'])
    GROUP BY 1
    ORDER BY 1
 `;
@@ -669,7 +689,8 @@ export async function monthCounts(month: string, confluenceOnly = true): Promise
  * stop offering months that cannot contain a row.
  */
 const SPAN_SQL = `
-  SELECT min(signal_date) AS lo, max(signal_date) AS hi FROM v_screen_live
+  SELECT min(signal_date) AS lo, max(signal_date) AS hi FROM events
+   WHERE ${FEED_DOMAIN}
 `;
 
 export async function feedSpan(): Promise<{ lo: string; hi: string } | null> {
