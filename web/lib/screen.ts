@@ -137,6 +137,21 @@ interface ScreenOptions {
   limit?: number;
 }
 
+/**
+ * The date to show when the caller does not name one.
+ *
+ * **The screener is a one-day view**, so "no date given" has to resolve to a
+ * date rather than to "no filter". Without this the feed ordered by
+ * `signal_date DESC` and truncated at `limit` silently spanned two days
+ * whenever the newest day had fewer rows than the limit -- measured
+ * 2026-08-18, the newest day had 46 and `LIMIT 50` pulled four more from the
+ * day before, under a single date in the status strip. The count was worse:
+ * an unfiltered `count(*)` reported 290,019, the whole history.
+ */
+const LATEST_DATE_SQL = `
+  SELECT max(signal_date) AS d FROM v_screen
+`;
+
 const FEED_SQL = `
   SELECT s.ticker, s.signal_date, s.signal_type, s.signal_types_all,
          s.signal_strength, s.bb_pctb, s.k_full, s.k_fast,
@@ -144,8 +159,8 @@ const FEED_SQL = `
     FROM v_screen s
     JOIN v_universe u ON u.ticker = s.ticker
    WHERE u.in_trade
-     AND ($1::date IS NULL OR s.signal_date = $1::date)
-   ORDER BY s.signal_date DESC, s.cofire_count DESC NULLS LAST, s.ticker
+     AND s.signal_date = $1::date
+   ORDER BY s.cofire_count DESC NULLS LAST, s.ticker
    LIMIT $2
 `;
 
@@ -154,7 +169,7 @@ const COUNT_SQL = `
     FROM v_screen s
     JOIN v_universe u ON u.ticker = s.ticker
    WHERE u.in_trade
-     AND ($1::date IS NULL OR s.signal_date = $1::date)
+     AND s.signal_date = $1::date
 `;
 
 /**
@@ -179,7 +194,15 @@ interface FeedRowRaw {
 
 export async function screen(options: ScreenOptions = {}): Promise<ScreenResult> {
   const limit = clampLimit(options.limit);
-  const date = options.date ?? null;
+
+  // Resolved before the feed runs, so the rows and the count describe the
+  // same day. `null` here means the view is empty, which the caller renders
+  // as the empty state rather than as a failure.
+  const date =
+    options.date ?? (await query<{ d: Date | null }>(LATEST_DATE_SQL))[0]?.d ?? null;
+  if (date === null) {
+    return { rows: [], totalMatched: 0, withStats: false, signalDate: null, meta: await readMeta() };
+  }
 
   const [rowsRaw, countRows, meta] = await Promise.all([
     query<FeedRowRaw>(FEED_SQL, [date, limit]),
@@ -212,7 +235,7 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
     rows,
     totalMatched: countRows[0]?.n ?? 0,
     withStats: Boolean(options.withStats),
-    signalDate: rows[0]?.signalDate ?? null,
+    signalDate: typeof date === "string" ? date : isoDate(date),
     meta,
   };
 }
