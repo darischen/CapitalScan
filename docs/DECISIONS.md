@@ -166,6 +166,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 122 | Detection records trade-universe membership instead of being filtered by it | Pinned. SMCI: 192 band touches, 0 events. Statistics population unchanged |
 | 123 | The screener shows the poller's intraday reversal, marked as intraday | Pinned. Surfaces 117's live judgement; three renderings, not two |
 | 124 | The screener is a record of the session, not a clustered sample | Pinned. 19 fires became 4 overnight; a feed is not a sample |
+| 125 | A migration carries its SQL as a literal, never as an import | Pinned. ADR 122 broke every fresh replay; applied to all seven |
 
 ---
 
@@ -3774,6 +3775,57 @@ Row counts on historical dates rise. On 2026-08-18: 5 poller rows plus 3 repeats
 *Cluster the poller's rows intraday.* Impossible without the session, which is ADR 054's own reasoning.
 
 *Show heads and count the repeats in a badge.* Considered. It compresses well and it hides which ticker repeated, which is the part a reader wants when a name fires three times in a morning.
+
+---
+
+## 125. A migration carries its SQL as a literal, never as an import
+
+**Date:** 2026-08-19. **Status:** Pinned. Corrects a pattern used by seven existing migrations.
+
+**Context.**
+
+`jobs/views.py` holds each view's DDL as a module constant, and migrations imported them:
+
+```python
+from capitalscan.jobs.views import V_SCREEN_LIVE_DDL
+op.execute(V_SCREEN_LIVE_DDL)
+```
+
+That reads as DRY and is a latent break. **The constant is the current definition; a migration is a statement about one point in history.** The two are the same only until the next time the view changes.
+
+ADR 122 added `events.in_trade` in `f2d16b47c093`. Four migrations that run *before* it had imported `V_SCREEN_LIVE_DDL`, and all four immediately began emitting `AND e.in_trade` against a table without the column. Every from-scratch replay died:
+
+```
+ProgrammingError: column e.in_trade does not exist
+```
+
+**It could not have been caught locally, and that is the important part.** A developer applies only the new migrations; the broken path is never taken. Only a full replay from an empty database hits it — which is precisely what CI does, and what a new deployment would do. It ran green on the developer machine and failed on the first CI run.
+
+**Decision.**
+
+A migration carries the SQL it emits as a **literal**, named `_*_AT_THIS_REVISION`. It may import from `jobs/views.py` only a constant whose name pins it to a superseded form — the existing `_PRE_115`, `_PRE_119`, `_PRE_120` convention — because those exist to record something that has already stopped changing.
+
+`test_migrations_freeze_ddl.py` parses every migration's imports and refuses a live name. A second test asserts that anything named `_AT_THIS_REVISION` is `literal_eval`-able, so the name cannot be attached to a computed value and keep the defect.
+
+**Applied to all seven**, not only the four that broke. The other three — `a3c8e15d40b7`, `c4a7e91b53d8`, `d7f4b91c26ea` — were the same defect waiting on the next edit to `v_ticker_state`, `v_chart`, or `v_positions`.
+
+`d7f4b91c26ea` also called `serving_config_values()`, the live builder, to seed the settings row. Frozen to a literal dict for the same reason: a field added to `ExitParams` would change what a past migration inserts, and a field removed would make it insert a key the frozen upsert does not name.
+
+**Consequences.**
+
+The duplication is real and is the point. `views.py` and the migrations will diverge, and that is correct — one describes now, the others describe then.
+
+**Verified by replay, not by reading.** A scratch database, `alembic upgrade head`, and an md5 over `pg_get_viewdef` for every view compared against production: `fac6d6b13ea438277600a88f8d6dfc0e` both ways. Then `downgrade -4` and back up, same digest.
+
+That comparison is worth keeping as a habit. It is the only check that proves the chain reproduces the live schema, and no amount of reading a migration establishes it.
+
+**Rejected.**
+
+*Version the constants in `views.py` — `V_SCREEN_LIVE_DDL_V3`, `_V4`.* Keeps them in one file and puts the history somewhere nobody reads it. It also leaves the trap intact: the unversioned name still exists and is still importable.
+
+*A CI step that replays migrations from empty.* Worth adding on its own merits and does not replace this. It catches the failure; the test catches the *cause*, names the file, and says what to do.
+
+*Generate migrations from a schema differ.* A larger change, and it does not address this: a generated migration that referenced a live constant would have exactly the same problem.
 
 ---
 
