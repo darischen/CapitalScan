@@ -42,6 +42,29 @@ HOLDOUT = "holdout"
 # population, `trade` the narrower live one.
 UNIVERSES: tuple[str, ...] = ("train", "trade")
 
+# `grain` selects which *feed* a screener read comes from. The two views
+# hold the same signals at different entry timings and, more importantly,
+# at different freshness:
+#
+# - `next_open` reads `v_screen`. Written only by `cscan backtest`, so it
+#   ends at the last backtest and every row carries a measured outcome.
+#   This is `GRID_ENTRY_KIND` -- the grain every Phase 4 statistic used.
+# - `touch` reads `v_screen_live`. Written by the poller continuously, so
+#   it reaches today.
+#
+# **Default `next_open`, and the default is the compatible one.** Before
+# this argument existed the handler read `v_screen` unconditionally, so a
+# caller asking "what fired today" got the last *backtested* session --
+# 2026-08-13 when the poller had already recorded 2026-08-19. The answer
+# was honest and wrong, and neither view is right for every question, so
+# the caller says which one they mean rather than the handler guessing.
+#
+# Statistics are unaffected: `v_screen_live` joins `cell_stats` on the
+# literal `entry_kind = 'next_open'` by design, because those are the only
+# cells that were measured. A live row's statistics describe what that
+# *kind* of setup historically did, on both grains, identically.
+GRAINS: tuple[str, ...] = ("next_open", "touch")
+
 
 def signal_types() -> tuple[str, ...]:
     """Every signal type in `core.types.SignalType`, in declaration order.
@@ -113,6 +136,10 @@ def parse_split(value: str) -> str:
 
 def parse_universe(value: str) -> str:
     return _check_one("universe", value, UNIVERSES)
+
+
+def parse_grain(value: str) -> str:
+    return _check_one("grain", value, GRAINS)
 
 
 def parse_entry_kind(value: str) -> str:

@@ -89,6 +89,7 @@ function event(over: Partial<TickerEvent> = {}): TickerEvent {
     side: "long",
     isClusterHead: true,
     ddBucket: "10-20",
+    pending: false,
     entryDate: "2026-07-28",
     entryPrice: 390.93,
     exitDate: "2026-07-30",

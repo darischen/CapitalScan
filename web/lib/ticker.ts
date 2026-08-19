@@ -144,6 +144,10 @@ export interface TickerEvent {
   side: Side;
   isClusterHead: boolean | null;
   ddBucket: string | null;
+  /** The poller recorded this fire and `cscan backtest` has not reached it
+   * yet, so it has no measured outcome. Distinct from an outcome that is
+   * missing, which is what the pre-2026-08-19 blank meant. */
+  pending: boolean;
   entryDate: string | null;
   entryPrice: number | null;
   exitDate: string | null;
@@ -466,16 +470,21 @@ export async function state(ticker: string): Promise<TickerState | null> {
 /**
  * Event history.
  *
- * **`entry_kind = 'touch'`, matching the chart's markers (ADR 120).**
- * `v_events` carries all four kinds, so an unfiltered read returns the same
- * signal four times. `touch` is the one the markers use, and a history row
- * with no marker on the chart above it is the kind of disagreement nobody
- * debugs — they assume the chart is wrong.
+ * **Reads `v_ticker_events`, which is `next_open` plus the poller's
+ * not-yet-backtested fires.** This read `entry_kind = 'touch'` until
+ * 2026-08-19 and showed a blank entry and exit on 47% of its rows,
+ * permanently: a `touch` entry means "enter at the level you touched", and
+ * a stochastic threshold crossing has no level, so all 19,218
+ * `stoch_oversold` and `stoch_overbought` rows carried no entry price and
+ * no exit. The user reported it as old events with the horizon long past
+ * still reading `— — —`, which is exactly what it looked like.
  *
- * The consequence, stated because it is a real one: the outcome columns are
- * then measured on the **touch** entry, while the screener's hit rates are
- * measured on `next_open` (`GRID_ENTRY_KIND`). Same event, two entries, two
- * outcomes. The column header says which.
+ * The outcomes now also match the grain the screener's hit rates were
+ * measured on (`GRID_ENTRY_KIND`), closing the "same event, two entries,
+ * two outcomes" wart this comment used to apologise for.
+ *
+ * `pending` marks a fire `cscan backtest` has not reached. It renders as
+ * "open", never as a blank — a blank is what the defect above looked like.
  *
  * **Confluence by default** (user's request, 2026-08-19), matching the
  * screener's own default and `cli.py::scan --confluence-only`: membership
@@ -497,12 +506,11 @@ export async function state(ticker: string): Promise<TickerState | null> {
  */
 const EVENTS_SQL = `
   SELECT id, signal_date, signal_type, signal_types_all, signal_strength,
-         is_cluster_head, dd_bucket, entry_date, entry_price,
+         is_cluster_head, dd_bucket, pending, entry_date, entry_price,
          exit_date, exit_price, exit_reason, holding_days,
          net_ret, mfe, mae, earnings_in_window
-    FROM v_events
+    FROM v_ticker_events
    WHERE ticker = $1
-     AND entry_kind = 'touch'
      AND ($3::boolean IS TRUE
           OR signal_types_all && ARRAY['confluence_high','confluence_low'])
    ORDER BY signal_date DESC, id
@@ -513,9 +521,8 @@ const EVENTS_SQL = `
  * goes rather than discovering it by scrolling. */
 const EVENTS_COUNT_SQL = `
   SELECT count(*)::int AS n
-    FROM v_events
+    FROM v_ticker_events
    WHERE ticker = $1
-     AND entry_kind = 'touch'
      AND ($2::boolean IS TRUE
           OR signal_types_all && ARRAY['confluence_high','confluence_low'])
 `;
@@ -528,6 +535,7 @@ interface EventRowRaw {
   signal_strength: number | null;
   is_cluster_head: boolean | null;
   dd_bucket: string | null;
+  pending: boolean;
   entry_date: Date | null;
   entry_price: string | null;
   exit_date: Date | null;
@@ -596,6 +604,7 @@ export async function events(
     side: sideFor(r.signal_type),
     isClusterHead: r.is_cluster_head,
     ddBucket: r.dd_bucket,
+    pending: r.pending,
     entryDate: r.entry_date ? isoDate(r.entry_date) : null,
     entryPrice: num(r.entry_price),
     exitDate: r.exit_date ? isoDate(r.exit_date) : null,

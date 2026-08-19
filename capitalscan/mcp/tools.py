@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     EntryKindArg = str
     SplitArg = str
     IndicatorFieldArg = str
+    GrainArg = str
 else:
     from capitalscan.handlers.indicators import ALL_FIELDS
 
@@ -63,6 +64,7 @@ else:
     # client that reads the schema never composes it.
     SplitArg = Literal[enums.SPLITS]
     IndicatorFieldArg = Literal[ALL_FIELDS]
+    GrainArg = Literal[enums.GRAINS]
 
 
 def screen_signals(
@@ -73,13 +75,24 @@ def screen_signals(
     min_strength: int | None = None,
     limit: int | None = None,
     with_stats: bool = False,
+    grain: GrainArg = "next_open",
 ) -> dict[str, Any]:
     """Events that fired on a date, newest first.
 
+    **`grain` decides how recent the feed is, and the default is not the
+    most recent one.** `next_open` reads the backtested feed, which ends at
+    the last `cscan backtest` and can be several sessions behind. `touch`
+    reads the poller's feed, which reaches the current session. For "what
+    fired today", pass `grain="touch"`; for a question about measured
+    outcomes, keep the default, because that is the timing every statistic
+    was computed on.
+
     Returns the event feed by default. Pass `with_stats=true` for the cell
     statistics behind each row; they arrive whole or as a suppression
-    reason, never as a partial set. No cell has survived FDR correction on
-    the current data (ADR 112), so every hit rate returned carries
+    reason, never as a partial set. Statistics mean the same thing on both
+    grains -- they are always the `next_open` cell for that setup, because
+    those are the only cells measured. No cell has survived FDR correction
+    on the current data (ADR 112), so every hit rate returned carries
     `survives_fdr: false` and a q-value near 1.
     """
     return to_wire_dict(
@@ -91,6 +104,7 @@ def screen_signals(
             min_strength=min_strength,
             limit=limit,
             with_stats=with_stats,
+            grain=grain,
         )
     )
 

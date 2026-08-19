@@ -1,4 +1,4 @@
-"""v_screen_live.live_price reads bars_live, not quotes_live
+"""v_screen_live: live_price from bars_live, and bb_pctb projected
 
 Revision ID: c1f7d92a6b45
 Revises: d5c17e9b3a02
@@ -24,6 +24,13 @@ reported a July price in a column labelled live.
 so `close` is the current price by construction. The lateral becomes an
 equality join on `(ticker, session_date)`, which is that table's primary
 key.
+
+**`bb_pctb` is added in the same revision.** `v_screen` projects it and
+`v_screen_live` did not, which is the one column that differed between the
+two feeds. `screen_signals` now takes a `grain` argument selecting between
+them (backlog item 2), and a handler whose column list changes with the
+grain would be two contracts wearing one name. `events.bb_pctb` is stored,
+so this is a projection and nothing is computed.
 
 **One behaviour change beyond the fix.** `live_price` is now NULL
 outside a session and for any ticker the poller does not cover. The old
@@ -67,6 +74,7 @@ CREATE VIEW public.v_screen_live AS
     e.k_full,
     e.d_full,
     e.k_cross_up,
+    e.bb_pctb,
     e.dd_52w,
     e.dd_bucket,
     e.above_sma200,

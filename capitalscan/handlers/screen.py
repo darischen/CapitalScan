@@ -1,6 +1,7 @@
 """`screen_signals` — what fired, and only on request what it historically meant.
 
-Reads `v_screen`. It does not rebuild what that view already decides:
+Reads `v_screen` or `v_screen_live`, chosen by `grain`. It does not rebuild
+what those views already decide:
 
 - ADR 100's `config_hash` predicate, taken from the `capitalscan.default_
   config_hash` GUC rather than guessed.
@@ -8,7 +9,8 @@ Reads `v_screen`. It does not rebuild what that view already decides:
   cannot leak into a screener row.
 - ADR 107's pooled-over-`signal_strength` cell selection.
 - `is_cluster_head AND entry_kind = 'next_open'`, which is the same grain
-  every Phase 4 statistics query used.
+  every Phase 4 statistics query used. `v_screen_live` is the `touch`
+  counterpart -- see `enums.GRAINS` for why the caller picks.
 
 **The default is the event feed (ADR 114).** `with_stats=False` returns
 rows with `stats=None`. ADR 112 measured zero cells surviving FDR
@@ -52,8 +54,13 @@ _FEED_COLUMNS = """
 # last quarter should stop appearing today even though its historical
 # events remain valid. `get_events` makes no such filter, which is why a
 # ticker can be absent here and present there.
+# The view is chosen by `grain`, never interpolated from caller input:
+# `enums.parse_grain` maps to a key here, so the only two strings that can
+# reach this format are the two written below.
+_VIEWS = {"next_open": "v_screen", "touch": "v_screen_live"}
+
 _BASE = """
-FROM v_screen s
+FROM {view} s
 JOIN v_universe u ON u.ticker = s.ticker
 WHERE {predicates}
 """
@@ -64,9 +71,9 @@ def _f(value: Any) -> float | None:
 
 
 def _fetch_feed(
-    engine: Engine, predicates: str, params: dict[str, Any], limit: int
+    engine: Engine, predicates: str, params: dict[str, Any], limit: int, grain: str
 ) -> tuple[list[dict[str, Any]], int]:
-    base = _BASE.format(predicates=predicates)
+    base = _BASE.format(view=_VIEWS[grain], predicates=predicates)
     total = _db.rows(engine, f"SELECT count(*) AS n {base}", params)
     found = _db.rows(
         engine,
@@ -129,6 +136,7 @@ def screen_signals(
     min_strength: int | None = None,
     limit: int | None = None,
     with_stats: bool = False,
+    grain: str = "next_open",
     engine: Engine | None = None,
     sp: StatsParams | None = None,
 ) -> ScreenResult:
@@ -140,9 +148,17 @@ def screen_signals(
     empty result still has to say which config it queried and how stale the
     database is, or the reader cannot tell "nothing fired" from "nothing
     was ingested".
+
+    `grain` selects the feed. `next_open` (the default) reads the
+    backtested `v_screen` and stops at the last `cscan backtest`; `touch`
+    reads the poller's `v_screen_live` and reaches today. `meta.as_of` and
+    the staleness it carries are the same either way -- they describe the
+    *database*, not the feed -- so a caller on the default grain must read
+    `signal_date` to know how far back the newest row is.
     """
     sp = sp or StatsParams()
     universe = enums.parse_universe(universe)
+    grain = enums.parse_grain(grain)
     types = enums.parse_signal_types(signal_types)
     limit_n = enums.clamp_limit(limit)
 
@@ -170,7 +186,7 @@ def screen_signals(
         predicates.append("s.signal_strength >= :min_strength")
         params["min_strength"] = int(min_strength)
 
-    found, total = _fetch_feed(engine, " AND ".join(predicates), params, limit_n)
+    found, total = _fetch_feed(engine, " AND ".join(predicates), params, limit_n, grain)
     meta = _db.build_meta(engine, config_hash=config_hash, as_of=last_bar)
 
     by_cell: dict[str, CellStats | Suppressed] = {}

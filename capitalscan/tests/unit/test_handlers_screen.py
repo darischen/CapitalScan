@@ -256,3 +256,95 @@ def test_the_stale_flag_trips_above_the_configured_threshold(feed):
 
 def test_two_identical_calls_return_equal_results(feed):
     assert _call() == _call()
+
+
+# ---------------------------------------------------------------------------
+# `grain` — which feed, and how recent (backlog item 2)
+# ---------------------------------------------------------------------------
+
+
+def test_the_default_grain_reads_the_backtested_feed(feed):
+    """`next_open`, which is what this handler read before `grain` existed.
+
+    The default has to be the compatible one: MCP clients outside this
+    repository call `screen_signals`, and a default that silently moved
+    them to a different entry timing would change every outcome they had
+    already reported.
+    """
+    _call()
+    assert feed.sql_containing("FROM v_screen s")
+    assert not feed.sql_containing("FROM v_screen_live")
+
+
+def test_the_touch_grain_reads_the_live_feed(fake_db):
+    """The fix for the reported defect.
+
+    `/chat` answered "what fired today" with 2026-08-13 while the poller
+    had already recorded 2026-08-19, because `v_screen` is written only by
+    `cscan backtest`. The caller now says which feed they mean.
+    """
+    fake_db.on("FROM v_screen_live", FEED).on("count(*)", [{"n": len(FEED)}])
+    result = screen_signals(date_=date(2026, 8, 14), grain="touch", engine=object())
+
+    assert fake_db.sql_containing("FROM v_screen_live s")
+    assert len(result.rows) == len(FEED)
+
+
+def test_an_unknown_grain_is_refused_rather_than_defaulted(feed):
+    """It names the two, because the whole point of the argument is that
+    the caller chooses deliberately."""
+    with pytest.raises(InvalidEnum) as excinfo:
+        _call(grain="live")
+    assert "next_open" in str(excinfo.value)
+    assert "touch" in str(excinfo.value)
+
+
+def test_the_grain_cannot_carry_a_view_name_into_the_sql(feed):
+    """The view is a dict lookup keyed by a parsed enum, never interpolated.
+
+    `_BASE` is a format string with a `{view}` hole, which is the shape that
+    would be an injection site if the caller's string reached it. It cannot:
+    `parse_grain` runs first and only two keys exist.
+    """
+    with pytest.raises(InvalidEnum):
+        _call(grain="v_screen; DROP TABLE events")
+
+
+def test_both_grains_return_the_same_columns(fake_db):
+    """One contract, two feeds.
+
+    A handler whose row shape changed with the grain would be two contracts
+    wearing one name. `v_screen_live` was missing `bb_pctb` until migration
+    `c1f7d92a6b45` added it, which is exactly the divergence this asserts
+    against.
+    """
+    fake_db.on("FROM v_screen_live", FEED).on("count(*)", [{"n": len(FEED)}])
+    live = screen_signals(date_=date(2026, 8, 14), grain="touch", engine=object())
+    assert live.rows[0].bb_pctb == 0.02
+    assert live.rows[0].cell_id == CELL_ID
+
+
+def test_statistics_mean_the_same_thing_on_both_grains(fake_db):
+    """`v_screen_live` joins `cell_stats` on the literal `next_open`.
+
+    So a live row's statistics are the measured cell for that *setup*, not
+    a differently-measured cell for that timing. Without this the touch
+    grain would pair today's fires with numbers from another population,
+    which is the one way this argument could have been silently wrong.
+    """
+    fake_db.on("FROM v_screen_live", FEED).on("count(*)", [{"n": len(FEED)}]).on(
+        "FROM cell_stats", [dict(LIVE_CELL, cell_id=CELL_ID, split_key="validate")]
+    )
+    result = screen_signals(
+        date_=date(2026, 8, 14), grain="touch", with_stats=True, engine=object()
+    )
+    stats = result.rows[0].stats
+    assert isinstance(stats, CellStats)
+    # The cell id the live feed carries ends in `next_open`, so the row it
+    # joined is the measured one and not a touch-grain cell that does not
+    # exist.
+    assert result.rows[0].cell_id is not None
+    assert "next_open" in result.rows[0].cell_id
+    assert stats.n_eff == 93
+    assert stats.q_value == 0.8492
+    assert stats.survives_fdr is False

@@ -33,11 +33,25 @@ function typeList(e: TickerEvent): string[] {
  * reached — the poller writes an event the moment it fires and
  * `cscan backtest` fills the outcome hours later.
  */
+/**
+ * The Net column, and the three things "no number" can mean.
+ *
+ * **A blank here used to mean two different things and said neither.**
+ * Until 2026-08-19 the history read the `touch` grain, where a stochastic
+ * signal can never have an entry, so 47% of rows showed an em-dash that
+ * was indistinguishable from a genuinely missing outcome. The view now
+ * reads the grain that was measured, and `pending` names the one case that
+ * legitimately has no result yet.
+ */
 function Outcome({ e }: { e: TickerEvent }) {
   if (e.netRet !== null) {
     return <span className={`num ${e.netRet >= 0 ? "up" : "down"}`}>{signedPct(e.netRet)}</span>;
   }
   if (e.exitDate !== null) return <span className="dim">closed, no return</span>;
+  // The poller saw it; `cscan backtest` has not run since. Said in words,
+  // because "not measured yet" and "still in the trade" are different
+  // facts and only one of them is about the market.
+  if (e.pending) return <span className="dim">not backtested</span>;
   return <span className="dim">open</span>;
 }
 
