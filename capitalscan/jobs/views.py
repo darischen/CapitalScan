@@ -622,9 +622,21 @@ CREATE VIEW public.v_screen AS
 #   evening -- measured 2026-08-19, 0 of today's 67 events had one. Left
 #   null rather than back-filled from quotes: an open that is really the
 #   first tick anyone saw is not the session's open.
-# - **`live_price` is the newest `quotes_live` row for the ticker**, with
-#   its timestamp beside it. It is the last price the poller saw, not a
+# - **`live_price` is `bars_live.close` for the current session**, with its
+#   timestamp beside it. It is the last price the poller saw, not a
 #   real-time quote, and `live_price_ts` is what stops those being confused.
+#
+#   **It read `quotes_live` until 2026-08-19 and was usually wrong.**
+#   `poll.py` writes that table inside its breach loop, so a ticker gets a
+#   row only on a tick where it fired -- ROST fired at 09:36 ET, never
+#   again, and hours after the close this column still read its 238.72
+#   against a true 234.63. The lateral had no date bound either, so a
+#   ticker that last fired in July reported a July price as live.
+#
+#   `bars_live` is rewritten every tick for every ticker the poller covers
+#   (ADR 128), so `close` is the current price by construction. An equality
+#   join on its primary key replaces the lateral. Null outside a session
+#   is the honest answer and is new: the old lateral always found *a* row.
 # - **`fired_at` is the first `signal_reports` row for the event**, which is
 #   when the poller detected and notified it. `min()` because a re-notified
 #   event would otherwise report its latest mention rather than its first.
@@ -703,7 +715,7 @@ CREATE VIEW public.v_screen_live AS
     b.low,
     b.close,
     b.volume,
-    lq.price AS live_price,
+    lq.close AS live_price,
     lq.ts AS live_price_ts,
     fr.fired_at,
     rev.confirmed AS rev_confirmed,
@@ -720,11 +732,8 @@ CREATE VIEW public.v_screen_live AS
          LIMIT 1) ind ON (true)
      LEFT JOIN public.bars b ON ((b.ticker = e.ticker) AND (b.ts = e.signal_date)
          AND (b."interval" = '1d'::text))
-     LEFT JOIN LATERAL ( SELECT q.price, q.ts
-           FROM public.quotes_live q
-          WHERE (q.ticker = e.ticker)
-          ORDER BY q.ts DESC
-         LIMIT 1) lq ON (true)
+     LEFT JOIN public.bars_live lq ON ((lq.ticker = e.ticker)
+         AND (lq.session_date = market_date()))
      LEFT JOIN LATERAL ( SELECT min(r.fired_at) AS fired_at
            FROM public.signal_reports r
           WHERE (r.event_id = e.id)) fr ON (true)
