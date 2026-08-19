@@ -651,7 +651,14 @@ def load_grid_events(
         "       earnings_in_window, touched_2pct, day_touched_2pct, touched_3pct,",
         "       day_touched_3pct, touched_5pct, day_touched_5pct, touched_10pct,",
         "       day_touched_10pct",
-        "FROM events WHERE config_hash = :config_hash AND split_key = :split_key",
+        "FROM events WHERE config_hash = :config_hash AND split_key = :split_key "
+        # ADR 122. Detection stopped filtering on trade-universe
+        # membership and started recording it, so the cell population is
+        # only unchanged while this predicate is here. Without it every
+        # measured cell silently widens by roughly 4.4x on the next
+        # `cscan cell-stats`, and nothing about the output would look
+        # wrong.
+        "AND in_trade",
         "AND entry_kind = :entry_kind",
     ]
     if cluster_heads_only:

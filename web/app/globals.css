@@ -978,3 +978,96 @@ table.screen td.rail span[data-side="short"] {
     min-width: 100%;
   }
 }
+
+/* --- crosshair readouts ------------------------------------------------ */
+
+/* HTML over the canvas, not drawn into it: text that selects, inherits the
+ * page's tokens, and needs no font loaded into a chart config.
+ *
+ * `pointer-events: none` throughout. The chart's whole interaction model is
+ * a drag, and an overlay that swallows a mousedown breaks it in a way that
+ * feels like the chart is broken rather than the label. */
+
+.chart-holder {
+  position: relative;
+}
+
+.chart-hover {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* The day's bar. Semi-translucent so the candles stay readable underneath —
+ * the box sits over the series it describes, and an opaque panel would hide
+ * the shape the reader is tracing. */
+.ohlcv {
+  position: absolute;
+  top: 8px;
+  background: rgba(27, 31, 36, 0.82);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 5px 8px;
+  backdrop-filter: blur(3px);
+  min-width: 116px;
+}
+
+.ohlcv .d {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+
+.ohlcv dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0 10px;
+  margin: 0;
+  font-size: 11.5px;
+}
+
+.ohlcv dt {
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.ohlcv dd {
+  margin: 0;
+  text-align: right;
+  color: var(--text);
+}
+
+/* Beside the dots. Coloured to match its own line, so a value is matched to
+ * a series by colour rather than by reading a label — which is the whole
+ * reason the two lines are white and grey. */
+.stoch-tag {
+  position: absolute;
+  transform: translateY(-50%);
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 2px;
+  background: rgba(20, 23, 26, 0.78);
+}
+
+.stoch-tag.fast {
+  color: var(--text);
+}
+
+.stoch-tag.slow {
+  color: var(--muted);
+}
+
+.legend .grp-name {
+  margin-left: 4px;
+  color: var(--muted);
+}
+
+.stoch-tag.band {
+  color: var(--muted);
+}
+
+.stoch-tag.sma {
+  color: var(--flag);
+}

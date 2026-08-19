@@ -470,7 +470,9 @@ def load_config_events(engine: Engine, config_hash: str) -> pd.DataFrame:
     sql = """
         SELECT DISTINCT ticker, signal_date, signal_type, era
         FROM events
-        WHERE config_hash = :config_hash AND era IS NOT NULL
+        -- ADR 122: rho-bar describes the population the cells are
+        -- measured on, so it takes the same predicate.
+        WHERE config_hash = :config_hash AND era IS NOT NULL AND in_trade
         ORDER BY era, signal_date, ticker
     """
     with engine.connect() as conn:

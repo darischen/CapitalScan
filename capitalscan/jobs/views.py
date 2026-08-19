@@ -527,6 +527,21 @@ _STATS_PROJECTION = """
 # pinned `'next_open'`. For this view they are the same value - it filters
 # `e.entry_kind = 'next_open'` - so the join is unchanged in behaviour and
 # now says *why* it is that kind.
+# **ADR 122 adds `e.in_trade` to both screener views.**
+#
+# Detection now records trade-universe membership rather than filtering on
+# it, so `events` holds roughly 4.4x the rows it used to and a screener
+# reading it unfiltered would list names outside the trade universe.
+#
+# Both consumers already join `v_universe` and filter there, so this is
+# defence in depth — but `v_universe` carries *current* membership while
+# the column carries membership **as of the bar**, which is the correct
+# question for a historical row. A name that left the universe in 2019
+# should keep its 2015 rows on the screener's own terms.
+#
+# `v_chart` and `v_events` deliberately do **not** take this predicate:
+# they are what `/ticker/[sym]` reads, and showing every firing on a name
+# you do not trade is the entire point of ADR 122.
 V_SCREEN_DDL = f"""
 CREATE VIEW public.v_screen AS
  SELECT e.ticker,
@@ -549,6 +564,7 @@ CREATE VIEW public.v_screen AS
    FROM public.events e
 {_CELL_JOIN}
   WHERE (e.is_cluster_head AND (e.entry_kind = 'next_open'::text)
+     AND e.in_trade
      AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)))
 """
 
@@ -668,6 +684,7 @@ CREATE VIEW public.v_screen_live AS
           WHERE (r.event_id = e.id)) fr ON (true)
 {_CELL_JOIN}
   WHERE ((e.entry_kind = 'touch'::text) AND (e.is_cluster_head IS NOT FALSE)
+     AND e.in_trade
      AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)))
 """
 

@@ -340,10 +340,23 @@ export async function state(ticker: string): Promise<TickerState | null> {
  * measured on `next_open` (`GRID_ENTRY_KIND`). Same event, two entries, two
  * outcomes. The column header says which.
  *
- * `is_cluster_head IS NOT FALSE` by default, not `is_cluster_head`: the
- * poller writes NULL because ADR 054's gap window needs the whole session
- * (ADR 119). `$3 = true` drops the filter and shows every row in the
- * cluster.
+ * **Confluence by default** (user's request, 2026-08-19), matching the
+ * screener's own default and `cli.py::scan --confluence-only`: membership
+ * of `confluence_low` or `confluence_high` in **`signal_types_all`**, not
+ * in `signal_type`. The latter carries only the most specific type per ADR
+ * 057, so a bar that fired both `bear_close_above_upper` and
+ * `confluence_high` stores the reversal and would be dropped by a filter on
+ * the single column — the row a short-side reader most wants.
+ *
+ * **No reversal requirement.** ADR 111's `--actionable` makes a short
+ * actionable only with a confirming bear reversal; this filter deliberately
+ * does not, so every confluence shows and the reader judges. That is the
+ * same call ADR 117 made for the poller.
+ *
+ * `$3 = true` drops the filter and shows every fire, cluster heads and
+ * repeats alike. Neither mode filters on `is_cluster_head` any more: the
+ * page is for looking at what happened, and a cluster's second and third
+ * days are things that happened.
  */
 const EVENTS_SQL = `
   SELECT id, signal_date, signal_type, signal_types_all, signal_strength,
@@ -353,7 +366,8 @@ const EVENTS_SQL = `
     FROM v_events
    WHERE ticker = $1
      AND entry_kind = 'touch'
-     AND ($3::boolean IS TRUE OR is_cluster_head IS NOT FALSE)
+     AND ($3::boolean IS TRUE
+          OR signal_types_all && ARRAY['confluence_high','confluence_low'])
    ORDER BY signal_date DESC, id
    LIMIT $2 OFFSET $4
 `;
@@ -365,7 +379,8 @@ const EVENTS_COUNT_SQL = `
     FROM v_events
    WHERE ticker = $1
      AND entry_kind = 'touch'
-     AND ($2::boolean IS TRUE OR is_cluster_head IS NOT FALSE)
+     AND ($2::boolean IS TRUE
+          OR signal_types_all && ARRAY['confluence_high','confluence_low'])
 `;
 
 interface EventRowRaw {

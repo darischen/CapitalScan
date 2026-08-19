@@ -10,10 +10,12 @@ import {
   type IChartApi,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
+  type MouseEventParams,
   type SeriesMarker,
   type Time,
 } from "lightweight-charts";
 
+import { fmt, vol } from "@/lib/format";
 import type { ChartBar } from "@/lib/ticker";
 
 /**
@@ -138,6 +140,46 @@ export function prepend(older: ChartBar[], loaded: ChartBar[]): ChartBar[] {
  */
 const PREFETCH_BARS = 0;
 
+
+/**
+ * The top of each pane, in pixels from the top of the chart container.
+ *
+ * `priceToCoordinate` returns a y **relative to the series' own pane**, and
+ * the overlay is positioned against the container, so the two need adding.
+ * There is no public API for a pane's offset, and computing it from
+ * `paneSize()` means also guessing the separator heights.
+ *
+ * So it is measured. Each pane paints into full-width canvases; the price
+ * axis paints into narrow ones. Taking the distinct `top` of every canvas
+ * at least half the container's width gives the pane boundaries directly,
+ * with no assumption about the table markup beyond "panes have canvases".
+ * Measured on TSM at 826px: [0, 352, 378, 494] for price, volume,
+ * stochastic, and the time axis.
+ */
+function paneTops(holder: HTMLElement): number[] {
+  const base = holder.getBoundingClientRect();
+  const tops = new Set<number>();
+  for (const canvas of holder.querySelectorAll("canvas")) {
+    const box = canvas.getBoundingClientRect();
+    if (box.width > base.width / 2) tops.add(Math.round(box.top - base.top));
+  }
+  return [...tops].sort((a, b) => a - b);
+}
+
+/** What the crosshair is over. `null` when it leaves the chart. */
+interface Hover {
+  x: number;
+  ohlc: { open: number; high: number; low: number; close: number } | null;
+  volume: number | null;
+  date: string;
+  fast: { value: number; y: number } | null;
+  slow: { value: number; y: number } | null;
+  /** The band and 200-day levels at the same bar, keyed by their class so
+   * each tag takes its own line's colour. Absent entries are bars inside
+   * the indicator warm-up, where the level genuinely does not exist. */
+  levels: { key: string; value: number; y: number }[];
+}
+
 interface Series {
   price: ISeriesApi<"Candlestick">;
   bands: ISeriesApi<"Line">[];
@@ -145,7 +187,6 @@ interface Series {
   volume: ISeriesApi<"Histogram">;
   kFast: ISeriesApi<"Line">;
   kFull: ISeriesApi<"Line">;
-  dFull: ISeriesApi<"Line">;
   markers: ISeriesMarkersPluginApi<Time>;
   colors: { long: string; short: string };
 }
@@ -177,6 +218,7 @@ export default function TickerChart({
   const [atStart, setAtStart] = useState(false);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
+  const [hover, setHover] = useState<Hover | null>(null);
 
   /** Push the current array into every series. One function, so a series
    * added later cannot be forgotten by the paging path while the mount path
@@ -218,7 +260,6 @@ export default function TickerChart({
     );
     s.kFast.setData(line(bars, (b) => b.kFast));
     s.kFull.setData(line(bars, (b) => b.kFull));
-    s.dFull.setData(line(bars, (b) => b.dFull));
     s.markers.setMarkers(markers(bars, s.colors));
   }, []);
 
@@ -354,7 +395,11 @@ export default function TickerChart({
           lineStyle: dashed ? 2 : 0,
           priceLineVisible: false,
           lastValueVisible: false,
-          crosshairMarkerVisible: false,
+          // The dot under the crosshair (user's request, 2026-08-19). Small:
+          // four lines each carrying a marker is four things competing with
+          // the candle the reader is actually on.
+          crosshairMarkerVisible: true,
+          crosshairMarkerRadius: 2,
         },
         0,
       ),
@@ -370,7 +415,8 @@ export default function TickerChart({
         lineWidth: 1,
         priceLineVisible: false,
         lastValueVisible: false,
-        crosshairMarkerVisible: false,
+        crosshairMarkerVisible: true,
+        crosshairMarkerRadius: 2,
       },
       0,
     );
@@ -396,23 +442,17 @@ export default function TickerChart({
     });
 
     // --- pane 2: stochastic ---------------------------------------------
+    // Two lines, white and grey (user's request, 2026-08-19). `%D` is
+    // gone: it is a moving average of the slow `%K` and nothing in the
+    // system reads it — no signal, no exit, no cell dimension. A third
+    // line that decides nothing is a third line to tell apart from the two
+    // that do.
     const kFast = chart.addSeries(
       LineSeries,
       { color: t.text, lineWidth: 1, priceLineVisible: false, lastValueVisible: false },
       2,
     );
     const kFull = chart.addSeries(
-      LineSeries,
-      {
-        color: t.long,
-        lineWidth: 1,
-        lineStyle: 2,
-        priceLineVisible: false,
-        lastValueVisible: false,
-      },
-      2,
-    );
-    const dFull = chart.addSeries(
       LineSeries,
       { color: t.muted, lineWidth: 1, priceLineVisible: false, lastValueVisible: false },
       2,
@@ -439,7 +479,6 @@ export default function TickerChart({
       volume,
       kFast,
       kFull,
-      dFull,
       markers: createSeriesMarkers(price, []),
       colors: { long: t.long, short: t.short },
     };
@@ -460,8 +499,67 @@ export default function TickerChart({
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(onRange);
 
+    // The crosshair readouts (user's request, 2026-08-19). One handler for
+    // both, because they describe the same bar and must never disagree
+    // about which one the cursor is on.
+    const onCrosshair = (param: MouseEventParams<Time>) => {
+      if (!param.time || !param.point || !param.seriesData.size) {
+        setHover(null);
+        return;
+      }
+
+      const candle = param.seriesData.get(price) as
+        | { open: number; high: number; low: number; close: number }
+        | undefined;
+      const vol = param.seriesData.get(volume) as { value: number } | undefined;
+      const f = param.seriesData.get(kFast) as { value: number } | undefined;
+      const sl = param.seriesData.get(kFull) as { value: number } | undefined;
+
+      const tops = paneTops(el);
+      // Pane 2 is the stochastic one. Falling back to 0 rather than
+      // bailing keeps the values visible if the markup ever changes; they
+      // land at the top of the container instead of beside the dots, which
+      // is wrong-looking rather than missing.
+      const stochTop = tops[2] ?? 0;
+      const at = (series: ISeriesApi<"Line">, value: number | undefined) => {
+        if (value === undefined) return null;
+        const y = series.priceToCoordinate(value);
+        return y === null ? null : { value, y: stochTop + y };
+      };
+
+      // Pane 0 starts at the top of the container, so the price-pane
+      // levels need no offset. Read through the same helper anyway rather
+      // than assuming zero: a future layout change moves it.
+      const priceTop = tops[0] ?? 0;
+      const levels: { key: string; value: number; y: number }[] = [];
+      const level = (key: string, series: ISeriesApi<"Line">) => {
+        const point = param.seriesData.get(series) as { value: number } | undefined;
+        if (point === undefined) return;
+        const y = series.priceToCoordinate(point.value);
+        if (y !== null) levels.push({ key, value: point.value, y: priceTop + y });
+      };
+      level("band", bandSeries[0]);
+      level("band", bandSeries[1]);
+      level("band", bandSeries[2]);
+      level("sma", sma);
+
+      setHover({
+        x: param.point.x,
+        date: String(param.time),
+        ohlc: candle
+          ? { open: candle.open, high: candle.high, low: candle.low, close: candle.close }
+          : null,
+        volume: vol?.value ?? null,
+        fast: at(kFast, f?.value),
+        slow: at(kFull, sl?.value),
+        levels,
+      });
+    };
+    chart.subscribeCrosshairMove(onCrosshair);
+
     return () => {
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRange);
+      chart.unsubscribeCrosshairMove(onCrosshair);
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
@@ -492,7 +590,81 @@ export default function TickerChart({
 
   return (
     <>
-      <div className="chart" ref={holder} style={{ height }} />
+      <div className="chart-holder">
+        <div className="chart" ref={holder} style={{ height }} />
+
+        {/* The crosshair readouts. Rendered as HTML over the canvas rather
+            than drawn into it: they are text, they select, and they inherit
+            the same tokens as the rest of the page.
+
+            `pointerEvents: none` on the wrapper, so nothing here can steal
+            the drag the chart depends on. */}
+        {hover && (
+          <div className="chart-hover" aria-hidden="true">
+            {hover.ohlc && (
+              <div
+                className="ohlcv"
+                // Follows the cursor and flips to the left half past the
+                // midpoint, so it never runs off the right edge on the most
+                // recent bars — which is where a reader spends most of
+                // their time.
+                style={
+                  hover.x > (holder.current?.clientWidth ?? 0) / 2
+                    ? { right: (holder.current?.clientWidth ?? 0) - hover.x + 12 }
+                    : { left: hover.x + 12 }
+                }
+              >
+                <div className="d num">{hover.date}</div>
+                <dl>
+                  <dt>O</dt>
+                  <dd className="num">{fmt(hover.ohlc.open)}</dd>
+                  <dt>H</dt>
+                  <dd className="num">{fmt(hover.ohlc.high)}</dd>
+                  <dt>L</dt>
+                  <dd className="num">{fmt(hover.ohlc.low)}</dd>
+                  <dt>C</dt>
+                  {/* Coloured against the open, the same rule the candle
+                      body uses. */}
+                  <dd className={`num ${hover.ohlc.close >= hover.ohlc.open ? "up" : "down"}`}>
+                    {fmt(hover.ohlc.close)}
+                  </dd>
+                  <dt>V</dt>
+                  <dd className="num">{vol(hover.volume)}</dd>
+                </dl>
+              </div>
+            )}
+
+            {/* Beside the dots, in the two colours the lines already use, so
+                a value is matched to its line by colour rather than by
+                reading a label. */}
+            {hover.fast && (
+              <span className="stoch-tag fast num" style={{ left: hover.x + 8, top: hover.fast.y }}>
+                {hover.fast.value.toFixed(1)}
+              </span>
+            )}
+            {hover.slow && (
+              <span className="stoch-tag slow num" style={{ left: hover.x + 8, top: hover.slow.y }}>
+                {hover.slow.value.toFixed(1)}
+              </span>
+            )}
+
+            {/* The three bands and the 200-day, at the same bar. Same
+                treatment as the stochastic values and for the same reason:
+                the level a signal compared against is a number you want to
+                read, not one you want to estimate off an axis. */}
+            {hover.levels.map((l, i) => (
+              <span
+                key={`${l.key}-${i}`}
+                className={`stoch-tag ${l.key} num`}
+                style={{ left: hover.x + 8, top: l.y }}
+              >
+                {l.value.toFixed(2)}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* What is loaded, and why it stopped. A chart that quietly stops
           growing when you drag left is indistinguishable from one that has
           reached the beginning of the data. */}

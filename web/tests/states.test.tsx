@@ -402,16 +402,19 @@ describe("the band gauge", () => {
 /* --- gate 8: both %K series --------------------------------------------- */
 
 describe("gate 8: both %K series are named and distinguishable", () => {
-  it("the legend names all three stochastic lines", () => {
+  it("the legend names both stochastic lines", () => {
     const html = renderToStaticMarkup(<ChartLegend />);
-    expect(html).toContain("%K fast");
-    expect(html).toContain("%K slow");
-    expect(html).toContain("%D");
-    // Different classes means different colours and dash patterns, which is
-    // what "distinguishable" has to mean for three lines in one panel.
+    expect(html).toContain("fast");
+    expect(html).toContain("slow");
+    expect(html).toContain("Stochastic");
+    // Different classes means different colours, which is what
+    // "distinguishable" has to mean for two lines that sit within
+    // `fast_agreement_tol` of each other by construction.
     expect(html).toContain("ln kfast");
-    expect(html).toContain("ln kfull dash");
-    expect(html).toContain("ln dfull");
+    expect(html).toContain("ln kfull");
+    // %D is deliberately gone: nothing in the system reads it.
+    expect(html).not.toContain("%D");
+    expect(html).not.toContain("dfull");
   });
 
   /** ADR 110 gates the signal on the two agreeing within

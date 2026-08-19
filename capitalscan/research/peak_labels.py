@@ -84,7 +84,9 @@ def peak_label_sql(horizons: tuple[int, ...]) -> str:
     WITH eo AS (
         SELECT id, {_ENTRY_OFFSET_SQL} AS entry_offset
         FROM events
+        -- ADR 122: labels follow the measured population.
         WHERE config_hash = :config_hash AND entry_price IS NOT NULL
+          AND in_trade
     ),
     agg AS (
         SELECT p.event_id,

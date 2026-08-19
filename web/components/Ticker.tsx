@@ -159,9 +159,17 @@ export function StateRail({ state }: { state: TickerState }) {
 
   return (
     <section className="rail-strip">
-      <Stat k="%K fast" v={fmt(state.kFast, 1)} />
-      <Stat k="%K slow" v={fmt(state.kFull, 1)} note={gap === null ? undefined : `Δ${gap.toFixed(1)}`} />
-      <Stat k="%D" v={fmt(state.dFull, 1)} />
+      {/* "fast stochastic" / "slow stochastic", not "%K fast" / "%K slow"
+          (user's request, 2026-08-19). `%K` is the textbook name and it
+          tells a reader nothing they do not already know from the number
+          being 0-100. `%D` is gone here for the same reason it is gone from
+          the chart: nothing in the system reads it. */}
+      <Stat k="fast stochastic" v={fmt(state.kFast, 1)} />
+      <Stat
+        k="slow stochastic"
+        v={fmt(state.kFull, 1)}
+        note={gap === null ? undefined : `Δ${gap.toFixed(1)}`}
+      />
       <Stat
         k="cross"
         v={state.kCrossUp ? "up" : state.kCrossDown ? "down" : "—"}
@@ -195,9 +203,14 @@ export function StateRail({ state }: { state: TickerState }) {
  * What each line on the chart is.
  *
  * Gate item 8 is not "both `%K` series render", it is that they render *and
- * are distinguishable*. Three lines in one panel, two of them within five
- * points of each other by construction (ADR 110's `fast_agreement_tol`), is
- * exactly the case where a reader cannot name a line without being told.
+ * are distinguishable*. Two lines within five points of each other by
+ * construction (ADR 110's `fast_agreement_tol`) is exactly the case where a
+ * reader cannot name a line without being told.
+ *
+ * **`%D` is not here because it is not on the chart** (user's request,
+ * 2026-08-19). It is a moving average of the slow `%K`, and nothing in the
+ * system reads it: no signal, no exit, no cell dimension. A third line that
+ * decides nothing is a third line to tell apart from the two that do.
  *
  * HTML rather than a canvas overlay: it is text, it selects, it reads to a
  * screen reader, and it stays in the same stylesheet as everything else.
@@ -211,9 +224,9 @@ export function ChartLegend() {
         <i className="ln sma" /> 200-day
       </span>
       <span className="grp">
-        <i className="ln kfast" /> %K fast <em>trigger</em>
-        <i className="ln kfull dash" /> %K slow
-        <i className="ln dfull" /> %D
+        <i className="ln kfast" /> fast
+        <i className="ln kfull" /> slow
+        <span className="grp-name">Stochastic</span>
       </span>
     </div>
   );
@@ -336,7 +349,7 @@ export function EventHistory({
         <h2>Event history</h2>
         <nav className="toggles">
           <Link href={`/ticker/${sym}`} className={all ? undefined : "on"}>
-            cluster heads
+            confluence
           </Link>
           <Link href={`/ticker/${sym}?all=1`} className={all ? "on" : undefined}>
             every fire

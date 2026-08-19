@@ -281,7 +281,10 @@ def load_events_for_reachability(
             ORDER BY ind.ts DESC
             LIMIT 1
         ) i ON true
+        -- ADR 122: the reachability ladder is measured on the same
+        -- population as the cells, so it takes the same predicate.
         WHERE e.config_hash = :config_hash AND e.split_key = :split_key
+          AND e.in_trade
         """  # noqa: S608 - peak_col is validated against a fixed whitelist above
     )
     with engine.connect() as conn:

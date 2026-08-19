@@ -750,6 +750,11 @@ _RUN_EVENTS_UPDATE_COLUMNS = [
     "entry_price",
     "entry_gapped",
     "split_key",
+    # ADR 122. Updatable because `cscan universe` re-evaluates membership
+    # every quarter and can revise a past `as_of`; a row that kept the
+    # answer from the first time it was detected would disagree with the
+    # table the answer came from.
+    "in_trade",
 ]
 
 
@@ -761,6 +766,7 @@ def _build_event_row(
     chash: str,
     run_id: str,
     splits: SplitParams | None = None,
+    in_trade: bool = True,
 ) -> dict:
     bound = Bound.LOWER if hit.side.value == "long" else Bound.UPPER
     entry_gapped = None
@@ -778,6 +784,11 @@ def _build_event_row(
         "signal_types_all": [t.value for t in hit.signal_types_all],
         "signal_strength": hit.signal_strength,
         "side": hit.side.value,
+        # ADR 122. Point-in-time: membership as of *this bar*, not today's.
+        # A name that left the trade universe in 2019 has true on its 2015
+        # events and false on its 2021 ones, which is the only reading that
+        # lets a statistics population be reconstructed from the table.
+        "in_trade": in_trade,
         "touch_level": hit.touch_level,
         "bb_pctb": hit.pctb,
         "bb_width_pct": ind_row.get("bb_width_pct"),
@@ -897,9 +908,27 @@ def run_events(
                 if any(pd.isna(prior_ind.get(f)) for f in ("bb_lower", "bb_upper", "k_full")):
                     skipped_null += 1
                     continue
-                # Step 3: skip if not in the trade universe.
-                if not core_universe.in_trade(universe_flags, ticker, bar_date):
-                    continue
+                # Step 3 (ADR 122): **record** trade-universe membership,
+                # do not filter on it.
+                #
+                # This was a `continue`, and it meant a train-universe name
+                # had bars, indicators, real band touches, and no events at
+                # all — SMCI: 192 band touches since 2024, zero events,
+                # never once in the trade universe across 66 snapshots. The
+                # ticker page could not show it, and the absence read as a
+                # broken job rather than as a policy.
+                #
+                # A signal that fired is a fact about the ticker. Whether
+                # you would have traded it is a different fact, and storing
+                # the second lets each consumer decide, rather than one
+                # decision being frozen into what the table contains.
+                #
+                # **Every consumer that must not widen now says so.**
+                # `scan()` most of all: its docstring named this skip as the
+                # reason it accepted a `universe` argument without filtering
+                # on it. `test_events_in_trade_filter.py` fails if a
+                # production read of `events` stops carrying the predicate.
+                bar_in_trade = core_universe.in_trade(universe_flags, ticker, bar_date)
 
                 # ADR 108: attach bar t's close-confirmed flags. Mirrors
                 # `research.candidates.scan_candidates` exactly, and shares
@@ -926,6 +955,7 @@ def run_events(
                             chash,
                             report.run_id,
                             resolved_config.splits,
+                            in_trade=bar_in_trade,
                         )
                     )
 
@@ -992,12 +1022,18 @@ def scan(
     `events` for Phase 3 but are never in `scan()`'s output (see this
     module's docstring for why the row may still be null there today).
 
-    `universe` is accepted but not filtered on: `run_events` already skips
-    any bar where `universe.in_trade` was false at signal time (DESIGN
-    §4.7 step 3), so every row already in `events` cleared the trade
-    universe — there is no wider "train" superset stored here to select
-    from. The two-universe split (ADR 001) applies to raw bars for
-    statistics, not to detected events.
+    **`universe` is still accepted and still not branched on, but the
+    reason changed (ADR 122).** It used to be that `events` could not hold
+    an out-of-trade row, because `run_events` skipped the bar. It now can:
+    detection records membership rather than filtering on it, so the
+    ticker page can show a train-universe name's firings. This function
+    therefore carries an explicit `e.in_trade` predicate, and `cscan scan`
+    and the poller list exactly the names they listed before.
+
+    Widening this to the train universe is a one-line change and is
+    deliberately not made: `scan` is the actionable surface, and ADR 001's
+    two-universe split exists so that what you look at is narrower than
+    what you measure on.
     """
     engine = engine or db_io.get_engine()
 
@@ -1039,6 +1075,15 @@ def scan(
     # backtest-added entry_kind row exists, and it's the same kind
     # `jobs/poll.py` already treats as canonical for existing-event lookups.
     clauses.append("e.entry_kind = :entry_kind")
+    # ADR 122. **This predicate replaces a guarantee that used to come from
+    # `run_events`.** Until ADR 122 the detector skipped every out-of-trade
+    # bar, so `events` could not contain one and this function's docstring
+    # said so in as many words while accepting a `universe` argument it
+    # never used. Detection now records membership instead of filtering on
+    # it, and `cscan scan` would have started listing names outside the
+    # trade universe on the first run after — quietly, with no error and no
+    # visible change other than more rows.
+    clauses.append("e.in_trade")
     if tickers:
         clauses.append("e.ticker = ANY(:tickers)")
         params["tickers"] = tickers

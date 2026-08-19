@@ -162,6 +162,8 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 118 | MCP is for LLM callers; deterministic reads go straight to the views | Pinned. Resolves the Session 17 blocker; confirms 070 and 076 |
 | 119 | The screener shows what fired today; `market_date()` defines "today" | Pinned. Adds `v_screen_live`; fixes `v_screen`'s missing config filter |
 | 120 | `v_chart` returns one row per bar; markers are arrays | Pinned. 963 rows for 275 days; applies 119 to the last view missing it |
+| 121 | The ticker chart pages its own history through an API route | Pinned. Right edge stops at today; dragging left fetches a year |
+| 122 | Detection records trade-universe membership instead of being filtered by it | Pinned. SMCI: 192 band touches, 0 events. Statistics population unchanged |
 
 ---
 
@@ -3582,6 +3584,108 @@ The ticker page needs two queries where the plan assumed one — series from `v_
 *Keep the scalars and let the page deduplicate.* Puts the grain contract in TypeScript, where the next consumer will not know it exists. ADR 076 puts query logic in the view for this reason.
 
 *A `jsonb` marker column.* One column instead of three and it reads well, but it takes every marker out of the type system and out of `\d v_chart`, which is where someone looks first.
+
+---
+
+## 121. The ticker chart pages its own history through an API route
+
+**Date:** 2026-08-19. **Status:** Pinned. First application of ADR 076's "TypeScript API routes select from those views". Does not amend ADR 118.
+
+**Context.**
+
+`/ticker/[sym]` server-renders a fixed window — 252 sessions by default — and a chart is a thing people drag. Two complaints, both correct.
+
+Dragging right ran off the end of the data into blank future, which reads as missing data rather than as the edge of the series. Dragging left stopped at the oldest server-rendered bar with nothing to say it had stopped.
+
+The same shape, one axis over, in the event table: TSLA has **272 `touch` events** and the page rendered 40, so five of six were unreachable and nothing on the page said how deep the list went.
+
+**Decision.**
+
+Three API routes — `/api/chart`, `/api/events`, `/api/tickers` — each a `SELECT` against the same views the page reads, with a bound the page does not have.
+
+**ADR 118 is unaffected.** It says MCP is for LLM callers and deterministic reads go straight to the views. These *are* deterministic reads going straight to the views; they run in the Next process, not through a handler. ADR 076 names this shape explicitly.
+
+**The right edge is pinned, the left edge is not.** `rightOffset: 0` with `fixRightEdge` stops the scroll at the newest bar. `fixLeftEdge` stays off, because the left edge is where more history arrives, and pinning it would pin the thing that is supposed to move.
+
+**Paging is `OFFSET`, not a keyset cursor.** A keyset is the right answer when the offset can reach the millions. This is one ticker's own history and the deepest in the database is a few hundred rows, so `OFFSET 200` on an index-ordered scan costs nothing and the two-column cursor costs a tuple comparison in the SQL and in the client, forever.
+
+**The trigger is a negative logical `from`, not a positive threshold.**
+
+This is the part worth recording. The common recipe for lazy-loading this library is `if (logicalRange.from < 10) loadMore()`. It is wrong for a chart that calls `fitContent()`: fitting puts the whole loaded array on screen, so `from` is 0 at rest and the test is true the moment the chart mounts. Measured in the network log — `?range=6m` fetched a full extra year before anyone touched it, which makes the range switch decorative.
+
+A negative `from` means the viewport extends left of the first bar: the reader is looking at empty space where older data belongs. It cannot fire at rest, it needs no "has the user interacted yet" flag, and it costs a moment of blank before the page lands against a ~10 ms query.
+
+**Consequences.**
+
+The chart component became stateful: built once per mount, with the bar array in a ref rather than in state, because the scroll handler reads it every frame and a stale closure would page from the wrong cursor. Prepending shifts every logical index, so the visible range is captured before the repaint and restored by the shift — without that the chart jumps backwards under the cursor each time a page lands.
+
+Three client components now exist where there was one. `test_boundary` asserts the list whole rather than counting, so a fourth is a decision someone makes deliberately.
+
+Pages merge on **event id**, not on index. A concurrent write between two requests shifts every offset by one, and a duplicate React key is a silent rendering fault rather than an error.
+
+**Rejected.**
+
+*Server-render the whole history.* TSLA's 272 events is nothing; a ticker with fifteen years of daily bars and no range limit is 3,800 rows of chart data in the RSC payload on every navigation, for a reader who will look at one year.
+
+*A "load more" button.* Honest and slower. The chart already has a continuous gesture — the drag — and a button would ask the reader to leave it.
+
+*Infinite scroll on the screener too.* The screener is a one-day view (ADR 119); there is nothing below it to load.
+
+---
+
+## 122. Detection records trade-universe membership instead of being filtered by it
+
+**Date:** 2026-08-19. **Status:** Pinned. Amends DESIGN §4.7 step 3. Does not amend ADR 001.
+
+**Context.**
+
+Building `/ticker/[sym]` made a ten-year-old behaviour visible for the first time. Pull up SMCI and the event history stops at **2010-03-24**, while the chart above it shows price clearing the upper band repeatedly through 2026. Measured on SMCI since 2024-01-01: **659 bars, 72 lower-band touches, 120 upper-band touches, 0 events.**
+
+`run_events` skipped any bar where the ticker was outside the trade universe that day:
+
+```python
+# Step 3: skip if not in the trade universe.
+if not core_universe.in_trade(universe_flags, ticker, bar_date):
+    continue
+```
+
+SMCI has **never** been in the trade universe — 0 of 66 quarterly snapshots. It is `in_train`, which is why it has bars and indicators at all.
+
+Two consequences, one obvious and one not.
+
+**The ticker page is unusable for 481 of 622 names.** 141 tickers are in the trade universe now. The page exists to look at a ticker, and for the rest it showed a full price series under an empty history, which reads as a broken job rather than as a policy.
+
+**The 2010 block is an artifact.** The earliest `universe` snapshot is 2010-03-31 and `core.universe.in_trade` returns `True` when no evaluation exists on or before the bar — the documented v1 fail-open simplification. So every bar before that date passed a filter that had nothing to evaluate. That is why 187 tickers have a dense block of 2010 Q1 events and nothing after, and why **17,919 events, 11.4% of the live config's `touch` rows across 512 tickers**, entered the training population under a vacuous check.
+
+**Decision.**
+
+Membership stops being a filter on detection and becomes a column on the detection. `events.in_trade`, stamped point-in-time from the same `universe_flags` lookup the skip used.
+
+**A signal that fired is a fact about the ticker. Whether you would have traded it is a different fact.** Storing the second lets every consumer decide, instead of one decision being frozen into what the table is able to contain.
+
+**Point-in-time, not current.** A name that left the trade universe in 2019 carries `true` on its 2015 events and `false` on its 2021 ones. Current membership lives in `v_universe` and answers a different question; only the stored flag lets a historical population be reconstructed from the table.
+
+**Nothing else changes, and that is enforced rather than intended.** `cscan scan`, `cscan poll`, `wait_and_poll.ps1`, the screener, and every statistic keep exactly the population they had. The measured numbers must not move, so every read that decides a population carries the predicate.
+
+**Consequences.**
+
+*The guarantee moved from one place to eighteen, so it became a test.* Before this, `events` could not contain an out-of-trade row and no consumer needed a predicate. After it, every read widens by roughly 4.4x without one, and **nothing about the output looks wrong**: `cell_stats` returns more events per cell, `n_eff` rises, and every number stays internally consistent. `test_events_in_trade_filter.py` sweeps `jobs/`, `research/` and `handlers/` and fails on any read of `events` that neither filters nor appears on an allowlist with a stated reason — the `threshold_lint.KNOWN_EXCEPTIONS` pattern, including the test that every allowlist entry still describes something real.
+
+*`jobs/compute.py::scan` was the trap.* Its docstring named this skip as the reason it accepted a `universe` argument without filtering on it. `cscan scan` would have started listing out-of-trade names on the first run after this change, silently. It now carries `e.in_trade` explicitly, and a test asserts it by name rather than leaving it to the sweep.
+
+*`v_screen` and `v_screen_live` take the predicate too.* Both consumers already join `v_universe` and filter there, so this is defence in depth — but `v_universe` answers "in the universe now" and the column answers "in the universe on that bar", which is the right question for a historical row. `v_chart` and `v_events` deliberately do **not**: they are what the ticker page reads. A test asserts the negative, because adding the predicate there is the obvious thing to do and would undo this ADR entirely.
+
+*The fail-open branch stays, and the 17,919 rows stay in `train`.* Closing it is a separate decision with its own blast radius — it would drop 11.4% of the training population and move every measured cell. Recorded in `RESULTS.md` with the number, not fixed here.
+
+*Cost.* `events` grows by roughly 4.4x on the live config's `touch` rows. `ADD COLUMN ... NOT NULL DEFAULT true` is a catalog-only change on Postgres 11+, so the migration is instant on 13.5M rows, and `true` is not a guess: every pre-existing row was written by the gated path.
+
+**Rejected.**
+
+*A second table for the wider detections.* Zero risk to the eighteen consumers, and it makes "which one is authoritative" a question someone has to ask forever. The predicate plus a lint test buys the same safety without splitting the meaning of "an event".
+
+*Gate on `in_train` instead of `in_trade`.* Narrower blast radius, and it just moves the same wall: the next name someone wants to look at is the one outside the train universe.
+
+*Recompute the statistics over the wider population.* A different study, not a fix. ADR 001's two-universe split exists so what you look at is narrower than what you measure on; this ADR widens neither of those, it widens what is *recorded*.
 
 ---
 

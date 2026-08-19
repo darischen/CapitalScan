@@ -388,7 +388,10 @@ def load_signal_events(
     """
     sql = [
         "SELECT ticker, signal_date, signal_type, side, era, k_full, cofire_count",
-        "FROM events WHERE config_hash = :config_hash AND split_key = :split_key",
+        "FROM events WHERE config_hash = :config_hash AND split_key = :split_key "
+        # ADR 122. The arms are measured on the trade universe, the same
+        # population `cell_stats` uses. See the note there.
+        "AND in_trade",
         "AND side = :side AND entry_kind = :entry_kind",
     ]
     if GRID_CLUSTER_HEADS_ONLY:
