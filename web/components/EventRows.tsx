@@ -131,6 +131,7 @@ export default function EventRows({
           <tr>
             <th className="rail" />
             <th>Date</th>
+            <th>Side</th>
             <th>Signal</th>
             <th className="r">Entry</th>
             <th className="r">Exit</th>
@@ -150,6 +151,17 @@ export default function EventRows({
               </td>
               <td className="num" data-label="Date">
                 {e.signalDate}
+              </td>
+              {/* Spelled out (user's request, 2026-08-19). The rail already
+                  encodes it, but a 3px stripe is a thing you learn rather
+                  than read, and the short rows are the ones worth not
+                  misreading.
+
+                  `long`/`short` is the position direction and nothing more.
+                  It says which way the signal points, not what instrument
+                  expresses it. */}
+              <td className={`side ${e.side}`} data-label="Side">
+                {e.side}
               </td>
               <td className="sig" data-label="Signal">
                 {typeList(e).map((t, i) => (
@@ -191,7 +203,7 @@ export default function EventRows({
           {/* Inside the table so it scrolls with the rows. Zero height, so
               it adds nothing to the layout. */}
           <tr ref={sentinel} className="sentinel" aria-hidden="true">
-            <td colSpan={11} />
+            <td colSpan={12} />
           </tr>
         </tbody>
       </table>

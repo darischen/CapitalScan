@@ -69,7 +69,12 @@ export default async function TickerPage({
 
     return (
       <main className="wrap tk">
-        <TickerHeader state={current} meta={meta} fired={total} />
+        <TickerHeader
+          state={current}
+          meta={meta}
+          fired={total}
+          latest={bars[bars.length - 1] ?? null}
+        />
         <div className="tk-top">
           <StateRail state={current} />
           <BandGauge state={current} />

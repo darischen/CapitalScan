@@ -5,7 +5,7 @@ import TickerSearch from "./TickerSearch";
 
 import { NONE, SIGNAL_LABELS, fmt, pct, signedPct, vol } from "@/lib/format";
 import type { Meta } from "@/lib/screen";
-import type { Range, TickerEvent, TickerState } from "@/lib/ticker";
+import type { ChartBar, Range, TickerEvent, TickerState } from "@/lib/ticker";
 import { RANGES } from "@/lib/ticker";
 
 /**
@@ -23,10 +23,23 @@ export function TickerHeader({
   state,
   meta,
   fired,
+  latest,
 }: {
   state: TickerState;
   meta: Meta;
   fired: number;
+  /**
+   * The newest bar on the chart, for the compact OHLC beside the as-of
+   * date (user's request, 2026-08-19).
+   *
+   * **Taken from the chart series, not from `v_ticker_state`.** That view
+   * projects `close` and `volume` and no other price — adding three
+   * columns to it is a migration, and one is not available right now with
+   * a `cscan events` rebuild holding the table. The page already loaded
+   * these bars, so this costs nothing and cannot disagree with the candles
+   * above it, which a second read of the same data eventually would.
+   */
+  latest?: ChartBar | null;
 }) {
   const distance =
     state.close !== null && state.sma200 !== null ? state.close / state.sma200 - 1 : null;
@@ -52,6 +65,10 @@ export function TickerHeader({
       <TickerSearch />
 
       <div className="tk-price">
+        {/* Says which price this is. It is the last *close*, not a live
+            quote, and on a page that also shows an intraday poller price
+            the distinction is worth four characters. */}
+        <span className="k">close</span>
         <span className="num big">{fmt(state.close)}</span>
         <span className={`num ${distance !== null && distance >= 0 ? "up" : "down"}`}>
           {signedPct(distance)} vs 200d
@@ -69,6 +86,21 @@ export function TickerHeader({
             length, which would understate it by the page size. */}
         <span className="tag">{fired} events</span>
         <span className="tag dim">as of {state.asOf}</span>
+        {/* The session's own bar, compact. The gauge above says where the
+            close sits between the bands; this says what the day did to get
+            there, which is the next question and was a click away on the
+            chart. */}
+        {latest && (
+          <span className="tag ohlc num">
+            <b>O</b>
+            {fmt(latest.open)} <b>H</b>
+            {fmt(latest.high)} <b>L</b>
+            {fmt(latest.low)} <b>C</b>
+            <span className={latest.close !== null && latest.open !== null && latest.close >= latest.open ? "up" : "down"}>
+              {fmt(latest.close)}
+            </span>
+          </span>
+        )}
         {meta.stale && (
           <span className="tag flagged">
             {meta.stalenessDays} sessions behind {meta.asOf ?? "?"}

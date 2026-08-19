@@ -1088,3 +1088,49 @@ table.screen td.rail span[data-side="short"] {
 .stoch-tag.sma {
   color: var(--flag);
 }
+
+/* "close", left of the price. Sized and coloured as a label so it reads as
+ * one, not as part of the number. */
+.tk-price .k {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* The session's OHLC in the tag row. Letters dimmer than the numbers, so
+ * the eye lands on the values and uses the letters only to locate one. */
+.tag.ohlc {
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+
+.tag.ohlc b {
+  font-weight: 400;
+  color: var(--muted);
+  margin-left: 6px;
+  margin-right: 2px;
+}
+
+.tag.ohlc b:first-child {
+  margin-left: 0;
+}
+
+/* The side column. Same two colours as the rail beside it and as every
+ * other direction cue on the page — one palette carries direction
+ * everywhere, so a warm word under a warm rail is agreement rather than
+ * two conventions competing. */
+.side {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.side.long {
+  color: var(--long);
+}
+
+.side.short {
+  color: var(--short);
+}

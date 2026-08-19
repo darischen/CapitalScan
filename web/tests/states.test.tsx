@@ -335,6 +335,45 @@ describe("the ticker page's states", () => {
     expect(html).toContain("next_open");
   });
 
+  it("labels the headline price as a close, and shows the session's OHLC", () => {
+    const bar = {
+      ts: "2026-08-18",
+      open: 410,
+      high: 416.2,
+      low: 409.1,
+      close: 413.41,
+      volume: 14_000_000,
+      bbLower: null,
+      bbMid: null,
+      bbUpper: null,
+      kFull: null,
+      dFull: null,
+      kFast: null,
+      sma200: null,
+      eventIds: [],
+      signalTypes: [],
+      sides: [],
+      signalStrength: null,
+    };
+    const html = renderToStaticMarkup(
+      <TickerHeader state={state()} meta={meta()} fired={3} latest={bar} />,
+    );
+    expect(html).toContain(">close<");
+    expect(html).toContain("410.00");
+    expect(html).toContain("416.20");
+    expect(html).toContain("409.10");
+  });
+
+  /** The chart can be empty — a symbol with state but no bars in range —
+   * and the header must render without it rather than print four dashes. */
+  it("omits the OHLC when there is no bar", () => {
+    const html = renderToStaticMarkup(
+      <TickerHeader state={state()} meta={meta()} fired={3} latest={null} />,
+    );
+    expect(html).not.toContain("tag ohlc");
+    expect(html).toContain(">close<");
+  });
+
   it("says when a ticker is outside the trade universe", () => {
     const inside = renderToStaticMarkup(
       <TickerHeader state={state({ inTrade: true })} meta={meta()} fired={3} />,
