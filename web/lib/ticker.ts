@@ -122,16 +122,23 @@ export interface TickerEvent {
 
 /**
  * `v_chart` is already config-scoped and marker-aggregated (ADR 120), so
- * this is a range read and nothing else.
+ * these are range reads and nothing else.
  *
- * The window is counted in **sessions**, taken from `trading_days`, not in
- * calendar days. `now() - interval '1 year'` drifts by the holiday count
- * and makes two tickers' charts cover different numbers of bars.
+ * **Two queries, one shape.** `CHART_SQL` takes the newest N sessions;
+ * `CHART_BEFORE_SQL` takes the N strictly before a date, which is what the
+ * chart asks for when you drag past the left edge (ADR 121). Both count in
+ * **sessions**, taken from `trading_days`, never in calendar days:
+ * `now() - interval '1 year'` drifts by the holiday count and gives two
+ * tickers charts with different numbers of bars.
  */
+const CHART_COLUMNS = `
+  ts::date AS ts, open, high, low, close, volume,
+  bb_lower, bb_mid, bb_upper, k_full, d_full, k_fast, sma_200,
+  event_ids, signal_types, sides, signal_strength
+`;
+
 const CHART_SQL = `
-  SELECT ts::date AS ts, open, high, low, close, volume,
-         bb_lower, bb_mid, bb_upper, k_full, d_full, k_fast, sma_200,
-         event_ids, signal_types, sides, signal_strength
+  SELECT ${CHART_COLUMNS}
     FROM v_chart
    WHERE ticker = $1
      AND ts >= (SELECT min(d) FROM (
@@ -140,6 +147,27 @@ const CHART_SQL = `
                    ORDER BY d DESC LIMIT $2
                 ) w)
    ORDER BY ts
+`;
+
+/**
+ * The page before a cursor.
+ *
+ * `ts::date < $2` is strict, so the bar the caller already holds is not
+ * sent twice. Ordered descending with a `LIMIT` so Postgres walks the index
+ * backwards from the cursor and stops, then reversed in TypeScript — the
+ * chart wants ascending and reversing a 252-element array is free next to
+ * sorting the ticker's whole history in the database.
+ */
+const CHART_BEFORE_SQL = `
+  SELECT * FROM (
+    SELECT ${CHART_COLUMNS}
+      FROM v_chart
+     WHERE ticker = $1
+       AND ts::date < $2::date
+     ORDER BY ts DESC
+     LIMIT $3
+  ) page
+  ORDER BY ts
 `;
 
 interface ChartRowRaw {
@@ -162,9 +190,10 @@ interface ChartRowRaw {
   signal_strength: number | null;
 }
 
-export async function chart(ticker: string, range: Range = DEFAULT_RANGE): Promise<ChartBar[]> {
-  const rows = await query<ChartRowRaw>(CHART_SQL, [ticker, RANGES[range]]);
-  return rows.map((r) => ({
+/** One mapping, used by both reads, so a column added to one cannot be
+ * missing from the other. */
+function toBar(r: ChartRowRaw): ChartBar {
+  return {
     ts: isoDate(r.ts),
     open: num(r.open),
     high: num(r.high),
@@ -185,7 +214,37 @@ export async function chart(ticker: string, range: Range = DEFAULT_RANGE): Promi
     signalTypes: r.signal_types ?? [],
     sides: (r.sides ?? []).map((s) => (s === "short" ? "short" : "long")) as Side[],
     signalStrength: r.signal_strength,
-  }));
+  };
+}
+
+export async function chart(ticker: string, range: Range = DEFAULT_RANGE): Promise<ChartBar[]> {
+  return (await query<ChartRowRaw>(CHART_SQL, [ticker, RANGES[range]])).map(toBar);
+}
+
+/** How many sessions one drag-left fetches. A year, matching the default
+ * window, so one gesture never lands mid-page. */
+export const PAGE_SESSIONS = 252;
+export const MAX_PAGE_SESSIONS = 1260;
+
+export function clampPage(value: number | undefined): number {
+  if (value === undefined || Number.isNaN(value)) return PAGE_SESSIONS;
+  return Math.max(1, Math.min(Math.trunc(value), MAX_PAGE_SESSIONS));
+}
+
+/**
+ * The sessions immediately before `before`, oldest first.
+ *
+ * Returns `[]` at the start of the ticker's history, which is how the
+ * caller knows to stop asking (ADR 121).
+ */
+export async function chartBefore(
+  ticker: string,
+  before: string,
+  limit?: number,
+): Promise<ChartBar[]> {
+  return (
+    await query<ChartRowRaw>(CHART_BEFORE_SQL, [ticker, before, clampPage(limit)])
+  ).map(toBar);
 }
 
 const STATE_SQL = `
@@ -296,7 +355,17 @@ const EVENTS_SQL = `
      AND entry_kind = 'touch'
      AND ($3::boolean IS TRUE OR is_cluster_head IS NOT FALSE)
    ORDER BY signal_date DESC, id
-   LIMIT $2
+   LIMIT $2 OFFSET $4
+`;
+
+/** The row count behind the page, so the reader is told how deep the list
+ * goes rather than discovering it by scrolling. */
+const EVENTS_COUNT_SQL = `
+  SELECT count(*)::int AS n
+    FROM v_events
+   WHERE ticker = $1
+     AND entry_kind = 'touch'
+     AND ($2::boolean IS TRUE OR is_cluster_head IS NOT FALSE)
 `;
 
 interface EventRowRaw {
@@ -322,19 +391,45 @@ interface EventRowRaw {
 export const DEFAULT_EVENT_LIMIT = 40;
 export const MAX_EVENT_LIMIT = 200;
 
+/**
+ * The scroll page for the history table.
+ *
+ * It lives here rather than in the route because a Next route module may
+ * only export the handler names — `export const EVENT_PAGE` in
+ * `app/api/events/route.ts` fails the build with a type error about
+ * `OmitWithTag`, which does not mention the actual rule. Both the route and
+ * the component import it from one place, so the server's "done" answer and
+ * the client's expectations cannot drift.
+ *
+ * Fifty, not the chart's 252: a table row is read, not panned past, and
+ * fifty is about two screens.
+ */
+export const EVENT_PAGE = 50;
+
 export function clampEvents(value: number | undefined): number {
   if (value === undefined || Number.isNaN(value)) return DEFAULT_EVENT_LIMIT;
   return Math.max(1, Math.min(Math.trunc(value), MAX_EVENT_LIMIT));
 }
 
+/**
+ * `OFFSET` paging, not a keyset cursor.
+ *
+ * A keyset would be `(signal_date, id) < (lastDate, lastId)` and is the
+ * right answer on a table where the offset can reach the millions. It
+ * cannot here: this is one ticker's own history, and the deepest in the
+ * database is a few hundred rows. `OFFSET 200` on an index-ordered scan of
+ * 272 rows costs nothing, and the two-column cursor costs a tuple
+ * comparison in the SQL and in the client on every request.
+ */
 export async function events(
   ticker: string,
-  options: { limit?: number; all?: boolean } = {},
+  options: { limit?: number; all?: boolean; offset?: number } = {},
 ): Promise<TickerEvent[]> {
   const rows = await query<EventRowRaw>(EVENTS_SQL, [
     ticker,
     clampEvents(options.limit),
     Boolean(options.all),
+    Math.max(0, Math.trunc(options.offset ?? 0)),
   ]);
   return rows.map((r) => ({
     id: Number(r.id),
@@ -359,5 +454,77 @@ export async function events(
     mfe: num(r.mfe),
     mae: num(r.mae),
     earningsInWindow: r.earnings_in_window,
+  }));
+}
+
+export async function countEvents(ticker: string, all = false): Promise<number> {
+  const [row] = await query<{ n: number }>(EVENTS_COUNT_SQL, [ticker, all]);
+  return row?.n ?? 0;
+}
+
+/* --- ticker search ------------------------------------------------------ */
+
+export interface TickerHit {
+  ticker: string;
+  name: string | null;
+  sector: string | null;
+  mcapUsd: number | null;
+  inTrade: boolean | null;
+}
+
+/**
+ * Type-ahead over `v_universe` — 622 names, **including the ones outside
+ * the trade universe**, because the ticker page is where you go to look at
+ * a name you are not trading.
+ *
+ * **Ranked by prefix, then by size.** Three tiers: the symbol starts with
+ * what you typed, then the company name starts with it, then either
+ * contains it. Within a tier, market cap descending. Typing `A` should
+ * surface AAPL and AMZN, not AAL and ABNB, and alphabetical order gives you
+ * the second list. `mcap_usd` is present on 620 of 622 rows; the two
+ * without sort last rather than first.
+ *
+ * `position(... in ...)` rather than `LIKE $1 || '%'` so the tier and the
+ * filter come from one expression and cannot disagree about what a match
+ * is.
+ */
+const SEARCH_SQL = `
+  SELECT ticker, name, sector, mcap_usd, in_trade
+    FROM v_universe
+   WHERE ticker ILIKE '%' || $1 || '%'
+      OR name ILIKE '%' || $1 || '%'
+   ORDER BY CASE
+              WHEN position(upper($1) in upper(ticker)) = 1 THEN 0
+              WHEN position(upper($1) in upper(coalesce(name, ''))) = 1 THEN 1
+              ELSE 2
+            END,
+            mcap_usd DESC NULLS LAST,
+            ticker
+   LIMIT $2
+`;
+
+export const SEARCH_LIMIT = 6;
+
+export async function searchTickers(term: string, limit = SEARCH_LIMIT): Promise<TickerHit[]> {
+  // An empty term matches everything, which would return the six largest
+  // companies to someone who has typed nothing. The caller shows no menu
+  // in that state; this makes it impossible rather than conventional.
+  const q = term.trim();
+  if (q === "") return [];
+
+  const rows = await query<{
+    ticker: string;
+    name: string | null;
+    sector: string | null;
+    mcap_usd: string | null;
+    in_trade: boolean | null;
+  }>(SEARCH_SQL, [q, Math.max(1, Math.min(Math.trunc(limit), 20))]);
+
+  return rows.map((r) => ({
+    ticker: r.ticker,
+    name: r.name,
+    sector: r.sector,
+    mcapUsd: num(r.mcap_usd),
+    inTrade: r.in_trade,
   }));
 }

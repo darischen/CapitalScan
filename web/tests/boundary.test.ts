@@ -107,12 +107,17 @@ describe("parameterisation", () => {
    * one — `${...}` in a string that also contains SELECT — rather than for
    * backticks, which are everywhere and benign.
    *
-   * `screen.ts` interpolates two named fragments into its SQL on purpose
-   * (`CONFLUENCE_RANK`, `CONFLUENCE_FILTER`), and both are constants
-   * defined in the same file with no argument reaching them. They are
-   * listed here so the exception is visible rather than silent.
+   * Three named fragments are interpolated on purpose, and every one is a
+   * constant defined in the same file with no argument reaching it. They
+   * are listed here so each exception is visible rather than silent — this
+   * test caught `CHART_COLUMNS` the moment it was added, which is the
+   * behaviour wanted from it.
    */
-  const ALLOWED = new Set(["${CONFLUENCE_RANK}", "${CONFLUENCE_FILTER}"]);
+  const ALLOWED = new Set([
+    "${CONFLUENCE_RANK}",
+    "${CONFLUENCE_FILTER}",
+    "${CHART_COLUMNS}",
+  ]);
 
   it.each(sources())("%s interpolates nothing user-supplied into SQL", (path) => {
     const text = code(path);
@@ -131,12 +136,20 @@ describe("the client boundary", () => {
    * external, which turns a stray import into a build error, and this is the
    * cheaper check that says which file did it.
    */
-  it("only the chart is a client component, and it does not import pg", () => {
-    const clients = sources().filter((p) => /^\s*["']use client["']/.test(read(p)));
-    expect(clients.map((p) => relative(ROOT, p).split(sep).join("/"))).toEqual([
+  it("the client components are exactly the three that need a browser", () => {
+    const clients = sources()
+      .filter((p) => /^\s*["']use client["']/.test(read(p)))
+      .map((p) => relative(ROOT, p).split(sep).join("/"))
+      .sort();
+    // Each earns it: a canvas chart, an IntersectionObserver, and a
+    // keyboard-driven menu. The list is asserted whole rather than as a
+    // count so that adding a fourth is a decision someone makes here.
+    expect(clients).toEqual([
+      "components/EventRows.tsx",
       "components/TickerChart.tsx",
+      "components/TickerSearch.tsx",
     ]);
-    for (const path of clients) {
+    for (const path of sources().filter((p) => /^\s*["']use client["']/.test(read(p)))) {
       expect(code(path)).not.toMatch(/from "pg"|@\/lib\/db/);
     }
   });

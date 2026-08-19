@@ -94,6 +94,25 @@ describe.skipIf(!connected)("against the live database", () => {
     expect(bars.some((b) => b.kFast !== b.kFull)).toBe(true);
   });
 
+  it.each(TICKERS)("%s: a page before the oldest bar returns older bars", async (ticker) => {
+    const { chart, chartBefore } = await import("@/lib/ticker");
+    const bars = await chart(ticker, "1y");
+    const oldest = bars[0].ts;
+
+    const page = await chartBefore(ticker, oldest, 60);
+    expect(page.length).toBe(60);
+    // Strictly before, so the cursor bar is not sent twice — a duplicate
+    // timestamp makes `setData` throw and blanks the chart.
+    expect(page.every((b) => b.ts < oldest)).toBe(true);
+    // Ascending, which is the order the chart takes.
+    expect([...page].sort((a, b) => a.ts.localeCompare(b.ts))).toEqual(page);
+  });
+
+  it("returns an empty page at the start of history, which is how paging stops", async () => {
+    const { chartBefore } = await import("@/lib/ticker");
+    expect(await chartBefore("TSM", "1900-01-01", 10)).toEqual([]);
+  });
+
   it("the event history is one row per signal, not one per entry kind", async () => {
     const { events } = await import("@/lib/ticker");
     const history = await events("TSM", { limit: 200 });
