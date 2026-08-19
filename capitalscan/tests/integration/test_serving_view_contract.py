@@ -214,3 +214,65 @@ def test_p_value_columns_are_not_treated_as_probabilities(views):
     the test, has no interval, and requiring one would recurse."""
     assert "p_value_randomization" in views["v_stats"]
     assert not is_probability_field("p_value_randomization")
+
+
+# ---------------------------------------------------------------------------
+# Dead columns
+# ---------------------------------------------------------------------------
+
+# Columns a serving view projects that are null on every row, with the reason
+# each is allowed to be. Anything not listed here that is entirely null is a
+# column nobody can use and nobody has noticed.
+#
+# `events.sector` was the case that prompted this: NULL on all 13,479,819
+# rows while `tickers.sector` carried 502 populated, because the views
+# projected the events column and nothing ever wrote it. `v_events` had
+# joined `tickers` correctly the whole time. Fixed 2026-08-19; the guard is
+# what stops the next one living that long.
+KNOWN_NULL_COLUMNS: dict[str, str] = {
+    "q50": "predictions is empty until Phase 6 ships a model (ADR 113)",
+    "p_touch_3": "predictions, Phase 6",
+    "p_touch_5": "predictions, Phase 6",
+    "p_adverse_3": "predictions, Phase 6",
+    "model_version": "predictions, Phase 6",
+}
+
+
+@pytest.mark.parametrize("view", ["v_screen", "v_screen_live"])
+def test_no_view_projects_a_column_that_is_null_everywhere(views, view):
+    """A column null on every row is a column nobody can read.
+
+    Measured per column rather than sampled: `count(col)` counts non-nulls,
+    so zero against a non-zero row count is exact.
+    """
+    engine = db_io.get_engine()
+    columns = views[view]
+    counts = ", ".join(f'count("{c}") AS "{c}"' for c in columns)
+    with engine.connect() as conn:
+        conn.execute(text("SET max_parallel_workers_per_gather = 0"))
+        row = conn.execute(text(f"SELECT count(*) AS total, {counts} FROM {view}")).mappings().one()
+
+    if row["total"] == 0:
+        pytest.skip(f"{view} is empty; the check would be vacuous")
+
+    dead = sorted(c for c in columns if row[c] == 0 and c not in KNOWN_NULL_COLUMNS)
+    assert not dead, (
+        f"{view} projects {dead}, null on all {row['total']} rows. Either the "
+        "column is written by nothing and the view should source it elsewhere "
+        "(as `sector` did, from `tickers`), or add it to KNOWN_NULL_COLUMNS "
+        "with the reason."
+    )
+
+
+def test_sector_is_populated_rather_than_merely_present(views):
+    """The specific regression. A view can carry the column and still hand
+    back nulls, which is the state this was in until 2026-08-19."""
+    engine = db_io.get_engine()
+    with engine.connect() as conn:
+        conn.execute(text("SET max_parallel_workers_per_gather = 0"))
+        total, filled = conn.execute(
+            text("SELECT count(*), count(sector) FROM v_screen_live")
+        ).one()
+    if total == 0:
+        pytest.skip("no rows")
+    assert filled > 0, "v_screen_live.sector is null on every row again"

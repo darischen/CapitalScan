@@ -1123,7 +1123,7 @@ CREATE VIEW public.v_screen AS
     e.above_sma200,
     e.seq_in_cluster,
     e.cofire_count,
-    e.sector,
+    t.sector,
     c.cell_id,
         CASE
             WHEN c.suppressed THEN NULL::numeric
@@ -1155,7 +1155,8 @@ CREATE VIEW public.v_screen AS
     p.p_touch_5,
     p.p_adverse_3,
     p.model_version
-   FROM ((public.events e
+   FROM (((public.events e
+     JOIN public.tickers t ON ((t.ticker = e.ticker)))
      LEFT JOIN public.cell_stats c ON (((c.signal_type = e.signal_type) AND (c.side = e.side) AND (c.dd_bucket = e.dd_bucket) AND (c.signal_strength IS NULL) AND (c.entry_kind = 'next_open'::text) AND (c.split_key = 'validate'::text) AND (c.era IS NULL) AND (c.horizon_days = 5) AND (c.target_pct = 0.03) AND (c.config_hash = current_setting('capitalscan.default_config_hash'::text, true)) AND (c.arm = 'signal'::text))))
      LEFT JOIN public.predictions p ON (((p.ticker = e.ticker) AND (p.as_of = e.signal_date))))
   WHERE (e.is_cluster_head AND (e.entry_kind = 'next_open'::text) AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)));
@@ -1176,9 +1177,9 @@ CREATE VIEW public.v_screen_live AS
     e.side,
     e.touch_level,
     e.entry_price,
-    e.bb_pctb,
-    e.k_full,
     e.k_fast,
+    e.k_full,
+    e.d_full,
     e.k_cross_up,
     e.dd_52w,
     e.dd_bucket,
@@ -1186,7 +1187,19 @@ CREATE VIEW public.v_screen_live AS
     e.seq_in_cluster,
     e.is_cluster_head,
     e.cofire_count,
-    e.sector,
+    t.sector,
+    ind.bb_lower,
+    ind.bb_mid,
+    ind.bb_upper,
+    ind.ts AS band_ts,
+    b.open,
+    b.high,
+    b.low,
+    b.close,
+    b.volume,
+    lq.price AS live_price,
+    lq.ts AS live_price_ts,
+    fr.fired_at,
     c.cell_id,
         CASE
             WHEN c.suppressed THEN NULL::numeric
@@ -1218,7 +1231,26 @@ CREATE VIEW public.v_screen_live AS
     p.p_touch_5,
     p.p_adverse_3,
     p.model_version
-   FROM ((public.events e
+   FROM (((((((public.events e
+     LEFT JOIN LATERAL ( SELECT i2.bb_lower,
+            i2.bb_mid,
+            i2.bb_upper,
+            i2.ts
+           FROM public.indicators i2
+          WHERE ((i2.ticker = e.ticker) AND (i2."interval" = '1d'::text) AND (i2.ts < e.signal_date))
+          ORDER BY i2.ts DESC
+         LIMIT 1) ind ON (true))
+     LEFT JOIN public.bars b ON (((b.ticker = e.ticker) AND (b.ts = e.signal_date) AND (b."interval" = '1d'::text))))
+     LEFT JOIN LATERAL ( SELECT q.price,
+            q.ts
+           FROM public.quotes_live q
+          WHERE (q.ticker = e.ticker)
+          ORDER BY q.ts DESC
+         LIMIT 1) lq ON (true))
+     LEFT JOIN LATERAL ( SELECT min(r.fired_at) AS fired_at
+           FROM public.signal_reports r
+          WHERE (r.event_id = e.id)) fr ON (true))
+     JOIN public.tickers t ON ((t.ticker = e.ticker)))
      LEFT JOIN public.cell_stats c ON (((c.signal_type = e.signal_type) AND (c.side = e.side) AND (c.dd_bucket = e.dd_bucket) AND (c.signal_strength IS NULL) AND (c.entry_kind = 'next_open'::text) AND (c.split_key = 'validate'::text) AND (c.era IS NULL) AND (c.horizon_days = 5) AND (c.target_pct = 0.03) AND (c.config_hash = current_setting('capitalscan.default_config_hash'::text, true)) AND (c.arm = 'signal'::text))))
      LEFT JOIN public.predictions p ON (((p.ticker = e.ticker) AND (p.as_of = e.signal_date))))
   WHERE ((e.entry_kind = 'touch'::text) AND (e.is_cluster_head IS NOT FALSE) AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)));
