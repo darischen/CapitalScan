@@ -1,9 +1,10 @@
 import Link from "next/link";
 
 import EventRows from "./EventRows";
+import LivePrice from "./LivePrice";
 import TickerSearch from "./TickerSearch";
 
-import { NONE, SIGNAL_LABELS, clock, fmt, mcap, pct, signedPct, vol } from "@/lib/format";
+import { NONE, SIGNAL_LABELS, fmt, mcap, pct, signedPct, vol } from "@/lib/format";
 import type { Meta } from "@/lib/screen";
 import type { ChartBar, LiveQuote, Range, TickerEvent, TickerState } from "@/lib/ticker";
 import { RANGES } from "@/lib/ticker";
@@ -75,20 +76,17 @@ export function TickerHeader({
             The live quote leads because during a session it is the answer
             to "what is it now"; the close stays beside it because every
             indicator, band, and signal on this page was computed from the
-            close and not from the quote. */}
-        {live && (
-          <>
-            <span className="k">live</span>
-            <span
-              className={`num big ${
-                state.close !== null && live.price >= state.close ? "up" : "down"
-              }`}
-              title={`polled ${clock(live.ts)} ET`}
-            >
-              {fmt(live.price)}
-            </span>
-          </>
-        )}
+            close and not from the quote.
+
+            The quote is the only element on this page that moves during a
+            session, so it is the only one that is a client component. It
+            polls `/api/live` on the same schedule as the chart's candle. */}
+        <LivePrice
+          ticker={state.ticker}
+          barDate={state.asOf}
+          close={state.close}
+          initial={live ?? null}
+        />
         <span className="k">close</span>
         <span className={live ? "num" : "num big"}>{fmt(state.close)}</span>
         <span className={`num ${distance !== null && distance >= 0 ? "up" : "down"}`}>

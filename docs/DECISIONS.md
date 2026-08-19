@@ -3981,6 +3981,80 @@ Fail closed. No evaluation on or before the bar means not tradeable.
 
 ---
 
+## 130. The chat route holds the tool loop, and holds nothing else
+
+**Date:** 2026-08-19. **Status:** Pinned. Implements ADR 118 for `/chat`. Does not amend ADR 070 — no Python runs in the request path.
+
+**Context.**
+
+ADR 118 settled where `/chat` reads from: the MCP server, which calls the handlers, which validate. That leaves the harder question, which is what the route is allowed to *hold*. A chat route is a natural place to accumulate things: a copy of the tool schemas so the model can be given them, a system prompt string, a parse of the tool result so the answer can be shaped, a rounding helper so a rate reads as a percentage. Each is one line and each is a second copy of a contract that already exists.
+
+**Decision.**
+
+Four things the route does not hold, each with the thing that would otherwise drift.
+
+**No tool schemas.** They are read from the server on every request via `listTools`. `mcp/tools.py::SplitArg` has two members and `holdout` is not one of them; a copy in TypeScript would be a second contract, and the way a copy fails is that it keeps working after the original changes. `test_mcp_schemas.py` already asserts the schema is generated from `core.types.SignalType` — reading it at runtime extends that guarantee to the web layer for free.
+
+**No prompt text.** `lib/prompt.ts` reads `docs/SYSTEM_PROMPT.md` and extracts the fenced block under `## The prompt`. The document is where the reasoning behind each rule lives, and Session 18.3 requires the prompt's changes to be reviewable — which holds only while there is one text. The loader **refuses to start** on a prompt that no longer names ADR 112's result, whitespace-normalised so a reflowed paragraph does not read as a deletion. Gate item 6 is enforced rather than checked.
+
+**No parse of a tool result.** `contentToText` joins the server's text blocks and nothing else touches the payload. It reaches the model byte-identical, which is how `n_eff`, the interval, and the q-value survive: not by being carried carefully, but by never being read. A `JSON.parse` round trip would narrow a `numeric` the database stores with more precision than a double holds — the same reason `lib/db.ts` has one `num()` rather than a `parseFloat` per component. A test asserts the module never calls `JSON.parse`, over source with comments stripped, because the comment explaining the rule failed the test checking it.
+
+**No arithmetic, and no arithmetic to reach for.** DESIGN §10.2 forbids the model computing; the loop has no calculator to offer and the handlers return finished numbers.
+
+**Conversation state across a request boundary is text only.** `sanitizeHistory` drops every block that is not a plain string and every role that is not user or assistant. Tool results exist inside one call to `runTurn` and nowhere else, so a browser cannot post a fabricated `tool_result` and have it read with a tool's authority. This is a security property rather than a tidiness one, and it costs the model its tool context between turns — the right trade, because the alternative is trusting the client with the one thing on the page that carries the handlers' guarantee.
+
+**A tool budget of eight per turn, with a documented ending.** At the limit the tools are withdrawn — one final turn with `tool_choice: none` — rather than the request being cut off. The model answers from what it has or says it cannot; both are honest, and neither requires it to invent the fetch it did not get. Every `tool_use` block still receives a `tool_result`, because the API rejects the next request otherwise, and the refusal in that slot names the limit and says *do not estimate the missing number*. The transcript says so too: a reader who cannot see that an answer stopped early has no way to tell it from one that was complete.
+
+**Consequences.**
+
+`tests/boundary.test.ts` gained a carve-out. Session 17's rule was "no web module calls the MCP server", correct while no LLM caller existed; ADR 118 always had two halves and only one was testable. Six files are now exempt, listed by name rather than matched by directory, and the exemption is **asserted from both sides** — a test checks that `lib/mcp.ts` still reaches the server, so deleting the client and querying Postgres from `/chat` cannot leave the suite green by simply not using the exemption.
+
+**A duplicate key in `.env.local` broke this before any of it ran.** The file assigns `MCP_BEARER_TOKEN` twice with different values. `python-dotenv` takes the last, so `cscan mcp serve` came up on one token; `next.config.ts` took the first and skipped every later line for that key, so `/chat` presented the other and got a flat 401 — which the MCP SDK surfaces as a transport failure, reading like a server that is down. Both readers were behaving correctly and neither said the file was ambiguous. The parser moved to `lib/env.ts` (testable, which a config file is not), now resolves last-wins to match `python-dotenv` exactly, and prints the duplicated keys at startup. The process environment still wins over the whole file, so an injected secret is never overwritten.
+
+**Live verification is opt-in, in `tests/mcp.live.test.ts`.** Fakes cover the loop; they cannot show that the generated schemas are ones a model can be given, or that a holdout request raises rather than merely being absent from a `Literal`. Six assertions against a running server, skipped unless `MCP_LIVE=1` so CI stays hermetic. Writing it found that `get_stats` refuses `target_pct=3` and names the four measured values — the handler validating, which is the layer this whole ADR exists to avoid duplicating.
+
+---
+
+## 131. What moves during a session is polled by the client, not re-rendered by the server
+
+**Date:** 2026-08-19. **Status:** Pinned. Completes ADR 128.
+
+**Context.**
+
+ADR 128 put today's session in `bars_live` and drew it on the chart. It rendered correctly and then never changed again.
+
+Every page in this app is a server component with `dynamic = "force-dynamic"`, which means *rendered per request* and not *kept current*. The poller rewrites `bars_live` and `quotes_live` every five minutes; a tab left open all session showed a candle and a live price that were both right when they were drawn and progressively wronger after, **with nothing on screen saying which**. Reported by the user, 2026-08-19: "I don't think the live prices are updating properly in the graph view."
+
+That is the worst shape of stale. `meta.stalenessDays` exists because a database that stopped being updated has to say so; a number that is 40 minutes behind and looks identical to one that is current says nothing at all.
+
+**Decision.**
+
+`GET /api/live?sym=&bar=` returns today's partial candle and the last quote. Two client components poll it every 45 seconds and update in place.
+
+**One endpoint for both, because they must move together.** Refreshing the candle alone would put a close on the chart that disagrees with the number printed above it, and two numbers that disagree read as broken data rather than as a race between two fetches. Two numbers stale in agreement are merely old.
+
+**45 seconds against a five-minute write.** Deliberately faster than the writer rather than matched to it: matching would put the worst-case age at ten minutes. The cost is a primary-key lookup on a 139-row table.
+
+**Only while the tab is visible**, with an immediate refresh on `visibilitychange`. A backgrounded tab polling forever is a request every 45 seconds against a database `cscan backtest` also wants (ADR 039), and returning to the tab is then current rather than up to a poll behind.
+
+**`update()` on the two series that carry it, not a repaint.** `setData` across eight series to move one candle rebuilds the price scale on every tick, and the reader is usually mid-drag somewhere else on the chart.
+
+**Rejected: `revalidate` on the route.** It re-renders the whole page — the chart remounts, the loaded history is discarded, and a reader who dragged back to 2019 is returned to today every 45 seconds. The stale thing is one candle and one number; re-rendering an event table and a 1,300-bar series to move them is the wrong unit.
+
+**Rejected: a websocket or SSE push.** The write cycle is five minutes. A push channel would hold a connection per open tab to deliver twelve messages an hour, and the failure mode of a dropped socket is silence, which is the bug being fixed.
+
+**Consequences.**
+
+`LivePrice` is a new client component, and the ticker page's client boundary is now six files rather than four. That list is asserted whole in `boundary.test.ts` so adding one stays a decision.
+
+The chart's footer says **when** it last re-read, in the accent colour. That line is the actual fix. Polling makes the number current; the timestamp is what makes a *failed* poll legible — the price holds at the last good value and the clock beside it stops advancing, which is an honest report rather than a frozen number pretending to be live.
+
+`liveBar` was extracted from `chart()` so the first paint and every refresh return the same shape from the same query. A second read written separately is a second thing to keep in agreement, which is how the header and the candle would have started disagreeing.
+
+`quotes_live` is still written inside the poller's breach loop, so `quote` is null for most tickers and the header simply omits the live price. ADR 128 fixed exactly this for bars and not for quotes. It is a two-line change to `_write_live_bars` and it is not made here, because it needs a poller restart and the poller is running.
+
+---
+
 ## Open items
 
 | Item | Options | Current lean |

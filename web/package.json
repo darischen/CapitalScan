@@ -11,6 +11,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.119.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "lightweight-charts": "^5.2.1",
     "next": "^15.5.0",
     "pg": "^8.13.0",

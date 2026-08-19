@@ -140,6 +140,17 @@ export function prepend(older: ChartBar[], loaded: ChartBar[]): ChartBar[] {
  */
 const PREFETCH_BARS = 0;
 
+/**
+ * How often the open session's candle is re-read, in milliseconds.
+ *
+ * The poller writes `bars_live` on a five-minute cycle, so anything under
+ * that returns the same row. 45 seconds is deliberately faster than the
+ * write: it bounds how long a fresh price sits in the database unseen to
+ * well under a minute, at the cost of a bounded SELECT against a primary
+ * key. Matching the five minutes exactly would put the worst case at ten.
+ */
+const LIVE_POLL_MS = 45_000;
+
 
 /**
  * The top of each pane, in pixels from the top of the chart container.
@@ -239,6 +250,8 @@ export default function TickerChart({
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const [hover, setHover] = useState<Hover | null>(null);
+  /** When today's candle was last re-read. Null until the first poll. */
+  const [liveAt, setLiveAt] = useState<Date | null>(null);
 
   /** Push the current array into every series. One function, so a series
    * added later cannot be forgotten by the paging path while the mount path
@@ -640,6 +653,83 @@ export default function TickerChart({
     chartRef.current?.timeScale().fitContent();
   }, [initial, paint]);
 
+  /**
+   * Re-read today's candle on a timer (ADR 128).
+   *
+   * The page is a server component, so the candle it renders is whatever
+   * `bars_live` held at page load. The poller rewrites that row every five
+   * minutes. Without this, a tab left open all session showed a price that
+   * was right when it was drawn and progressively wronger after — the worst
+   * kind of stale, because nothing on screen said so.
+   *
+   * `update()` on the two series that carry it rather than a full repaint:
+   * `setData` on eight series to move one candle would rebuild the price
+   * scale on every tick, and the reader is usually mid-drag somewhere else
+   * on the chart.
+   *
+   * **Only while the tab is visible.** A backgrounded tab that keeps
+   * polling is a request every 45 seconds forever against a database that
+   * `cscan backtest` also wants (ADR 039). `visibilitychange` fires an
+   * immediate refresh on return, so coming back to the tab is current
+   * rather than up to 45 seconds behind.
+   */
+  useEffect(() => {
+    let cancelled = false;
+
+    const refresh = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const response = await fetch(`/api/live?sym=${encodeURIComponent(ticker)}`);
+        if (!response.ok) return;
+        const { bar } = (await response.json()) as { bar: ChartBar | null };
+        if (cancelled || !bar || bar.close === null) return;
+
+        const bars = barsRef.current;
+        const index = bars.findIndex((b) => b.ts === bar.ts);
+        // A closed bar for the same session already exists — the nightly
+        // ingest ran while the tab was open. It is settled and it carries
+        // indicators, so it wins and the polling has nothing left to do.
+        if (index !== -1 && !bars[index].partial) return;
+        if (index === -1) bars.push(bar);
+        else bars[index] = bar;
+
+        const s = seriesRef.current;
+        if (!s) return;
+        s.partial.update({
+          time: bar.ts as Time,
+          open: bar.open as number,
+          high: bar.high as number,
+          low: bar.low as number,
+          close: bar.close as number,
+        });
+        if (bar.volume !== null) {
+          s.volume.update({
+            time: bar.ts as Time,
+            value: bar.volume,
+            color:
+              bar.open !== null && bar.close < bar.open
+                ? `${s.colors.short}55`
+                : `${s.colors.long}55`,
+          });
+        }
+        setLiveAt(new Date());
+      } catch {
+        // A failed poll leaves the last good candle on the chart. The
+        // timestamp beside it stops advancing, which is the honest signal:
+        // this is what we last heard, and when.
+      }
+    };
+
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), LIVE_POLL_MS);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [ticker]);
+
   if (initial.length === 0) {
     return (
       <div className="chart-empty" style={{ height }}>
@@ -734,6 +824,16 @@ export default function TickerChart({
           reached the beginning of the data. */}
       <p className="chart-foot dim">
         <span className="num">{loadedFrom ?? "—"}</span> to present
+        {/* The open session's candle and when it was last re-read. A live
+            number with no timestamp beside it cannot be told apart from a
+            frozen one, which is exactly the failure this poll fixed. */}
+        {liveAt && (
+          <span className="live-at">
+            {" "}
+            · today live, updated{" "}
+            <span className="num">{liveAt.toLocaleTimeString([], { hour12: false })}</span>
+          </span>
+        )}
         {loading && <span className="loading"> · loading earlier sessions</span>}
         {atStart && !loading && <span> · start of history</span>}
         {failed && (

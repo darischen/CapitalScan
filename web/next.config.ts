@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 
 import type { NextConfig } from "next";
 
+import { applyEnv, duplicateKeys } from "./lib/env";
+
 /**
  * The repository keeps one `.env.local`, at the root, and `jobs/db.py`
  * reads it. Next only looks inside its own directory, so `next start` came
@@ -11,26 +13,25 @@ import type { NextConfig } from "next";
  * looked like a broken query and was a missing file path.
  *
  * Reading the root file here rather than copying it into `web/` keeps one
- * copy of the credentials. **Never overwrites**: a variable already in the
- * environment wins, so `DATABASE_URL_MCP=... npm run dev` still works and a
- * deployment that injects its own configuration is untouched.
+ * copy of the credentials. The parsing rules, and the duplicate key that
+ * made them matter, are in `lib/env.ts`.
  */
 function loadRootEnv(): void {
   const path = resolve(process.cwd(), "..", ".env.local");
   if (!existsSync(path)) return;
 
-  for (const raw of readFileSync(path, "utf8").split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const eq = line.indexOf("=");
-    if (eq <= 0) continue;
-    const key = line.slice(0, eq).trim();
-    if (process.env[key] !== undefined) continue;
-    // Strips one layer of matching quotes and nothing else. This is not a
-    // full dotenv parser and does not try to be: the file it reads is the
-    // one `jobs/db.py::_load_env` already reads with the same simplicity.
-    const value = line.slice(eq + 1).trim();
-    process.env[key] = value.replace(/^(['"])(.*)\1$/, "$2");
+  const document = readFileSync(path, "utf8");
+  applyEnv(document, process.env);
+
+  // Said out loud, once, at startup. A file that assigns one key twice is
+  // ambiguous, and every reader of it resolving that ambiguity quietly is
+  // how the MCP token ended up different in two processes.
+  const duplicates = duplicateKeys(document);
+  if (duplicates.length > 0) {
+    console.warn(
+      `.env.local assigns ${duplicates.join(", ")} more than once. ` +
+        "The last assignment wins, here and in python-dotenv. Remove the earlier one.",
+    );
   }
 }
 

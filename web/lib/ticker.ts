@@ -274,55 +274,71 @@ const LIVE_BAR_SQL = `
      AND session_date = market_date()
 `;
 
+/**
+ * Today's partial candle, or null outside a session.
+ *
+ * **Its own exported function because the chart has to be able to re-read
+ * it.** The page is a server component: it renders once, and the candle it
+ * renders is whatever `bars_live` held at that instant. The poller rewrites
+ * that row every five minutes, so a tab left open showed a price frozen at
+ * page load — correct when it was drawn and progressively wronger all
+ * session, with nothing on screen saying which. `/api/live` calls this on a
+ * timer so the same shape reaches the chart on the first paint and on every
+ * refresh after it.
+ */
+export async function liveBar(ticker: string): Promise<ChartBar | null> {
+  const rows = await query<{
+    session_date: Date;
+    open: string | null;
+    high: string | null;
+    low: string | null;
+    close: string | null;
+    volume: string | null;
+  }>(LIVE_BAR_SQL, [ticker]);
+
+  const today = rows[0];
+  if (!today) return null;
+
+  return {
+    ts: isoDate(today.session_date),
+    open: num(today.open),
+    high: num(today.high),
+    low: num(today.low),
+    close: num(today.close),
+    volume: num(today.volume),
+    // Null, never carried forward from yesterday. Indicators are
+    // computed on closed bars; inventing them here would be the
+    // look-ahead this design exists to prevent, one layer up.
+    bbLower: null,
+    bbMid: null,
+    bbUpper: null,
+    kFull: null,
+    dFull: null,
+    kFast: null,
+    sma200: null,
+    eventIds: [],
+    signalTypes: [],
+    sides: [],
+    signalStrength: null,
+    partial: true,
+  };
+}
+
 export async function chart(ticker: string, range: Range = DEFAULT_RANGE): Promise<ChartBar[]> {
-  const [rows, live] = await Promise.all([
+  const [rows, today] = await Promise.all([
     query<ChartRowRaw>(CHART_SQL, [ticker, RANGES[range]]),
-    query<{
-      session_date: Date;
-      open: string | null;
-      high: string | null;
-      low: string | null;
-      close: string | null;
-      volume: string | null;
-    }>(LIVE_BAR_SQL, [ticker]),
+    liveBar(ticker),
   ]);
 
   const bars = rows.map(toBar);
-  const today = live[0];
   if (!today) return bars;
 
-  const ts = isoDate(today.session_date);
   // Across the nightly handover both exist: the ingest has written today's
   // closed bar and `bars_live` still holds the session's partial one. The
   // closed bar wins — it is settled and it carries indicators.
-  if (bars.some((b) => b.ts === ts)) return bars;
+  if (bars.some((b) => b.ts === today.ts)) return bars;
 
-  return [
-    ...bars,
-    {
-      ts,
-      open: num(today.open),
-      high: num(today.high),
-      low: num(today.low),
-      close: num(today.close),
-      volume: num(today.volume),
-      // Null, never carried forward from yesterday. Indicators are
-      // computed on closed bars; inventing them here would be the
-      // look-ahead this design exists to prevent, one layer up.
-      bbLower: null,
-      bbMid: null,
-      bbUpper: null,
-      kFull: null,
-      dFull: null,
-      kFast: null,
-      sma200: null,
-      eventIds: [],
-      signalTypes: [],
-      sides: [],
-      signalStrength: null,
-      partial: true,
-    },
-  ];
+  return [...bars, today];
 }
 
 /** How many sessions one drag-left fetches. A year, matching the default
