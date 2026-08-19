@@ -85,12 +85,43 @@ describe("gate 9: no route reads holdout (ADR 019, ADR 033)", () => {
    * hardcode `split_key = 'validate'` on their statistics join rather than
    * inheriting an event's own key, which on a live event is `holdout`.
    */
-  it.each(sources())("%s never names holdout", (path) => {
-    expect(code(path)).not.toMatch(/holdout/i);
+  /**
+   * The word may appear in prose explaining why holdout is absent — that
+   * is documentation of the rule, not a breach of it. What must not appear
+   * is holdout as a **string literal**, which is the only form that can
+   * reach a query.
+   *
+   * The earlier version matched the bare word and fired on
+   * `app/research/page.tsx` for the sentence "it is the holdout window".
+   */
+  it.each(sources())("%s never names holdout as a value", (path) => {
+    expect(code(path)).not.toMatch(/["'`]holdout["'`]/i);
   });
 
+  /**
+   * `split_key` is banned from routes that serve *live* data, where a split
+   * has no meaning and reaching for one is how holdout leaks.
+   *
+   * `/research` is the exception and is exempted by name: showing train
+   * against validate is the page's entire purpose. It is safe because the
+   * split list there is a literal `["train", "validate"]` rather than a
+   * parameter — `research.test.ts` asserts that, and asserts the route
+   * takes no `searchParams` at all.
+   */
+  const SPLIT_ALLOWED = new Set(["lib/research.ts"]);
+
   it.each(sources())("%s never filters or selects split_key", (path) => {
+    const rel = relative(ROOT, path).split(sep).join("/");
+    if (SPLIT_ALLOWED.has(rel)) return;
     expect(code(path)).not.toMatch(/split_key/);
+  });
+
+  it("every split_key exemption still reads split_key", () => {
+    // An exemption kept past its reason hides a working thing instead of
+    // documenting a broken one.
+    for (const rel of SPLIT_ALLOWED) {
+      expect(code(join(ROOT, rel))).toMatch(/split_key/);
+    }
   });
 
   it("the ticker route exposes no split parameter", () => {
