@@ -615,20 +615,23 @@ export default function TickerChart({
                 }
               >
                 <div className="d num">{hover.date}</div>
+                {/* Spelled out (user's request, 2026-08-19). The single
+                    letters were a habit from terminals with 80 columns;
+                    there is room here, and "Open" needs no decoding. */}
                 <dl>
-                  <dt>O</dt>
+                  <dt>Open</dt>
                   <dd className="num">{fmt(hover.ohlc.open)}</dd>
-                  <dt>H</dt>
+                  <dt>High</dt>
                   <dd className="num">{fmt(hover.ohlc.high)}</dd>
-                  <dt>L</dt>
+                  <dt>Low</dt>
                   <dd className="num">{fmt(hover.ohlc.low)}</dd>
-                  <dt>C</dt>
+                  <dt>Close</dt>
                   {/* Coloured against the open, the same rule the candle
                       body uses. */}
                   <dd className={`num ${hover.ohlc.close >= hover.ohlc.open ? "up" : "down"}`}>
                     {fmt(hover.ohlc.close)}
                   </dd>
-                  <dt>V</dt>
+                  <dt>Volume</dt>
                   <dd className="num">{vol(hover.volume)}</dd>
                 </dl>
               </div>

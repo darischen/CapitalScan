@@ -784,15 +784,25 @@ table.screen td.rail span[data-side="short"] {
   border-top-color: var(--flag);
 }
 
+/* Declared rather than inherited from `.legend .ln`, even though the base
+ * rule already resolves to `--muted`. An inherited colour is not a promise
+ * anything can check, and `legend.test.ts` compares this against the token
+ * the band series is drawn in. */
+.legend .ln.band {
+  border-top-color: var(--muted);
+}
+
 .legend .ln.kfast {
   border-top-color: var(--text);
 }
 
+/* Grey, matching the line. It was `--long` while the chart drew the slow
+ * series in blue; the chart moved to grey and this did not, so the legend
+ * spent a day claiming a colour the chart never painted.
+ *
+ * A swatch is a promise about a pixel somewhere else on the page, and
+ * nothing enforces it — `test_chart_legend_colors.ts` now does. */
 .legend .ln.kfull {
-  border-top-color: var(--long);
-}
-
-.legend .ln.dfull {
   border-top-color: var(--muted);
 }
 
@@ -1005,12 +1015,15 @@ table.screen td.rail span[data-side="short"] {
 .ohlcv {
   position: absolute;
   top: 8px;
+  /* Wider now the labels are words. Still capped: it sits over the candles
+     and a panel that covers a quarter of the pane hides the shape the
+     reader is tracing. */
   background: rgba(27, 31, 36, 0.82);
   border: 1px solid var(--rule);
   border-radius: 2px;
   padding: 5px 8px;
   backdrop-filter: blur(3px);
-  min-width: 116px;
+  min-width: 150px;
 }
 
 .ohlcv .d {
@@ -1027,9 +1040,13 @@ table.screen td.rail span[data-side="short"] {
   font-size: 11.5px;
 }
 
+/* Word labels, so the sans face rather than the mono one — the mono is for
+ * numbers, and setting a word in it makes the label compete with the value
+ * beside it. */
 .ohlcv dt {
   color: var(--muted);
-  font-family: var(--mono);
+  font-family: var(--sans);
+  font-size: 11px;
 }
 
 .ohlcv dd {
