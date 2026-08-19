@@ -216,6 +216,22 @@ td.rail span[data-side="short"] {
   color: var(--muted);
 }
 
+/* Direction on a closing price, in the same cool/warm the side rail uses.
+ *
+ * One palette carries direction everywhere rather than two conventions
+ * competing: a warm close under a warm rail is a short signal on a down
+ * day, and that agreement is the point.
+ *
+ * Not green/red, for the reason §11.7 gives: it separates on hue alone and
+ * fails for the ~8% of men with a red-green deficiency. */
+.up {
+  color: var(--long);
+}
+
+.down {
+  color: var(--short);
+}
+
 /* --- empty state ------------------------------------------------------- */
 
 /* Most days nothing fires (DESIGN §11.2), so this is the common view and

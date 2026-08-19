@@ -20,18 +20,37 @@ import { lastFire, screen } from "@/lib/screen";
 // longer has, which is the one thing the banner exists to prevent.
 export const dynamic = "force-dynamic";
 
+/** The two toggles as one URL, so neither clears the other. */
+function href({
+  withStats,
+  confluenceOnly,
+}: {
+  withStats: boolean;
+  confluenceOnly: boolean;
+}): string {
+  const q = new URLSearchParams();
+  if (withStats) q.set("stats", "1");
+  if (!confluenceOnly) q.set("all", "1");
+  const s = q.toString();
+  return s ? `/?${s}` : "/";
+}
+
 export default async function ScreenerPage({
   searchParams,
 }: {
-  searchParams: Promise<{ date?: string; stats?: string; limit?: string }>;
+  searchParams: Promise<{ date?: string; stats?: string; limit?: string; all?: string }>;
 }) {
   const params = await searchParams;
   const withStats = params.stats === "1";
+  // ADR 111's `--confluence-only`, on by default (user's request). `?all=1`
+  // clears it, so every signal stays one click away rather than unreachable.
+  const confluenceOnly = params.all !== "1";
 
   try {
     const result = await screen({
       date: params.date,
       withStats,
+      confluenceOnly,
       limit: params.limit ? Number(params.limit) : undefined,
     });
 
@@ -56,9 +75,14 @@ export default async function ScreenerPage({
                     saying only "200" misstates how much fired. */}
                 Showing <span className="num">{result.rows.length}</span> of{" "}
                 <span className="num">{result.totalMatched}</span>
+                {result.confluenceOnly && " confluence"}
                 {" · "}
-                <a href={withStats ? "/" : "/?stats=1"}>
+                <a href={href({ withStats: !withStats, confluenceOnly })}>
                   {withStats ? "hide statistics" : "show statistics"}
+                </a>
+                {" · "}
+                <a href={href({ withStats, confluenceOnly: !confluenceOnly })}>
+                  {confluenceOnly ? "show every signal" : "confluence only"}
                 </a>
               </p>
             </>
