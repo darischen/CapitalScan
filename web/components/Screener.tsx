@@ -175,10 +175,10 @@ export function ScreenerTable({
           <th>Signal</th>
           <th className="r">Str</th>
           <th className="r" title="Bollinger bands at t-1, the row the signal compared against. Mid is the 20-day SMA.">
-            Lower / Mid / Upper
+            Bollinger Lower / Mid / Upper
           </th>
           <th className="r" title="Raw %K is the trigger (ADR 110); smoothed must agree within tolerance">
-            %K fast / slow
+            fast / slow Stochastic
           </th>
           <th className="r" title="The signal date's own bar. Empty until that night's ingest.">
             O / H / L / C
@@ -218,7 +218,7 @@ export function ScreenerTable({
                 `core/indicators.py` computed it; nothing is recomputed
                 here. `title` carries the session so a reader can confirm
                 which one it is without a column for it. */}
-            <td className="r num" data-label="Bands" title={row.bandTs ? `bands at ${row.bandTs}` : undefined}>
+            <td className="r num" data-label="Bollinger" title={row.bandTs ? `bands at ${row.bandTs}` : undefined}>
               {fmt(row.bbLower)}
               <span className="dim"> / </span>
               {fmt(row.bbMid)}
@@ -229,7 +229,7 @@ export function ScreenerTable({
                 of the signal definition: the raw one is the trigger and the
                 smoothed one must agree within `fast_agreement_tol`, so
                 showing one is showing half the rule. */}
-            <td className="r num" data-label="%K">
+            <td className="r num" data-label="Stochastic">
               {fmt(row.kFast, 1)}
               <span className="dim"> / {fmt(row.kSlow, 1)}</span>
             </td>
