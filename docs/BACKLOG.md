@@ -38,39 +38,49 @@ running it twice with the same cutoff double-shifts. Use the poller's own
 
 ## 2. Today's bar on the ticker chart
 
-**Asked for 2026-08-19. Not built, because the obvious implementation
-breaks invariant 3.**
+**Asked for 2026-08-19. The data is already being fetched every five
+minutes and thrown away.**
 
-The chart stops at yesterday's close. `bars` gains today's row only after
-the nightly ingest.
+I first recorded this as "the poller cannot supply it". That was wrong, and
+the correction is the useful part.
 
-**The poller cannot supply it.** It writes a `quotes_live` row only when a
-signal fires, not a continuous tape — measured today, 128 quotes across 86
-tickers, at most 2 per ticker. No open, no true high or low, no volume.
+`fetch_quotes` calls Yahoo's batch quote endpoint with
+`params={"symbols": ...}` and **no field restriction**, so the response
+carries the whole quote object — `regularMarketDayHigh`,
+`regularMarketDayLow`, `regularMarketVolume`, `regularMarketPreviousClose`.
+`_QUOTE_COLUMNS` keeps four of them: `ticker`, `ts`, `price`, `day_open`.
+The rest is discarded at parse time.
 
-**yfinance can**: it returns a partial daily bar for the current session
-with real OHLCV.
+It is then discarded a second time at write time: `quotes_live` rows are
+inserted **inside the breach loop**, so only a ticker that fired gets one.
+Measured 2026-08-19: 128 rows across 86 tickers, at most 2 per ticker.
 
-**The trap is where it lands.** A partial row in `bars` would get an
-indicator row from `cscan indicators`, and the poller's t−1 lookup would
-then read *today's* partial indicators instead of yesterday's closed ones.
-That is exactly the look-ahead failure the t−1 discipline exists to
-prevent, and it would be silent — every band would tighten around a price
-that had not finished happening.
+So a live candle needs three changes and no new data source:
 
-So it needs one of:
+1. Keep the fields. `_QUOTE_COLUMNS` gains `day_high`, `day_low`,
+   `day_volume`; `fetch_quotes` reads them with the same
+   absent-stays-absent rule `day_open` already uses (invariant 4).
+2. Persist one row per polled ticker per session, upserted on
+   `(ticker, session_date)` rather than appended per tick. Yahoo's
+   `regularMarketDayHigh/Low` are already the running extremes for the
+   session, so there is nothing to accumulate — each tick overwrites with
+   a better answer. ~141 rows a day, not ~11,000.
+3. The ticker page appends it to the bar series as the newest candle.
 
-- a separate table, or a distinct `interval` value the indicator job
-  ignores;
-- an `is_partial` column on `bars`, with every indicator and signal read
-  filtering it out.
+**It must not land in `bars`.** A partial row there would get an indicator
+row from `cscan indicators`, and the poller's t−1 lookup would then read
+*today's* partial indicators instead of yesterday's closed ones — the exact
+look-ahead failure invariant 3 exists to prevent, and silent. A separate
+table keeps that structural rather than adding a predicate eighteen
+consumers must carry, which is ADR 122's problem shape.
 
-The second is smaller and more dangerous: it adds a predicate that
-*eighteen* consumers must carry, which is the shape of ADR 122's problem.
-The first keeps the invariant structural.
+**Two things the page must say.** The candle is partial, so it is drawn
+distinctly rather than as a settled bar; and no band or stochastic value
+exists for it, because indicators are computed on closed bars only. The
+bands simply stop at yesterday, which is correct — they are what the signal
+compares against.
 
-Either way: a migration, an ADR, and a test asserting that no indicator or
-signal path can see a partial bar.
+Needs a migration and an ADR. Blocked on the quiet window, not on design.
 
 ---
 
