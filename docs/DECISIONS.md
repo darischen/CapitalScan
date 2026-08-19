@@ -3503,6 +3503,7 @@ Reading it surfaced a second error, in CLAUDE.md and `DESIGN.md` §11.7 rather t
 |---|---|---|
 | **`cscan nightly` never ingests the session it runs after** | Pass `end + 1 day` to the fetcher, or make `_download_daily`'s `end` inclusive to match every other date range in the codebase | Make it inclusive — see below |
 | **`v_forward` exposes probabilities with no interval or q-value** | Add `cell_ci_low`/`cell_ci_high`/`cell_q_value` to the view, or have the model carry its own interval | Whichever ADR 113's model produces. **Blocks `/forward`, not Phase 5.** Recorded in `test_serving_view_contract.py::KNOWN_GAPS` |
+| **`/` cannot show today: `v_screen` filters `entry_kind = 'next_open'`, which only `cscan backtest` writes** | Widen the view to prefer `next_open` and fall back to `touch`; add a second live view; or have the route read the feed from `touch` and join stats on the `next_open` cell | The third, probably: ADR 114 makes the default the *feed*, and the feed is a detection-time question. **Measured 2026-08-18: newest `next_open` 2026-08-13, bars through 2026-08-17** |
 | Point-in-time index membership | Scrape Wikipedia history, or accept survivorship bias and state it | Scrape, note residual error in RESULTS.md |
 | Historical earnings dates | Finnhub free tier, Nasdaq scrape, or drop the feature | Finnhub, since earnings contamination is the largest 5-day confound |
 | Point-in-time market cap | Shares outstanding from filings, or price-times-current-shares approximation | Filings where available, approximation flagged elsewhere |
@@ -3573,6 +3574,50 @@ built, authenticated, and passing since Session 16 — is the reading the
 existing code most nearly supports, and it makes Session 16 load-bearing
 rather than a side surface. Recorded in
 `sessions/session18-research-and-chat.md` §0.
+
+### `/` cannot show today's signals, found 2026-08-18
+
+**The screener route renders, and it structurally cannot render today.**
+
+`v_screen` filters `is_cluster_head AND entry_kind = 'next_open'`. Only
+`cscan backtest` writes `next_open` rows: `run_events` writes
+`EntryKind.TOUCH` (`compute.py:801`) and so does the poller. So the
+screener trails the last full backtest, which is a five-hour job.
+
+Measured on 2026-08-18:
+
+| | |
+|---|---|
+| Newest `next_open` in `events` | 2026-08-13 |
+| Newest daily bar | 2026-08-17 |
+| Events for 2026-08-18 | 67, all `entry_kind = 'touch'` |
+| Events for 2026-08-17 | 76, all `entry_kind = 'touch'` |
+
+DESIGN §11.1 calls `/` "today's screener, the default landing route". It is
+currently a five-day-old screener, and would be a months-old one in normal
+operation.
+
+**The page does not hide this.** The status strip carries two dates,
+`signals` and `bars`, with a badge when they diverge. That was added after
+the first render showed `2026-08-17 · fresh · 0 sessions` above rows from
+2026-08-13 — one label reporting the fresher of two different facts.
+
+Three fixes, none taken yet because `v_screen` is the shared contract under
+ADR 076 and changing it moves `handlers/screen.py` too:
+
+- **Widen the view** to prefer `next_open` per event and fall back to
+  `touch`. Keeps one view. Needs care: both kinds exist for backtested
+  days, so a naive `IN (...)` double-counts.
+- **A second live view.** Clean separation, two things to keep in step.
+- **Change what the route reads.** The feed comes from `touch` rows, the
+  statistics join on the `next_open` cell. This needs no view change and
+  matches what `cscan scan` already does, which is the surface the operator
+  uses daily. ADR 114 makes the default the *feed*, and a feed is a
+  detection-time question, so the two grains are arguably right to differ.
+
+The third is the current lean. It brushes against ADR 076's "query logic
+lives in views" and that tension should be settled in whatever ADR resolves
+this rather than left implicit.
 
 ### The nightly ingest gap, found 2026-08-17
 

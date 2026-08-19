@@ -42,3 +42,9 @@ capitalscan/models/**/*.parquet
 
 # Git worktrees (subagent-driven-development scratch workspaces)
 .worktrees/
+
+# Web (Session 17, ADR 118)
+web/node_modules/
+web/.next/
+web/next-env.d.ts
+web/*.tsbuildinfo

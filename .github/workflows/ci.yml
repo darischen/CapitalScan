@@ -140,3 +140,37 @@ jobs:
         env:
           DATABASE_URL_RESEARCH: postgresql://capscan:capscan@localhost:5432/capitalscan
         run: uv run pytest capitalscan/tests/golden capitalscan/tests/integration
+
+  # Session 17, ADR 118. The web routes are TypeScript selecting from the
+  # views, so they need their own toolchain and their own gate. It runs
+  # without a database: `typecheck`, `test`, and `build` all work against
+  # the source, and the queries are exercised by the Python integration
+  # tier, which owns the schema.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+      # `next build` type-checks the routes too, and it is the only step
+      # that catches a server component importing something that cannot be
+      # serialised to a client boundary.
+      - name: Build
+        run: npm run build
