@@ -55,7 +55,46 @@ but it must land before any holdout evaluation rather than after.
 
 ---
 
-## 2. The benchmark record and the database disagree
+## 2. `/chat` and `/` answer "what fired today" with different dates
+
+Found 2026-08-19 by asking `/chat` "What fired today?". It answered
+**August 13** and said so plainly, which is honest and is still the wrong
+answer to the question.
+
+```
+v_screen_live max signal_date   2026-08-19   ← what `/` shows
+v_screen      max signal_date   2026-08-13   ← what `handlers/screen.py` reads
+market_date()                   2026-08-19
+events on 2026-08-19                    63
+```
+
+`handlers/screen.py` reads `v_screen`, whose grain is `entry_kind =
+'next_open'` and which only `cscan backtest` writes. `v_screen_live` is the
+`touch` grain the poller writes continuously. The screener's "trails bars
+by N" badge exists for exactly this gap; the chat route has no such badge,
+because it has no layout to put one in.
+
+**Not fixed unilaterally.** Three reasons it is a decision rather than a
+patch:
+
+- It changes a Session 15 handler contract that MCP clients outside this
+  repo also call.
+- The two views are different *grains*, not fresh and stale copies. Every
+  statistic in `cell_stats` was measured on `next_open`, so a feed switched
+  to `touch` would pair live rows with numbers measured on a different
+  population.
+- `with_stats=true` is where that pairing becomes visible, and it is the
+  one path where getting it wrong is silent.
+
+**Options, in order of how much they claim.** (a) Leave the handler and
+teach the prompt to say which grain it is reading — cheapest, and the model
+already volunteers the date. (b) Add a `grain` argument defaulting to
+`next_open`, so a caller can ask for the live feed deliberately. (c) Switch
+the default and suppress statistics on live rows.
+
+---
+
+## 3. The benchmark record and the database disagree
 
 `RESULTS.md` records the signal arm below its randomization null's 97.5th
 percentile on both splits. The live config's run puts validate **above** it.
@@ -82,7 +121,7 @@ itself worth understanding.
 
 ---
 
-## 3. Held by the user, not to be acted on unilaterally
+## 4. Held by the user, not to be acted on unilaterally
 
 **Neon and the sync job — deferred, 2026-08-19.** Not needed for Session
 18: every route reads the local views and `/chat` calls MCP on 127.0.0.1.
@@ -94,7 +133,7 @@ a technical one. Revisit at deployment.
 
 ---
 
-## 4. Small and unblocked
+## 5. Small and unblocked
 
 **No edge interval exists in the schema.** `cell_stats` stores a Wilson
 interval on `p_hit`; `edge` is `p_hit − baseline` with no interval of its
