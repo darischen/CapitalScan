@@ -4055,6 +4055,89 @@ The chart's footer says **when** it last re-read, in the accent colour. That lin
 
 ---
 
+## 132. The caller names the grain; the default is the compatible one
+
+**Date:** 2026-08-19. **Status:** Pinned. Closes backlog item 2. Amends no ADR — `GRID_ENTRY_KIND` is unchanged.
+
+**Context.**
+
+`/chat` answered "what fired today" with **2026-08-13** while the poller had already recorded 63 events on 2026-08-19. The model named the date it used, so the answer was honest; it was still the wrong answer to the question.
+
+`handlers/screen.py` read `v_screen` unconditionally. That view is `entry_kind = 'next_open'` and only `cscan backtest` writes it, so it ends at the last backtest. `v_screen_live` is the `touch` grain the poller writes continuously and reaches the current session. The screener has a `trails bars by N` badge for exactly this gap; a chat route has no layout to put one in.
+
+**Decision.**
+
+`screen_signals` takes `grain`, one of `next_open` or `touch`, defaulting to `next_open`.
+
+**The default is the compatible one, not the most recent one.** MCP clients outside this repository call this handler. A default that silently moved them to a different entry timing would change every outcome they had already reported, and would do it without an error anywhere. The caller who wants today says so.
+
+**The view is a dict lookup keyed by a parsed enum, never interpolated.** `_BASE` is a format string with a `{view}` hole, which is the shape that would be an injection site if caller input reached it. `parse_grain` runs first and only two keys exist; a test passes `grain="v_screen; DROP TABLE events"` through the argument and asserts the refusal.
+
+**Rejected: switching the default to `touch`.** It answers "what fired today" correctly and answers "what did this historically do" against a population no statistic was computed on.
+
+**Rejected: a freshness badge in the tool result.** It puts the fix in the model's reading of a field rather than in the query, and `meta` already carries staleness — which describes the *database*, not the feed, and was correct throughout the bug.
+
+**What was checked and turned out to be a non-issue.** The stated risk was that `touch` rows would pair with statistics measured on `next_open`. `v_screen_live` already joins `cell_stats` on the literal `entry_kind = 'next_open'`, deliberately and documented, because those are the only cells measured. A live row's statistics describe what that *kind* of setup historically did, identically on both grains. Now asserted by test rather than assumed.
+
+**Consequences.**
+
+`v_screen_live` gained `bb_pctb` (migration `c1f7d92a6b45`) — the one column that differed between the two feeds. A handler whose row shape changes with the grain would be two contracts wearing one name.
+
+The MCP tool description states the tradeoff, because the model is the caller most likely to want `touch` and least able to discover it: *"`grain` decides how recent the feed is, and the default is not the most recent one."*
+
+---
+
+## 133. The ticker history reads a grain that is defined for every signal type
+
+**Date:** 2026-08-19. **Status:** Pinned. Adds `v_ticker_events`.
+
+**Context.**
+
+Reported by the user: old events, horizon long past, still showing a blank entry and exit. Measured across in-trade cluster heads at the `touch` grain:
+
+```
+stoch_overbought  11,780 rows  11,780 with no entry
+stoch_oversold     7,438 rows   7,438 with no entry
+bb_upper_touch     8,876 rows       0 with no entry
+confluence_low     1,377 rows       0 with no entry
+```
+
+19,218 of 41,065 — **47%** — and every one a stochastic signal.
+
+**Not a data fault.** A `touch` entry means *enter at the level you touched*. A stochastic threshold crossing has no level, so `touch_level` is NULL on every such row by construction, no entry price can be assigned, and no exit can follow. The same events carry complete outcomes at the other three grains, where entry does not need a band:
+
+```
+AMZN 2024-12-31 stoch_oversold
+  next_open  entry 2025-01-02 @ 222.0966  exit 2025-01-10 @ 218.94  timeout  −1.48%
+  touch      —                             —                         —        —
+```
+
+The page read a grain undefined for two of the seven signal types and rendered the undefined half as an em-dash — indistinguishable from data that should be there and is not.
+
+**Decision.**
+
+`v_ticker_events`: `next_open` rows, union the `touch` rows that have no `next_open` sibling.
+
+`next_open` is `GRID_ENTRY_KIND`, the grain every Phase 4 statistic used, so the history's outcomes now match the numbers the screener quotes. That closes the "same event, two entries, two outcomes" wart the previous code apologised for in a comment.
+
+The union adds back the poller's fires from sessions `cscan backtest` has not reached — 246 of 41,065. Reading `next_open` alone would drop today's fires off the page, which is the row a reader most wants.
+
+**Marker alignment survives.** `v_chart` marks bars at `entry_kind = 'touch' AND is_cluster_head IS NOT FALSE`, and `(config_hash, ticker, signal_date, signal_type, entry_kind)` is the natural key — so every historical touch row has an exact sibling and a marker with no history row under it stays impossible.
+
+**Three states, and the first cut got that wrong.**
+
+`pending` initially meant "no `next_open` sibling", which counted **47,310** rows where it should have counted 246. The other 179,286 are `in_trade = false`: events ADR 122 records so they stay visible here, and that the backtest deliberately never measures. Labelling those "not yet backtested" promises a number that is never coming — a different lie from the blank it replaced, but still a lie.
+
+Corrected in `a4b8f2e619c3` twenty minutes after `a8d3e5c17f92` applied. `pending` is `in_trade AND no sibling`; `in_trade` is projected beside it; the page distinguishes **measured**, **not backtested**, and **outside universe**.
+
+**Found by verification, not by a test.** The count after applying was 47,310 against an estimate of 246, and the two orders of magnitude were the whole signal. Nothing in the suite would have caught it: the view was valid, the join was right, and every row rendered.
+
+**Consequences.**
+
+78 in-trade rows still settle with no entry. 77 are the last-backtest boundary — the entry is the *next* open, which had not happened when the backtest ran — and self-heal. The one historical is AET 2018-11-29, acquired by CVS days later, where no next open ever existed. Both are correct and neither is worth a fourth state.
+
+---
+
 ## Open items
 
 | Item | Options | Current lean |

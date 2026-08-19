@@ -1144,8 +1144,18 @@ SELECT cell_id,
 # `next_open` alone would drop today's fires off the page, which is the row
 # a reader most wants; reading `touch` alone is the defect above.
 #
-# `pending` distinguishes them, so the UI can say "not yet backtested"
-# rather than printing a blank that looks exactly like the bug this fixes.
+# **Three outcome states, not two, and the first cut of this view got that
+# wrong.** `pending` initially meant "no `next_open` sibling", which counted
+# 47,310 rows where it should have counted 246. The other 179,286 are
+# `in_trade = false`: events ADR 122 records so they stay visible on the
+# ticker page, and that the backtest deliberately never measures. Calling
+# those "not yet backtested" promises a number that is never coming.
+#
+# So `pending` is `in_trade AND no sibling` -- a session `cscan backtest`
+# has not reached -- and `in_trade` is projected beside it, letting the page
+# separate "measured", "waiting on the backtest", and "outside the trade
+# universe, never measured by design". Caught by checking the counts against
+# the estimate rather than by any test.
 #
 # **Marker alignment survives.** `v_chart` marks bars at `entry_kind =
 # 'touch' AND is_cluster_head IS NOT FALSE`, and every historical touch row
@@ -1156,9 +1166,9 @@ SELECT cell_id,
 V_TICKER_EVENTS_DDL = """
 CREATE VIEW public.v_ticker_events AS
  SELECT
-    e.id,
     e.ticker,
-    e.sector,
+    t.sector,
+    e.id,
     e.signal_date,
     e.signal_type,
     e.signal_types_all,
@@ -1197,14 +1207,17 @@ CREATE VIEW public.v_ticker_events AS
     e.earnings_in_window,
     e.era,
     e.split_key,
+    e.in_trade,
     false AS pending
-   FROM public.v_events e
-  WHERE (e.entry_kind = 'next_open'::text)
+   FROM public.events e
+     JOIN public.tickers t ON ((t.ticker = e.ticker))
+  WHERE ((e.config_hash = current_setting('capitalscan.default_config_hash'::text, true))
+     AND (e.entry_kind = 'next_open'::text))
 UNION ALL
  SELECT
-    e.id,
     e.ticker,
-    e.sector,
+    t.sector,
+    e.id,
     e.signal_date,
     e.signal_type,
     e.signal_types_all,
@@ -1243,13 +1256,16 @@ UNION ALL
     e.earnings_in_window,
     e.era,
     e.split_key,
-    true AS pending
-   FROM public.v_events e
-  WHERE ((e.entry_kind = 'touch'::text)
+    e.in_trade,
+    e.in_trade AS pending
+   FROM public.events e
+     JOIN public.tickers t ON ((t.ticker = e.ticker))
+  WHERE ((e.config_hash = current_setting('capitalscan.default_config_hash'::text, true))
+     AND (e.entry_kind = 'touch'::text)
      AND (NOT (EXISTS ( SELECT 1
-           FROM public.v_events n
-          WHERE ((n.ticker = e.ticker) AND (n.signal_date = e.signal_date)
-              AND (n.signal_type = e.signal_type)
+           FROM public.events n
+          WHERE ((n.config_hash = e.config_hash) AND (n.ticker = e.ticker)
+              AND (n.signal_date = e.signal_date) AND (n.signal_type = e.signal_type)
               AND (n.entry_kind = 'next_open'::text))))))
 """
 

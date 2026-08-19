@@ -145,9 +145,14 @@ export interface TickerEvent {
   isClusterHead: boolean | null;
   ddBucket: string | null;
   /** The poller recorded this fire and `cscan backtest` has not reached it
-   * yet, so it has no measured outcome. Distinct from an outcome that is
-   * missing, which is what the pre-2026-08-19 blank meant. */
+   * yet, so it has no measured outcome *yet*. 246 rows when measured. */
   pending: boolean;
+  /** ADR 122 keeps out-of-trade events visible here and excludes them from
+   * every statistical read, so they carry no outcome and never will. That
+   * is a third state, distinct from `pending`, and conflating the two was
+   * the first cut of `v_ticker_events` promising a number that was never
+   * coming for 179,286 rows. */
+  inTrade: boolean | null;
   entryDate: string | null;
   entryPrice: number | null;
   exitDate: string | null;
@@ -506,7 +511,7 @@ export async function state(ticker: string): Promise<TickerState | null> {
  */
 const EVENTS_SQL = `
   SELECT id, signal_date, signal_type, signal_types_all, signal_strength,
-         is_cluster_head, dd_bucket, pending, entry_date, entry_price,
+         is_cluster_head, dd_bucket, pending, in_trade, entry_date, entry_price,
          exit_date, exit_price, exit_reason, holding_days,
          net_ret, mfe, mae, earnings_in_window
     FROM v_ticker_events
@@ -536,6 +541,7 @@ interface EventRowRaw {
   is_cluster_head: boolean | null;
   dd_bucket: string | null;
   pending: boolean;
+  in_trade: boolean | null;
   entry_date: Date | null;
   entry_price: string | null;
   exit_date: Date | null;
@@ -605,6 +611,7 @@ export async function events(
     isClusterHead: r.is_cluster_head,
     ddBucket: r.dd_bucket,
     pending: r.pending,
+    inTrade: r.in_trade,
     entryDate: r.entry_date ? isoDate(r.entry_date) : null,
     entryPrice: num(r.entry_price),
     exitDate: r.exit_date ? isoDate(r.exit_date) : null,
