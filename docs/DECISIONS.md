@@ -3788,6 +3788,7 @@ Row counts on historical dates rise. On 2026-08-18: 5 poller rows plus 3 repeats
 
 ```python
 from capitalscan.jobs.views import V_SCREEN_LIVE_DDL
+
 op.execute(V_SCREEN_LIVE_DDL)
 ```
 
