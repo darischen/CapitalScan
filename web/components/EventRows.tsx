@@ -131,8 +131,8 @@ export default function EventRows({
           <tr>
             <th className="rail" />
             <th>Date</th>
-            <th>Side</th>
             <th>Signal</th>
+            <th>Side</th>
             <th className="r">Entry</th>
             <th className="r">Exit</th>
             <th>Reason</th>
@@ -152,17 +152,6 @@ export default function EventRows({
               <td className="num" data-label="Date">
                 {e.signalDate}
               </td>
-              {/* Spelled out (user's request, 2026-08-19). The rail already
-                  encodes it, but a 3px stripe is a thing you learn rather
-                  than read, and the short rows are the ones worth not
-                  misreading.
-
-                  `long`/`short` is the position direction and nothing more.
-                  It says which way the signal points, not what instrument
-                  expresses it. */}
-              <td className={`side ${e.side}`} data-label="Side">
-                {e.side}
-              </td>
               <td className="sig" data-label="Signal">
                 {typeList(e).map((t, i) => (
                   <span key={t}>
@@ -175,6 +164,16 @@ export default function EventRows({
                     "not a head". */}
                 {e.isClusterHead === null && <span className="flag">pending cluster</span>}
                 {e.earningsInWindow && <span className="flag">earnings</span>}
+              </td>
+              {/* After the signal, not before it (user's request,
+                  2026-08-19). The signal type is what identifies the row;
+                  the side follows from it and reads as its consequence.
+
+                  `long`/`short` is the position direction and nothing more.
+                  It says which way the signal points, not what instrument
+                  expresses it. */}
+              <td className={`side ${e.side}`} data-label="Side">
+                {e.side}
               </td>
               <td className="num r" data-label="Entry">
                 {fmt(e.entryPrice)}

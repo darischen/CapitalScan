@@ -92,11 +92,17 @@ export function TickerHeader({
             chart. */}
         {latest && (
           <span className="tag ohlc num">
-            <b>O</b>
-            {fmt(latest.open)} <b>H</b>
-            {fmt(latest.high)} <b>L</b>
-            {fmt(latest.low)} <b>C</b>
-            <span className={latest.close !== null && latest.open !== null && latest.close >= latest.open ? "up" : "down"}>
+            <b>O:</b>
+            {fmt(latest.open)} <b>H:</b>
+            {fmt(latest.high)} <b>L:</b>
+            {fmt(latest.low)} <b>C:</b>
+            <span
+              className={
+                latest.close !== null && latest.open !== null && latest.close >= latest.open
+                  ? "up"
+                  : "down"
+              }
+            >
               {fmt(latest.close)}
             </span>
           </span>

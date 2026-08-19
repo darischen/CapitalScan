@@ -1106,11 +1106,12 @@ table.screen td.rail span[data-side="short"] {
   color: var(--text);
 }
 
+/* The colon belongs to the label, so no right margin: `O:410.00` reads as
+ * one token, which is what makes four of them scannable in a row. */
 .tag.ohlc b {
   font-weight: 400;
   color: var(--muted);
-  margin-left: 6px;
-  margin-right: 2px;
+  margin-left: 7px;
 }
 
 .tag.ohlc b:first-child {
