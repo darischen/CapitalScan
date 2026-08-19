@@ -170,6 +170,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 126 | `v_stats` projects `arm` | Pinned. The screener's stats toggle had been broken since Session 17 |
 | 127 | The poller clock is timezone-aware | Pinned. Every stored poller timestamp was four hours early |
 | 128 | Today's session is a candle in its own table | Pinned. `bars_live`; a partial row in `bars` would be silent look-ahead |
+| 129 | `in_trade` fails closed | Accepted, not executed. 11.9% of train was admitted by a missing snapshot |
 
 ---
 
@@ -3933,6 +3934,50 @@ Across the nightly handover both rows exist for a moment. The closed bar wins �
 `test_bars_live_isolation.py` holds the separation: no module under `core/` or `research/` may name `bars_live`, only `poll.py` and `views.py` may under `jobs/`, and the poller's `db_io.upsert` targets are parsed to assert `bars` is not among them.
 
 **A second bug fell out of the same work.** ADR 127 made `_now_et` aware, and `scheduled_runs._scheduled_for` compared it against a naive `datetime.combine` — the poller died on its first tick with `can't compare offset-naive and offset-aware datetimes`. That is the right failure: the alternative is a naive comparison silently treating an ET wall clock as UTC, which is the four-hour bug ADR 127 had just fixed, reappearing one module over. Every candidate now inherits `as_of`'s tzinfo, and a naive caller still works unchanged.
+
+---
+
+## 129. `in_trade` fails closed: no universe evaluation means not tradeable
+
+**Date:** 2026-08-19. **Status:** Accepted, not yet executed. Closes ADR 122's open item. Amends `core/universe.py`.
+
+**Context.**
+
+`core.universe.in_trade` returns `True` when no universe evaluation exists on or before the bar — the documented v1 simplification, so `run_events` worked before `run_universe` had ever run for a name.
+
+**It is not only the pre-2010 window, which is how it was first measured and reported.** The check is per *ticker*: a name with no snapshot on or before a given bar fails open on that bar, so a ticker that entered the universe late fails open across all its earlier history. Measured on the live config's `touch` slice:
+
+| Split | Events | Tickers | Range |
+|---|---|---|---|
+| train | **18,805** | 566 | 2010-01-04 → 2021-09-23 |
+| validate | 45 | 3 | 2022-02-18 → 2023-12-29 |
+| holdout | 35 | 3 | 2024-09-13 → 2025-03-21 |
+
+18,805 of 158,156 in-trade events is **11.9% of the training population**. An earlier note recorded 17,919 and said validate and holdout were clean; both were artifacts of measuring only `signal_date < 2010-03-31`.
+
+Across every config and entry kind the same predicate covers **1,672,092 rows**.
+
+**Decision.**
+
+Fail closed. No evaluation on or before the bar means not tradeable.
+
+**Rationale, in the user's words: "why train on tickers I'm not trading".** The training population is supposed to be the trade universe; a name admitted because the universe job had not reached it yet is in the sample by accident of scheduling, not by criteria.
+
+**ADR 122 makes this cheap.** Membership is now *recorded* on the event rather than *filtering* detection, so flipping the default changes a stamp rather than deleting rows. The 18,885 events stay in the table with `in_trade = false`, and every statistical consumer already carries the predicate that excludes them (ADR 122, `test_events_in_trade_filter.py`). Nothing needs a new filter and nothing is destroyed — the events remain visible on the ticker page, which is what ADR 122 built.
+
+**Consequences.**
+
+**Every measured cell moves, on all three splits.** `cell_stats`, `benchmarks`, `rho`, `peak_labels` and `reachability` all re-derive from a population 11.9% smaller on train. ADR 112's result — zero cells surviving FDR correction — must be re-established rather than assumed; it is likely to hold and is not entitled to.
+
+**Holdout is touched, and that needs care.** 35 events across 3 tickers. Holdout is evaluated once and published whatever it says (ADR 019/033); re-stamping is a change to the *population definition* rather than a look at the data, which is legitimate, but it must happen before any holdout evaluation rather than after.
+
+**Execution.** Change the fallback in `core/universe.py`, then re-run `cscan events` for the full window — roughly three hours, and it must not overlap the poller. Then `cscan cell-stats` and the benchmark arms. The `cell_stats` digest is expected to move; that is the point, and it should be recorded before and after.
+
+**Rejected.**
+
+*`UPDATE events SET in_trade = false WHERE ...`.* Same end state in seconds, and it makes the stored value disagree with what the code would derive. The next rebuild would silently revert it. Re-deriving is slower and is the only version that stays true.
+
+*Keep failing open and document it.* What ADR 122 did, as a holding position. The user's reasoning retires it: a training population that includes names outside the trade criteria measures something other than the strategy.
 
 ---
 

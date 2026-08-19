@@ -14,7 +14,48 @@ wearing the wrong name.
 
 ---
 
-## 1. The benchmark record and the database disagree
+## 1. Make `in_trade` fail closed (ADR 129) — decided, needs a rebuild
+
+**Blocked on the database being free.** ~3 hours of `cscan events`, then
+`cell-stats` and the benchmark arms. Must not overlap the poller.
+
+`core.universe.in_trade` returns `True` when no universe evaluation exists
+on or before a bar. The check is per *ticker*, so a name that entered the
+universe late fails open across all its earlier history — not only the
+pre-2010 window, which is how it was first mismeasured.
+
+Live config, `touch` slice:
+
+| Split | Events | Tickers | Range |
+|---|---|---|---|
+| train | **18,805** | 566 | 2010-01-04 → 2021-09-23 |
+| validate | 45 | 3 | 2022-02-18 → 2023-12-29 |
+| holdout | 35 | 3 | 2024-09-13 → 2025-03-21 |
+
+11.9% of the training population. Across all configs and entry kinds the
+same predicate covers 1,672,092 rows.
+
+**Steps:**
+
+1. Flip the fallback in `core/universe.py` to `False`, with the test that
+   currently asserts fail-open inverted.
+2. `cscan events` full window. ADR 122 means this re-*stamps* rather than
+   deletes — the events stay visible on the ticker page and drop out of
+   every statistical read, which already carries the predicate.
+3. Record the `cell_stats` digest **before and after**. It is expected to
+   move; the current baseline is `96af3a8dd09438c4c62cc162fdc0fdff`.
+4. Re-run `cscan cell-stats` and the benchmark arms.
+5. Re-establish ADR 112's result rather than assuming it. Zero cells
+   surviving FDR is likely to hold on an 11.9%-smaller train set and is not
+   entitled to.
+
+**Holdout is touched** — 35 events, 3 tickers. Re-stamping is a change to
+the population *definition*, not a look at the data, so it is legitimate;
+but it must land before any holdout evaluation rather than after.
+
+---
+
+## 2. The benchmark record and the database disagree
 
 `RESULTS.md` records the signal arm below its randomization null's 97.5th
 percentile on both splits. The live config's run puts validate **above** it.
@@ -41,21 +82,19 @@ itself worth understanding.
 
 ---
 
-## 2. Held by the user, not to be acted on unilaterally
+## 3. Held by the user, not to be acted on unilaterally
 
-**The 17,919 fail-open events.** 11.4% of the live config's `touch` rows,
-across 512 tickers, entered `train` before the first universe snapshot
-(2010-03-31) through `core.universe.in_trade`'s fail-open branch. Closing
-it drops them and moves every measured cell. Recorded in ADR 122.
+**Neon and the sync job — deferred, 2026-08-19.** Not needed for Session
+18: every route reads the local views and `/chat` calls MCP on 127.0.0.1.
 
-**Neon and the sync job.** Not needed for Session 18 — every route reads
-the local views and `/chat` calls MCP on 127.0.0.1. It becomes necessary at
-deployment. `events` at 14.6M rows will not fit Neon's free tier, so "what
-gets synced" is a real design decision with an ADR attached.
+The user's reasoning for deferring: the constraint is cost rather than
+hosting, and this workstation can serve. `events` at 14.6M rows does not
+fit Neon's free tier, so "what gets synced" is a paid decision before it is
+a technical one. Revisit at deployment.
 
 ---
 
-## 3. Small and unblocked
+## 4. Small and unblocked
 
 **No edge interval exists in the schema.** `cell_stats` stores a Wilson
 interval on `p_hit`; `edge` is `p_hit − baseline` with no interval of its
