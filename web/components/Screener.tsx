@@ -262,14 +262,28 @@ export function ScreenerTable({
                 data rather than assumed -- so the leading label is the one
                 that names the row and the rest are dimmed as context. */}
             <td className="sig" data-label="Signal">
-              {typeList(row).map((t, i) => (
-                <span key={t}>
-                  {i > 0 && <span className="sep-dot"> · </span>}
-                  <span className={i === 0 ? undefined : "dim"}>
-                    {SIGNAL_LABELS[t] ?? t}
+              {typeList(row)
+                .filter((t) => t !== "bear_close_above_upper")
+                .map((t, i) => (
+                  <span key={t}>
+                    {i > 0 && <span className="sep-dot"> · </span>}
+                    <span className={i === 0 ? undefined : "dim"}>{SIGNAL_LABELS[t] ?? t}</span>
                   </span>
+                ))}
+              {/* Pulled out of the list and badged (user's request,
+                  2026-08-19). ADR 111 makes a short actionable only with a
+                  confirming reversal, so this is the one label that changes
+                  what a reader does rather than describing what fired — and
+                  as the fourth word in a list of four it read like the
+                  least important of them.
+
+                  Rare enough to earn the treatment: 116 of 4,306
+                  confluences. */}
+              {row.signalTypesAll.includes("bear_close_above_upper") && (
+                <span className="reversal" title="closed back inside the band: ADR 111's confirming reversal">
+                  ↓ reversal
                 </span>
-              ))}
+              )}
             </td>
             <td className="r num" data-label="Str">
               {row.signalStrength}

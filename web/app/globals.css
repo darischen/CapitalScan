@@ -1170,3 +1170,20 @@ table.screen td.rail span[data-side="short"] {
   font-size: 11px;
   border-bottom: 1px solid var(--rule);
 }
+
+/* The confirming reversal (ADR 111). Warm, because it only occurs on the
+ * short side, and bordered so it reads as a badge rather than as another
+ * word in the signal list — it is the one label that changes what a reader
+ * does rather than describing what fired. */
+.reversal {
+  margin-left: 8px;
+  padding: 0 5px;
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--short);
+  border: 1px solid var(--short);
+  border-radius: 2px;
+  white-space: nowrap;
+}
