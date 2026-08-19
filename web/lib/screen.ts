@@ -1,15 +1,21 @@
 import { num, query } from "./db";
 
 /**
- * The screener query. Reads `v_screen`, which already decides:
+ * The screener query. Reads `v_screen_live` (ADR 119), which already decides:
  *
  * - ADR 100's `config_hash` predicate, from the
  *   `capitalscan.default_config_hash` GUC rather than a guess.
  * - ADR 105's `arm = 'signal'` predicate, so the control and benchmark arms
  *   cannot leak into a row.
  * - ADR 107's pooled-over-`signal_strength` cell selection.
- * - `is_cluster_head AND entry_kind = 'next_open'`, the grain every Phase 4
- *   statistic was measured on.
+ * - `entry_kind = 'touch'` with `is_cluster_head IS NOT FALSE`: what fired,
+ *   at detection time. `v_screen` filters `next_open`, which only
+ *   `cscan backtest` writes, so it trails the last five-hour backtest --
+ *   measured 2026-08-18, newest `next_open` was 2026-08-13 while 67 events
+ *   had fired that day.
+ * - The cell join still pins `next_open`, because that is the entry the
+ *   grid measured. The feed's grain and the statistics' grain differ on
+ *   purpose.
  *
  * None of that is rebuilt here. ADR 076 puts the query logic in the view
  * precisely so this file and `capitalscan/handlers/screen.py` cannot drift.
@@ -26,12 +32,33 @@ export interface ScreenRow {
   signalStrength: number;
   side: Side;
   sector: string | null;
-  bbPctb: number | null;
-  kFull: number | null;
+  /** The t-1 bands the signal compared against (invariant 3). */
+  bbLower: number | null;
+  bbMid: number | null;
+  bbUpper: number | null;
+  bandTs: string | null;
+  /** Raw %K, the ADR 110 trigger. */
   kFast: number | null;
-  ddBucket: string | null;
-  cofireCount: number | null;
+  /** Smoothed %K, which must agree within `fast_agreement_tol`. */
+  kSlow: number | null;
+  /** The signal date's own bar. Null intraday: bars are ingested nightly. */
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  volume: number | null;
+  /** The newest price the poller saw, with the time it saw it. */
+  livePrice: number | null;
+  livePriceTs: string | null;
+  /** When the poller detected and notified this signal. */
+  firedAt: string | null;
   cellId: string | null;
+  /**
+   * `null` while the poller has written the row and clustering has not run.
+   * ADR 054's gap window needs the whole session, so an intraday row cannot
+   * know yet whether it is a cluster head.
+   */
+  isClusterHead: boolean | null;
   /** Populated only when `withStats` is requested. See ADR 114. */
   stats: CellStats | Suppressed | null;
 }
@@ -149,24 +176,27 @@ interface ScreenOptions {
  * an unfiltered `count(*)` reported 290,019, the whole history.
  */
 const LATEST_DATE_SQL = `
-  SELECT max(signal_date) AS d FROM v_screen
+  SELECT max(signal_date) AS d FROM v_screen_live
 `;
 
 const FEED_SQL = `
   SELECT s.ticker, s.signal_date, s.signal_type, s.signal_types_all,
-         s.signal_strength, s.bb_pctb, s.k_full, s.k_fast,
-         s.dd_bucket, s.cofire_count, s.sector, s.cell_id
-    FROM v_screen s
+         s.signal_strength, s.k_full, s.k_fast,
+         s.dd_bucket, s.sector, s.cell_id, s.side, s.is_cluster_head,
+         s.bb_lower, s.bb_mid, s.bb_upper, s.band_ts,
+         s.open, s.high, s.low, s.close, s.volume,
+         s.live_price, s.live_price_ts, s.fired_at
+    FROM v_screen_live s
     JOIN v_universe u ON u.ticker = s.ticker
    WHERE u.in_trade
      AND s.signal_date = $1::date
-   ORDER BY s.cofire_count DESC NULLS LAST, s.ticker
+   ORDER BY s.fired_at DESC NULLS LAST, s.ticker
    LIMIT $2
 `;
 
 const COUNT_SQL = `
   SELECT count(*)::int AS n
-    FROM v_screen s
+    FROM v_screen_live s
     JOIN v_universe u ON u.ticker = s.ticker
    WHERE u.in_trade
      AND s.signal_date = $1::date
@@ -183,13 +213,25 @@ interface FeedRowRaw {
   signal_type: string;
   signal_types_all: string[] | null;
   signal_strength: number | null;
-  bb_pctb: string | null;
+  bb_lower: string | null;
+  bb_mid: string | null;
+  bb_upper: string | null;
+  band_ts: Date | null;
   k_full: string | null;
   k_fast: string | null;
   dd_bucket: string | null;
-  cofire_count: number | null;
   sector: string | null;
   cell_id: string | null;
+  side: string;
+  is_cluster_head: boolean | null;
+  open: string | null;
+  high: string | null;
+  low: string | null;
+  close: string | null;
+  volume: string | null;
+  live_price: string | null;
+  live_price_ts: Date | null;
+  fired_at: Date | null;
 }
 
 export async function screen(options: ScreenOptions = {}): Promise<ScreenResult> {
@@ -216,14 +258,29 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
     signalType: r.signal_type,
     signalTypesAll: r.signal_types_all ?? [],
     signalStrength: r.signal_strength ?? 0,
-    side: sideFor(r.signal_type),
+    // `v_screen_live` projects `events.side` directly, so this is the
+    // stored value rather than a re-derivation. `sideFor` stays as the
+    // fallback and is still tested: it is what a caller without the column
+    // would need, and the two must agree.
+    side: (r.side === "short" || r.side === "long" ? r.side : sideFor(r.signal_type)) as Side,
     sector: r.sector,
-    bbPctb: num(r.bb_pctb),
-    kFull: num(r.k_full),
+    bbLower: num(r.bb_lower),
+    bbMid: num(r.bb_mid),
+    bbUpper: num(r.bb_upper),
+    bandTs: r.band_ts ? isoDate(r.band_ts) : null,
     kFast: num(r.k_fast),
+    kSlow: num(r.k_full),
+    open: num(r.open),
+    high: num(r.high),
+    low: num(r.low),
+    close: num(r.close),
+    volume: num(r.volume),
+    livePrice: num(r.live_price),
+    livePriceTs: r.live_price_ts ? r.live_price_ts.toISOString() : null,
+    firedAt: r.fired_at ? r.fired_at.toISOString() : null,
     ddBucket: r.dd_bucket,
-    cofireCount: r.cofire_count,
     cellId: r.cell_id,
+    isClusterHead: r.is_cluster_head,
     stats: null,
   }));
 

@@ -438,3 +438,292 @@ CREATE VIEW public.v_ticker_state AS
   WHERE (i."interval" = '1d'::text)
   ORDER BY i.ticker, i.ts DESC
 """
+
+
+# ---------------------------------------------------------------------------
+# market_date(), v_screen, and v_screen_live (ADR 119)
+# ---------------------------------------------------------------------------
+#
+# **`CURRENT_DATE` is not the market's date.** The database runs `Etc/UTC`
+# (measured 2026-08-19 02:15 UTC: `CURRENT_DATE` said 2026-08-19 while the
+# session that had just closed was 2026-08-18). So every use of it to mean
+# "today's session" is wrong from 00:00 UTC until midnight ET - about seven
+# hours a day, 5pm to midnight Pacific, which is exactly when someone
+# reviews the session that just ended.
+#
+# One definition, `STABLE` rather than `IMMUTABLE` because it reads the
+# clock. Every consumer calls it instead of spelling the zone again.
+MARKET_DATE_DDL = """
+CREATE OR REPLACE FUNCTION public.market_date() RETURNS date
+    LANGUAGE sql
+    STABLE
+    AS $$ SELECT (now() AT TIME ZONE 'America/New_York')::date $$
+"""
+
+# The statistics grain. `research/cell_stats.py::GRID_ENTRY_KIND` is
+# `next_open`, so every cell in the headline grid was measured on that entry
+# and a live feed joining on its own `entry_kind` would find nothing.
+#
+# Written once and interpolated into both views, so the feed's grain and the
+# statistics' grain can differ (ADR 119) without the *statistics* grain
+# differing between them.
+_CELL_JOIN = """
+     LEFT JOIN public.cell_stats c ON (((c.signal_type = e.signal_type)
+         AND (c.side = e.side) AND (c.dd_bucket = e.dd_bucket)
+         AND (c.signal_strength IS NULL) AND (c.entry_kind = 'next_open'::text)
+         AND (c.split_key = 'validate'::text) AND (c.era IS NULL)
+         AND (c.horizon_days = 5) AND (c.target_pct = 0.03)
+         AND (c.config_hash = current_setting('capitalscan.default_config_hash'::text, true))
+         AND (c.arm = 'signal'::text))))
+     LEFT JOIN public.predictions p ON (((p.ticker = e.ticker) AND (p.as_of = e.signal_date))))
+"""
+
+_STATS_PROJECTION = """
+    c.cell_id,
+        CASE
+            WHEN c.suppressed THEN NULL::numeric
+            ELSE c.p_hit
+        END AS p_hit,
+        CASE
+            WHEN c.suppressed THEN NULL::numeric
+            ELSE c.baseline_empirical
+        END AS baseline,
+        CASE
+            WHEN c.suppressed THEN NULL::numeric
+            ELSE c.edge
+        END AS edge,
+        CASE
+            WHEN c.suppressed THEN NULL::numeric
+            ELSE c.ci_low
+        END AS ci_low,
+        CASE
+            WHEN c.suppressed THEN NULL::numeric
+            ELSE c.ci_high
+        END AS ci_high,
+    c.n_events,
+    c.n_eff,
+    c.q_value,
+    c.suppressed,
+    c.suppress_reason,
+    p.q50,
+    p.p_touch_3,
+    p.p_touch_5,
+    p.p_adverse_3,
+    p.model_version
+"""
+
+# `v_screen`, with the config predicate it was missing.
+#
+# **It showed events from 23 different `config_hash` values.** ADR 100 says
+# the view carries a config predicate and it did - on the `cell_stats` join
+# only, never on `events`. `v_events` filters correctly; this one did not.
+#
+# Measured 2026-08-18 on the newest date the screener could show: 46 rows,
+# of which **17 belonged to a superseded config** and 29 to the live one,
+# mixed together with nothing distinguishing them.
+#
+# The `entry_kind` in the cell join also moves from `e.entry_kind` to the
+# pinned `'next_open'`. For this view they are the same value - it filters
+# `e.entry_kind = 'next_open'` - so the join is unchanged in behaviour and
+# now says *why* it is that kind.
+V_SCREEN_DDL = f"""
+CREATE VIEW public.v_screen AS
+ SELECT e.ticker,
+    e.signal_date,
+    e.signal_type,
+    e.signal_types_all,
+    e.signal_strength,
+    e.touch_level,
+    e.bb_pctb,
+    e.k_full,
+    e.k_fast,
+    e.k_cross_up,
+    e.dd_52w,
+    e.dd_bucket,
+    e.above_sma200,
+    e.seq_in_cluster,
+    e.cofire_count,
+    e.sector,
+{_STATS_PROJECTION}
+   FROM ((public.events e
+{_CELL_JOIN}
+  WHERE (e.is_cluster_head AND (e.entry_kind = 'next_open'::text)
+     AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)))
+"""
+
+# The live feed: what fired, at detection time (ADR 119).
+#
+# DESIGN §11.1 calls `/` "today's screener". `v_screen` cannot answer that:
+# it filters `entry_kind = 'next_open'`, and only `cscan backtest` writes
+# that kind, so it trails the last full backtest - a five-hour job. Measured
+# 2026-08-18: newest `next_open` was 2026-08-13 while 67 events had fired
+# that day, all `touch`.
+#
+# Three differences from `v_screen`, each deliberate:
+#
+# **`entry_kind = 'touch'`.** The detection-time row, written by the poller
+# during the session and by `cscan events` overnight. This is "what fired".
+#
+# **`is_cluster_head IS NOT FALSE`, not `is_cluster_head`.** The poller
+# writes one row per breach and cannot cluster: ADR 054's gap window needs
+# the whole day, which does not exist yet at 09:35. So its rows carry NULL,
+# and `WHERE is_cluster_head` shows **zero rows intraday** - measured, 0 of
+# 67 today. NULL means "not yet clustered", which is not "not a head", and
+# the honest treatment is to show it and hide only the known non-heads.
+#
+# **The cell join pins `next_open`.** The statistics were measured on that
+# entry (`GRID_ENTRY_KIND`), so the feed's grain and the statistics' grain
+# legitimately differ. A feed is a detection-time question; a hit rate is a
+# question about an entry that was actually simulated.
+#
+# `is_cluster_head` is projected so a consumer can tell a clustered head
+# from a not-yet-clustered row rather than having them look identical.
+#
+# **Four joins carry what `events` does not store** (user's request,
+# 2026-08-19). `events` holds `bb_pctb` and `touch_level` but none of the
+# three band levels, and no OHLCV at all.
+#
+# - **The bands come from `t-1`**, via a lateral ordered `ts DESC` under
+#   `ts < signal_date`. That is invariant 3 and it is the row the signal
+#   actually compared against, so the displayed band is the one that fired.
+#   `band_ts` is projected so a reader can confirm which session it is.
+#   `bb_mid` is the 20-day SMA as `core/indicators.py` computed it; nothing
+#   is recomputed here.
+# - **OHLCV is the signal date's own bar**, and is **NULL intraday**. Bars
+#   are ingested nightly, so a row that fired at 09:35 has no bar until that
+#   evening -- measured 2026-08-19, 0 of today's 67 events had one. Left
+#   null rather than back-filled from quotes: an open that is really the
+#   first tick anyone saw is not the session's open.
+# - **`live_price` is the newest `quotes_live` row for the ticker**, with
+#   its timestamp beside it. It is the last price the poller saw, not a
+#   real-time quote, and `live_price_ts` is what stops those being confused.
+# - **`fired_at` is the first `signal_reports` row for the event**, which is
+#   when the poller detected and notified it. `min()` because a re-notified
+#   event would otherwise report its latest mention rather than its first.
+#
+# All four are LATERAL-with-LIMIT or an equality join on a primary key, and
+# the `indicators_daily_latest` index (ADR 116) serves the band lookup.
+V_SCREEN_LIVE_DDL = f"""
+CREATE VIEW public.v_screen_live AS
+ SELECT e.ticker,
+    e.signal_date,
+    e.signal_type,
+    e.signal_types_all,
+    e.signal_strength,
+    e.side,
+    e.touch_level,
+    e.entry_price,
+    e.k_fast,
+    e.k_full,
+    e.d_full,
+    e.k_cross_up,
+    e.dd_52w,
+    e.dd_bucket,
+    e.above_sma200,
+    e.seq_in_cluster,
+    e.is_cluster_head,
+    e.cofire_count,
+    e.sector,
+    ind.bb_lower,
+    ind.bb_mid,
+    ind.bb_upper,
+    ind.ts AS band_ts,
+    b.open,
+    b.high,
+    b.low,
+    b.close,
+    b.volume,
+    lq.price AS live_price,
+    lq.ts AS live_price_ts,
+    fr.fired_at,
+{_STATS_PROJECTION}
+   FROM ((((((public.events e
+     LEFT JOIN LATERAL ( SELECT i2.bb_lower, i2.bb_mid, i2.bb_upper, i2.ts
+           FROM public.indicators i2
+          WHERE ((i2.ticker = e.ticker) AND (i2."interval" = '1d'::text)
+              AND (i2.ts < e.signal_date))
+          ORDER BY i2.ts DESC
+         LIMIT 1) ind ON (true))
+     LEFT JOIN public.bars b ON (((b.ticker = e.ticker) AND (b.ts = e.signal_date)
+         AND (b."interval" = '1d'::text))))
+     LEFT JOIN LATERAL ( SELECT q.price, q.ts
+           FROM public.quotes_live q
+          WHERE (q.ticker = e.ticker)
+          ORDER BY q.ts DESC
+         LIMIT 1) lq ON (true))
+     LEFT JOIN LATERAL ( SELECT min(r.fired_at) AS fired_at
+           FROM public.signal_reports r
+          WHERE (r.event_id = e.id)) fr ON (true))
+{_CELL_JOIN}
+  WHERE ((e.entry_kind = 'touch'::text) AND (e.is_cluster_head IS NOT FALSE)
+     AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)))
+"""
+
+# `v_screen` as it stood before ADR 119, kept verbatim so `downgrade()`
+# restores it exactly - including the missing config predicate, because a
+# downgrade that quietly kept the fix would not be a downgrade.
+V_SCREEN_DDL_PRE_119 = """
+CREATE VIEW public.v_screen AS
+ SELECT e.ticker,
+    e.signal_date,
+    e.signal_type,
+    e.signal_types_all,
+    e.signal_strength,
+    e.touch_level,
+    e.bb_pctb,
+    e.k_full,
+    e.k_fast,
+    e.k_cross_up,
+    e.dd_52w,
+    e.dd_bucket,
+    e.above_sma200,
+    e.seq_in_cluster,
+    e.cofire_count,
+    e.sector,
+    c.cell_id,
+        CASE
+            WHEN c.suppressed THEN NULL::numeric
+            ELSE c.p_hit
+        END AS p_hit,
+        CASE
+            WHEN c.suppressed THEN NULL::numeric
+            ELSE c.baseline_empirical
+        END AS baseline,
+        CASE
+            WHEN c.suppressed THEN NULL::numeric
+            ELSE c.edge
+        END AS edge,
+        CASE
+            WHEN c.suppressed THEN NULL::numeric
+            ELSE c.ci_low
+        END AS ci_low,
+        CASE
+            WHEN c.suppressed THEN NULL::numeric
+            ELSE c.ci_high
+        END AS ci_high,
+    c.n_events,
+    c.n_eff,
+    c.q_value,
+    c.suppressed,
+    c.suppress_reason,
+    p.q50,
+    p.p_touch_3,
+    p.p_touch_5,
+    p.p_adverse_3,
+    p.model_version
+   FROM ((public.events e
+     LEFT JOIN public.cell_stats c ON (((c.signal_type = e.signal_type)
+         AND (c.side = e.side) AND (c.dd_bucket = e.dd_bucket)
+         AND (c.signal_strength IS NULL) AND (c.entry_kind = e.entry_kind)
+         AND (c.split_key = 'validate'::text) AND (c.era IS NULL)
+         AND (c.horizon_days = 5) AND (c.target_pct = 0.03)
+         AND (c.config_hash = current_setting('capitalscan.default_config_hash'::text, true))
+         AND (c.arm = 'signal'::text))))
+     LEFT JOIN public.predictions p ON (((p.ticker = e.ticker) AND (p.as_of = e.signal_date))))
+  WHERE (e.is_cluster_head AND (e.entry_kind = 'next_open'::text))
+"""
+
+# `v_positions` with `market_date()` in place of `CURRENT_DATE`. Identical
+# in every other respect to the ADR 115/116 version above; only the two
+# date comparisons change.
+V_POSITIONS_DDL_MARKET_DATE = V_POSITIONS_DDL.replace("CURRENT_DATE", "public.market_date()")

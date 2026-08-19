@@ -160,6 +160,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 116 | `v_ticker_state` reads one row per ticker instead of sorting three million | Pinned. 1000x on `v_positions`; corrects a Session 15 measurement |
 | 117 | The poller reports every confluence and says how far it is from a reversal | Pinned. Amends 108's display half; diverges from 111 on purpose |
 | 118 | MCP is for LLM callers; deterministic reads go straight to the views | Pinned. Resolves the Session 17 blocker; confirms 070 and 076 |
+| 119 | The screener shows what fired today; `market_date()` defines "today" | Pinned. Adds `v_screen_live`; fixes `v_screen`'s missing config filter |
 
 ---
 
@@ -3497,13 +3498,54 @@ Reading it surfaced a second error, in CLAUDE.md and `DESIGN.md` §11.7 rather t
 
 ---
 
+## 119. The screener shows what fired today; `market_date()` defines "today"
+
+**Date:** 2026-08-19. **Status:** Pinned. Resolves the Session 17 open item. Amends ADR 100's predicate on `v_screen`.
+
+**Context.**
+
+DESIGN §11.1 calls `/` "today's screener, the default landing route". Building it showed it could not be one, and two further defects behind that.
+
+**`v_screen` filters `entry_kind = 'next_open'`, and only `cscan backtest` writes that kind.** `run_events` writes `touch` (`compute.py:801`) and so does the poller. The screener therefore trailed the last full backtest — a five-hour job. Measured 2026-08-18: newest `next_open` was 2026-08-13 while **67 events had fired that day**, all `touch`.
+
+**`v_screen` also showed events from every config.** ADR 100 says it carries a `config_hash` predicate, and it did — on the `cell_stats` join only, never on `events`. `v_events` filters correctly; this one did not. Measured on the newest date it could show: 46 rows, of which **17 belonged to a superseded config**, mixed in with nothing distinguishing them. Across the view, 23 distinct hashes and 799,455 rows; with the predicate, 40,819.
+
+**`CURRENT_DATE` is not the market's date.** The database runs `Etc/UTC`. At 2026-08-19 02:15 UTC it returned **2026-08-19** while the session that had just closed was **2026-08-18**. Every use of it to mean "today" is wrong from 00:00 UTC until midnight ET — about seven hours a day, 5pm to midnight Pacific, which is exactly when someone reviews the session that just ended.
+
+**Decision.**
+
+Three parts.
+
+**1. `v_screen_live` is the feed.** `entry_kind = 'touch'`, config-scoped, joined to statistics on the grid's `next_open` cell. `/` reads it.
+
+**The feed's grain and the statistics' grain differ, on purpose.** A feed answers "what fired", which is a detection-time question. A hit rate answers "what followed an entry we simulated", and `GRID_ENTRY_KIND` is `next_open`. Forcing one grain on both would either report statistics against an entry nobody measured, or show a screener that trails a five-hour job. This is the one place ADR 076's "one view, one contract" is deliberately two views, and the reason is that they answer different questions rather than the same question twice.
+
+**2. `is_cluster_head IS NOT FALSE`, not `is_cluster_head`.** The poller writes one row per breach and *cannot* cluster: ADR 054's gap window needs the whole session, which does not exist at 09:35. Its rows carry NULL. `WHERE is_cluster_head` therefore returns **zero rows intraday** — measured, 0 of today's 67. NULL means "not yet clustered", which is not "not a head", and the honest treatment is to show it and hide only the known non-heads. The column is projected so a consumer can tell the two apart.
+
+**3. `market_date()` is the one definition of today.** `SELECT (now() AT TIME ZONE 'America/New_York')::date`, `STABLE` because it reads the clock. `v_positions` adopts it, which fixes `days_held` and `exit_signal_timeout` over-counting by one session every evening.
+
+**Consequences.**
+
+`v_screen` keeps its `next_open` grain and is now correctly config-scoped, so `handlers/screen.py` and the MCP `screen_signals` tool stop returning superseded-config rows. That is a behaviour change to a shared contract and it is a fix, not a regression: those rows were never supposed to be there.
+
+The screener can now show signals *ahead* of bars — the poller writes today's events before that night's ingest. The status strip carries both dates rather than one.
+
+**Rejected.**
+
+*Widen `v_screen` to prefer `next_open` and fall back to `touch`.* Both kinds exist for backtested days, so it double-counts every historical row unless the fallback is written as a lateral per event. Achievable and harder to read than two views.
+
+*Put the join in the route.* Considered, and it was the original lean. Rejected once the config-filter defect surfaced: the fix belonged in SQL either way, and having made one view correct there was no reason to put the second one somewhere else.
+
+*Use `CURRENT_DATE` and set the database timezone to ET.* Moves the problem into cluster configuration, where nothing in the repository records it and a restored dump silently reverts it.
+
+---
+
 ## Open items
 
 | Item | Options | Current lean |
 |---|---|---|
 | **`cscan nightly` never ingests the session it runs after** | Pass `end + 1 day` to the fetcher, or make `_download_daily`'s `end` inclusive to match every other date range in the codebase | Make it inclusive — see below |
 | **`v_forward` exposes probabilities with no interval or q-value** | Add `cell_ci_low`/`cell_ci_high`/`cell_q_value` to the view, or have the model carry its own interval | Whichever ADR 113's model produces. **Blocks `/forward`, not Phase 5.** Recorded in `test_serving_view_contract.py::KNOWN_GAPS` |
-| **`/` cannot show today: `v_screen` filters `entry_kind = 'next_open'`, which only `cscan backtest` writes** | Widen the view to prefer `next_open` and fall back to `touch`; add a second live view; or have the route read the feed from `touch` and join stats on the `next_open` cell | The third, probably: ADR 114 makes the default the *feed*, and the feed is a detection-time question. **Measured 2026-08-18: newest `next_open` 2026-08-13, bars through 2026-08-17** |
 | Point-in-time index membership | Scrape Wikipedia history, or accept survivorship bias and state it | Scrape, note residual error in RESULTS.md |
 | Historical earnings dates | Finnhub free tier, Nasdaq scrape, or drop the feature | Finnhub, since earnings contamination is the largest 5-day confound |
 | Point-in-time market cap | Shares outstanding from filings, or price-times-current-shares approximation | Filings where available, approximation flagged elsewhere |
@@ -3575,7 +3617,10 @@ existing code most nearly supports, and it makes Session 16 load-bearing
 rather than a side surface. Recorded in
 `sessions/session18-research-and-chat.md` §0.
 
-### `/` cannot show today's signals, found 2026-08-18
+### `/` cannot show today's signals — RESOLVED by ADR 119, 2026-08-19
+
+**Answered: `v_screen_live`, a detection-time feed on `touch` rows.** Two further defects surfaced with it: `v_screen` was not config-scoped, and `CURRENT_DATE` is not the market's date. The account below is how the question was framed.
+
 
 **The screener route renders, and it structurally cannot render today.**
 

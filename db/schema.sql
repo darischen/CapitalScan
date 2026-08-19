@@ -38,6 +38,17 @@ CREATE FUNCTION public.cell_key(p_signal_type text, p_side text, p_dd_bucket tex
 
 ALTER FUNCTION public.cell_key(p_signal_type text, p_side text, p_dd_bucket text, p_strength integer, p_entry_kind text, p_split text, p_era text, p_horizon integer, p_target numeric) OWNER TO capscan;
 
+--
+-- Name: market_date(); Type: FUNCTION; Schema: public; Owner: capscan
+--
+
+CREATE FUNCTION public.market_date() RETURNS date
+    LANGUAGE sql STABLE
+    AS $$ SELECT (now() AT TIME ZONE 'America/New_York')::date $$;
+
+
+ALTER FUNCTION public.market_date() OWNER TO capscan;
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -1054,7 +1065,7 @@ CREATE VIEW public.v_positions AS
         END AS unrealized_or_realized_ret,
     ( SELECT count(*) AS count
            FROM public.trading_days td
-          WHERE ((td.d > p.entry_date) AND (td.d <= CURRENT_DATE))) AS days_held,
+          WHERE ((td.d > p.entry_date) AND (td.d <= public.market_date()))) AS days_held,
         CASE
             WHEN (NOT c.exit_on_stoch_80) THEN NULL::boolean
             WHEN (p.side = 'short'::text) THEN (
@@ -1080,7 +1091,7 @@ CREATE VIEW public.v_positions AS
         END AS exit_signal_mid_band,
     (( SELECT count(*) AS count
            FROM public.trading_days td
-          WHERE ((td.d > p.entry_date) AND (td.d <= CURRENT_DATE))) >= c.max_hold_days) AS exit_signal_timeout,
+          WHERE ((td.d > p.entry_date) AND (td.d <= public.market_date()))) >= c.max_hold_days) AS exit_signal_timeout,
         CASE
             WHEN (c.exit_stoch_source = 'k_fast'::text) THEN s.k_fast
             ELSE s.k_full
@@ -1145,12 +1156,75 @@ CREATE VIEW public.v_screen AS
     p.p_adverse_3,
     p.model_version
    FROM ((public.events e
-     LEFT JOIN public.cell_stats c ON (((c.signal_type = e.signal_type) AND (c.side = e.side) AND (c.dd_bucket = e.dd_bucket) AND (c.signal_strength IS NULL) AND (c.entry_kind = e.entry_kind) AND (c.split_key = 'validate'::text) AND (c.era IS NULL) AND (c.horizon_days = 5) AND (c.target_pct = 0.03) AND (c.config_hash = current_setting('capitalscan.default_config_hash'::text, true)) AND (c.arm = 'signal'::text))))
+     LEFT JOIN public.cell_stats c ON (((c.signal_type = e.signal_type) AND (c.side = e.side) AND (c.dd_bucket = e.dd_bucket) AND (c.signal_strength IS NULL) AND (c.entry_kind = 'next_open'::text) AND (c.split_key = 'validate'::text) AND (c.era IS NULL) AND (c.horizon_days = 5) AND (c.target_pct = 0.03) AND (c.config_hash = current_setting('capitalscan.default_config_hash'::text, true)) AND (c.arm = 'signal'::text))))
      LEFT JOIN public.predictions p ON (((p.ticker = e.ticker) AND (p.as_of = e.signal_date))))
-  WHERE (e.is_cluster_head AND (e.entry_kind = 'next_open'::text));
+  WHERE (e.is_cluster_head AND (e.entry_kind = 'next_open'::text) AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)));
 
 
 ALTER VIEW public.v_screen OWNER TO capscan;
+
+--
+-- Name: v_screen_live; Type: VIEW; Schema: public; Owner: capscan
+--
+
+CREATE VIEW public.v_screen_live AS
+ SELECT e.ticker,
+    e.signal_date,
+    e.signal_type,
+    e.signal_types_all,
+    e.signal_strength,
+    e.side,
+    e.touch_level,
+    e.entry_price,
+    e.bb_pctb,
+    e.k_full,
+    e.k_fast,
+    e.k_cross_up,
+    e.dd_52w,
+    e.dd_bucket,
+    e.above_sma200,
+    e.seq_in_cluster,
+    e.is_cluster_head,
+    e.cofire_count,
+    e.sector,
+    c.cell_id,
+        CASE
+            WHEN c.suppressed THEN NULL::numeric
+            ELSE c.p_hit
+        END AS p_hit,
+        CASE
+            WHEN c.suppressed THEN NULL::numeric
+            ELSE c.baseline_empirical
+        END AS baseline,
+        CASE
+            WHEN c.suppressed THEN NULL::numeric
+            ELSE c.edge
+        END AS edge,
+        CASE
+            WHEN c.suppressed THEN NULL::numeric
+            ELSE c.ci_low
+        END AS ci_low,
+        CASE
+            WHEN c.suppressed THEN NULL::numeric
+            ELSE c.ci_high
+        END AS ci_high,
+    c.n_events,
+    c.n_eff,
+    c.q_value,
+    c.suppressed,
+    c.suppress_reason,
+    p.q50,
+    p.p_touch_3,
+    p.p_touch_5,
+    p.p_adverse_3,
+    p.model_version
+   FROM ((public.events e
+     LEFT JOIN public.cell_stats c ON (((c.signal_type = e.signal_type) AND (c.side = e.side) AND (c.dd_bucket = e.dd_bucket) AND (c.signal_strength IS NULL) AND (c.entry_kind = 'next_open'::text) AND (c.split_key = 'validate'::text) AND (c.era IS NULL) AND (c.horizon_days = 5) AND (c.target_pct = 0.03) AND (c.config_hash = current_setting('capitalscan.default_config_hash'::text, true)) AND (c.arm = 'signal'::text))))
+     LEFT JOIN public.predictions p ON (((p.ticker = e.ticker) AND (p.as_of = e.signal_date))))
+  WHERE ((e.entry_kind = 'touch'::text) AND (e.is_cluster_head IS NOT FALSE) AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)));
+
+
+ALTER VIEW public.v_screen_live OWNER TO capscan;
 
 --
 -- Name: v_stats; Type: VIEW; Schema: public; Owner: capscan
@@ -1869,6 +1943,13 @@ GRANT SELECT ON TABLE public.v_positions TO capscan_ro;
 --
 
 GRANT SELECT ON TABLE public.v_screen TO capscan_ro;
+
+
+--
+-- Name: TABLE v_screen_live; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.v_screen_live TO capscan_ro;
 
 
 --
