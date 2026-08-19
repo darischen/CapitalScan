@@ -74,7 +74,11 @@ def main() -> int:
         running = conn.execute(
             text("SELECT count(*) FROM runs WHERE job = 'poll' AND status = 'running'")
         ).scalar_one()
-        if running:
+        # Only blocks the write. A dry run reads and prints, so refusing it
+        # while the poller is up meant you could not see the plan until the
+        # moment you were about to run it -- which is the wrong time to
+        # first look at a data migration.
+        if running and args.apply:
             print(
                 f"refusing: {running} poll run(s) are still 'running'. Stop the "
                 "poller first -- this script cannot tell an uncorrected old row "
