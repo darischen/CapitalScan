@@ -71,6 +71,24 @@ export interface ChartBar {
   signalStrength: number | null;
 }
 
+/**
+ * The newest price the poller saw, with the time it saw it.
+ *
+ * A separate read rather than a column on `v_ticker_state`: that view is
+ * the last *closed* session, and joining an intraday quote onto it would
+ * make one row mean two different times. `null` outside market hours and
+ * for any ticker the poller does not cover — it polls
+ * `_load_in_trade_tickers`, so a train-universe name never has one.
+ */
+export interface LiveQuote {
+  price: number;
+  ts: string;
+  /** Sessions between the quote and the state row's bar. `0` means the
+   * quote is intraday against today's close-not-yet-written, which is the
+   * normal case during a session. */
+  aheadOfBar: boolean;
+}
+
 export interface TickerState {
   ticker: string;
   name: string | null;
@@ -542,4 +560,46 @@ export async function searchTickers(term: string, limit = SEARCH_LIMIT): Promise
     mcapUsd: num(r.mcap_usd),
     inTrade: r.in_trade,
   }));
+}
+
+/**
+ * `quotes_live`, one ticker, newest row.
+ *
+ * `DISTINCT ON` is unnecessary for a single ticker — `ORDER BY ts DESC
+ * LIMIT 1` walks the primary key backwards and stops.
+ *
+ * The staleness comparison is against `market_date()`, not against the
+ * quote's own age: a quote from Friday 15:59 is not stale on Friday
+ * evening and is very stale on Tuesday, and only the market's calendar
+ * knows the difference.
+ */
+const LIVE_SQL = `
+  SELECT q.price, q.ts, (q.ts AT TIME ZONE 'America/New_York')::date AS quote_date,
+         market_date() AS today
+    FROM quotes_live q
+   WHERE q.ticker = $1
+   ORDER BY q.ts DESC
+   LIMIT 1
+`;
+
+export async function liveQuote(ticker: string, barDate: string): Promise<LiveQuote | null> {
+  const [row] = await query<{
+    price: string;
+    ts: Date;
+    quote_date: Date;
+    today: Date;
+  }>(LIVE_SQL, [ticker]);
+  if (!row) return null;
+
+  const price = num(row.price);
+  if (price === null) return null;
+
+  const quoteDate = isoDate(row.quote_date);
+  // Only shown when the quote is from the current market date. A quote from
+  // an earlier session is not a live price, and rendering it as one beside
+  // a bar from the same day would be claiming intraday movement that
+  // already closed.
+  if (quoteDate !== isoDate(row.today)) return null;
+
+  return { price, ts: row.ts.toISOString(), aheadOfBar: quoteDate > barDate };
 }

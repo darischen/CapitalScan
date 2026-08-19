@@ -374,6 +374,34 @@ describe("the ticker page's states", () => {
     expect(html).toContain(">close<");
   });
 
+  /** The screener already showed a live price and the ticker page did not,
+   * so during a session the same ticker read as two different numbers on
+   * two pages. */
+  it("leads with the poller's price when there is one, and still shows the close", () => {
+    const html = renderToStaticMarkup(
+      <TickerHeader
+        state={state()}
+        meta={meta()}
+        fired={3}
+        live={{ price: 415.22, ts: "2026-08-18T17:35:00.000Z", aheadOfBar: false }}
+      />,
+    );
+    expect(html).toContain(">live<");
+    expect(html).toContain("415.22");
+    // The close never disappears: every band, indicator and signal on the
+    // page was computed from it and not from the quote.
+    expect(html).toContain(">close<");
+    expect(html).toContain("413.41");
+  });
+
+  it("shows only the close when the poller has nothing for this session", () => {
+    const html = renderToStaticMarkup(
+      <TickerHeader state={state()} meta={meta()} fired={3} live={null} />,
+    );
+    expect(html).not.toContain(">live<");
+    expect(html).toContain("num big");
+  });
+
   it("says when a ticker is outside the trade universe", () => {
     const inside = renderToStaticMarkup(
       <TickerHeader state={state({ inTrade: true })} meta={meta()} fired={3} />,

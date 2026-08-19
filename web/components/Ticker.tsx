@@ -3,9 +3,9 @@ import Link from "next/link";
 import EventRows from "./EventRows";
 import TickerSearch from "./TickerSearch";
 
-import { NONE, SIGNAL_LABELS, fmt, pct, signedPct, vol } from "@/lib/format";
+import { NONE, SIGNAL_LABELS, clock, fmt, pct, signedPct, vol } from "@/lib/format";
 import type { Meta } from "@/lib/screen";
-import type { ChartBar, Range, TickerEvent, TickerState } from "@/lib/ticker";
+import type { ChartBar, LiveQuote, Range, TickerEvent, TickerState } from "@/lib/ticker";
 import { RANGES } from "@/lib/ticker";
 
 /**
@@ -23,11 +23,17 @@ export function TickerHeader({
   state,
   meta,
   fired,
+  live,
   latest,
 }: {
   state: TickerState;
   meta: Meta;
   fired: number;
+  /** The poller's newest price, when there is one for the current session
+   * (user's request, 2026-08-19). The screener already showed this and the
+   * ticker page did not, so during a session the same ticker read as two
+   * different prices on two pages. */
+  live?: LiveQuote | null;
   /**
    * The newest bar on the chart, for the compact OHLC beside the as-of
    * date (user's request, 2026-08-19).
@@ -65,11 +71,26 @@ export function TickerHeader({
       <TickerSearch />
 
       <div className="tk-price">
-        {/* Says which price this is. It is the last *close*, not a live
-            quote, and on a page that also shows an intraday poller price
-            the distinction is worth four characters. */}
+        {/* Two prices when the poller has one, and each says which it is.
+            The live quote leads because during a session it is the answer
+            to "what is it now"; the close stays beside it because every
+            indicator, band, and signal on this page was computed from the
+            close and not from the quote. */}
+        {live && (
+          <>
+            <span className="k">live</span>
+            <span
+              className={`num big ${
+                state.close !== null && live.price >= state.close ? "up" : "down"
+              }`}
+              title={`polled ${clock(live.ts)} ET`}
+            >
+              {fmt(live.price)}
+            </span>
+          </>
+        )}
         <span className="k">close</span>
-        <span className="num big">{fmt(state.close)}</span>
+        <span className={live ? "num" : "num big"}>{fmt(state.close)}</span>
         <span className={`num ${distance !== null && distance >= 0 ? "up" : "down"}`}>
           {signedPct(distance)} vs 200d
         </span>
