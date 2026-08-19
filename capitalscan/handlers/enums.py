@@ -70,6 +70,17 @@ def dd_buckets(sp: StatsParams | None = None) -> tuple[str, ...]:
     return dd_bucket_labels(sp or StatsParams())
 
 
+def reach_targets(sp: StatsParams | None = None) -> tuple[float, ...]:
+    """The measured reach targets, as decimal fractions.
+
+    Exists so the MCP tool descriptions can *state* them rather than
+    restate them. Invariant 9 puts the numbers in `core/config.py` and
+    nowhere else; a docstring that spelled `0.02, 0.03, 0.05, 0.1` would be
+    a copy that stops being true the first time the sweep changes.
+    """
+    return tuple(float(t) for t in (sp or StatsParams()).reach_targets)
+
+
 def _reject(name: str, value: object, allowed: tuple[str, ...]) -> None:
     raise InvalidEnum(f"{name}={value!r} is not valid. Allowed: {', '.join(allowed)}")
 
@@ -219,7 +230,7 @@ def parse_target_pct(value: float, sp: StatsParams | None = None) -> float:
     here would be a fourth copy of that number outside `core/config.py`
     (invariant 9). Callers state the target they mean.
     """
-    targets = tuple(float(t) for t in (sp or StatsParams()).reach_targets)
+    targets = reach_targets(sp)
     if float(value) not in targets:
         raise InvalidEnum(
             f"target_pct={value!r} is not measured. Allowed: " + ", ".join(str(t) for t in targets)

@@ -266,6 +266,39 @@ describe("the tool budget", () => {
     expect((blocks[1] as { is_error?: boolean }).is_error).toBe(true);
   });
 
+  /**
+   * The reader is told once. A model emits its remaining calls in one
+   * block, so emitting per refusal printed the banner six times in a row
+   * on the first real question that hit the limit — measured through
+   * `/chat`, and it read as the page malfunctioning rather than as one
+   * fact about the answer. Every call still gets its own `tool_result`;
+   * that is the API's requirement and a separate thing.
+   */
+  it("announces the budget once per turn, not once per refused call", async () => {
+    const model = fakeModel([
+      {
+        content: [toolUse("t1"), toolUse("t2"), toolUse("t3"), toolUse("t4")],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: "Partial." }], stopReason: "end_turn" },
+    ]);
+    const events: string[] = [];
+
+    await runTurn([{ role: "user", content: "four cells" }], {
+      createMessage: model.createMessage,
+      callTool: async () => ({ text: STATS_PAYLOAD, isError: false }),
+      emit: (event) => events.push(event.type),
+      maxToolCalls: 1,
+    });
+
+    expect(events.filter((type) => type === "budget")).toHaveLength(1);
+    // All three refusals still reach the model.
+    const blocks = model.seen[1].at(-1)!.content as ContentBlock[];
+    expect(blocks.filter((b) => (b as { content: string }).content === BUDGET_MESSAGE)).toHaveLength(
+      3,
+    );
+  });
+
   it("the message tells the model not to estimate the number it did not get", () => {
     expect(BUDGET_MESSAGE.toLowerCase()).toContain("do not estimate");
   });

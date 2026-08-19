@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 /**
  * The chat surface.
@@ -225,7 +227,7 @@ export default function Chat() {
               <div className="body">
                 {turn.parts.map((part, partIndex) =>
                   part.kind === "text" ? (
-                    <p key={partIndex}>{part.text}</p>
+                    <Prose key={partIndex} text={part.text} />
                   ) : part.kind === "budget" ? (
                     <p className="chat-budget" key={partIndex}>
                       Tool budget reached at <span className="num">{part.limit}</span> calls.
@@ -277,6 +279,33 @@ export default function Chat() {
           {busy ? "…" : "ask"}
         </button>
       </form>
+    </div>
+  );
+}
+
+/**
+ * The model's prose, as markdown.
+ *
+ * **It writes tables, and a screener answer is a table.** Rendering the raw
+ * text left `| **TGT** | Consumer Staples | 0-10% | 0.94 |` on screen as
+ * literal pipes across twenty rows — every number present and none of them
+ * readable, which on a page whose whole argument is *check the numbers* is
+ * the same as not showing them.
+ *
+ * GFM for tables. **No raw HTML**, which is `react-markdown`'s default and
+ * is load-bearing here rather than incidental: the text is model output
+ * shaped by tool results, and tool results are database strings. Allowing
+ * HTML would make a ticker name an injection site.
+ *
+ * Streaming means this parses partial markdown many times a second. A half
+ * written table renders as a paragraph and becomes a table when its second
+ * row arrives; the alternative is holding the text back until the turn
+ * ends, which costs the streaming this route was built for.
+ */
+function Prose({ text }: { text: string }) {
+  return (
+    <div className="md">
+      <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
     </div>
   );
 }

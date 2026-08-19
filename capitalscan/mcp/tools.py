@@ -106,6 +106,10 @@ def get_stats(
 ) -> dict[str, Any]:
     """Historical frequencies for one cell of the grid.
 
+    `target_pct` is a **decimal fraction**, not a percentage: 0.03 is the
+    3% target. Only the measured values are accepted and anything else is
+    refused rather than rounded to the nearest one.
+
     Returns either a measured cell or a `"kind": "suppressed"` object
     carrying the reason it reports nothing. A suppressed cell is never
     replaced by a broader one. `split` accepts `train` and `validate`;
@@ -219,6 +223,20 @@ def get_universe(as_of: date | None = None, universe: UniverseArg | None = None)
     """
     return to_wire_dict(handlers.get_universe(as_of=as_of, universe=universe))
 
+
+# The measured targets, appended rather than written, for the same reason
+# the enums are generated: invariant 9 keeps the numbers in
+# `core/config.py`, and a docstring spelling them out would be a copy that
+# stops being true the first time the sweep changes.
+#
+# **Worth the two lines.** Without the values in the description, a model
+# asked about "the 3% target" sends `target_pct=3`, the handler refuses it,
+# and the model retries in decimals. Measured on the first real question
+# through `/chat`: six of an eight-call tool budget spent discovering the
+# units, leaving two for the actual question.
+get_stats.__doc__ = (get_stats.__doc__ or "") + (
+    "\n    Measured targets: " + ", ".join(str(t) for t in enums.reach_targets()) + ".\n"
+)
 
 # Ordered as DESIGN §10.1 lists them, and keyed by the same names
 # `handlers.SEVEN_TOOLS` uses. `test_mcp_schemas.py` asserts the two

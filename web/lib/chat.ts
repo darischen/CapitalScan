@@ -109,6 +109,8 @@ export async function runTurn(messages: WireMessage[], deps: TurnDeps): Promise<
   const conversation = [...messages];
   let used = 0;
   let steps = 0;
+  /** Whether the reader has already been told the budget ran out. */
+  let announced = false;
 
   while (steps < maxSteps) {
     steps += 1;
@@ -136,7 +138,16 @@ export async function runTurn(messages: WireMessage[], deps: TurnDeps): Promise<
     const results: ContentBlock[] = [];
     for (const call of calls) {
       if (used >= limit) {
-        deps.emit({ type: "budget", used, limit });
+        // Once per turn, not once per refused call. The model emits its
+        // remaining calls in one block, so a naive emit here printed the
+        // banner six times in a row under the first real question that hit
+        // the limit. The model still gets a `tool_result` for every one of
+        // them — that is the API's requirement — but the reader is being
+        // told a single fact.
+        if (!announced) {
+          announced = true;
+          deps.emit({ type: "budget", used, limit });
+        }
         results.push({
           type: "tool_result",
           tool_use_id: call.id,
