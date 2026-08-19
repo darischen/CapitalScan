@@ -21,9 +21,10 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from datetime import time as dtime
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from sqlalchemy import Engine, text
@@ -46,23 +47,38 @@ MAX_CONSECUTIVE_FAILURES = 3  # DESIGN §4.9: 3 consecutive tick failures alerts
 
 
 def _now_et() -> datetime:
-    # ADR 081: the poller runs natively on the workstation. Convert local
-    # time to ET to handle workstations in other timezones (e.g., PT).
-    import time
+    """Now, in ET, **timezone-aware** (ADR 127).
 
-    local_now = datetime.now()
-    # Get offset from local time to UTC
-    if time.daylight:
-        utc_offset = -time.altzone
-    else:
-        utc_offset = -time.timezone
+    ADR 081: the poller runs natively on the workstation, which may sit in
+    any zone, so session comparisons happen in ET.
 
-    # Convert to UTC then to ET
-    utc_now = local_now - timedelta(seconds=utc_offset)
-    # ET is UTC-5 (EST) or UTC-4 (EDT)
-    et_offset = -4 if time.daylight else -5
-    et_now = utc_now + timedelta(hours=et_offset)
-    return et_now
+    **It returned a naive datetime until 2026-08-19, and that was a bug.**
+    The value carried ET wall-clock time with no tzinfo, and it is written
+    to `signal_reports.fired_at` and `quotes_live.ts` — both `timestamptz`,
+    on a database running `Etc/UTC`. Postgres reads a naive value as UTC,
+    so every poller timestamp landed **four hours early** (five under EST).
+
+    One moment, two tables, measured 2026-08-13:
+
+        runs.started_at          13:30:41+00   (SQL wrote it: correct)
+        signal_reports.fired_at  09:30:43+00   (the poller wrote it)
+
+    Two seconds apart in reality, four hours apart in storage. On the
+    screener a 09:30 open rendered as **05:30**, because `clock()` formats
+    in ET over a value that was already ET.
+
+    The manual offset arithmetic is gone too. `time.daylight` is true when
+    the zone *observes* DST at all, not when DST is *currently in effect*,
+    so `et_offset = -4 if time.daylight else -5` was wrong every January in
+    any DST-observing zone. `ZoneInfo` knows the transition dates.
+
+    **Every comparison against this value must also be aware.** Session
+    bounds are compared via `.time()`, which drops the offset, so those are
+    unaffected — but a future caller subtracting a naive `datetime.now()`
+    from this will raise rather than silently skew, which is the failure
+    mode worth having.
+    """
+    return datetime.now(ZoneInfo("America/New_York"))
 
 
 def _none(v):

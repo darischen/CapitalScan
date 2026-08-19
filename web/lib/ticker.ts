@@ -17,6 +17,12 @@ import { isoDate, sideFor, type Side } from "./screen";
 
 /** How far back the chart runs. Sessions, not calendar days. */
 export const RANGES = {
+  // Short windows first (user's request, 2026-08-19). `5d` is the exit
+  // engine's own horizon -- `ExitParams.max_hold_days` -- so it frames a
+  // fired signal against exactly the window its outcome was measured over.
+  "5d": 5,
+  "1m": 21,
+  "3m": 63,
   "6m": 126,
   "1y": 252,
   "2y": 504,
