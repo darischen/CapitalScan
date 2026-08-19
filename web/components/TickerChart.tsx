@@ -122,8 +122,8 @@ export function prepend(older: ChartBar[], loaded: ChartBar[]): ChartBar[] {
 
 /**
  * How far past the oldest loaded bar the viewport must reach before the
- * next page is requested. **Zero: the reader has to actually drag into the
- * blank.**
+ * next page is requested. **Zero: the viewport has to actually extend into
+ * the blank.**
  *
  * The obvious threshold is a positive one — "within 40 bars of the left
  * edge" — and it is what the common recipe for this uses. It is wrong here
@@ -182,6 +182,11 @@ interface Hover {
 
 interface Series {
   price: ISeriesApi<"Candlestick">;
+  /** Today's partial candle (ADR 128), drawn hollow. A second series
+   * rather than a per-bar colour: body colour is per point in
+   * `lightweight-charts`, but border and wick styling is a series option,
+   * and an outlined body is what reads as "not finished". */
+  partial: ISeriesApi<"Candlestick">;
   bands: ISeriesApi<"Line">[];
   sma: ISeriesApi<"Line">;
   volume: ISeriesApi<"Histogram">;
@@ -211,6 +216,21 @@ export default function TickerChart({
   const barsRef = useRef<ChartBar[]>(initial);
   const exhausted = useRef(false);
   const inFlight = useRef(false);
+  /**
+   * Whether the reader has touched the chart.
+   *
+   * **A negative `from` is not enough on its own.** With a short range the
+   * viewport is wider than the data — 21 bars on a 1300px chart — so
+   * `fitContent()` leaves blank space on the left and `from` is negative
+   * at rest. That fired a page on mount and quietly turned `?range=1m`
+   * into a year: measured, one `/api/chart?before=2026-07-22` call before
+   * anyone scrolled.
+   *
+   * So paging needs both: blank space *and* a reader who went looking for
+   * it. Anything else makes the range switch decorative, which is the same
+   * defect the `from < 40` version had in a different disguise.
+   */
+  const interacted = useRef(false);
 
   const [loadedFrom, setLoadedFrom] = useState(initial[0]?.ts ?? null);
   // Mirrors `exhausted` for the caption. A ref does not re-render, so the
@@ -228,8 +248,8 @@ export default function TickerChart({
     if (!s) return;
     const bars = barsRef.current;
 
-    s.price.setData(
-      bars
+    const candles = (rows: ChartBar[]) =>
+      rows
         .filter((b) => b.open !== null && b.high !== null && b.low !== null && b.close !== null)
         .map((b) => ({
           time: b.ts as Time,
@@ -237,8 +257,13 @@ export default function TickerChart({
           high: b.high as number,
           low: b.low as number,
           close: b.close as number,
-        })),
-    );
+        }));
+
+    // Today's open session is drawn by its own series, so the closed one
+    // must not also draw it -- two candles on one timestamp and the later
+    // `setData` silently wins.
+    s.price.setData(candles(bars.filter((b) => !b.partial)));
+    s.partial.setData(candles(bars.filter((b) => b.partial)));
     const picks: ((b: ChartBar) => number | null)[] = [
       (b) => b.bbUpper,
       (b) => b.bbMid,
@@ -386,6 +411,26 @@ export default function TickerChart({
       0,
     );
 
+    // Hollow: transparent body, coloured border and wick. Its close is the
+    // current price rather than a settled one, and it carries no bands or
+    // stochastic because indicators are computed on closed bars only
+    // (ADR 128).
+    const partialSeries = chart.addSeries(
+      CandlestickSeries,
+      {
+        upColor: "transparent",
+        downColor: "transparent",
+        borderUpColor: t.long,
+        borderDownColor: t.short,
+        wickUpColor: t.long,
+        wickDownColor: t.short,
+        priceLineVisible: true,
+        priceLineStyle: 2,
+        lastValueVisible: true,
+      },
+      0,
+    );
+
     const bandSeries = [false, true, false].map((dashed) =>
       chart.addSeries(
         LineSeries,
@@ -477,6 +522,7 @@ export default function TickerChart({
       bands: bandSeries,
       sma,
       volume,
+      partial: partialSeries,
       kFast,
       kFull,
       markers: createSeriesMarkers(price, []),
@@ -495,9 +541,18 @@ export default function TickerChart({
     chart.timeScale().fitContent();
 
     const onRange = (range: { from: number; to: number } | null) => {
-      if (range && range.from < PREFETCH_BARS) void loadOlder();
+      if (interacted.current && range && range.from < PREFETCH_BARS) void loadOlder();
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(onRange);
+
+    // Pointer or wheel on the chart itself. `capture` so a drag that
+    // starts on the canvas still registers, and `once` because the flag
+    // only ever goes one way.
+    const onInteract = () => {
+      interacted.current = true;
+    };
+    el.addEventListener("pointerdown", onInteract, { capture: true });
+    el.addEventListener("wheel", onInteract, { capture: true, passive: true });
 
     // The crosshair readouts (user's request, 2026-08-19). One handler for
     // both, because they describe the same bar and must never disagree
@@ -558,6 +613,8 @@ export default function TickerChart({
     chart.subscribeCrosshairMove(onCrosshair);
 
     return () => {
+      el.removeEventListener("pointerdown", onInteract, { capture: true });
+      el.removeEventListener("wheel", onInteract, { capture: true });
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRange);
       chart.unsubscribeCrosshairMove(onCrosshair);
       chart.remove();
@@ -572,6 +629,10 @@ export default function TickerChart({
   useEffect(() => {
     barsRef.current = initial;
     exhausted.current = false;
+    // A new range or ticker is a fresh intent. Without this, having
+    // scrolled the 5y chart would make a later `?range=5d` expand itself
+    // on arrival.
+    interacted.current = false;
     setAtStart(false);
     setLoadedFrom(initial[0]?.ts ?? null);
     setFailed(null);

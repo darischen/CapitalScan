@@ -1554,3 +1554,11 @@ table.research tr.dimmed td {
   letter-spacing: 0.06em;
   font-weight: 400;
 }
+
+/* Today's partial candle: hollow body, so it reads as unfinished without a
+ * second colour. Its close is the current price and it carries no bands or
+ * stochastic, because indicators are computed on closed bars only. */
+.legend .ln.hollow {
+  border-top-style: dotted;
+  border-top-color: var(--text);
+}

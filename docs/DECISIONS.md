@@ -167,6 +167,9 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 123 | The screener shows the poller's intraday reversal, marked as intraday | Pinned. Surfaces 117's live judgement; three renderings, not two |
 | 124 | The screener is a record of the session, not a clustered sample | Pinned. 19 fires became 4 overnight; a feed is not a sample |
 | 125 | A migration carries its SQL as a literal, never as an import | Pinned. ADR 122 broke every fresh replay; applied to all seven |
+| 126 | `v_stats` projects `arm` | Pinned. The screener's stats toggle had been broken since Session 17 |
+| 127 | The poller clock is timezone-aware | Pinned. Every stored poller timestamp was four hours early |
+| 128 | Today's session is a candle in its own table | Pinned. `bars_live`; a partial row in `bars` would be silent look-ahead |
 
 ---
 
@@ -3827,6 +3830,109 @@ That comparison is worth keeping as a habit. It is the only check that proves th
 *A CI step that replays migrations from empty.* Worth adding on its own merits and does not replace this. It catches the failure; the test catches the *cause*, names the file, and says what to do.
 
 *Generate migrations from a schema differ.* A larger change, and it does not address this: a generated migration that referenced a live constant would have exactly the same problem.
+
+---
+
+## 126. `v_stats` projects `arm`
+
+**Date:** 2026-08-19. **Status:** Pinned. Closes a gap ADR 105 opened.
+
+**Context.**
+
+`v_stats` predates `cell_stats.arm`. ADR 105 added the column to separate a *measured* arm from a *recommended* one; the view was written before that and DESIGN §8.2's DDL still omitted it.
+
+So the serving surface for statistics could not express the one predicate that keeps the control and benchmark arms out of a rate.
+
+**Nothing caught it because every path that mattered carried its own copy of the filter.** `v_screen` and `v_screen_live` join `cell_stats` directly and pin `arm = 'signal'` themselves, so the view nobody had queried yet was the only one missing it.
+
+**Found by running the page.** `web/lib/screen.ts` filters `arm = 'signal'` on `v_stats`, so every `?stats=1` request returned `column "arm" does not exist` and rendered the error state. **The screener's statistics toggle had been broken since Session 17 shipped** — `states.test.tsx` covers the component with a `CellStats` fixture and never runs the query behind it, which is exactly why a fixture test is not a substitute for one round trip against the real view.
+
+It surfaced now rather than later because `/research` needs the same predicate for its cell grid.
+
+**Decision.**
+
+`arm` is projected, positioned with the other grain columns rather than appended.
+
+`live.test.ts` gains a round trip: `screen({ withStats: true })` against the live view, asserting that a returned cell is either suppressed with a reason or carries `n_eff`, both interval bounds, and a q-value — invariant 8 checked against the database rather than against a fixture.
+
+**Consequences.**
+
+`DROP`/`CREATE` rather than `CREATE OR REPLACE`, which cannot insert a column mid-list.
+
+The lesson generalises and is worth stating: a view is only as tested as its callers, and a caller that is tested against a fixture tests nothing about the view. Every serving view now has at least one live-database assertion.
+
+---
+
+## 127. The poller clock is timezone-aware
+
+**Date:** 2026-08-19. **Status:** Pinned.
+
+**Context.**
+
+`poll.py::_now_et` returned a **naive** datetime holding ET wall clock. It is written to `signal_reports.fired_at` and `quotes_live.ts`, both `timestamptz` on a database running `Etc/UTC`, so Postgres read the naive value as UTC and stored an offset it never had. Every poller timestamp landed four hours early, five under EST.
+
+One moment, two tables, measured 2026-08-13:
+
+    runs.started_at          13:30:41+00   (SQL wrote it: correct)
+    signal_reports.fired_at  09:30:43+00   (the poller wrote it)
+
+Two seconds apart in reality, four hours apart in storage. On the screener a 09:30 market open rendered as **05:30**, which is how it was noticed.
+
+`wait_and_poll.ps1` compensated with a three-step conversion — strip the false UTC label, reinterpret as ET, convert to Pacific — so **its CSV was correct while the page was not**. Its own comment said: *"delete this chain if `_now_et` is fixed to return an aware datetime; it becomes wrong the moment the stored data is right."*
+
+**Decision.**
+
+`return datetime.now(ZoneInfo("America/New_York"))`.
+
+The manual offset arithmetic goes with it. `time.daylight` is true when a zone *observes* DST at all, not when DST is *in effect*, so `et_offset = -4 if time.daylight else -5` was an hour wrong every January in any DST-observing zone.
+
+**The three changes are coupled and must land together**: the clock, the backfill of stored rows, and the script's chain. Fixing any one alone moves the operator's CSV four hours. This was briefly committed apart and reverted before it bit — nothing broke only because PowerShell had read the script at startup.
+
+**Consequences.**
+
+`scripts/backfill_poller_timestamps.py` corrected **1,752 rows** — 876 `signal_reports`, 876 `quotes_live`. It refuses to write while a poll run is `running`, because it cannot tell an uncorrected row from a correct one; the dry run is not blocked, since a plan you cannot see until the moment of applying it is a plan nobody reads.
+
+Verified from both consumers afterwards: the CSV query reads `06:30:40 PT` and the screener reads `09:41` ET for the same session.
+
+**It broke the scheduler, correctly.** `scheduled_runs._scheduled_for` compared the now-aware value against a naive `datetime.combine` and the poller died on its first tick with `can't compare offset-naive and offset-aware datetimes`. That is the failure worth having — the alternative is a naive comparison silently treating ET as UTC, which is this bug one module over. Every candidate now inherits `as_of`'s tzinfo; a naive caller is unaffected.
+
+---
+
+## 128. Today's session is a candle in its own table
+
+**Date:** 2026-08-19. **Status:** Pinned. Adds `bars_live`. Does not amend invariant 3 — it exists to keep it.
+
+**Context.**
+
+The ticker chart stopped at yesterday's close, because `bars` gains today's row only after the nightly ingest.
+
+**The data was already being fetched and thrown away, twice.** `fetch_quotes` calls Yahoo's batch quote endpoint with `params={"symbols": ...}` and **no field restriction**, so every response carries `regularMarketDayHigh`, `regularMarketDayLow` and `regularMarketVolume`. `_QUOTE_COLUMNS` kept four fields and dropped the rest at parse time. Then `quotes_live` rows were written **inside the breach loop**, so only a ticker that fired got one at all — measured 2026-08-19, 128 rows across 86 tickers, at most 2 per ticker.
+
+So a live candle needed no new data source and no new request. It needed the parser to stop discarding, and the writer to run before the filter.
+
+**Decision.**
+
+`bars_live`: one row per `(ticker, session_date)`, upserted every tick.
+
+**A separate table, and that is the entire design.** The obvious place is a partial row in `bars`, and it would be a silent look-ahead bug. `cscan indicators` computes on whatever is in `bars`; a partial row gets an indicator row; `run_events` and `poll` read the latest indicator *strictly before* the bar — so today's unfinished values become tomorrow's t−1. Every band would tighten around a price that had not finished happening, every stochastic would read a close that was still moving, and **nothing would raise**.
+
+**Rejected: an `is_partial` flag on `bars`.** Smaller, and it needs eighteen readers to carry a predicate that fails silently when one forgets. ADR 122 is the cautionary case — that guarantee moved from one place to eighteen and needed a lint test to hold it. A separate table needs no predicate anywhere.
+
+**One row per session, not a tape.** Yahoo's `regularMarketDayHigh`/`Low` are cumulative session extremes rather than interval values, so each tick overwrites with strictly better information. Nothing accumulates, nothing reconstructs a gap: a poller down for an hour still writes the correct session high on its next quote. ~141 rows a day instead of ~11,000.
+
+**`close` is `NOT NULL`, everything else nullable.** `close` is the current price and a row without one describes nothing. A pre-market quote can carry a price and no high, and invariant 4 says absent stays absent — a high defaulted to the price would assert a range that never happened.
+
+**Consequences.**
+
+The chart appends the partial candle in the data layer rather than unioning it into `v_chart`. The view joins `indicators`, so a row with no indicator row would arrive with null bands that read as a data gap rather than an open session; and keeping the join out of SQL keeps `bars_live` invisible to anything that computes an indicator.
+
+It renders **hollow** — transparent body, coloured border — as a second candlestick series, because body colour is per point in `lightweight-charts` while border and wick styling is a series option. Its bands and stochastic are null and the lines simply stop at yesterday. That is correct rather than missing: yesterday's bands are exactly what a live signal compares against.
+
+Across the nightly handover both rows exist for a moment. The closed bar wins — it is settled and it carries indicators.
+
+`test_bars_live_isolation.py` holds the separation: no module under `core/` or `research/` may name `bars_live`, only `poll.py` and `views.py` may under `jobs/`, and the poller's `db_io.upsert` targets are parsed to assert `bars` is not among them.
+
+**A second bug fell out of the same work.** ADR 127 made `_now_et` aware, and `scheduled_runs._scheduled_for` compared it against a naive `datetime.combine` — the poller died on its first tick with `can't compare offset-naive and offset-aware datetimes`. That is the right failure: the alternative is a naive comparison silently treating an ET wall clock as UTC, which is the four-hour bug ADR 127 had just fixed, reappearing one module over. Every candidate now inherits `as_of`'s tzinfo, and a naive caller still works unchanged.
 
 ---
 

@@ -70,10 +70,20 @@ def test_full_universe_stays_inside_the_design_request_budget(calls):
     assert len(out) == 140
 
 
-def test_returns_ticker_ts_price_and_day_open_per_symbol(calls):
+def test_returns_the_session_aggregates_per_symbol(calls):
     out = yahoo.fetch_quotes(["SPY", "GOOG"], now=NOW)
 
-    assert list(out.columns) == ["ticker", "ts", "price", "day_open"]
+    # ADR 128 widened this: the same Yahoo response already carried the
+    # session aggregates and the parser was dropping them.
+    assert list(out.columns) == [
+        "ticker",
+        "ts",
+        "price",
+        "day_open",
+        "day_high",
+        "day_low",
+        "day_volume",
+    ]
     assert list(out["ticker"]) == ["SPY", "GOOG"]
     assert out["price"].tolist() == [100.0, 100.0]
     assert isinstance(out["ts"].iloc[0], pd.Timestamp)
@@ -224,4 +234,77 @@ def test_no_tickers_makes_no_request(calls):
 
     assert calls == []
     assert out.empty
-    assert list(out.columns) == ["ticker", "ts", "price", "day_open"]
+    # ADR 128 widened this: the same Yahoo response already carried the
+    # session aggregates and the parser was dropping them.
+    assert list(out.columns) == [
+        "ticker",
+        "ts",
+        "price",
+        "day_open",
+        "day_high",
+        "day_low",
+        "day_volume",
+    ]
+
+
+def test_session_aggregates_are_absent_rather_than_defaulted(monkeypatch, calls):
+    """Invariant 4, for the three columns ADR 128 added.
+
+    Yahoo omits a field rather than sending null when a session has not
+    produced it — pre-market, or a halted name. A volume of 0 and an unknown
+    volume are different facts, and a partial candle drawn from a defaulted
+    high would be a candle asserting a range that never happened.
+    """
+    payload = {
+        "quoteResponse": {
+            "result": [
+                {
+                    "symbol": "AAA",
+                    "regularMarketPrice": 10.0,
+                    "regularMarketTime": int(pd.Timestamp.now(tz="UTC").timestamp()),
+                    # No high, low, volume, or open.
+                }
+            ]
+        }
+    }
+    monkeypatch.setattr(yahoo, "_download_quotes", lambda symbols: payload)
+
+    out = yahoo.fetch_quotes(["AAA"])
+
+    assert out["price"].iloc[0] == 10.0
+    for column in ("day_open", "day_high", "day_low", "day_volume"):
+        assert pd.isna(out[column].iloc[0]), f"{column} was defaulted rather than absent"
+
+
+def test_session_aggregates_are_read_when_present(monkeypatch, calls):
+    """The other half — a quote carrying them must not lose them.
+
+    `regularMarketDayHigh`/`Low` are cumulative session extremes rather
+    than interval values, which is why one row per session can be
+    overwritten each tick instead of accumulated.
+    """
+    payload = {
+        "quoteResponse": {
+            "result": [
+                {
+                    "symbol": "AAA",
+                    "regularMarketPrice": 10.5,
+                    "regularMarketTime": int(pd.Timestamp.now(tz="UTC").timestamp()),
+                    "regularMarketOpen": 10.0,
+                    "regularMarketDayHigh": 11.0,
+                    "regularMarketDayLow": 9.5,
+                    "regularMarketVolume": 1234567,
+                }
+            ]
+        }
+    }
+    monkeypatch.setattr(yahoo, "_download_quotes", lambda symbols: payload)
+
+    out = yahoo.fetch_quotes(["AAA"])
+
+    assert out["day_open"].iloc[0] == 10.0
+    assert out["day_high"].iloc[0] == 11.0
+    assert out["day_low"].iloc[0] == 9.5
+    assert out["day_volume"].iloc[0] == 1234567
+    # The candle must be self-consistent: low <= close <= high.
+    assert out["day_low"].iloc[0] <= out["price"].iloc[0] <= out["day_high"].iloc[0]

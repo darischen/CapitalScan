@@ -75,12 +75,48 @@ describe.skipIf(!connected)("against the live database", () => {
     }
   });
 
-  it.each(TICKERS)("%s: the state's as-of matches the newest bar drawn", async (ticker) => {
+  it.each(TICKERS)("%s: the state's as-of is the newest closed bar", async (ticker) => {
     const { chart, state } = await import("@/lib/ticker");
     const [bars, current] = await Promise.all([chart(ticker, "6m"), state(ticker)]);
 
     expect(current).not.toBeNull();
-    expect(current?.asOf).toBe(bars[bars.length - 1]?.ts);
+    // **The newest closed bar, not the newest bar.** Since ADR 128 the
+    // series can end with today's partial candle, and `v_ticker_state`
+    // deliberately does not — it is the last *closed* session, which is
+    // what every indicator on the page was computed from.
+    const closed = bars.filter((b) => !b.partial);
+    expect(current?.asOf).toBe(closed[closed.length - 1]?.ts);
+  });
+
+  /**
+   * ADR 128. The partial candle carries real OHLCV and **no indicators**,
+   * because indicators are computed on closed bars only. Null bands there
+   * are the correct rendering, not a gap: yesterday's bands are exactly
+   * what a live signal compares against (invariant 3).
+   *
+   * Skipped outside a session, when `bars_live` has nothing for today.
+   */
+  it("today's partial candle has prices and no indicators", async () => {
+    const { chart } = await import("@/lib/ticker");
+    const partial = (await chart("TSM", "1m")).filter((b) => b.partial);
+    if (partial.length === 0) return;
+
+    expect(partial).toHaveLength(1);
+    const bar = partial[0];
+
+    expect(bar.close).not.toBeNull();
+    // Self-consistent as a candle, which a defaulted high would not be.
+    if (bar.high !== null && bar.low !== null && bar.close !== null) {
+      expect(bar.low).toBeLessThanOrEqual(bar.close);
+      expect(bar.close).toBeLessThanOrEqual(bar.high);
+    }
+
+    for (const field of ["bbLower", "bbMid", "bbUpper", "kFast", "kFull", "sma200"] as const) {
+      expect(bar[field], `${field} must be null on a partial bar`).toBeNull();
+    }
+    // And it must be the newest bar, never inserted mid-series.
+    const all = await chart("TSM", "1m");
+    expect(all[all.length - 1].partial).toBe(true);
   });
 
   it("returns null for a symbol with no indicator history", async () => {

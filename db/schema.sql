@@ -132,6 +132,25 @@ CREATE TABLE public.bars (
 ALTER TABLE public.bars OWNER TO capscan;
 
 --
+-- Name: bars_live; Type: TABLE; Schema: public; Owner: capscan
+--
+
+CREATE TABLE public.bars_live (
+    ticker text NOT NULL,
+    session_date date NOT NULL,
+    ts timestamp with time zone NOT NULL,
+    open numeric(12,4),
+    high numeric(12,4),
+    low numeric(12,4),
+    close numeric(12,4) NOT NULL,
+    volume bigint,
+    run_id text
+);
+
+
+ALTER TABLE public.bars_live OWNER TO capscan;
+
+--
 -- Name: benchmarks; Type: TABLE; Schema: public; Owner: capscan
 --
 
@@ -1435,6 +1454,14 @@ ALTER TABLE ONLY public.bar_rejects
 
 
 --
+-- Name: bars_live bars_live_pkey; Type: CONSTRAINT; Schema: public; Owner: capscan
+--
+
+ALTER TABLE ONLY public.bars_live
+    ADD CONSTRAINT bars_live_pkey PRIMARY KEY (ticker, session_date);
+
+
+--
 -- Name: bars bars_pkey; Type: CONSTRAINT; Schema: public; Owner: capscan
 --
 
@@ -1714,6 +1741,14 @@ CREATE INDEX indicators_ts_idx ON public.indicators USING btree (ts);
 
 
 --
+-- Name: bars_live bars_live_ticker_fkey; Type: FK CONSTRAINT; Schema: public; Owner: capscan
+--
+
+ALTER TABLE ONLY public.bars_live
+    ADD CONSTRAINT bars_live_ticker_fkey FOREIGN KEY (ticker) REFERENCES public.tickers(ticker);
+
+
+--
 -- Name: bars bars_ticker_fkey; Type: FK CONSTRAINT; Schema: public; Owner: capscan
 --
 
@@ -1803,6 +1838,13 @@ GRANT SELECT ON TABLE public.bar_rejects TO capscan_ro;
 --
 
 GRANT SELECT ON TABLE public.bars TO capscan_ro;
+
+
+--
+-- Name: TABLE bars_live; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.bars_live TO capscan_ro;
 
 
 --

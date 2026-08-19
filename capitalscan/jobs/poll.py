@@ -23,7 +23,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from datetime import time as dtime
-from typing import Callable
+from typing import Callable, cast
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -144,6 +144,51 @@ def _bands_from(ind_row: pd.Series) -> Bands:
         k_fast=float(ind_row["k_fast"]),
         atr_14=float(ind_row["atr_14"]),
     )
+
+
+def _write_live_bars(engine: Engine, quotes: pd.DataFrame, today: date, run_id: str) -> None:
+    """Upsert today's partial candle per ticker (ADR 128).
+
+    **`bars_live`, never `bars`.** `cscan indicators` computes on whatever
+    is in `bars`, so a partial row there would get an indicator row and the
+    t-1 lookup would read today's unfinished values as tomorrow's t-1 --
+    silent look-ahead. The separate table keeps invariant 3 structural
+    rather than making eighteen readers carry a predicate.
+
+    One row per `(ticker, session_date)`, overwritten each tick. Yahoo's
+    `regularMarketDayHigh`/`Low` are cumulative session extremes, so a
+    later quote is strictly better information and there is nothing to
+    accumulate.
+
+    A quote with no `price` never reaches here -- `fetch_quotes` drops it
+    (invariant 4) -- and `close` is the only NOT NULL column, so a row
+    always describes at least a current price.
+    """
+    rows = [
+        {
+            "ticker": q.ticker,
+            "session_date": today,
+            "ts": q.ts,
+            "open": _none(getattr(q, "day_open", None)),
+            "high": _none(getattr(q, "day_high", None)),
+            "low": _none(getattr(q, "day_low", None)),
+            # `itertuples` types every field as the frame's union, so the
+            # cast is for mypy rather than for the value: `fetch_quotes`
+            # already coerced price to float and drops a row without one.
+            "close": float(cast(float, q.price)),
+            "volume": _none(getattr(q, "day_volume", None)),
+            "run_id": run_id,
+        }
+        for q in quotes.itertuples()
+    ]
+    if rows:
+        db_io.upsert(
+            engine,
+            "bars_live",
+            rows,
+            ["ticker", "session_date"],
+            update_columns=["ts", "open", "high", "low", "close", "volume", "run_id"],
+        )
 
 
 def _load_market_row(engine: Engine, as_of: date) -> pd.Series | None:
@@ -465,6 +510,11 @@ def _process_tick(
     today = now.date()
     market_row = _load_market_row(engine, today)
     fired_count = 0
+
+    # ADR 128. Every quoted ticker, before the breach filter -- the partial
+    # candle is for the chart, and a chart that only had today's bar for
+    # names that happened to fire would be stranger than having none.
+    _write_live_bars(engine, quotes, today, run_id)
 
     for row in quotes.itertuples():
         ticker = row.ticker

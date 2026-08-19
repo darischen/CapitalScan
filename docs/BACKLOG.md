@@ -24,51 +24,20 @@ first fire of the day is the 09:30 open, which is what it always was.
 
 ---
 
-## 2. Today's bar on the ticker chart
+## 2. ~~Today's bar on the ticker chart~~ — DONE 2026-08-19 (ADR 128)
 
-**Asked for 2026-08-19. The data is already being fetched every five
-minutes and thrown away.**
+Live, verified against a real session. TSM at 11:23 PT: open 418.13, high
+419.60, low 407.88, close 411.24 on 5.5M shares, drawn hollow beside the
+closed bars with its bands stopping at yesterday.
 
-I first recorded this as "the poller cannot supply it". That was wrong, and
-the correction is the useful part.
+No new data source and no new request — `fetch_quotes` was already
+receiving the session aggregates and discarding them, then writing
+`quotes_live` only for tickers that fired. 139 rows now, one per in-trade
+ticker, all self-consistent (`low <= close <= high`).
 
-`fetch_quotes` calls Yahoo's batch quote endpoint with
-`params={"symbols": ...}` and **no field restriction**, so the response
-carries the whole quote object — `regularMarketDayHigh`,
-`regularMarketDayLow`, `regularMarketVolume`, `regularMarketPreviousClose`.
-`_QUOTE_COLUMNS` keeps four of them: `ticker`, `ts`, `price`, `day_open`.
-The rest is discarded at parse time.
-
-It is then discarded a second time at write time: `quotes_live` rows are
-inserted **inside the breach loop**, so only a ticker that fired gets one.
-Measured 2026-08-19: 128 rows across 86 tickers, at most 2 per ticker.
-
-So a live candle needs three changes and no new data source:
-
-1. Keep the fields. `_QUOTE_COLUMNS` gains `day_high`, `day_low`,
-   `day_volume`; `fetch_quotes` reads them with the same
-   absent-stays-absent rule `day_open` already uses (invariant 4).
-2. Persist one row per polled ticker per session, upserted on
-   `(ticker, session_date)` rather than appended per tick. Yahoo's
-   `regularMarketDayHigh/Low` are already the running extremes for the
-   session, so there is nothing to accumulate — each tick overwrites with
-   a better answer. ~141 rows a day, not ~11,000.
-3. The ticker page appends it to the bar series as the newest candle.
-
-**It must not land in `bars`.** A partial row there would get an indicator
-row from `cscan indicators`, and the poller's t−1 lookup would then read
-*today's* partial indicators instead of yesterday's closed ones — the exact
-look-ahead failure invariant 3 exists to prevent, and silent. A separate
-table keeps that structural rather than adding a predicate eighteen
-consumers must carry, which is ADR 122's problem shape.
-
-**Two things the page must say.** The candle is partial, so it is drawn
-distinctly rather than as a settled bar; and no band or stochastic value
-exists for it, because indicators are computed on closed bars only. The
-bands simply stop at yesterday, which is correct — they are what the signal
-compares against.
-
-Needs a migration and an ADR. Blocked on the quiet window, not on design.
+`bars_live` is a separate table, not a flag on `bars`.
+`test_bars_live_isolation.py` keeps it invisible to anything that computes
+an indicator.
 
 ---
 
