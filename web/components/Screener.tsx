@@ -36,14 +36,47 @@ function dayClass(row: ScreenRow): string {
 
 
 
+/**
+ * The URL for another date, keeping whichever toggles are on.
+ *
+ * Rebuilt rather than mutated: a link that dropped `?all=1` would silently
+ * change the filter as well as the date, and the reader would read the
+ * difference in row count as a change in the market.
+ */
+function dateHref(
+  date: string | null,
+  { withStats, confluenceOnly }: { withStats: boolean; confluenceOnly: boolean },
+): string {
+  const q = new URLSearchParams();
+  // `null` means "the newest date", which is the *absence* of the
+  // parameter. Setting it empty would send `?date=` and the route would
+  // hand `""` to the query, where it is neither a date nor missing.
+  if (date) q.set("date", date);
+  if (withStats) q.set("stats", "1");
+  if (!confluenceOnly) q.set("all", "1");
+  const query = q.toString();
+  return query ? `/?${query}` : "/";
+}
+
 export function StatusStrip({
   meta,
   fired,
   signalDate,
+  prevDate,
+  nextDate,
+  withStats = false,
+  confluenceOnly = true,
 }: {
   meta: Meta;
   fired: number;
   signalDate: string | null;
+  /** The nearest dates each way that actually have rows. `null` at the ends
+   * of the history, where the arrow renders disabled rather than absent —
+   * a control that disappears makes the strip reflow. */
+  prevDate?: string | null;
+  nextDate?: string | null;
+  withStats?: boolean;
+  confluenceOnly?: boolean;
 }) {
   // Two dates, deliberately. `signalDate` is what is on screen; `asOf` is how
   // current the database is. They diverge whenever the last backtest is
@@ -52,9 +85,51 @@ export function StatusStrip({
   const trailing = signalDate !== null && meta.asOf !== null && signalDate < meta.asOf;
   return (
     <div className={meta.stale ? "strip stale" : "strip"}>
-      <strong className="num" title="signal date shown">
-        signals {signalDate ?? "—"}
-      </strong>
+      {/* Date navigation (user's request, 2026-08-19). Steps to the next
+          date that *has rows under the current filters*, not to the next
+          trading day: most sessions fire nothing, and stepping by calendar
+          would walk a reader through a run of empty screens.
+
+          `←` is older and `→` is newer, matching the chart's time axis
+          rather than a browser's history. */}
+      <span className="datenav">
+        {prevDate ? (
+          <a
+            href={dateHref(prevDate, { withStats, confluenceOnly })}
+            title={`previous date with rows: ${prevDate}`}
+            aria-label={`Previous date with signals, ${prevDate}`}
+          >
+            ←
+          </a>
+        ) : (
+          <span className="off" aria-hidden="true">
+            ←
+          </span>
+        )}
+        <strong className="num" title="signal date shown">
+          signals {signalDate ?? "—"}
+        </strong>
+        {nextDate ? (
+          <a
+            href={dateHref(nextDate, { withStats, confluenceOnly })}
+            title={`next date with rows: ${nextDate}`}
+            aria-label={`Next date with signals, ${nextDate}`}
+          >
+            →
+          </a>
+        ) : (
+          <span className="off" aria-hidden="true">
+            →
+          </span>
+        )}
+        {/* Only when you are not on it. On the newest date it would be a
+            link to the page you are already reading. */}
+        {nextDate && (
+          <a className="latest" href={dateHref(null, { withStats, confluenceOnly })}>
+            latest
+          </a>
+        )}
+      </span>
       {trailing && (
         <span className="stale-badge num" title="v_screen shows entry_kind='next_open', which only cscan backtest writes">
           trails bars by {sessionsBetween(signalDate, meta.asOf)}

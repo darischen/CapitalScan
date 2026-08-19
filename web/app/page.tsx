@@ -48,7 +48,9 @@ export default async function ScreenerPage({
 
   try {
     const result = await screen({
-      date: params.date,
+      // An empty `?date=` is not a date. `??` would keep `""` and hand it
+      // to the query, which is neither a valid date nor a missing one.
+      date: params.date || undefined,
       withStats,
       confluenceOnly,
       limit: params.limit ? Number(params.limit) : undefined,
@@ -63,6 +65,10 @@ export default async function ScreenerPage({
           meta={result.meta}
           fired={result.totalMatched}
           signalDate={result.signalDate}
+          prevDate={result.prevDate}
+          nextDate={result.nextDate}
+          withStats={withStats}
+          confluenceOnly={confluenceOnly}
         />
         <main className="wrap">
           {empty ? (

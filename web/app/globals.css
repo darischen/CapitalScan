@@ -1135,3 +1135,38 @@ table.screen td.rail span[data-side="short"] {
 .side.short {
   color: var(--short);
 }
+
+/* --- date navigation --------------------------------------------------- */
+
+/* The arrows bracket the date they move, so the control reads as one thing
+ * rather than as two links that happen to sit near a label. */
+
+.datenav {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.datenav a {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.datenav a:hover {
+  color: var(--text);
+}
+
+/* Rendered, not removed, at the ends of the history. A control that
+ * disappears makes the whole strip reflow, and the reader reads the shift
+ * as something having changed in the data. */
+.datenav .off {
+  color: var(--rule);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.datenav .latest {
+  font-size: 11px;
+  border-bottom: 1px solid var(--rule);
+}

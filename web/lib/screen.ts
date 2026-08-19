@@ -102,6 +102,17 @@ export interface ScreenResult {
    * reported the fresher of the two beside the older rows.
    */
   signalDate: string | null;
+  /**
+   * The dates on either side that actually have rows, for the previous/next
+   * links (user's request, 2026-08-19).
+   *
+   * **Dates with events, not adjacent trading days.** Most sessions fire
+   * nothing, so stepping by calendar or by `trading_days` would walk a
+   * reader through a run of empty screens to reach the next one that is
+   * not. `null` at either end of the history.
+   */
+  prevDate: string | null;
+  nextDate: string | null;
   meta: Meta;
 }
 
@@ -215,6 +226,29 @@ const LATEST_DATE_SQL = `
  * each group, newest first, so the feed still reads chronologically where
  * the ranking does not separate rows.
  */
+/**
+ * The nearest date each way that has at least one row under the same
+ * filters the feed is using.
+ *
+ * Passed the confluence flag so the arrows agree with the table: with
+ * confluence-only on, "previous" must mean the previous day that had a
+ * confluence, not the previous day that had any event at all — otherwise a
+ * click lands on an empty screen while the date strip claims rows exist.
+ */
+const NEIGHBOURS_SQL = `
+  SELECT
+    (SELECT max(s.signal_date) FROM v_screen_live s
+       JOIN v_universe u ON u.ticker = s.ticker
+      WHERE u.in_trade AND s.signal_date < $1::date
+        AND ($2::boolean IS NOT TRUE
+             OR s.signal_types_all && ARRAY['confluence_high','confluence_low'])) AS prev,
+    (SELECT min(s.signal_date) FROM v_screen_live s
+       JOIN v_universe u ON u.ticker = s.ticker
+      WHERE u.in_trade AND s.signal_date > $1::date
+        AND ($2::boolean IS NOT TRUE
+             OR s.signal_types_all && ARRAY['confluence_high','confluence_low'])) AS next
+`;
+
 const CONFLUENCE_RANK = `
   CASE WHEN 'confluence_high' = ANY(s.signal_types_all) THEN 0
        WHEN 'confluence_low'  = ANY(s.signal_types_all) THEN 1
@@ -301,13 +335,16 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
       withStats: false,
       confluenceOnly,
       signalDate: null,
+      prevDate: null,
+      nextDate: null,
       meta: await readMeta(),
     };
   }
 
-  const [rowsRaw, countRows, meta] = await Promise.all([
+  const [rowsRaw, countRows, neighbours, meta] = await Promise.all([
     query<FeedRowRaw>(FEED_SQL, [date, limit, confluenceOnly]),
     query<{ n: number }>(COUNT_SQL, [date, confluenceOnly]),
+    query<{ prev: Date | null; next: Date | null }>(NEIGHBOURS_SQL, [date, confluenceOnly]),
     readMeta(),
   ]);
 
@@ -353,6 +390,8 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
     withStats: Boolean(options.withStats),
     confluenceOnly,
     signalDate: typeof date === "string" ? date : isoDate(date),
+    prevDate: neighbours[0]?.prev ? isoDate(neighbours[0].prev) : null,
+    nextDate: neighbours[0]?.next ? isoDate(neighbours[0].next) : null,
     meta,
   };
 }

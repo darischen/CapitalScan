@@ -161,6 +161,53 @@ describe("gate 7: the staleness banner triggers above 2 days", () => {
     expect(html).toContain("strip stale");
   });
 
+  it("links to the neighbouring dates that have rows", () => {
+    const html = renderToStaticMarkup(
+      <StatusStrip
+        meta={meta()}
+        fired={4}
+        signalDate="2026-08-18"
+        prevDate="2026-08-13"
+        nextDate={null}
+      />,
+    );
+    expect(html).toContain("date=2026-08-13");
+    // No next date means the newest screen, so no "latest" shortcut to the
+    // page you are already reading.
+    expect(html).not.toContain(">latest<");
+  });
+
+  /**
+   * The arrows must carry the filters. A link that dropped `?all=1` would
+   * change the filter as well as the date, and the reader would read the
+   * difference in row count as a change in the market.
+   */
+  it("keeps the toggles when stepping to another date", () => {
+    const html = renderToStaticMarkup(
+      <StatusStrip
+        meta={meta()}
+        fired={4}
+        signalDate="2026-08-18"
+        prevDate="2026-08-13"
+        nextDate="2026-08-19"
+        withStats
+        confluenceOnly={false}
+      />,
+    );
+    expect(html).toContain("stats=1");
+    expect(html).toContain("all=1");
+    // And "latest" is the absence of a date, never an empty one.
+    expect(html).not.toContain("date=&");
+    expect(html).not.toMatch(/date=(?=["&])/);
+  });
+
+  it("renders a disabled arrow at the end of the history rather than removing it", () => {
+    const html = renderToStaticMarkup(
+      <StatusStrip meta={meta()} fired={0} signalDate="2010-01-05" prevDate={null} nextDate="2010-01-06" />,
+    );
+    expect(html).toContain('class="off"');
+  });
+
   it("reports the read-write role when the read-only one is unset", () => {
     const html = renderToStaticMarkup(
       <StatusStrip meta={meta({ readOnly: false })} fired={0} signalDate={null} />,
