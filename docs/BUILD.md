@@ -40,6 +40,7 @@ Sessions 0-7 deliver v1 (Phase 1). Sessions 8-9 deliver Phases 2-3. Session 10 i
 | 16 | MCP server | Seven tools over streamable HTTP, bearer auth, per-token rate limiting, generated schemas, read-only database role | **Session 16 gate — complete, passed on all 10 items.** Verified end to end against the live database on 2026-08-18: unauthenticated `tools/list` refused, `initialize` and all seven tools answered, `get_stats` returned a real suppressed cell. **No `mcp/` module imports `sqlalchemy` or `db_io`**, and no enum value is spelled as a literal anywhere under it. The read-only role is proven by running each write verb through its own connection. See `RESULTS.md` Session 16 and `MCP_SETUP.md` |
 
 | 17 | Screener and ticker page | `/` and `/ticker/[sym]` in Next 15, `lightweight-charts` price/volume/stochastic panes, the five states, ADR 120's `v_chart` rewrite | **Session 17 gate — 10 of 12 items passed; the two that did not are recorded as findings, not as debt.** Both routes render against the live database: the ticker page at **43 ms median**, the screener at 256 ms after one query rewrite took 871 ms to 265 ms. **`v_chart` was returning 963 rows for 275 sessions** — 22 config hashes on an unfiltered join, plus 116 dates that carry both a long and a short head (ADR 120). Four more defects found by running it, including every chart date landing one session early. 145 web tests, up from 15. See `RESULTS.md` Session 17 |
+| 18 | `/research`, `/chat`, and the Phase 5 close | The research page, the chat route over MCP (ADR 118), the system prompt loader, ADRs 129-136 | **Session 18 gate — complete. Phase 5 closed on all 9 items; see `RESULTS.md` "Phase 5 gate".** `/chat` runs the tool loop server-side and holds no tool schemas, no prompt text, and no parse of a tool result — each is read at request time from the one place that owns it (ADR 130). The prompt loader **refuses to start** if `SYSTEM_PROMPT.md` stops naming ADR 112's result. `docs/BACKLOG.md` emptied: `in_trade` now fails closed (ADR 129, 6h25m of rebuild), a delisted ticker no longer passes the health filter forever (ADR 135), and the benchmark "disagreement" turned out to be two configs and a missing label. **ADR 112 re-established rather than assumed** on an 11.9%-smaller train set: still zero cells surviving FDR, min q 0.7604 train / 0.7061 validate |
 
 Sessions 0-2 can run back to back in one sitting. Session 7 is mostly waiting.
 
@@ -108,6 +109,17 @@ idempotent; a deployment behind a domain must pass `allowed_hosts` or every requ
 returns `421 Misdirected Request`. Both are in `MCP_SETUP.md`.
 
 **Session 15 is complete. Phase 5 is open.**
+
+**Phase 5 is complete as of 2026-08-20**, closed on all nine gate items at
+the end of Session 18. The evidence table is in `RESULTS.md` under "Phase 5
+gate". Item 8 — ADR 112's result visible on every surface that reports a
+statistic — is the one that makes the phase honest rather than merely
+finished, and `/research` holds it under change by *computing* the number
+from the same query that draws the grid instead of restating it.
+
+Phase 6 (the model) remains **conditional on ADR 112** and does not proceed
+by default. That condition was met on 2026-08-16 and re-confirmed on
+2026-08-20 against a corrected population.
 
 One migration, `d7f4b91c26ea`: `serving_config` plus a rebuilt `v_positions`. Applied
 to research on 2026-08-18 and `db/schema.sql` regenerated. Run `cscan db sync-config`

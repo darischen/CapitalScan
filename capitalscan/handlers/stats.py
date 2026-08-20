@@ -7,7 +7,7 @@ carries `survives_fdr=False` and a q-value near 1.
 
 Two rules the code enforces rather than the caller remembering:
 
-- **A suppressed cell never becomes a broader one.** DESIGN §11.2's system
+- **A suppressed cell never becomes a broader one.** DESIGN §10.2's system
   prompt asks the chat layer not to substitute; asking is not a guarantee,
   so this handler has no widening path at all. There is nowhere in it that
   drops a predicate and retries.

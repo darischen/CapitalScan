@@ -3246,6 +3246,55 @@ hold today is how this class of defect arrives.
 
 ---
 
+## Phase 5 gate — closed 2026-08-20
+
+Nine items, checked at the end of Session 18. The phase covers the
+`handlers/` layer, the seven tools, the MCP server, and the four routes.
+
+| # | Criterion | Evidence |
+|---|---|---|
+| 1 | Seven handlers, one contract, three consumers agreeing by construction | The web routes, the MCP tools, and the chat loop all reach the same seven handlers. `test_mcp_schemas.py` asserts the tool registry and `handlers.SEVEN_TOOLS` have identical keys |
+| 2 | No probability leaves the handler layer without `n_eff`, an interval, and a q-value | `handlers/validate.py`, plus a structural test on the return annotations. A suppressed cell carries a reason and no rate — the union can express the difference, the view's nulled columns cannot |
+| 3 | MCP server authenticated, rate limited, read-only, adding no query logic | Session 16 gate, all 10 items. No `mcp/` module imports `sqlalchemy` or `db_io`. Re-verified live 2026-08-19: seven tools, two splits, holdout refused at the handler, `predict` returning `not_found` |
+| 4 | `/`, `/ticker/[sym]`, `/research`, `/chat` all render against the live database | All four verified 2026-08-19. `/chat` answered a real question end to end through MCP, showing every tool call and its raw payload |
+| 5 | No route, tool, or chat surface reads holdout | `test_holdout_firewall.py`, 18 passing. Three independent guards: nothing on these routes can express it, `SplitArg` has two members, `handlers/enums.py` raises |
+| 6 | `v_positions` reads its thresholds from config | ADR 115, `serving_config`. `test_v_positions_config.py` fails when the stored row and the live config disagree, and names `cscan db sync-config` |
+| 7 | The chat layer performs no arithmetic and cannot query outside the seven tools | ADR 130. No SQL, no `pg`, no `JSON.parse` on the MCP boundary; tool results reach the model byte-identical |
+| 8 | ADR 112's result is visible on every surface that reports a statistic | `/chat` states it above the composer; `/research` **computes** it from the rows on the page rather than restating it; `mcp/server.py::INSTRUCTIONS` carries it; the system prompt loader refuses to start without it |
+| 9 | `test_holdout_firewall.py` and `test_schema_drift.py` both pass, the latter having run | Holdout: 18 passing. Schema drift is an integration test and runs in CI's slow tier against a container migrated from empty — a stronger check than a local run, since it replays the whole chain |
+
+**Item 8 is what makes the phase honest rather than merely complete**, and
+`/research` is the reason it holds under change: `KillBanner` derives the
+surviving-cell count and the minimum q from the same query that draws the
+grid, so the prose cannot drift from the table beside it.
+
+### The measured result at the close
+
+After ADR 129 (`in_trade` fails closed) removed 11.9% of the training
+population and ADR 135 corrected the universe's recency:
+
+| split | cells | suppressed | survives FDR | min q |
+|---|---|---|---|---|
+| train | 56 | 8 | **0** | 0.7604 |
+| validate | 56 | 28 | **0** | 0.7061 |
+
+448 cells across the full grid, 248 suppressed, **zero surviving**. Every
+reported cell's confidence interval contains its baseline — 48 of 48 on
+train, 28 of 28 on validate. ADR 112 was re-established rather than
+assumed to survive the smaller sample.
+
+`cell_stats` digest at the close: `7ad6eb4cda94d7e5cad85a54b49c9dc2`.
+
+### What Phase 5 does not claim
+
+The pooled signal arm clears its randomization null on validate (+12.63%
+against +6.36%) and this is **not** an edge. It sits far below the null on
+train (+81.68% against +216.70%), the breadth_high split disagrees in sign
+on validate (−6.45% against +23.61%), and one uncorrected arm comparison on
+one split is not the FDR-corrected cell grid — which is where an edge would
+have to appear, and does not.
+
+
 ## Holdout
 
 **Evaluated once. Published whatever it says.**
