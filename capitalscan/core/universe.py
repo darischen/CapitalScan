@@ -96,14 +96,70 @@ def evaluate_criteria(
     }
 
 
+# How long a rebalance period lasts, in calendar days, per `UniverseParams.
+# rebalance_freq`. Calendar arithmetic, not a tunable threshold: a quarter
+# is ~92 days because a quarter is ~92 days. Invariant 9 governs numbers
+# that could be swept and change a result; these change only if the
+# definition of a month changes.
+#
+# `rebalance_freq` had no consumer at all until 2026-08-20 — declared in
+# `core/config.py` and read nowhere.
+_REBALANCE_DAYS: dict[str, int] = {"D": 1, "W": 7, "M": 31, "Q": 92, "A": 366, "Y": 366}
+
+
+def evaluation_max_age_days(rebalance_freq: str) -> int:
+    """How stale an indicator row may be and still evaluate a quarter.
+
+    **One rebalance period, so an evaluation must rest on data from inside
+    the period it describes.** A ticker that did not trade at all during
+    the quarter has not been shown to pass anything, and the criteria are
+    a claim that it did.
+
+    Without this floor `jobs.compute._latest_indicator_row` filtered
+    `ts <= as_of` with no lower bound, so a ticker that stopped trading
+    kept returning its final row forever. AET (Aetna, acquired by CVS
+    2018-11-29) passed all four criteria at 2026-06-30 on data frozen in
+    November 2018 — **31 consecutive quarters `in_trade` with no bars
+    behind any of them**, found 2026-08-20.
+
+    No event is affected, and the reason is structural rather than lucky:
+    an event needs a bar and staleness means no bars, so the two sets
+    cannot intersect. Measured at 0 rows before the change. What *is*
+    affected is `research/arms.py`, which walks membership forward per day
+    and held AET at a frozen 2018 price — rebalancing into it every quarter
+    for seven years, because `last_price` persists once seen.
+
+    Raises on an unknown frequency rather than defaulting: a silent fallback
+    here would restore exactly the unbounded behaviour this closes.
+    """
+    key = rebalance_freq.strip().upper()
+    if key not in _REBALANCE_DAYS:
+        raise ValueError(
+            f"rebalance_freq={rebalance_freq!r} has no known period. "
+            f"Known: {', '.join(sorted(_REBALANCE_DAYS))}"
+        )
+    return _REBALANCE_DAYS[key]
+
+
 def in_trade(universe_flags: pd.DataFrame, ticker: str, signal_date: date) -> bool:
     """Whether `ticker` is in the trade universe as of `signal_date`.
 
-    True when no universe evaluation exists yet for that ticker on or
-    before `signal_date` — the v1 fail-open simplification, so a caller
-    (`jobs.compute.run_events`) works before `jobs.compute.run_universe` has
-    ever run for a name. Otherwise, the most recent evaluation on or before
-    `signal_date` decides.
+    **False when no universe evaluation exists** for that ticker on or
+    before `signal_date` (ADR 129). Otherwise the most recent evaluation on
+    or before `signal_date` decides.
+
+    This fails **closed**. It failed open until 2026-08-19 — a v1
+    simplification so `jobs.compute.run_events` worked before
+    `run_universe` had ever run for a name — and the cost of that was
+    18,805 training events on 566 tickers admitted to the trade population
+    without ever being evaluated for it, 11.9% of the split. The check is
+    per *ticker*, so a name that entered the universe late failed open
+    across all of its earlier history, not merely the pre-2010 window where
+    it was first assumed to live.
+
+    Membership is a claim that a name passed four criteria. Absent evidence
+    is not that claim, and defaulting to True made "we never looked" and
+    "it passed" the same value in the same column.
 
     This is the single home for what used to be two identical copies —
     `jobs/compute.py:_in_trade` and `research/candidates.py:_in_trade`
@@ -120,7 +176,7 @@ def in_trade(universe_flags: pd.DataFrame, ticker: str, signal_date: date) -> bo
         (universe_flags["ticker"] == ticker) & (universe_flags["as_of"] <= signal_date)
     ]
     if rows.empty:
-        return True
+        return False
     return bool(rows.sort_values("as_of").iloc[-1]["in_trade"])
 
 

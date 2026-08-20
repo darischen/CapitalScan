@@ -119,8 +119,37 @@ def signal_date(monkeypatch) -> date:
     return target_date
 
 
+def _mark_tradeable(engine, ticker: str = TICKER) -> None:
+    """Record a universe evaluation saying `ticker` is tradeable.
+
+    **Required since ADR 129 made `in_trade` fail closed.** It used to
+    return `True` when no evaluation existed, so this test detected a
+    confluence-low event without ever saying the ticker was in the trade
+    universe. Now an absent evaluation means "not tradeable", `run_events`
+    stamps `in_trade = false`, and `scan` — which carries the predicate —
+    returns nothing. The event is still written, which is why
+    `rows_written > 0` kept passing while the assertion below did not.
+
+    Stated explicitly rather than derived by running `run_universe`: this
+    test is about signal detection, and making it depend on the health
+    filter's four criteria would couple it to a decision it is not
+    checking. `as_of` predates `START` so every bar in the window is
+    covered.
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO universe (ticker, as_of, in_train, in_trade) "
+                "VALUES (:ticker, :as_of, true, true) "
+                "ON CONFLICT (ticker, as_of) DO UPDATE SET in_trade = true, in_train = true"
+            ),
+            {"ticker": ticker, "as_of": date(2024, 12, 31)},
+        )
+
+
 def test_scan_returns_the_confluence_low_event_with_correct_pctb_and_k(engine, signal_date):
     ingest.ensure_tickers([TICKER], engine=engine)
+    _mark_tradeable(engine)
     bars_report = ingest.run_bars_daily([TICKER], START, signal_date, engine=engine)
     assert bars_report.rows_rejected == 0
 

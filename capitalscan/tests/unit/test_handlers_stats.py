@@ -156,7 +156,7 @@ def test_a_cell_that_was_never_computed_returns_suppressed_not_an_error(fake_db)
 def test_a_suppressed_cell_never_becomes_a_broader_one(fake_db):
     """One query, one cell. There is no retry path in the handler at all.
 
-    DESIGN §11.2's system prompt asks the chat layer not to substitute.
+    DESIGN §10.2's system prompt asks the chat layer not to substitute.
     Asking is not a guarantee, so this handler has nowhere in it that drops
     a predicate and tries again - which is what this asserts by counting
     the queries rather than by checking the answer.

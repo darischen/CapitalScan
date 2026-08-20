@@ -9,6 +9,8 @@ log has to be able to tell them apart (DESIGN §4.6).
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -164,3 +166,121 @@ def test_is_tradeable_rejects_an_unknown_required_criterion():
     # A typo in an ablation config must fail loudly, not silently pass.
     with pytest.raises(KeyError):
         uni.is_tradeable(_healthy(), required={"crit_typo"})
+
+
+# ---------------------------------------------------------------------------
+# `in_trade` fails closed (ADR 129)
+# ---------------------------------------------------------------------------
+
+
+def _flags(rows: list[tuple[str, date, bool]]) -> pd.DataFrame:
+    return pd.DataFrame(rows, columns=["ticker", "as_of", "in_trade"])
+
+
+def test_no_evaluation_means_not_tradeable():
+    """The whole of ADR 129, in one assertion.
+
+    This returned True until 2026-08-19 — a v1 simplification so
+    `run_events` worked before `run_universe` had ever run for a name. It
+    admitted 18,805 training events on 566 tickers to the trade population
+    without ever evaluating them for it, 11.9% of the split.
+
+    Membership is a claim that a name passed four criteria. Absent evidence
+    is not that claim.
+    """
+    assert uni.in_trade(_flags([]), "TSLA", date(2015, 6, 30)) is False
+
+
+def test_an_evaluation_after_the_signal_does_not_count():
+    """The check is `as_of <= signal_date`, so a later evaluation is not
+    evidence about an earlier bar.
+
+    **This is why the population was 18,805 and not a few hundred.** The
+    first measurement assumed the gap was the pre-2010 window; it is per
+    *ticker*, so a name that entered the universe in 2021 failed open
+    across every one of its earlier signals.
+    """
+    flags = _flags([("TSLA", date(2021, 3, 31), True)])
+    assert uni.in_trade(flags, "TSLA", date(2015, 6, 30)) is False
+    assert uni.in_trade(flags, "TSLA", date(2021, 6, 30)) is True
+
+
+def test_another_tickers_evaluation_is_not_evidence():
+    flags = _flags([("AAPL", date(2015, 3, 31), True)])
+    assert uni.in_trade(flags, "TSLA", date(2015, 6, 30)) is False
+
+
+def test_the_most_recent_evaluation_on_or_before_the_signal_decides():
+    """Not the newest row overall — the newest one that had happened yet.
+
+    TSLA is the live example: in the trade universe at 2026-06-30 and out
+    of it for all of 2024 and 2025 on `crit_rel_return`. Reading the wrong
+    row would backdate a membership it did not have.
+    """
+    flags = _flags(
+        [
+            ("TSLA", date(2024, 12, 31), False),
+            ("TSLA", date(2025, 12, 31), True),
+            ("TSLA", date(2026, 6, 30), True),
+        ]
+    )
+    assert uni.in_trade(flags, "TSLA", date(2025, 6, 30)) is False
+    assert uni.in_trade(flags, "TSLA", date(2026, 1, 15)) is True
+
+
+def test_an_evaluation_exactly_on_the_signal_date_counts():
+    """`<=`, not `<`. A quarter-end evaluation governs that day's signals."""
+    flags = _flags([("TSLA", date(2026, 6, 30), True)])
+    assert uni.in_trade(flags, "TSLA", date(2026, 6, 30)) is True
+
+
+# ---------------------------------------------------------------------------
+# `evaluation_max_age_days` — the recency floor (backlog item 3, 2026-08-20)
+# ---------------------------------------------------------------------------
+
+
+def test_a_quarter_is_one_rebalance_period():
+    assert uni.evaluation_max_age_days("Q") == 92
+
+
+def test_the_frequency_is_read_case_insensitively_and_trimmed():
+    """`rebalance_freq` is a hand-written config string, not an enum."""
+    assert uni.evaluation_max_age_days(" q ") == 92
+    assert uni.evaluation_max_age_days("M") == uni.evaluation_max_age_days("m")
+
+
+def test_an_unknown_frequency_raises_rather_than_defaulting():
+    """A silent fallback would restore the unbounded behaviour this closes.
+
+    That is the whole defect: `_latest_indicator_row` filtered `ts <= as_of`
+    with no lower bound, so AET passed every criterion at 2026-06-30 on
+    data frozen in November 2018.
+    """
+    with pytest.raises(ValueError, match="no known period"):
+        uni.evaluation_max_age_days("fortnightly")
+
+
+def test_every_frequency_is_a_positive_number_of_days():
+    for freq in ("D", "W", "M", "Q", "A", "Y"):
+        assert uni.evaluation_max_age_days(freq) > 0
+
+
+def test_the_default_config_frequency_resolves():
+    """`UniverseParams.rebalance_freq` had no consumer until 2026-08-20, so
+    nothing checked that its default was a value anything understood."""
+    assert uni.evaluation_max_age_days(UniverseParams().rebalance_freq) == 92
+
+
+def test_the_floor_admits_aets_final_quarter_and_rejects_the_next():
+    """The boundary the fix turns on, stated as dates.
+
+    AET's last bar is 2018-11-29. At `as_of` 2018-12-31 it traded inside
+    the quarter and stays; at 2019-03-31 it did not and drops. One final
+    quarter of membership is correct — `core/arms.py` sells at the next
+    rebalance, not immediately.
+    """
+    max_age = uni.evaluation_max_age_days("Q")
+    last_bar = date(2018, 11, 29)
+
+    assert last_bar > date(2018, 12, 31) - timedelta(days=max_age)
+    assert last_bar <= date(2019, 3, 31) - timedelta(days=max_age)

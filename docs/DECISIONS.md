@@ -962,6 +962,28 @@ No EC2 and no persistent cloud compute. Vercel serves frontend and API, Neon ser
 
 Steady-state cost through Phase 6: under $15 monthly, consisting only of Anthropic API usage.
 
+**Sizing re-verified 2026-08-19, and the headline number is alarming until
+you read which rows it counts.** `events` is now **14,604,735 rows / 10 GB**
+locally — 70x this ADR's whole-serving-store estimate, and enough to make a
+reader assume the free tier is out.
+
+It is not. That table holds **23 config hashes x 4 entry kinds**. The
+serving store carries one config at one grain, and measured:
+
+    events, all configs x all entry kinds    14,604,735 rows,  10 GB
+    events, live config, next_open only         157,915 rows
+
+157,915 against this ADR's "roughly 200k rows, under 150MB" for the whole
+subset. The estimate holds; the growth is entirely in slices that never
+leave the workstation — the config sweep (ADR 059) and ADR 122's
+out-of-trade events, which exist to keep the ticker page complete and are
+excluded from every statistical read.
+
+Recorded because `docs/BACKLOG.md` carried an item asserting the opposite
+("`events` at 14.6M rows does not fit Neon's free tier, so what gets synced
+is a paid decision"). That read the local row count as the sync payload.
+The item is removed; the sync job remains unbuilt but undecided-nothing.
+
 ---
 
 ## 054. Notifier protocol, three channels
@@ -4177,6 +4199,74 @@ ADR 131 fixed *staleness within* a session by polling. It did not ask what a liv
 Both clients stop polling once the database reports the session closed. Nothing rewrites `bars_live` until tomorrow, so a timer left running is a query every 45 seconds for a row that cannot change for seventeen hours.
 
 **Half-days are not modelled.** The market closes at 13:00 ET on roughly nine afternoons a year, and on those the live price stays visible for three hours after trading ends. Modelling them needs a holiday calendar carrying session lengths, which nothing here has. Recorded rather than silently accepted.
+
+---
+
+## 135. A universe evaluation must rest on data from inside the period it describes
+
+**Date:** 2026-08-20. **Status:** Pinned. Gives `UniverseParams.rebalance_freq` its first consumer. Does not change `config_hash`.
+
+**Context.**
+
+`jobs.compute._latest_indicator_row` filtered `ts <= as_of` with **no lower bound**, so a ticker that stopped trading kept returning its final row for every later quarter and passed every criterion on frozen data.
+
+AET (Aetna, acquired by CVS 2018-11-29):
+
+```
+as_of        in_trade  mcap  above_sma  slope  rel_return
+2026-06-30      t        t       t        t        t      <- November 2018 data
+2018-12-31      t        t       t        t        t
+```
+
+**31 consecutive quarters `in_trade` with no bars behind any of them.** The only ticker in that state, found while checking two backlog items that both turned out to be symptoms of it.
+
+`QuarterNotEnded`'s docstring describes the *mirror* of this defect — an `as_of` in the future silently reading whatever the latest real data is — in the same file, about the same query, without noticing the past-facing version.
+
+**Decision.**
+
+An indicator row older than one rebalance period does not evaluate the quarter. `core.universe.evaluation_max_age_days` maps `rebalance_freq` to days; `_latest_indicator_row` gains `AND i.ts > :floor` and returns `None`, which already means "skip this ticker" — so an unevaluable name simply gets no row, which is what "we did not look" should always have meant.
+
+**Derived from `rebalance_freq`, not declared as a new parameter.** That field existed in `core/config.py` since Session 9 and had **no consumer anywhere** until this ADR. A new `max_evaluation_staleness_days` would have been more explicit and would have changed `config_hash` (ADR 060), orphaning every measured row under the old hash and requiring ~8 hours of rebuild to re-key numbers that are provably identical.
+
+**Provably identical, and this is the load-bearing claim: no event can change.** An event requires a bar; staleness means no bars; the two sets cannot intersect. Measured before the change at **0 rows**, so `events`, `cell_stats`, and ADR 112's result are untouched by construction rather than by luck.
+
+`universe` has no `config_hash` column, so re-running it creates no ambiguous key. `benchmarks` does, and its rows *will* move — recorded below.
+
+**One final quarter of membership is correct, not a rounding error.** AET's last bar is 2018-11-29; at `as_of` 2018-12-31 it traded inside the quarter and stays, and at 2019-03-31 it did not and drops. `core/arms.py` sells at the next rebalance rather than immediately, and this matches that rule exactly.
+
+**Unknown frequencies raise.** A silent fallback would restore the unbounded behaviour this closes.
+
+**Consequences.**
+
+**The benchmark arms were the only thing actually harmed, and the harm was invisible.** `core/arms.py:588` selects `[t for t in members[i] if last_price.get(t, 0.0) > 0]`, and `last_price` persists once a price has been seen — so AET stayed a *priced* member and was **rebalanced into every quarter for seven years** at a frozen 2018 price. In an equal-weight book that is roughly 1/140th of capital that can neither gain nor lose, dragging every buy-and-hold and DCA measurement. `cscan stats benchmarks` must re-run, and this is a candidate explanation for the record-versus-database disagreement in `BACKLOG.md` item 2.
+
+**`ArmWindow.delisted_on` is a dead field.** `research/benchmarks.py:195` selects `WHERE delisted_on IS NOT NULL` to resolve delisted positions, `arms.py:504` documents the mechanism in prose — and `delisted_on` is **read nowhere in the code and written nowhere in the tree**, so all 712 rows are NULL and the query returns zero every time. The mechanism was documented, plumbed, and never connected. This ADR does not fix that; it makes it redundant for the case that mattered, and `BACKLOG.md` keeps it.
+
+---
+
+## 136. No edge interval is stored, and the rate interval answers the question
+
+**Date:** 2026-08-20. **Status:** Pinned. Rejects DESIGN 11.2's edge bar as specified. Closes the last open item in `BACKLOG.md` 5.
+
+**Context.**
+
+DESIGN 11.2 asks for edge rendered "as a bar with CI width, not a number". `cell_stats` stores `edge` as `p_hit - baseline` and a Wilson interval on `p_hit`. There is no interval on `edge`.
+
+**Decision.**
+
+Do not store one, and do not derive one.
+
+**Deriving is the tempting half and it is wrong.** Differencing the two rates' bounds — `(ci_low - baseline, ci_high - baseline)` — treats the baseline as a constant. It is not: it is itself estimated, from the same ticker's own history, over a window that overlaps the cell's events. The two are positively correlated by construction, so a differenced interval is too wide by an unknown amount and its coverage is not 95% or anything else nameable. An interval whose coverage nobody can state is worse than no interval, because it will be read as one.
+
+**Storing one is possible and buys nothing here.** It means a bootstrap over the clustered event set, a new column, a migration, and a full `cell_stats` recompute. The result would be an interval on a quantity that is already reported: `/research` draws the rate interval with the baseline marked *inside* it, so "does the edge exclude zero" is read directly as "does the baseline fall outside the interval".
+
+**Verified rather than asserted, 2026-08-20**: across every reported cell on the live config, the baseline falls inside the rate interval — **48 of 48 on train, 28 of 28 on validate**. Zero cells separate from their baseline. The edge bar would have shown, for every cell, a bar crossing zero.
+
+**Consequences.**
+
+DESIGN 11.2's edge bar is not built. The rate interval with an inline baseline marker is the rendering, and `/research` already does this.
+
+Revisit only if a cell ever separates from its baseline, at which point the width of that separation becomes a question worth a bootstrap. On the current data that question has no instances.
 
 ---
 

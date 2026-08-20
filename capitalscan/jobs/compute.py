@@ -236,7 +236,27 @@ def _quarter_end(quarter: str) -> date:
     return date(next_month_first.year, next_month_first.month, 1) - timedelta(days=1)
 
 
-def _latest_indicator_row(engine: Engine, ticker: str, as_of: date) -> pd.Series | None:
+def _latest_indicator_row(
+    engine: Engine, ticker: str, as_of: date, max_age_days: int
+) -> pd.Series | None:
+    """The newest indicator row on or before `as_of`, **and no older than
+    one rebalance period** (`core.universe.evaluation_max_age_days`).
+
+    The floor is the whole point. Without it this filtered `ts <= as_of`
+    with no lower bound, so a ticker that stopped trading kept returning
+    its final row forever and passed every criterion on frozen data: AET
+    (acquired by CVS 2018-11-29) was `in_trade` at 2026-06-30 on November
+    2018 numbers, 31 consecutive quarters with no bars behind any of them.
+
+    Returning `None` is already "skip this ticker", so the caller needs no
+    change — an unevaluable name simply gets no `universe` row for the
+    quarter, which is what "we did not look" should have meant all along.
+
+    The sibling defect is documented on `QuarterNotEnded`: an `as_of` in
+    the future reads whatever the latest real data is and stamps it with a
+    future label. Same query, opposite end, and the docstring there
+    described that one without noticing this one.
+    """
     with engine.connect() as conn:
         row = conn.execute(
             text(
@@ -244,9 +264,10 @@ def _latest_indicator_row(engine: Engine, ticker: str, as_of: date) -> pd.Series
                 "JOIN bars close_join ON close_join.ticker = i.ticker AND close_join.ts = i.ts "
                 "AND close_join.interval = '1d' "
                 "WHERE i.ticker = :ticker AND i.interval = '1d' AND i.ts <= :as_of "
+                "AND i.ts > :floor "
                 "ORDER BY i.ts DESC LIMIT 1"
             ),
-            {"ticker": ticker, "as_of": as_of},
+            {"ticker": ticker, "as_of": as_of, "floor": as_of - timedelta(days=max_age_days)},
         ).one_or_none()
     if row is None:
         return None
@@ -552,9 +573,13 @@ def run_universe(
         # never accumulates entries across runs.
         rel_return_cache: dict[tuple, Any] = {}
 
+        # One rebalance period, derived rather than declared: an evaluation
+        # must rest on data from inside the period it describes.
+        max_age_days = core_universe.evaluation_max_age_days(up.rebalance_freq)
+
         rows = []
         for ticker in tickers:
-            ind_row = _latest_indicator_row(engine, ticker, as_of)
+            ind_row = _latest_indicator_row(engine, ticker, as_of, max_age_days)
             if ind_row is None:
                 continue
             with engine.connect() as conn:

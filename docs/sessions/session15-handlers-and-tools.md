@@ -120,7 +120,7 @@ Rules:
 
 - `screen_signals` reads `v_screen`, which already carries ADR 100's `config_hash` predicate, ADR 105's `arm = 'signal'` predicate, and ADR 107's pooled-over-`signal_strength` selection. It does not rebuild that logic.
 - The screener column contract from the ADR governs what `ScreenResult` rows contain. Default is the event feed; the statistical fields sit behind an explicit flag.
-- `get_stats` returns `Suppressed` with the stored `suppress_reason` whenever `cell_stats.suppressed` is true. It never substitutes a broader cell. DESIGN §11.2's system prompt says the chat layer must not do this silently; the handler makes it impossible rather than discouraged.
+- `get_stats` returns `Suppressed` with the stored `suppress_reason` whenever `cell_stats.suppressed` is true. It never substitutes a broader cell. DESIGN §10.2's system prompt says the chat layer must not do this silently; the handler makes it impossible rather than discouraged.
 - `predict` returns `NotFound` for every input. The model does not exist, ADR 093 is Provisional, and ADR 112 made Phase 6 conditional. Building the contract now is right; faking a return is not.
 - `explain_signal` returns features and the cell. The SHAP top-5 in DESIGN §10.1 is a Phase 6 field and is absent, not empty.
 - `get_events` defaults `cluster_head_only=True`, matching every statistics query in Phase 4.
@@ -232,7 +232,7 @@ Item 2 is the one this session exists for. Everything else is plumbing.
 
 **Making `predict` return something.** The model does not exist. A stub returning a plausible-looking distribution will be forgotten and then trusted.
 
-**Substituting a broader cell when the requested one suppresses.** It feels helpful and it is the exact behaviour DESIGN §11.2's system prompt forbids. The handler should make it impossible rather than ask the chat layer not to.
+**Substituting a broader cell when the requested one suppresses.** It feels helpful and it is the exact behaviour DESIGN §10.2's system prompt forbids. The handler should make it impossible rather than ask the chat layer not to.
 
 **Presenting the statistical fields as the screener's default.** ADR 112 measured zero cells surviving correction. A default view with four always-empty columns trains the reader to ignore the row. The event feed is the default; the statistics sit behind a deliberate action.
 

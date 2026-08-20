@@ -286,6 +286,16 @@ class TestScanCandidatesNullIndicators:
 # ---------------------------------------------------------------------------
 
 
+def _in_trade_flags(ticker: str = "TSM") -> pd.DataFrame:
+    """One evaluation, long before any fixture date, saying the name is in.
+
+    Since ADR 129 an empty frame means *not* tradeable, so a test about
+    anything other than membership has to say so explicitly rather than
+    leaning on a default.
+    """
+    return pd.DataFrame([{"ticker": ticker, "as_of": date(2010, 1, 1), "in_trade": True}])
+
+
 def _candidate_row(**overrides) -> dict:
     row = {
         "ticker": "TSM",
@@ -303,7 +313,7 @@ def _candidate_row(**overrides) -> dict:
 class TestApplyEligibility:
     def test_keeps_a_row_inside_the_window_and_in_trade(self):
         candidates = pd.DataFrame([_candidate_row()])
-        universe_flags = pd.DataFrame(columns=["ticker", "as_of", "in_trade"])
+        universe_flags = _in_trade_flags()
         sp = SplitParams(event_start="2010-01-01")
 
         kept, rejects = apply_eligibility(candidates, universe_flags, sp, today=date(2026, 8, 1))
@@ -346,17 +356,26 @@ class TestApplyEligibility:
         assert len(rejects) == 1
         assert rejects[0]["reason"] == "not_in_trade"
 
-    def test_fail_open_when_no_universe_evaluation_exists_yet(self):
-        """v1 semantics from compute.py:624-635: no evaluation on or before
-        the date means in-trade defaults True."""
+    def test_no_universe_evaluation_means_rejected(self):
+        """Inverted 2026-08-19 by ADR 129. It asserted the opposite.
+
+        The v1 semantics this used to pin — "no evaluation on or before the
+        date means in-trade defaults True" — admitted 18,805 training
+        events on 566 tickers to the trade population without ever
+        evaluating them for it. The rejection now carries the same
+        `not_in_trade` reason as a name that was evaluated and failed,
+        because from the population's point of view they are the same
+        thing: not shown to belong.
+        """
         candidates = pd.DataFrame([_candidate_row(signal_date=date(2026, 7, 30))])
         universe_flags = pd.DataFrame(columns=["ticker", "as_of", "in_trade"])
         sp = SplitParams(event_start="2010-01-01")
 
         kept, rejects = apply_eligibility(candidates, universe_flags, sp, today=date(2026, 8, 1))
 
-        assert len(kept) == 1
-        assert rejects == []
+        assert kept.empty
+        assert len(rejects) == 1
+        assert rejects[0]["reason"] == "not_in_trade"
 
     def test_empty_candidates_returns_empty_frame_and_no_rejects(self):
         candidates = pd.DataFrame(

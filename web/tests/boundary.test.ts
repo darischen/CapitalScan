@@ -191,6 +191,11 @@ describe("parameterisation", () => {
     "${CONFLUENCE_FILTER}",
     "${CHART_COLUMNS}",
     "${FEED_DOMAIN}",
+    // A correlated subquery pinning the newest benchmark run for a split.
+    // No caller input reaches it: the config comes from a GUC and the split
+    // from the outer row. Added 2026-08-20 when a second benchmark run for
+    // one config made `/research` read both and double everything.
+    "${LATEST_RUN}",
   ]);
 
   it.each(sources())("%s interpolates nothing user-supplied into SQL", (path) => {

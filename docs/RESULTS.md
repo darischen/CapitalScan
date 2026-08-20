@@ -1663,11 +1663,24 @@ null replications. All ten gate items pass.
 | train | **+383.66%** | +108.37% | +83.95% | **+205.77%** | below |
 | validate | **−3.69%** | −10.10% | −13.99% | **+3.02%** | below |
 
-> **Superseded and unresolved, 2026-08-19.** The live config's benchmark run
-> (2026-08-16, `86e91448a65aa40b`) puts validate at **+12.63% against a
-> 97.5th percentile of +6.36%** — above, not below. The table here is from
-> the 2026-08-13 run under `1835688bf7d760ba`. See "OPEN: the benchmark
-> record and the database disagree" above; **do not read either as settled.**
+> **Resolved 2026-08-20. There was never a contradiction — only a missing
+> label.** This table is `1835688bf7d760ba`, and it matches that config's
+> stored `benchmarks` rows exactly: validate signal −10.10%, null 97.5th
+> +3.02%. The live config `86e91448a65aa40b` gives +12.63% against +6.36%,
+> and it too reproduces exactly — twice, across a full universe rebuild
+> (2026-08-16 and 2026-08-20 runs agree to the cent).
+>
+> Two configs, two answers, both correct and both stored. The arms are
+> deterministic; the appearance of disagreement came from quoting a number
+> without the hash that produced it. **Every benchmark figure in this
+> document now carries its `config_hash`, and that is the fix** — the
+> alternative, editing this table to match the newer run, would have erased
+> a measurement that was never wrong.
+>
+> The live config's numbers are recorded below under "Live config
+> `86e91448a65aa40b`". Neither reading is an edge: on the live config the
+> signal arm sits **below** its null on train (+81.68% against +216.70%)
+> and the breadth_high split disagrees in sign on validate.
 
 The signal arm is **below the 97.5th percentile of its own randomization null on both
 splits**, and below buy-and-hold on both. On train it does clear the null's *median*
@@ -1677,6 +1690,31 @@ even clear the median.
 
 This is the reading gate item 4 exists to record. It is not a favorable result and it is
 published as measured.
+
+### Live config `86e91448a65aa40b`, measured 2026-08-20
+
+The same eight arms under the config the system currently serves, after
+ADR 129 (`in_trade` fails closed) and ADR 135 (a universe evaluation must
+rest on data from inside its period).
+
+| Split | Buy and hold | Signal | Null median | Null 97.5th | Verdict |
+|---|---|---|---|---|---|
+| train | **+392.97%** | +81.68% | +102.50% | **+216.70%** | below |
+| validate | **−3.76%** | +12.63% | −12.45% | **+6.36%** | above |
+
+The validate row is the only arm comparison in this project that clears
+its null, and it should be read narrowly. It is one uncorrected test on
+one split; the breadth_high split of the same run gives −6.45% against a
+97.5th percentile of +23.61%, and train is far below on both eras. ADR
+112's cell grid — which is FDR-corrected and is where an edge would have
+to appear — reports **zero cells surviving on either split** after this
+rebuild, minimum q 0.7604 train and 0.7061 validate.
+
+ADR 135 moved buy-and-hold on train by +9.31 points (from +383.66%) by
+removing a delisted position that had been held at a frozen 2018 price for
+seven years. Validate's signal arm did not move at all, because the signal
+arm trades events and no event changed — the structural claim in that ADR,
+confirmed by measurement.
 
 ### All eight arms, train split
 
@@ -2712,7 +2750,24 @@ Two things worth carrying over anyway.
 
 ---
 
-## OPEN: the benchmark record and the database disagree, 2026-08-19
+## RESOLVED: the benchmark record and the database never disagreed, 2026-08-20
+
+**Both numbers were correct; neither carried its `config_hash`.** Verified
+against the stored `benchmarks` rows: `RESULTS.md`'s table reproduces
+`1835688bf7d760ba` exactly (−10.10% / +3.02%), and the live
+`86e91448a65aa40b` reproduces exactly too, twice, across a full universe
+rebuild (2026-08-16 and 2026-08-20 agree to the cent).
+
+So the arms are deterministic and nothing needed re-measuring. Every
+benchmark figure in this document now names the config that produced it,
+and the Session 13 table carries a resolved note pointing at the live
+config's section. The heading below is kept as written so the
+investigation is legible; read it as the account of a question that turned
+out to have a clerical answer.
+
+---
+
+### The original entry, 2026-08-19
 
 **Found by building `/research`.** The page renders the signal arm against
 its randomization null and put validate at the **100th percentile**.
@@ -3190,6 +3245,55 @@ the next-newest row in that case, `indicators` has no foreign key to
 hold today is how this class of defect arrives.
 
 ---
+
+## Phase 5 gate — closed 2026-08-20
+
+Nine items, checked at the end of Session 18. The phase covers the
+`handlers/` layer, the seven tools, the MCP server, and the four routes.
+
+| # | Criterion | Evidence |
+|---|---|---|
+| 1 | Seven handlers, one contract, three consumers agreeing by construction | The web routes, the MCP tools, and the chat loop all reach the same seven handlers. `test_mcp_schemas.py` asserts the tool registry and `handlers.SEVEN_TOOLS` have identical keys |
+| 2 | No probability leaves the handler layer without `n_eff`, an interval, and a q-value | `handlers/validate.py`, plus a structural test on the return annotations. A suppressed cell carries a reason and no rate — the union can express the difference, the view's nulled columns cannot |
+| 3 | MCP server authenticated, rate limited, read-only, adding no query logic | Session 16 gate, all 10 items. No `mcp/` module imports `sqlalchemy` or `db_io`. Re-verified live 2026-08-19: seven tools, two splits, holdout refused at the handler, `predict` returning `not_found` |
+| 4 | `/`, `/ticker/[sym]`, `/research`, `/chat` all render against the live database | All four verified 2026-08-19. `/chat` answered a real question end to end through MCP, showing every tool call and its raw payload |
+| 5 | No route, tool, or chat surface reads holdout | `test_holdout_firewall.py`, 18 passing. Three independent guards: nothing on these routes can express it, `SplitArg` has two members, `handlers/enums.py` raises |
+| 6 | `v_positions` reads its thresholds from config | ADR 115, `serving_config`. `test_v_positions_config.py` fails when the stored row and the live config disagree, and names `cscan db sync-config` |
+| 7 | The chat layer performs no arithmetic and cannot query outside the seven tools | ADR 130. No SQL, no `pg`, no `JSON.parse` on the MCP boundary; tool results reach the model byte-identical |
+| 8 | ADR 112's result is visible on every surface that reports a statistic | `/chat` states it above the composer; `/research` **computes** it from the rows on the page rather than restating it; `mcp/server.py::INSTRUCTIONS` carries it; the system prompt loader refuses to start without it |
+| 9 | `test_holdout_firewall.py` and `test_schema_drift.py` both pass, the latter having run | Holdout: 18 passing. Schema drift is an integration test and runs in CI's slow tier against a container migrated from empty — a stronger check than a local run, since it replays the whole chain |
+
+**Item 8 is what makes the phase honest rather than merely complete**, and
+`/research` is the reason it holds under change: `KillBanner` derives the
+surviving-cell count and the minimum q from the same query that draws the
+grid, so the prose cannot drift from the table beside it.
+
+### The measured result at the close
+
+After ADR 129 (`in_trade` fails closed) removed 11.9% of the training
+population and ADR 135 corrected the universe's recency:
+
+| split | cells | suppressed | survives FDR | min q |
+|---|---|---|---|---|
+| train | 56 | 8 | **0** | 0.7604 |
+| validate | 56 | 28 | **0** | 0.7061 |
+
+448 cells across the full grid, 248 suppressed, **zero surviving**. Every
+reported cell's confidence interval contains its baseline — 48 of 48 on
+train, 28 of 28 on validate. ADR 112 was re-established rather than
+assumed to survive the smaller sample.
+
+`cell_stats` digest at the close: `7ad6eb4cda94d7e5cad85a54b49c9dc2`.
+
+### What Phase 5 does not claim
+
+The pooled signal arm clears its randomization null on validate (+12.63%
+against +6.36%) and this is **not** an edge. It sits far below the null on
+train (+81.68% against +216.70%), the breadth_high split disagrees in sign
+on validate (−6.45% against +23.61%), and one uncorrected arm comparison on
+one split is not the FDR-corrected cell grid — which is where an edge would
+have to appear, and does not.
+
 
 ## Holdout
 

@@ -210,6 +210,32 @@ export interface Arm {
  * replications and an average of them is the summary ADR 013 exists to
  * avoid.
  */
+/**
+ * The newest benchmark run for one split of the live config.
+ *
+ * **Every arm query needs this, and none had it.** `config_hash` alone was
+ * enough while a config had been benchmarked exactly once — which was true
+ * until 2026-08-20, when the arms were re-run on corrected membership
+ * (ADR 135). The second run did not replace the first: `benchmarks` is
+ * append-only with a `run_id`, so the page silently read both and doubled
+ * everything. The null distribution came back as 400 replications and the
+ * signal arm as four rows, and neither looked wrong on the page — a
+ * distribution twice as dense is still a distribution.
+ *
+ * `computed_at DESC` rather than `run_id DESC`: the id embeds a timestamp
+ * and would sort correctly today, but that is a property of the format
+ * rather than a guarantee.
+ */
+const LATEST_RUN = `
+  run_id = (
+    SELECT b2.run_id FROM benchmarks b2
+     WHERE b2.config_hash = current_setting('capitalscan.default_config_hash', true)
+       AND b2.split_key = benchmarks.split_key
+     ORDER BY b2.computed_at DESC
+     LIMIT 1
+  )
+`;
+
 const ARMS_SQL = `
   SELECT arm, era, total_ret, sharpe, max_drawdown, frac_deployed, n_trades
     FROM benchmarks
@@ -217,6 +243,7 @@ const ARMS_SQL = `
      AND split_key = 'validate'
      AND arm <> 'random'
      AND replication IS NULL
+     AND ${LATEST_RUN}
    ORDER BY era, arm
 `;
 
@@ -258,6 +285,7 @@ const NULL_SQL = `
      AND arm = 'random'
      AND era = $1
      AND replication IS NOT NULL
+     AND ${LATEST_RUN}
    ORDER BY total_ret
 `;
 

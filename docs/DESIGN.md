@@ -2311,7 +2311,14 @@ Phase 7 adds one month of Polygon, $29-199, once.
 
 ## 10. Tools and chat
 
-### 11.1 Tool set
+> **Renumbered 2026-08-20.** These four subsections were numbered `11.1`
+> through `11.4`, colliding with section 11's own `11.1`-`11.8`. Two
+> different "§11.2" existed — the system prompt here, the screener there —
+> and citations across the codebase resolved to whichever the reader
+> assumed. `session16-18-phase5.md` already cited "DESIGN §10.2 gives the
+> prompt", so the headings were the error rather than the references.
+
+### 10.1 Tool set
 
 Seven tools, closed enums, dates validated against the ingested window, `limit` capped server-side at 200 (ADR 074).
 
@@ -2352,7 +2359,7 @@ the breadth denominator the train universe rather than any single name. A
 worst of the three options. Per-ticker history is `get_events(ticker=...)`.
 
 *`get_stats` has no `target_pct` default.* `v_screen` pins 0.03 in SQL and
-§11.2 quotes "up 3% within 5 sessions", but a fourth copy of that number
+§10.2 quotes "up 3% within 5 sessions", but a fourth copy of that number
 outside `core/config.py` violates invariant 9. Callers state the target they
 mean, and it is validated against `StatsParams.reach_targets`.
 
@@ -2375,7 +2382,7 @@ this guards the only layer that could ask it.
 
 **Every result carries `meta`** — `config_hash`, `as_of` (the most recent
 *bar* date, not the clock), `staleness_days` in **trading** days, `run_id`
-where one applies. §11.2's staleness banner cannot render what the handler
+where one applies. §10.2's staleness banner cannot render what the handler
 does not say.
 
 `compare_positions` joins in Phase 2 with the trade log.
@@ -2399,7 +2406,7 @@ See `MCP_SETUP.md` for auth, the read-only role, and client configuration.
 
 Tool schemas dominate input tokens, so a small tool count is a cost decision as well as a correctness one.
 
-### 11.2 System prompt
+### 10.2 System prompt
 
 Short, because guardrails live in code. The prompt handles framing, not enforcement.
 
@@ -2424,7 +2431,7 @@ Rules:
 
 Model: `ANTHROPIC_MODEL` env var, Sonnet default, Haiku first for single-tool turns with escalation (ADR 077).
 
-### 11.3 Response validator
+### 10.3 Response validator
 
 Post-turn, pre-delivery (ADR 075).
 
@@ -2448,7 +2455,7 @@ And this fails:
 
 Web fetch stays available for company context, attributed explicitly and never merged into a statistical claim.
 
-### 11.4 MCP server
+### 10.4 MCP server
 
 ```
 capitalscan-mcp

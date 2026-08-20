@@ -34,9 +34,14 @@
    * (ADR 112), so a loud treatment would colour the entire page. */
   --flag: #c9a227;
 
-  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  --sans: "Inter Tight", Inter, system-ui, -apple-system, sans-serif;
-  --display: "IBM Plex Sans Condensed", "IBM Plex Sans", var(--sans);
+  /* `--font-*` come from `next/font/google` in `layout.tsx`, which
+   * self-hosts the files and emits a size-adjusted local fallback. The
+   * literal names stay behind them: if the variable is ever missing (a test
+   * renderer with no layout, a stylesheet loaded standalone) the page falls
+   * back to an installed copy rather than to Times. */
+  --mono: var(--font-mono), "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: var(--font-sans), "Inter Tight", Inter, system-ui, -apple-system, sans-serif;
+  --display: var(--font-display), "IBM Plex Sans Condensed", "IBM Plex Sans", var(--sans);
 
   /* One superfamily across mono and display, a different face for prose.
    * Headers and data then look related rather than pasted together. */

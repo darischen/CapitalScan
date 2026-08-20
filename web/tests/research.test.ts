@@ -180,3 +180,36 @@ describe.skipIf(!connected)("against the live database", () => {
     expect(percentileOf(1, sorted)).toBe(1);
   });
 });
+
+/**
+ * The arm queries read one run, not every run of a config.
+ *
+ * **This shipped and was invisible.** `config_hash` alone was a sufficient
+ * key while a config had been benchmarked exactly once — true until
+ * 2026-08-20, when ADR 135's corrected membership produced a second run.
+ * `benchmarks` is append-only with a `run_id`, so `/research` read both:
+ * the null distribution came back as 400 replications instead of 200 and
+ * the signal arm as four rows instead of two.
+ *
+ * Nothing about the rendered page would have looked wrong. A null
+ * distribution with twice the points is still a distribution, and the
+ * percentile it yields is still plausible.
+ */
+describe("benchmark queries are scoped to a single run", () => {
+  const source = readFileSync(join(__dirname, "..", "lib", "research.ts"), "utf8");
+
+  it("every benchmarks query carries the latest-run predicate", () => {
+    const blocks = source.match(/const \w+_SQL = `[^`]*`/g) ?? [];
+    const benchmarkQueries = blocks.filter((b) => /FROM benchmarks/.test(b));
+    expect(benchmarkQueries.length).toBeGreaterThan(0);
+    for (const q of benchmarkQueries) {
+      expect(q, `a benchmarks query without LATEST_RUN:\n${q}`).toContain("LATEST_RUN");
+    }
+  });
+
+  it("the predicate orders by computed_at, not by run_id", () => {
+    // `run_id` embeds a timestamp and would sort correctly today, but that
+    // is a property of the format rather than a guarantee.
+    expect(source).toMatch(/ORDER BY b2\.computed_at DESC/);
+  });
+});
