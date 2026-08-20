@@ -962,6 +962,28 @@ No EC2 and no persistent cloud compute. Vercel serves frontend and API, Neon ser
 
 Steady-state cost through Phase 6: under $15 monthly, consisting only of Anthropic API usage.
 
+**Sizing re-verified 2026-08-19, and the headline number is alarming until
+you read which rows it counts.** `events` is now **14,604,735 rows / 10 GB**
+locally — 70x this ADR's whole-serving-store estimate, and enough to make a
+reader assume the free tier is out.
+
+It is not. That table holds **23 config hashes x 4 entry kinds**. The
+serving store carries one config at one grain, and measured:
+
+    events, all configs x all entry kinds    14,604,735 rows,  10 GB
+    events, live config, next_open only         157,915 rows
+
+157,915 against this ADR's "roughly 200k rows, under 150MB" for the whole
+subset. The estimate holds; the growth is entirely in slices that never
+leave the workstation — the config sweep (ADR 059) and ADR 122's
+out-of-trade events, which exist to keep the ticker page complete and are
+excluded from every statistical read.
+
+Recorded because `docs/BACKLOG.md` carried an item asserting the opposite
+("`events` at 14.6M rows does not fit Neon's free tier, so what gets synced
+is a paid decision"). That read the local row count as the sync payload.
+The item is removed; the sync job remains unbuilt but undecided-nothing.
+
 ---
 
 ## 054. Notifier protocol, three channels

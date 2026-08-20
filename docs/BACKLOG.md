@@ -15,6 +15,13 @@ the session (ADR 134, `market_is_open()`). All are recorded in
 `DECISIONS.md`; they are gone from here rather than marked done, because a
 backlog of finished work is a changelog wearing the wrong name.
 
+**Removed 2026-08-19**: the Neon sync item. It asserted that `events` at
+14.6M rows does not fit the free tier, which read the local row count as
+the sync payload. ADR 053 specifies a subset and the measured subset is
+157,915 rows, inside that ADR's own estimate. The sync job is unbuilt, but
+nothing about it is undecided, so it is a deployment task rather than a
+backlog item. ADR 053 carries the re-verification.
+
 ---
 
 ## 1. Make `in_trade` fail closed (ADR 129) — decided, needs a rebuild
@@ -85,19 +92,7 @@ itself worth understanding.
 
 ---
 
-## 3. Held by the user, not to be acted on unilaterally
-
-**Neon and the sync job — deferred, 2026-08-19.** Not needed for Session
-18: every route reads the local views and `/chat` calls MCP on 127.0.0.1.
-
-The user's reasoning for deferring: the constraint is cost rather than
-hosting, and this workstation can serve. `events` at 14.6M rows does not
-fit Neon's free tier, so "what gets synced" is a paid decision before it is
-a technical one. Revisit at deployment.
-
----
-
-## 4. Small and unblocked
+## 3. Small and unblocked
 
 **No edge interval exists in the schema.** `cell_stats` stores a Wilson
 interval on `p_hit`; `edge` is `p_hit − baseline` with no interval of its
