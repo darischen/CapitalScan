@@ -1663,11 +1663,24 @@ null replications. All ten gate items pass.
 | train | **+383.66%** | +108.37% | +83.95% | **+205.77%** | below |
 | validate | **−3.69%** | −10.10% | −13.99% | **+3.02%** | below |
 
-> **Superseded and unresolved, 2026-08-19.** The live config's benchmark run
-> (2026-08-16, `86e91448a65aa40b`) puts validate at **+12.63% against a
-> 97.5th percentile of +6.36%** — above, not below. The table here is from
-> the 2026-08-13 run under `1835688bf7d760ba`. See "OPEN: the benchmark
-> record and the database disagree" above; **do not read either as settled.**
+> **Resolved 2026-08-20. There was never a contradiction — only a missing
+> label.** This table is `1835688bf7d760ba`, and it matches that config's
+> stored `benchmarks` rows exactly: validate signal −10.10%, null 97.5th
+> +3.02%. The live config `86e91448a65aa40b` gives +12.63% against +6.36%,
+> and it too reproduces exactly — twice, across a full universe rebuild
+> (2026-08-16 and 2026-08-20 runs agree to the cent).
+>
+> Two configs, two answers, both correct and both stored. The arms are
+> deterministic; the appearance of disagreement came from quoting a number
+> without the hash that produced it. **Every benchmark figure in this
+> document now carries its `config_hash`, and that is the fix** — the
+> alternative, editing this table to match the newer run, would have erased
+> a measurement that was never wrong.
+>
+> The live config's numbers are recorded below under "Live config
+> `86e91448a65aa40b`". Neither reading is an edge: on the live config the
+> signal arm sits **below** its null on train (+81.68% against +216.70%)
+> and the breadth_high split disagrees in sign on validate.
 
 The signal arm is **below the 97.5th percentile of its own randomization null on both
 splits**, and below buy-and-hold on both. On train it does clear the null's *median*
@@ -1677,6 +1690,31 @@ even clear the median.
 
 This is the reading gate item 4 exists to record. It is not a favorable result and it is
 published as measured.
+
+### Live config `86e91448a65aa40b`, measured 2026-08-20
+
+The same eight arms under the config the system currently serves, after
+ADR 129 (`in_trade` fails closed) and ADR 135 (a universe evaluation must
+rest on data from inside its period).
+
+| Split | Buy and hold | Signal | Null median | Null 97.5th | Verdict |
+|---|---|---|---|---|---|
+| train | **+392.97%** | +81.68% | +102.50% | **+216.70%** | below |
+| validate | **−3.76%** | +12.63% | −12.45% | **+6.36%** | above |
+
+The validate row is the only arm comparison in this project that clears
+its null, and it should be read narrowly. It is one uncorrected test on
+one split; the breadth_high split of the same run gives −6.45% against a
+97.5th percentile of +23.61%, and train is far below on both eras. ADR
+112's cell grid — which is FDR-corrected and is where an edge would have
+to appear — reports **zero cells surviving on either split** after this
+rebuild, minimum q 0.7604 train and 0.7061 validate.
+
+ADR 135 moved buy-and-hold on train by +9.31 points (from +383.66%) by
+removing a delisted position that had been held at a frozen 2018 price for
+seven years. Validate's signal arm did not move at all, because the signal
+arm trades events and no event changed — the structural claim in that ADR,
+confirmed by measurement.
 
 ### All eight arms, train split
 
@@ -2712,7 +2750,24 @@ Two things worth carrying over anyway.
 
 ---
 
-## OPEN: the benchmark record and the database disagree, 2026-08-19
+## RESOLVED: the benchmark record and the database never disagreed, 2026-08-20
+
+**Both numbers were correct; neither carried its `config_hash`.** Verified
+against the stored `benchmarks` rows: `RESULTS.md`'s table reproduces
+`1835688bf7d760ba` exactly (−10.10% / +3.02%), and the live
+`86e91448a65aa40b` reproduces exactly too, twice, across a full universe
+rebuild (2026-08-16 and 2026-08-20 agree to the cent).
+
+So the arms are deterministic and nothing needed re-measuring. Every
+benchmark figure in this document now names the config that produced it,
+and the Session 13 table carries a resolved note pointing at the live
+config's section. The heading below is kept as written so the
+investigation is legible; read it as the account of a question that turned
+out to have a clerical answer.
+
+---
+
+### The original entry, 2026-08-19
 
 **Found by building `/research`.** The page renders the signal arm against
 its randomization null and put validate at the **100th percentile**.
