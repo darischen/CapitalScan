@@ -24,46 +24,36 @@ backlog item. ADR 053 carries the re-verification.
 
 ---
 
-## 1. Make `in_trade` fail closed (ADR 129) — decided, needs a rebuild
+## 1. ~~Make `in_trade` fail closed (ADR 129)~~ — done 2026-08-20
 
-**Blocked on the database being free.** ~3 hours of `cscan events`, then
-`cell-stats` and the benchmark arms. Must not overlap the poller.
+Kept for one release as the record of what it cost, then deleted.
 
-`core.universe.in_trade` returns `True` when no universe evaluation exists
-on or before a bar. The check is per *ticker*, so a name that entered the
-universe late fails open across all its earlier history — not only the
-pre-2010 window, which is how it was first mismeasured.
+Flipped, rebuilt, and verified. `cscan events` 2h54m / 1,313,204 rows;
+`cscan backtest --workers 8` 3h31m / 557,012 rows, harness passing all five
+checks. 55,986 stale rows from the superseded 2026-08-16 run deleted after
+a decision (`run_backtest` upserts and filters, so it never emits an
+ineligible row and cannot remove one).
 
-Live config, `touch` slice:
+```
+entry_kind   in_trade   fail_open
+next_open     139,253       0
+touch         139,280       0
+touch_5m      139,253       0
+touch_30m     139,253       0
+```
 
-| Split | Events | Tickers | Range |
-|---|---|---|---|
-| train | **18,805** | 566 | 2010-01-04 → 2021-09-23 |
-| validate | 45 | 3 | 2022-02-18 → 2023-12-29 |
-| holdout | 35 | 3 | 2024-09-13 → 2025-03-21 |
+`cell_stats` digest moved `d4df6c3d...` -> `7ad6eb4c...`, as expected.
 
-11.9% of the training population. Across all configs and entry kinds the
-same predicate covers 1,672,092 rows.
+**ADR 112 re-established rather than assumed:**
 
-**Steps:**
+| split | cells | suppressed | survives FDR | min q |
+|---|---|---|---|---|
+| train | 56 | 8 | **0** | 0.7604 |
+| validate | 56 | 28 | **0** | 0.7061 |
 
-1. Flip the fallback in `core/universe.py` to `False`, with the test that
-   currently asserts fail-open inverted.
-2. `cscan events` full window. ADR 122 means this re-*stamps* rather than
-   deletes — the events stay visible on the ticker page and drop out of
-   every statistical read, which already carries the predicate.
-3. Record the `cell_stats` digest **before and after**. It is expected to
-   move; the current baseline is `96af3a8dd09438c4c62cc162fdc0fdff`.
-4. Re-run `cscan cell-stats` and the benchmark arms.
-5. Re-establish ADR 112's result rather than assuming it. Zero cells
-   surviving FDR is likely to hold on an 11.9%-smaller train set and is not
-   entitled to.
-
-**Holdout is touched** — 35 events, 3 tickers. Re-stamping is a change to
-the population *definition*, not a look at the data, so it is legitimate;
-but it must land before any holdout evaluation rather than after.
-
----
+448 cells, 248 suppressed, 0 surviving. Every reported cell's interval
+still contains its baseline. Train's minimum q moved from 0.849 toward
+significance and landed nowhere near it.
 
 ## 2. The benchmark record and the database disagree
 
@@ -92,14 +82,95 @@ itself worth understanding.
 
 ---
 
-## 3. Small and unblocked
+## 3. A delisted ticker passes the health filter forever
+
+**Found 2026-08-20 while checking the two "small" ticker items, which turned
+out to share this cause.**
+
+`_latest_indicator_row` filters `ts <= as_of` with **no lower bound**, so a
+ticker that stops trading keeps returning its last real row for every later
+quarter. AET (Aetna, acquired by CVS 2018-11-29) passes all four criteria
+in 2026-06-30 on data frozen in November 2018:
+
+```
+as_of        in_trade  mcap  above_sma  slope  rel_return
+2026-06-30      t        t       t        t        t      <- 2018 data
+2018-12-31      t        t       t        t        t
+```
+
+31 consecutive quarters `in_trade` with no bars behind any of them. It is
+the only ticker in this state, measured.
+
+**Why it matters beyond one row.** `core/arms.py` says a position in a
+delisted name "must resolve rather than silently persist", and resolves it
+by dropping out of `universe`. AET never drops out, so the buy-and-hold and
+DCA arms carry a frozen position — neither gaining nor losing — for seven
+years of an equal-weight book. That is a candidate contributor to item 2's
+discrepancy and should be checked before that item is called
+non-deterministic.
+
+**Not fixed unilaterally.** A recency floor on the criteria changes the
+universe definition, which changes `config_hash`, which invalidates every
+measured number. Same class of decision as ADR 129 and needs the same
+deliberate call.
+
+**The obvious floor** is "no indicator row within one quarter of `as_of`
+means not evaluable", which fails closed the way ADR 129 now does.
+
+---
+
+## 4. Nothing ever writes `tickers.delisted_on`
+
+All 712 rows are NULL, and no code path in the tree sets the column —
+verified by grep across `capitalscan/` and `scripts/`.
+
+**It has a live reader.** `research/benchmarks.py:194` selects
+`WHERE delisted_on IS NOT NULL` to resolve delisted positions in the
+benchmark arms, and gets zero rows every time. The delisting mechanism the
+arms document is present in code and inert in practice.
+
+Same investigation as item 3 and probably the same fix: whatever sets a
+recency floor can also stamp the date it noticed.
+
+---
+
+## 5. `tickers.is_active` is written True and never False
+
+`run_tickers_refresh` upserts `is_active: True` for current constituents;
+`ensure_tickers` does the same for ad-hoc backfills. **No code path writes
+False**, and the column defaults True — yet 96 rows carry False, so they
+were set from outside the current tree (manual SQL, or a script since
+removed).
+
+Two of the three named inactive rows look wrongly flagged: **HUBB**
+(Hubbell Incorporated, a current S&P 500 member trading ~$504) and **Q**
+(Qnity Electronics, a 2025 spin-off trading ~$142). Both are excluded from
+every job, because every ticker list is `SELECT ticker FROM tickers WHERE
+is_active`.
+
+**Contained, verified**: the nine inactive tickers carrying 2026-08 bars
+produced 0 indicator rows, 0 events, 0 `in_trade` universe rows, 0
+`bars_live` rows and 0 screener rows. No measured number is affected. The
+bars exist because these tickers were active when `bars_daily` ran on
+2026-08-18 and were deactivated afterwards — the reverse of the backlog's
+earlier guess that this was symbol reuse landing on an old row.
+
+The cost is a false negative: a real S&P 500 name silently absent from the
+universe. Worth an explicit reconciliation between `tickers` and the
+Wikipedia constituent list, which would also give item 4 its date.
+
+---
+
+## 6. Documented limitations, unlikely to be built as stated
 
 **No edge interval exists in the schema.** `cell_stats` stores a Wilson
-interval on `p_hit`; `edge` is `p_hit − baseline` with no interval of its
+interval on `p_hit`; `edge` is `p_hit - baseline` with no interval of its
 own. `/research` shows the rate interval with the baseline marked inside
-it, which answers the same question. DESIGN §11.2 asks for an edge bar; one
-cannot be drawn without either storing an edge interval or differencing two
-bounds, and the latter assumes independence the data does not have.
+it, which answers the same question — verified 2026-08-20: every reported
+cell's interval contains its baseline, 48/48 train and 28/28 validate.
+DESIGN 11.2's edge bar cannot be drawn without either storing an edge
+interval or differencing two bounds, and the latter assumes independence
+the data does not have.
 
 **Half-day sessions are not modelled.** `market_is_open()` is 09:30-16:00
 ET every trading day. The market closes at 13:00 ET on roughly nine
@@ -109,10 +180,3 @@ lengths, which nothing here has.
 
 **Self-hosting the three Google fonts.** The only outbound request the app
 still makes. Cosmetic.
-
-**`tickers.delisted_on` is NULL on all 96 inactive rows**, so the date a
-listing ended is recorded nowhere.
-
-**Nine delisted symbols carry 2026-08 bars** — UA, FB, FISV, HUBB, NKTR,
-PCLN, PCS, Q, CPWR — three to four bars each on tickers delisted years ago.
-Reads like symbol reuse landing on the old row.
