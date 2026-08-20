@@ -9,7 +9,7 @@ log has to be able to tell them apart (DESIGN §4.6).
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -232,3 +232,55 @@ def test_an_evaluation_exactly_on_the_signal_date_counts():
     """`<=`, not `<`. A quarter-end evaluation governs that day's signals."""
     flags = _flags([("TSLA", date(2026, 6, 30), True)])
     assert uni.in_trade(flags, "TSLA", date(2026, 6, 30)) is True
+
+
+# ---------------------------------------------------------------------------
+# `evaluation_max_age_days` — the recency floor (backlog item 3, 2026-08-20)
+# ---------------------------------------------------------------------------
+
+
+def test_a_quarter_is_one_rebalance_period():
+    assert uni.evaluation_max_age_days("Q") == 92
+
+
+def test_the_frequency_is_read_case_insensitively_and_trimmed():
+    """`rebalance_freq` is a hand-written config string, not an enum."""
+    assert uni.evaluation_max_age_days(" q ") == 92
+    assert uni.evaluation_max_age_days("M") == uni.evaluation_max_age_days("m")
+
+
+def test_an_unknown_frequency_raises_rather_than_defaulting():
+    """A silent fallback would restore the unbounded behaviour this closes.
+
+    That is the whole defect: `_latest_indicator_row` filtered `ts <= as_of`
+    with no lower bound, so AET passed every criterion at 2026-06-30 on
+    data frozen in November 2018.
+    """
+    with pytest.raises(ValueError, match="no known period"):
+        uni.evaluation_max_age_days("fortnightly")
+
+
+def test_every_frequency_is_a_positive_number_of_days():
+    for freq in ("D", "W", "M", "Q", "A", "Y"):
+        assert uni.evaluation_max_age_days(freq) > 0
+
+
+def test_the_default_config_frequency_resolves():
+    """`UniverseParams.rebalance_freq` had no consumer until 2026-08-20, so
+    nothing checked that its default was a value anything understood."""
+    assert uni.evaluation_max_age_days(UniverseParams().rebalance_freq) == 92
+
+
+def test_the_floor_admits_aets_final_quarter_and_rejects_the_next():
+    """The boundary the fix turns on, stated as dates.
+
+    AET's last bar is 2018-11-29. At `as_of` 2018-12-31 it traded inside
+    the quarter and stays; at 2019-03-31 it did not and drops. One final
+    quarter of membership is correct — `core/arms.py` sells at the next
+    rebalance, not immediately.
+    """
+    max_age = uni.evaluation_max_age_days("Q")
+    last_bar = date(2018, 11, 29)
+
+    assert last_bar > date(2018, 12, 31) - timedelta(days=max_age)
+    assert last_bar <= date(2019, 3, 31) - timedelta(days=max_age)

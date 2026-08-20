@@ -55,67 +55,78 @@ touch_30m     139,253       0
 still contains its baseline. Train's minimum q moved from 0.849 toward
 significance and landed nowhere near it.
 
-## 2. The benchmark record and the database disagree
+## 2. ~~The benchmark record and the database disagree~~ — resolved 2026-08-20
 
-`RESULTS.md` records the signal arm below its randomization null's 97.5th
-percentile on both splits. The live config's run puts validate **above** it.
+**The arms are deterministic. `RESULTS.md`'s table is stale.**
+
+Re-run under the live config on corrected membership. The database's
+numbers reproduce **exactly**:
 
 ```
-RESULTS.md   signal −10.10%, null 97.5th +3.02%   (08-13, 1835688bf7d760ba)
-database     signal +12.63%, null 97.5th +6.36%   (08-16, 86e91448a65aa40b)
+                       08-16 run    08-20 run    RESULTS.md
+validate signal pooled   +12.63%      +12.63%      -10.10%
+validate null 97.5th      +6.36%       +6.36%       +3.02%
 ```
 
-`/research` states the contradiction rather than picking a number.
+The backlog's own test settles it: "If they reproduce, `RESULTS.md`'s table
+is stale... If they do not, something in the arms is non-deterministic,
+which is a much larger finding." They reproduce to the cent, twice, across
+a universe rebuild. `RESULTS.md`'s figures were measured on 2026-08-13
+under config `1835688bf7d760ba`; the live config is `86e91448a65aa40b`.
 
-**What would settle it**: re-run `cscan benchmarks` under the live config
-and compare against the 08-16 rows. If they reproduce, `RESULTS.md`'s table
-is stale and should be re-measured with the config hash recorded beside it.
-If they do not, something in the arms is non-deterministic, which is a much
-larger finding.
+**Do not read the validate line as an edge.** The pooled signal arm sits
+above its randomization null on validate and **below** it on train
+(+81.68% against a null 97.5th of +216.70%), and the breadth_high split
+disagrees in sign on validate (-6.45% against +23.61%). One uncorrected arm
+comparison on one split is not the cell grid, and the cell grid is where
+ADR 112 measured zero cells surviving FDR correction.
 
-**Not to be settled by editing `RESULTS.md` to match.** The record is the
-account of what was measured; changing it erases that the result moved.
-
-Worth noting the cells did *not* move — the `cell_stats` digest is
-byte-identical across ADR 122's rebuild. Stable cells and unstable arms is
-itself worth understanding.
+**What remains**: `RESULTS.md` still prints the 08-13 table without its
+config hash beside it. Re-measuring it is Session 18.4's job, not a
+backlog item — the record should state which config produced each number
+rather than being edited to match the newest run.
 
 ---
 
-## 3. A delisted ticker passes the health filter forever
+## 3. ~~A delisted ticker passes the health filter forever~~ — fixed 2026-08-20 (ADR 135)
 
-**Found 2026-08-20 while checking the two "small" ticker items, which turned
-out to share this cause.**
+`core.universe.evaluation_max_age_days` derives a floor from
+`rebalance_freq`, which had no consumer until this change.
+`_latest_indicator_row` gained `AND i.ts > :floor`.
 
-`_latest_indicator_row` filters `ts <= as_of` with **no lower bound**, so a
-ticker that stops trading keeps returning its last real row for every later
-quarter. AET (Aetna, acquired by CVS 2018-11-29) passes all four criteria
-in 2026-06-30 on data frozen in November 2018:
+**The rebuild did not fix it on its own**, and that is the part worth
+keeping. `db_io.upsert` never deletes, so the re-run declining to evaluate
+AET left its old rows in place with their old claims — the same shape as
+the 55,986 stale backtest rows earlier the same night. 30 rows were flipped
+to `false` explicitly; AET's last `in_trade` quarter is now 2018-12-31,
+which is the one-final-quarter boundary `core/arms.py` expects.
+
+**Flipped, not deleted, and the direction matters.** `v_universe` is
+`DISTINCT ON (ticker) ORDER BY as_of DESC`, so deleting AET's later rows
+would have promoted its 2018 row to newest and had the view claim AET is
+in the trade universe *today*.
+
+**Measured effect on the arms**, which was the whole reason to care:
 
 ```
-as_of        in_trade  mcap  above_sma  slope  rel_return
-2026-06-30      t        t       t        t        t      <- 2018 data
-2018-12-31      t        t       t        t        t
+train buy_hold   +383.66%  ->  +392.97%
+train signal     +85.75%   ->  +81.68%
+validate signal  +12.63%   ->  +12.63%   (unchanged)
 ```
 
-31 consecutive quarters `in_trade` with no bars behind any of them. It is
-the only ticker in this state, measured.
+Removing a seven-year frozen position raised buy-and-hold on train by 9.31
+points. Validate's signal arm did not move, because the signal arm trades
+events and no event changed — the structural claim in ADR 135, confirmed
+by measurement rather than assumed.
 
-**Why it matters beyond one row.** `core/arms.py` says a position in a
-delisted name "must resolve rather than silently persist", and resolves it
-by dropping out of `universe`. AET never drops out, so the buy-and-hold and
-DCA arms carry a frozen position — neither gaining nor losing — for seven
-years of an equal-weight book. That is a candidate contributor to item 2's
-discrepancy and should be checked before that item is called
-non-deterministic.
-
-**Not fixed unilaterally.** A recency floor on the criteria changes the
-universe definition, which changes `config_hash`, which invalidates every
-measured number. Same class of decision as ADR 129 and needs the same
-deliberate call.
-
-**The obvious floor** is "no indicator row within one quarter of `as_of`
-means not evaluable", which fails closed the way ADR 129 now does.
+**Also surfaced, unrelated to the floor**: 11 BLK rows flipped `f` -> `t`
+on the re-run. BLK's indicator rows are 0 days stale in every affected
+quarter, so the floor is a no-op for it. The cause is `tickers.sector`,
+now populated for 502 of 712 rows where `compute.py`'s own docstring
+records it as NULL for all 711 when that code was written; sector changes
+the peer set, which changes the median, which flips borderline
+`crit_rel_return`. The stored rows were stale relative to data that
+arrived later, and the re-run corrected them.
 
 ---
 
