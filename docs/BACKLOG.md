@@ -130,49 +130,77 @@ arrived later, and the re-run corrected them.
 
 ---
 
-## 4. Nothing ever writes `tickers.delisted_on`
+## 4. `tickers.is_active` and `delisted_on` are not derived from the delisting signal that exists
 
-All 712 rows are NULL, and no code path in the tree sets the column —
-verified by grep across `capitalscan/` and `scripts/`.
+**Investigated 2026-08-20. Items 4 and 5 were the same defect and are merged.**
 
-**It has a live reader.** `research/benchmarks.py:194` selects
-`WHERE delisted_on IS NOT NULL` to resolve delisted positions in the
-benchmark arms, and gets zero rows every time. The delisting mechanism the
-arms document is present in code and inert in practice.
+`jobs/ingest.py::_update_ticker_coverage` maintains `tickers.last_bar` and
+its docstring names it exactly right: *"the delisting signal DESIGN 4.3
+calls out under silent truncation."* It is populated for **638 of 712**
+tickers.
 
-Same investigation as item 3 and probably the same fix: whatever sets a
-recency floor can also stamp the date it noticed.
+Neither column that should follow from it does:
+
+```
+tickers                 712
+  have last_bar         638
+  have delisted_on        0     <- no writer anywhere in the tree
+```
+
+**`is_active` disagrees with `last_bar` on 14 tickers.**
+
+Nine are marked inactive and still trading, so every job skips them —
+every ticker list is `SELECT ticker FROM tickers WHERE is_active`:
+
+```
+HUBB  Hubbell Incorporated  $504.30  last bar 2026-08-17
+Q     Qnity Electronics     $140.76  last bar 2026-08-17
+UA                            $5.19  last bar 2026-08-17
+FISV  Fiserv                 $52.21  last bar 2026-08-17
+FB                           $45.05  last bar 2026-08-17
+NKTR / PCLN / PCS / CPWR
+```
+
+HUBB is a current S&P 500 member. FB is not Meta — Meta trades as META,
+and $45 is a different company holding a reused symbol. So the nine are a
+mix of *wrongly excluded* and *genuinely reused*, and `last_bar` alone
+cannot tell them apart.
+
+Five are marked active and stopped trading years ago:
+
+```
+TLAB 2013-12-03   MOLX 2013-12-09   AET 2018-11-29
+SCG  2018-12-31   BMS  2019-06-10
+```
+
+**Nothing in the tree writes `is_active = False`.** `run_tickers_refresh`
+upserts `True` for current constituents, `ensure_tickers` upserts `True`
+for ad-hoc backfills, and the column defaults `True`. The 96 `False` rows
+were set from outside the current code. The last refresh was 2026-08-01
+and wrote 503 rows.
+
+**Why this is one decision, not two.** Populating `delisted_on` while
+`is_active` still disagrees would leave the table telling two stories: a
+ticker could carry a delisting date and an active flag, or trade daily and
+carry neither. The reconciliation has to cover both columns or neither.
+
+**Blast radius is the reason it is not done here.** `delisted_on` is inert
+— `ArmWindow.delisted_on` is built and never read, so writing it changes
+no measurement today, though `handlers/universe.py` projects it to MCP
+callers and would start telling the truth. `is_active` is not inert: it
+selects the ticker list for every job, so admitting HUBB and Q would give
+them indicators, events, and universe evaluations, changing the measured
+population. That is the same class of call as ADR 129 and ADR 135.
+
+**The reconciliation, when someone takes it**: compare `tickers` against
+the Wikipedia constituent list *and* `last_bar`, set `delisted_on =
+last_bar` for names that stopped trading, and treat a name that is trading
+but absent from the index as a membership question rather than an
+activity one. `last_bar` is already the evidence; nothing needs fetching.
 
 ---
 
-## 5. `tickers.is_active` is written True and never False
-
-`run_tickers_refresh` upserts `is_active: True` for current constituents;
-`ensure_tickers` does the same for ad-hoc backfills. **No code path writes
-False**, and the column defaults True — yet 96 rows carry False, so they
-were set from outside the current tree (manual SQL, or a script since
-removed).
-
-Two of the three named inactive rows look wrongly flagged: **HUBB**
-(Hubbell Incorporated, a current S&P 500 member trading ~$504) and **Q**
-(Qnity Electronics, a 2025 spin-off trading ~$142). Both are excluded from
-every job, because every ticker list is `SELECT ticker FROM tickers WHERE
-is_active`.
-
-**Contained, verified**: the nine inactive tickers carrying 2026-08 bars
-produced 0 indicator rows, 0 events, 0 `in_trade` universe rows, 0
-`bars_live` rows and 0 screener rows. No measured number is affected. The
-bars exist because these tickers were active when `bars_daily` ran on
-2026-08-18 and were deactivated afterwards — the reverse of the backlog's
-earlier guess that this was symbol reuse landing on an old row.
-
-The cost is a false negative: a real S&P 500 name silently absent from the
-universe. Worth an explicit reconciliation between `tickers` and the
-Wikipedia constituent list, which would also give item 4 its date.
-
----
-
-## 6. Documented limitations, unlikely to be built as stated
+## 5. Documented limitations, unlikely to be built as stated
 
 **No edge interval exists in the schema.** `cell_stats` stores a Wilson
 interval on `p_hit`; `edge` is `p_hit - baseline` with no interval of its
