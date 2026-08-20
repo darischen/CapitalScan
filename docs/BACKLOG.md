@@ -8,11 +8,36 @@ Ordered by when it blocks something, not by size.
 
 ## Open
 
-Nothing.
+### `UniverseParams.min_price` is declared and enforced nowhere
+
+Found 2026-08-20 while checking why `cscan nightly` warned that SBNY was
+"possibly delisted". `min_price: float = 1.0` appears exactly once in the
+tree — its own declaration in `core/config.py`. No criterion reads it and
+`is_tradeable` never sees it.
+
+**Same shape as `rebalance_freq` before ADR 135**, which sat unused from
+Session 9 until it was given a consumer. A config field that nothing reads
+is a claim the system makes and does not honour: someone tuning
+`min_price` would change a number, see the hash move, rebuild, and get
+identical results.
+
+**Currently harmless, which is why it is here rather than fixed.** The four
+enforced criteria already exclude penny stocks through market cap — SBNY
+trades at $0.64 with a $0.03B cap and fails `crit_mcap` by three orders of
+magnitude. Adding a fifth criterion would change the universe definition
+and therefore `config_hash`, invalidating every measured row, to exclude
+names that are already excluded.
+
+**What would settle it**: either add `crit_min_price` to
+`UniverseParams.required_criteria` and accept the rebuild, or delete the
+field and record that market cap subsumes it. Deleting also moves
+`config_hash`, so neither option is free — which is the argument for
+deciding deliberately rather than drifting.
+
+---
 
 The file is kept so the next finding has a home. Adding one means saying
-what is wrong, what it costs, and what would settle it — the entries below
-are gone because they were settled, not because they were forgotten.
+what is wrong, what it costs, and what would settle it.
 
 ---
 

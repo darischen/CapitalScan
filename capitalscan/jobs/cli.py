@@ -2090,7 +2090,28 @@ def nightly() -> None:
     # 2026-08-09). `run_id` is the path-capture job's, the last link in the
     # chain, so a reader landing here can follow it into `runs`.
     scheduled_runs.complete(engine, "nightly", "ok", run_id=path_job.run_id)
-    console.print("nightly: chain complete (sync --to-serving not yet implemented)")
+
+    # ADR 053's last link: "a nightly export builds the subset locally and
+    # upserts to cloud". Skipped visibly rather than silently when the
+    # serving store is not configured, matching `cscan db migrate`'s
+    # `skip <target>: <VAR> not set` — a chain that quietly stops one step
+    # short is how a deployed site goes stale without anyone noticing.
+    #
+    # Failures here do not fail the chain. Everything above has already
+    # been written to the research store, which is the source of truth; a
+    # network problem reaching the cloud copy should not mark a good
+    # ingest as failed. It is reported and the next run retries.
+    from capitalscan.jobs import sync as sync_job
+
+    try:
+        sync_report = sync_job.run_sync()
+        console.print(f"nightly: synced {sync_report.total:,} rows to serving")
+    except RuntimeError as exc:
+        console.print(f"[yellow]skip[/yellow] sync: {exc}")
+    except Exception as exc:  # noqa: BLE001 - reported, chain still succeeded
+        console.print(f"[yellow]warn[/yellow] sync failed, research store is unaffected: {exc}")
+
+    console.print("nightly: chain complete")
 
 
 @app.command()
