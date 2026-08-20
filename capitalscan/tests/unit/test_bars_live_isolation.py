@@ -32,7 +32,15 @@ INDICATOR_PATHS = (
 
 # `jobs/` is checked file by file: the poller legitimately *writes*
 # `bars_live`, and `views.py` holds its DDL.
-JOBS_ALLOWED = {"poll.py", "views.py"}
+#
+# `sync.py` is here for a weaker reason and gets a stronger check.
+# It never touches the table — it *explains why it does not ship it*, and
+# that paragraph has to name it to be worth anything. A string scan cannot
+# tell an exclusion from a use, so the real property is asserted against
+# the data structure instead: `test_sync.py::test_the_live_session_is_not_
+# shipped` checks `bars_live` is absent from the synced table list. That
+# survives a rewording of the comment, which this scan would not.
+JOBS_ALLOWED = {"poll.py", "views.py", "sync.py"}
 
 
 def _sources(package: str) -> list[Path]:

@@ -339,6 +339,39 @@ DEFAULT_SWEEP = SweepParams()
 
 
 @dataclass(frozen=True)
+class ServingParams:
+    """What the cloud serving store carries (ADR 053, ADR 137).
+
+    **Standalone, not a `Config` field**, for the same reason as
+    `BaselineParams` below: nothing here varies a backtest result, and
+    `jobs.config.config_hash` hashes `dataclasses.asdict(config)`. Folding
+    this in would move `config_hash` for every config already written to
+    `events` in order to name a deployment constant the backtest never
+    reads. Invariant 9 is still satisfied — the number lives here and
+    `jobs/sync.py` holds no literals.
+
+    `history_years` is how far back the served subset reaches. Three,
+    measured against Neon's 512MB free tier on 2026-08-20:
+
+        1 year   139 MB     3 years  393 MB     full   2,149 MB
+        2 years  266 MB     5 years  638 MB
+
+    Three fits with 23% headroom, covers every chart range through 1y and
+    most of 2y, and spans the validate split (2022-2023) so `/research` is
+    fully backed. The 5y range degrades by stopping early, which the chart
+    already handles — it pages until the server returns nothing.
+
+    **This is a serving cut, never a statistical one.** No measured number
+    is computed from the subset; the arms, the cells and the benchmarks are
+    all produced locally against full history and shipped as results. A
+    reader of the deployed site sees fewer *dates*, never a different
+    *answer*.
+    """
+
+    history_years: int = 3
+
+
+@dataclass(frozen=True)
 class BaselineParams:
     """DESIGN §6.2 / ADR 062's dual-baseline geometry (Session 11.2).
 

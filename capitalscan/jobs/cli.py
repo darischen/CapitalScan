@@ -1020,10 +1020,42 @@ def scan(
 
 @app.command()
 def sync(
-    to_serving: bool = typer.Option(False, help="Sync to serving database"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print what would be copied, copy nothing"
+    ),
 ) -> None:
-    """Sync research database to serving database."""
-    raise NotImplementedError("sync")
+    """Push the serving subset to the cloud store (ADR 053, ADR 137).
+
+    One direction only: local research is the source of truth and the cloud
+    copy is derived, so a serving database can be dropped and rebuilt from
+    this at any time.
+
+    Carries `ServingParams.history_years` of history — three, which
+    measured 393MB against Neon's 512MB free tier. The cut is in *dates*,
+    never in answers: `cell_stats` and `benchmarks` ship whole, because
+    they are computed locally against full history.
+
+    Refuses to run without `DATABASE_URL_SERVING` rather than falling back
+    to the research database, which would write its rows onto themselves.
+
+    **The `--to-serving` flag is gone.** This command had a stub signature
+    carrying it, which implied a second destination that never existed:
+    ADR 053 defines exactly one serving store and `db_io.get_engine` is
+    already the research one. A flag whose only valid value is `true` is a
+    flag that will eventually be passed `false` by mistake.
+    """
+    from capitalscan.jobs import sync as sync_job
+
+    plan = sync_job.describe()
+    console.print(f"cutoff [bold]{plan['cutoff']}[/bold], {len(plan['tables'])} tables")
+    if dry_run:
+        console.print(", ".join(plan["tables"]))
+        return
+
+    report = sync_job.run_sync()
+    for name, n in report.rows.items():
+        console.print(f"  {name:<16} {n:>9,}")
+    console.print(f"[green]synced[/green] {report.total:,} rows")
 
 
 @app.command()

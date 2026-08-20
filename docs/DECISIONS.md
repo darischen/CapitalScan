@@ -962,6 +962,12 @@ No EC2 and no persistent cloud compute. Vercel serves frontend and API, Neon ser
 
 Steady-state cost through Phase 6: under $15 monthly, consisting only of Anthropic API usage.
 
+**Superseded on sizing by ADR 137, 2026-08-20.** The note below is correct
+about *why* 14.6M rows is not the sync payload, and wrong about the total:
+it predates `v_chart` reading `FROM bars`. Full history measures 2,149MB,
+not 150MB, and the served subset is three years. The decision — two stores,
+local research authoritative, cloud derived — is unchanged.
+
 **Sizing re-verified 2026-08-19, and the headline number is alarming until
 you read which rows it counts.** `events` is now **14,604,735 rows / 10 GB**
 locally — 70x this ADR's whole-serving-store estimate, and enough to make a
@@ -4267,6 +4273,58 @@ Do not store one, and do not derive one.
 DESIGN 11.2's edge bar is not built. The rate interval with an inline baseline marker is the rendering, and `/research` already does this.
 
 Revisit only if a cell ever separates from its baseline, at which point the width of that separation becomes a question worth a bootstrap. On the current data that question has no instances.
+
+---
+
+## 137. The served subset is three years, and ADR 053's sizing predates the chart
+
+**Date:** 2026-08-20. **Status:** Pinned. Amends ADR 053's estimate, not its decision. Implements `cscan sync`.
+
+**Context.**
+
+ADR 053 sized the serving store at "roughly 200k rows, under 150MB" and justified it: *"The serving layer never queries a raw bar: the screener reads `events`, charts read roughly 45k indicator rows."*
+
+That was true when written and has not been true since Session 17. `v_chart` reads `FROM bars`, because indicators cannot draw a candle. Measured 2026-08-20, full history:
+
+```
+events       1,452,564 rows   1027 MB
+indicators   1,847,034 rows    745 MB
+bars         1,847,034 rows    367 MB
+reference data                  12 MB
+                              --------
+                              2,149 MB
+```
+
+**14x the estimate**, and 4.2x Neon's 512MB free tier. Three features landed after the estimate, each adding a multiple: the candlestick chart made `bars` a serving table, the chart's paging made indicators full-history rather than three years, and ADR 122 records out-of-trade events so the ticker page stays complete.
+
+None of those were mistakes. The estimate simply describes a system that no longer exists.
+
+**Decision.**
+
+`ServingParams.history_years = 3`. Measured against the free tier:
+
+```
+1 year   139 MB      3 years  393 MB      full  2,149 MB
+2 years  266 MB      5 years  638 MB
+```
+
+Three fits with 23% headroom, covers every chart range through 1y and most of 2y, and spans the validate split (2022-2023) so `/research` is fully backed. The 5y range degrades by stopping early, which the chart already handles — it pages until the server returns nothing and marks the start of history.
+
+**The cut is in dates, never in answers.** `cell_stats` and `benchmarks` ship whole because they are computed locally against full history. A reader of the deployed site sees fewer sessions on a chart; they never see a different hit rate. This is the property that makes a serving subset acceptable at all — the alternative, recomputing statistics from the subset, would publish numbers no local run could reproduce.
+
+**`ServingParams` is not a `Config` field**, following `BaselineParams`. `jobs.config.config_hash` hashes `dataclasses.asdict(Config)`, so folding a deployment constant in would move the hash for every config already written to `events` in order to name a number the backtest never reads. Invariant 9 holds: the value is in `core/config.py` and `jobs/sync.py` contains no literals.
+
+**Consequences.**
+
+**One direction, always.** Local research is the source of truth; the cloud copy is derived and can be dropped and rebuilt at any time. That is what makes it safe to point a public site at.
+
+**`DATABASE_URL_SERVING` unset raises rather than falling back.** Every other resolver here falls back to the research URL with a warning, which is correct for a read — the worst case is a developer reading local data. Here the worst case is a *write*: a sync that upserted the serving subset into the research store, on top of the rows it had just read.
+
+**Upserts, never truncates, never deletes.** A truncate-and-reload leaves the site empty for the duration, and an interrupted one leaves it empty until the next run — a public page showing no signals is indistinguishable from a day when nothing fired. A row ageing past the cutoff stays until someone prunes it deliberately, because the alternative is a bug in the cutoff arithmetic silently emptying the served history.
+
+**The table list is written down, not discovered.** It came from `pg_depend` on the serving views, but a table appearing in a view is not consent to publish it: `bar_rejects`, `runs` and `quotes_live` are local diagnostics. Adding a table is a deliberate edit, asserted by test.
+
+**`cscan sync --to-serving` is gone.** The stub carried that flag, implying a second destination that never existed — ADR 053 defines exactly one serving store. A flag whose only valid value is `true` is one that eventually gets passed `false`.
 
 ---
 
