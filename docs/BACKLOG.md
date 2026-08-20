@@ -130,92 +130,70 @@ arrived later, and the re-run corrected them.
 
 ---
 
-## 4. `tickers.is_active` and `delisted_on` are not derived from the delisting signal that exists
-
-**Investigated 2026-08-20. Items 4 and 5 were the same defect and are merged.**
+## 4. ~~`is_active` and `delisted_on` not derived from the delisting signal~~ — done 2026-08-20
 
 `jobs/ingest.py::_update_ticker_coverage` maintains `tickers.last_bar` and
-its docstring names it exactly right: *"the delisting signal DESIGN 4.3
-calls out under silent truncation."* It is populated for **638 of 712**
-tickers.
+its docstring names it "the delisting signal DESIGN 4.3 calls out". It was
+populated for 638 of 712 tickers and nothing read it.
 
-Neither column that should follow from it does:
+**Stamped**: `delisted_on = last_bar` for the 18 names that stopped
+trading, and `is_active = false` with them. `handlers/universe.py` projects
+the column to MCP callers, so that field now tells the truth.
 
-```
-tickers                 712
-  have last_bar         638
-  have delisted_on        0     <- no writer anywhere in the tree
-```
+**Re-admitted**: HUBB (Hubbell, a current S&P 500 member, $504) and Q
+(Qnity Electronics, $141) were marked inactive and invisible to every job,
+since each ticker list is `SELECT ticker FROM tickers WHERE is_active`.
+Both have 4 bars and no history, so nothing measurable changed — the
+`cell_stats` digest is byte-identical at `7ad6eb4cda94d7e5cad85a54b49c9dc2`
+and 0 events exist dated after any delisting. A future
+`cscan bars --backfill` would pull their history and *then* change the
+population; that is a separate deliberate act.
 
-**`is_active` disagrees with `last_bar` on 14 tickers.**
+**Junk bars deleted and the fetch guarded.** FB, PCLN, PCS, NKTR and CPWR
+are dead symbols; Yahoo answers for whoever holds them now, so `FB` came
+back at $45 against a Meta that trades as `META`. 19 rows removed, and
+`ingest._drop_delisted_before` now skips a ticker whose `delisted_on`
+predates the fetch window. ADR 035's survivorship-bias policy is untouched
+— historical bars for delisted names are exactly the point; what cannot be
+real is a bar dated after the ticker stopped existing.
 
-Nine are marked inactive and still trading, so every job skips them —
-every ticker list is `SELECT ticker FROM tickers WHERE is_active`:
-
-```
-HUBB  Hubbell Incorporated  $504.30  last bar 2026-08-17
-Q     Qnity Electronics     $140.76  last bar 2026-08-17
-UA                            $5.19  last bar 2026-08-17
-FISV  Fiserv                 $52.21  last bar 2026-08-17
-FB                           $45.05  last bar 2026-08-17
-NKTR / PCLN / PCS / CPWR
-```
-
-HUBB is a current S&P 500 member. FB is not Meta — Meta trades as META,
-and $45 is a different company holding a reused symbol. So the nine are a
-mix of *wrongly excluded* and *genuinely reused*, and `last_bar` alone
-cannot tell them apart.
-
-Five are marked active and stopped trading years ago:
-
-```
-TLAB 2013-12-03   MOLX 2013-12-09   AET 2018-11-29
-SCG  2018-12-31   BMS  2019-06-10
-```
-
-**Nothing in the tree writes `is_active = False`.** `run_tickers_refresh`
-upserts `True` for current constituents, `ensure_tickers` upserts `True`
-for ad-hoc backfills, and the column defaults `True`. The 96 `False` rows
-were set from outside the current code. The last refresh was 2026-08-01
-and wrote 503 rows.
-
-**Why this is one decision, not two.** Populating `delisted_on` while
-`is_active` still disagrees would leave the table telling two stories: a
-ticker could carry a delisting date and an active flag, or trade daily and
-carry neither. The reconciliation has to cover both columns or neither.
-
-**Blast radius is the reason it is not done here.** `delisted_on` is inert
-— `ArmWindow.delisted_on` is built and never read, so writing it changes
-no measurement today, though `handlers/universe.py` projects it to MCP
-callers and would start telling the truth. `is_active` is not inert: it
-selects the ticker list for every job, so admitting HUBB and Q would give
-them indicators, events, and universe evaluations, changing the measured
-population. That is the same class of call as ADR 129 and ADR 135.
-
-**The reconciliation, when someone takes it**: compare `tickers` against
-the Wikipedia constituent list *and* `last_bar`, set `delisted_on =
-last_bar` for names that stopped trading, and treat a name that is trading
-but absent from the index as a membership question rather than an
-activity one. `last_bar` is already the evidence; nothing needs fetching.
+**How the bars got there, corrected.** An earlier note guessed symbol reuse
+landing on an active row. The `runs` params show the truth: that backfill
+passed **712 tickers**, the whole table, while every other job resolves
+`WHERE is_active` (616 at the time). `run_bars_daily` was the one entry
+point with no activity filter.
 
 ---
 
-## 5. Documented limitations, unlikely to be built as stated
+## 5. ~~Documented limitations~~ — all three closed 2026-08-20
 
-**No edge interval exists in the schema.** `cell_stats` stores a Wilson
-interval on `p_hit`; `edge` is `p_hit - baseline` with no interval of its
-own. `/research` shows the rate interval with the baseline marked inside
-it, which answers the same question — verified 2026-08-20: every reported
-cell's interval contains its baseline, 48/48 train and 28/28 validate.
-DESIGN 11.2's edge bar cannot be drawn without either storing an edge
-interval or differencing two bounds, and the latter assumes independence
-the data does not have.
+**"Won't build as stated" was too broad a label.** Examined individually,
+two of the three were buildable and one was a genuine rejection.
 
-**Half-day sessions are not modelled.** `market_is_open()` is 09:30-16:00
-ET every trading day. The market closes at 13:00 ET on roughly nine
-afternoons a year, and on those the live price stays visible for three
-hours after trading ends. Needs a holiday calendar carrying session
-lengths, which nothing here has.
+**Half-day sessions — fixed** (migration `d2f6b48e1a07`). The note claimed
+this "needs a holiday calendar carrying session lengths, which nothing here
+has." Wrong twice: `trading_days.is_early_close` has existed since the
+reference-tables migration, and `jobs/ingest.py:177` populates it from
+measured session length. 38 days marked across 2009-2026, agreeing exactly
+with the hourly bars (a half-day has 3 bars ending 11:30 ET against 7
+ending 15:30). `market_is_open()` now closes at 13:00 ET on those days. The
+data was present, correct, and unread.
 
-**Self-hosting the three Google fonts.** The only outbound request the app
-still makes. Cosmetic.
+**Self-hosting the fonts — done.** `next/font/google` fetches at build time
+and emits the files into the app's own static output; 21 woff2 files, and
+no reference to `fonts.googleapis.com` survives in the build. This also
+removed the preconnect pair and the first-paint round trip.
+
+**The edge interval — rejected, ADR 136.** The only one that genuinely
+could not be built as specified. Differencing the rate bounds assumes an
+independence the data does not have; storing a bootstrapped interval is
+possible and answers a question already answered. Verified: the baseline
+falls inside the rate interval on 48 of 48 train cells and 28 of 28
+validate, so the edge bar would have crossed zero on every cell.
+
+---
+
+## 6. Open
+
+Nothing. Every item above is closed, and this file is kept so the next
+finding has a home.

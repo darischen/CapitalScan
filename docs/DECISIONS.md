@@ -4244,6 +4244,32 @@ An indicator row older than one rebalance period does not evaluate the quarter. 
 
 ---
 
+## 136. No edge interval is stored, and the rate interval answers the question
+
+**Date:** 2026-08-20. **Status:** Pinned. Rejects DESIGN 11.2's edge bar as specified. Closes the last open item in `BACKLOG.md` 5.
+
+**Context.**
+
+DESIGN 11.2 asks for edge rendered "as a bar with CI width, not a number". `cell_stats` stores `edge` as `p_hit - baseline` and a Wilson interval on `p_hit`. There is no interval on `edge`.
+
+**Decision.**
+
+Do not store one, and do not derive one.
+
+**Deriving is the tempting half and it is wrong.** Differencing the two rates' bounds — `(ci_low - baseline, ci_high - baseline)` — treats the baseline as a constant. It is not: it is itself estimated, from the same ticker's own history, over a window that overlaps the cell's events. The two are positively correlated by construction, so a differenced interval is too wide by an unknown amount and its coverage is not 95% or anything else nameable. An interval whose coverage nobody can state is worse than no interval, because it will be read as one.
+
+**Storing one is possible and buys nothing here.** It means a bootstrap over the clustered event set, a new column, a migration, and a full `cell_stats` recompute. The result would be an interval on a quantity that is already reported: `/research` draws the rate interval with the baseline marked *inside* it, so "does the edge exclude zero" is read directly as "does the baseline fall outside the interval".
+
+**Verified rather than asserted, 2026-08-20**: across every reported cell on the live config, the baseline falls inside the rate interval — **48 of 48 on train, 28 of 28 on validate**. Zero cells separate from their baseline. The edge bar would have shown, for every cell, a bar crossing zero.
+
+**Consequences.**
+
+DESIGN 11.2's edge bar is not built. The rate interval with an inline baseline marker is the rendering, and `/research` already does this.
+
+Revisit only if a cell ever separates from its baseline, at which point the width of that separation becomes a question worth a bootstrap. On the current data that question has no instances.
+
+---
+
 ## Open items
 
 | Item | Options | Current lean |

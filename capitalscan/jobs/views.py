@@ -474,18 +474,29 @@ CREATE VIEW public.v_ticker_state AS
 # cannot be imported -- one is Python and one is SQL -- so the guarantee is
 # a test.
 #
-# Half-days close at 13:00 ET and are not modelled. The cost is a stale
-# price for three hours on roughly nine afternoons a year; modelling them
-# needs a holiday calendar with session lengths, which nothing here has.
-# Recorded rather than silently accepted.
+# **Half-days close at 13:00 ET and this reads them from the calendar.**
+# The first version of this function did not, and the note here said
+# modelling them "needs a holiday calendar with session lengths, which
+# nothing here has". That was wrong twice over: `trading_days.is_early_close`
+# already exists, and `jobs/ingest.py` already populates it from measured
+# session length -- 38 days marked across 2009-2026, agreeing exactly with
+# what the hourly bars show (a half-day has 3 bars ending 11:30 ET against
+# 7 ending 15:30).
+#
+# So the data was present, correct, and unread. The cost of not asking was a
+# live price displayed for three hours after the close on ~2 afternoons a
+# year.
 MARKET_IS_OPEN_DDL = """
 CREATE OR REPLACE FUNCTION public.market_is_open() RETURNS boolean
     LANGUAGE sql
     STABLE
-    AS $$ SELECT (now() AT TIME ZONE 'America/New_York')::time
-                 >= TIME '09:30'
-             AND (now() AT TIME ZONE 'America/New_York')::time
-                 <  TIME '16:00' $$
+    AS $$ SELECT (now() AT TIME ZONE 'America/New_York')::time >= TIME '09:30'
+             AND (now() AT TIME ZONE 'America/New_York')::time <
+                 CASE WHEN EXISTS (
+                        SELECT 1 FROM public.trading_days td
+                         WHERE td.d = (now() AT TIME ZONE 'America/New_York')::date
+                           AND td.is_early_close)
+                      THEN TIME '13:00' ELSE TIME '16:00' END $$
 """
 
 MARKET_DATE_DDL = """

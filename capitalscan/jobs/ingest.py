@@ -840,10 +840,47 @@ def _flag_range_escape(
 # ============ bars_daily / bars_hourly ============
 
 
+def _drop_delisted_before(engine: Engine, tickers: list[str], start: date) -> list[str]:
+    """Tickers that could still have been trading on or after `start`.
+
+    **A delisted symbol does not stop resolving — it starts belonging to
+    someone else.** Measured 2026-08-19: a 712-ticker backfill fetched four
+    2026-08 bars each for FB, PCLN, PCS, NKTR and CPWR. Yahoo answered every
+    one, with the current holder's prices: `FB` came back at $45 against a
+    Meta that trades as `META`.
+
+    ADR 035 keeps delisted names on purpose and this does not touch that.
+    Their *historical* bars are exactly what removes survivorship bias. What
+    cannot be real is a bar dated after the ticker stopped existing, and
+    `tickers.delisted_on` is now populated from `last_bar`, so the check is
+    a lookup rather than a guess.
+
+    A ticker with no `delisted_on` is always kept: absent evidence of
+    delisting is not evidence of delisting, and the alternative would drop
+    live names the moment a stamp was missed.
+    """
+    if not tickers:
+        return tickers
+    with engine.connect() as conn:
+        dead = {
+            r[0]
+            for r in conn.execute(
+                text(
+                    "SELECT ticker FROM tickers "
+                    "WHERE delisted_on IS NOT NULL AND delisted_on < :start "
+                    "AND ticker = ANY(:tickers)"
+                ),
+                {"start": start, "tickers": list(tickers)},
+            )
+        }
+    return [t for t in tickers if t not in dead]
+
+
 def run_bars_daily(
     tickers: list[str], start: date, end: date, engine: Engine | None = None
 ) -> IngestReport:
     engine = engine or db_io.get_engine()
+    tickers = _drop_delisted_before(engine, tickers, start)
     with run_job(
         engine, "bars_daily", {"tickers": tickers, "start": str(start), "end": str(end)}
     ) as report:
