@@ -123,6 +123,27 @@ complete in under a minute. A sub-second ingest is a cache read.
 `data/cache/yahoo_daily/` and `yahoo_hourly/` hold the pre-`_v2` entries and
 are unread; delete them freely.
 
+**`npm run build` invalidates a running `next start`.** The server holds
+its chunk hashes in memory; a build rewrites `.next/` with new ones, so
+every asset 404s and the page renders as unstyled text. It looks exactly
+like broken CSS and is not. **Restart the server after any build**, and
+never run `next dev` against the same `.next/` a production server is
+serving from. Hit twice, 2026-08-19 and 2026-08-20, both times diagnosed
+from the browser console:
+
+```
+ChunkLoadError: Loading chunk 974 failed
+400 Bad Request  /_next/static/chunks/app/page-<hash>.js
+```
+
+Check it in one command -- if the server started before the build, that is
+the cause:
+
+```
+ls -l --time-style=+%H:%M web/.next/BUILD_ID
+Get-CimInstance Win32_Process -Filter "ProcessId=<pid of :3100>" | Select CreationDate
+```
+
 No `cscan db migrate` or `uv sync`/`uv add` while a job is running. Migrate takes an ACCESS EXCLUSIVE lock against a live writer; `uv sync`/`uv add` on Windows locks `.venv` files a running process holds open.
 
 Long jobs, measured, so nobody starts one blind:
