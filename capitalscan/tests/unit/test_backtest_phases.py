@@ -163,41 +163,93 @@ class TestCofireIsCrossTicker:
         assert set(backtest.add_cofire_count(chunk)["cofire_count"]) == {1}
 
 
-class TestFinalizeWritesOnlyCofire:
-    def test_updates_exactly_one_column(self, monkeypatch):
-        """Every other column on these rows belongs to the compute phase.
+class _UpdateConn(_Conn):
+    """Captures the statement `finalize_cofire` executes."""
 
-        `finalize_cofire` reads five columns and writes back; naming
-        `cofire_count` as the sole update column is what stops it reverting
-        the other seventy to the values it never read.
+    def __init__(self):
+        super().__init__(row=None)
+        self.statements: list[str] = []
+        self.bound: list[dict] = []
+
+    def execute(self, stmt, params=None):
+        self.statements.append(str(stmt))
+        self.bound.append(params or {})
+
+        class _R:
+            rowcount = 1
+
+        return _R()
+
+
+class _TxEngine:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def connect(self):
+        return self._conn
+
+    def begin(self):
+        return self._conn
+
+
+class TestFinalizeUpdatesRatherThanUpserts:
+    """**It must never be able to create an event row.**
+
+    `db_io.upsert` issues `INSERT ... ON CONFLICT`, and Postgres enforces
+    NOT NULL on the insert before reaching the conflict clause -- so a
+    six-column frame fails on `run_id` even though every row is guaranteed
+    to conflict. Observed on 2026-08-21 against 783,644 real rows.
+
+    Padding the frame with the missing NOT NULL columns would have made it
+    pass and would have been wrong: finalize corrects rows the compute phase
+    wrote, and a key with no row is an upstream bug that should update
+    nothing rather than invent a skeleton.
+    """
+
+    def _run(self, rows):
+        conn = _UpdateConn()
+        import capitalscan.research.backtest as bt
+
+        original = bt.pd.read_sql
+        bt.pd.read_sql = lambda *a, **k: _events(rows)  # type: ignore[assignment]
+        try:
+            written = bt.finalize_cofire(_TxEngine(conn), "abc123")
+        finally:
+            bt.pd.read_sql = original  # type: ignore[assignment]
+        return written, conn
+
+    def test_it_issues_an_update_not_an_insert(self):
+        _, conn = self._run([("AAPL", "2026-01-05", "confluence_low", "next_open")])
+        sql = " ".join(conn.statements)
+        assert "UPDATE events" in sql
+        assert "INSERT" not in sql.upper()
+
+    def test_it_sets_only_cofire_count(self):
+        _, conn = self._run([("AAPL", "2026-01-05", "confluence_low", "next_open")])
+        sql = " ".join(conn.statements)
+        assert "SET cofire_count" in sql
+        # The other seventy columns belong to the compute phase.
+        for column in ("run_id", "net_ret", "entry_price", "split_key"):
+            assert f"SET {column}" not in sql
+            assert f", {column} =" not in sql
+
+    def test_it_matches_on_the_full_natural_key(self):
+        _, conn = self._run([("AAPL", "2026-01-05", "confluence_low", "next_open")])
+        sql = " ".join(conn.statements)
+        for column in ("config_hash", "ticker", "signal_date", "signal_type", "entry_kind"):
+            assert f"e.{column} = v.{column}" in sql
+
+    def test_the_page_stays_under_the_parameter_ceiling(self):
+        """Postgres accepts at most 65,535 bound parameters per statement.
+
+        Six per row here, so the default page must sit below ~10,900. The
+        obvious 50,000 sends 300,000 and fails with a message naming neither
+        the table nor the page size -- ADR 137's trap, reached again.
         """
-        captured: dict = {}
+        import inspect
 
-        def fake_upsert(engine, table, frame, keys, update_columns=None):
-            captured["table"] = table
-            captured["keys"] = keys
-            captured["update_columns"] = update_columns
-            return len(frame)
-
-        monkeypatch.setattr(backtest.db_io, "upsert", fake_upsert)
-        monkeypatch.setattr(
-            backtest.pd,
-            "read_sql",
-            lambda *a, **k: _events([("AAPL", "2026-01-05", "confluence_low", "next_open")]),
-        )
-
-        written = backtest.finalize_cofire(_Engine(_Conn()), "abc123")
-
-        assert written == 1
-        assert captured["table"] == "events"
-        assert captured["update_columns"] == ["cofire_count"]
-        assert captured["keys"] == [
-            "config_hash",
-            "ticker",
-            "signal_date",
-            "signal_type",
-            "entry_kind",
-        ]
+        default = inspect.signature(backtest.finalize_cofire).parameters["chunk_size"].default
+        assert default * 6 < 65_535
 
     def test_an_empty_config_writes_nothing_rather_than_raising(self, monkeypatch):
         monkeypatch.setattr(backtest.pd, "read_sql", lambda *a, **k: pd.DataFrame())

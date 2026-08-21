@@ -905,7 +905,12 @@ def finalize_cofire(
     engine: Engine,
     config_hash: str,
     *,
-    chunk_size: int = 50_000,
+    # **Six bound parameters per row against Postgres's 65,535 ceiling.**
+    # 5,000 rows is 30,000 parameters, comfortably inside it. The obvious
+    # 50,000 would send 300,000 and fail with a message naming neither the
+    # table nor the page size -- the same trap ADR 137 hit on `sync`, where
+    # SQLAlchemy's 1,000-row default page overflowed on a 75-column table.
+    chunk_size: int = 5_000,
 ) -> int:
     """Recompute `cofire_count` across every event of one config, and write it.
 
@@ -944,19 +949,45 @@ def finalize_cofire(
 
     events = add_cofire_count(events)
 
-    # `cofire_count` alone. Every other column on these rows belongs to the
-    # compute phase and must not be touched -- naming the update column
-    # explicitly is what keeps this pass from reverting them to the five
-    # values read above.
+    # **An UPDATE, not an upsert, and that distinction is load-bearing.**
+    #
+    # `db_io.upsert` issues `INSERT ... ON CONFLICT DO UPDATE`, and Postgres
+    # enforces NOT NULL on the INSERT *before* it ever reaches the conflict
+    # clause. This frame carries six columns of a seventy-five column table,
+    # so the insert fails on `run_id` even though every single row is
+    # guaranteed to conflict and update. Observed 2026-08-21:
+    # `NotNullViolation: null value in column "run_id"`.
+    #
+    # Padding the frame with the missing NOT NULL columns would work and
+    # would be wrong: it would let this pass *create* an event row. Finalize
+    # corrects rows the compute phase wrote; a key with no row is a bug
+    # upstream, and the honest response is to update nothing rather than to
+    # invent a skeleton. `UPDATE ... FROM (VALUES ...)` says exactly that.
     written = 0
     for start in range(0, len(events), chunk_size):
-        written += db_io.upsert(
-            engine,
-            "events",
-            events.iloc[start : start + chunk_size],
-            ["config_hash", "ticker", "signal_date", "signal_type", "entry_kind"],
-            update_columns=["cofire_count"],
-        )
+        page = events.iloc[start : start + chunk_size]
+        values = ", ".join(f"(:h{i}, :t{i}, :d{i}, :s{i}, :k{i}, :c{i})" for i in range(len(page)))
+        params: dict[str, object] = {}
+        for i, (_, row) in enumerate(page.iterrows()):
+            params[f"h{i}"] = row["config_hash"]
+            params[f"t{i}"] = row["ticker"]
+            params[f"d{i}"] = row["signal_date"]
+            params[f"s{i}"] = row["signal_type"]
+            params[f"k{i}"] = row["entry_kind"]
+            params[f"c{i}"] = int(row["cofire_count"])
+        with engine.begin() as conn:
+            result = conn.execute(
+                text(
+                    "UPDATE events AS e SET cofire_count = v.cofire_count "
+                    f"FROM (VALUES {values}) AS v("
+                    "config_hash, ticker, signal_date, signal_type, entry_kind, cofire_count) "
+                    "WHERE e.config_hash = v.config_hash AND e.ticker = v.ticker "
+                    "AND e.signal_date = v.signal_date::date "
+                    "AND e.signal_type = v.signal_type AND e.entry_kind = v.entry_kind"
+                ),
+                params,
+            )
+            written += result.rowcount or 0
     return written
 
 
