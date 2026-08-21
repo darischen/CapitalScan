@@ -84,12 +84,6 @@ export function getPool(): Pool {
       // updated; a request that never returns reports nothing at all.
       connectionTimeoutMillis: 5_000,
     });
-    // Per connection, not per query: `SET` is session-scoped and the pool
-    // reuses connections, so once per connect is both sufficient and the
-    // cheapest place to put it.
-    pool.on("connect", (client) => {
-      void client.query(PIN_CONFIG_HASH);
-    });
   }
   return pool;
 }
@@ -99,9 +93,35 @@ export function getPool(): Pool {
  * and an argument array, and nothing in this app interpolates a value into
  * SQL text.
  */
+/**
+ * Physical connections that have already had the config hash pinned.
+ *
+ * A `WeakSet` rather than a flag on the client so a connection the pool
+ * discards is not kept alive by this bookkeeping.
+ */
+const pinned = new WeakSet<object>();
+
 export async function query<T>(text: string, values: unknown[] = []): Promise<T[]> {
-  const result = await getPool().query(text, values);
-  return result.rows as T[];
+  // **Checked out explicitly so the pin can be awaited.** The obvious
+  // shape — `pool.on("connect", c => c.query(PIN))` — does not work:
+  // node-postgres does not await that handler, so it hands the client to
+  // the caller while the `SET` is still in flight. The first query on each
+  // new connection then races it and usually wins, and every screener view
+  // returns zero rows because `config_hash = NULL` matches nothing.
+  //
+  // That failed in production rather than in a test, because locally the
+  // GUC is set on the database and the race has no visible effect.
+  const client = await getPool().connect();
+  try {
+    if (!pinned.has(client)) {
+      await client.query(PIN_CONFIG_HASH);
+      pinned.add(client);
+    }
+    const result = await client.query(text, values);
+    return result.rows as T[];
+  } finally {
+    client.release();
+  }
 }
 
 /**
