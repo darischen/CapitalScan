@@ -10,10 +10,11 @@
  * supplies the symbol, independently -- which is exactly the seam this
  * needs.
  *
- * Verified 2026-08-20 against a cookieless request: `s=DAL` with the id
- * below renders DAL as candlesticks with `BB(20,2.0)`, `MA(200)`, and a
- * `Full STO %K(14,3) %D(3)` panel beneath carrying lines at 20 and 80. No
- * StockCharts account is involved at any point, on their side or ours.
+ * Verified 2026-08-21 against a cookieless request: `s=DAL` with the id
+ * below renders DAL as candlesticks over one year, with `BB(20,2.0)`,
+ * `EMA(10)` and `EMA(50)` on price and three panels beneath -- volume,
+ * `Full STO %K(14,3) %D(3)`, and `RSI(14)`. No StockCharts account is
+ * involved at any point, on their side or ours.
  */
 
 /**
@@ -25,14 +26,25 @@
  *
  * - `BB(20,2.0)` -- `IndicatorParams.bb_window`, `bb_std`
  * - `Full STO %K(14,3) %D(3)` -- `stoch_window`, `stoch_smooth_k`, `stoch_smooth_d`
- * - horizontal lines at 20 / 80 -- `SignalParams.stoch_oversold`, `stoch_overbought`
- * - `MA(200)` -- `sma_long`
+ * - the stochastic panel's 20 / 80 gridlines -- `SignalParams.stoch_oversold`,
+ *   `stoch_overbought`
  *
- * **Candlesticks, with the stochastic panel below price** (user's request,
- * 2026-08-20). Both are layout rather than measurement, so neither can
- * disagree with a config value -- but the reading order matters: price is
- * the thing the bands are drawn on, and the oscillator is read against it.
- * The superseded `p18455069802` drew OHLC bars with the panel above.
+ * **Rebuilt 2026-08-21 to the user's specification.** Candlesticks over a
+ * one-year predefined range with 6 extra bars, volume in its own panel, and
+ * the oscillators beneath price: `EMA(10)`, `EMA(50)` and Bollinger on
+ * price, `Full Stochastics` and `RSI(14)` below.
+ *
+ * `EMA(10)`, `EMA(50)` and `RSI(14)` correspond to nothing in
+ * `core/config.py` -- this project computes none of them. They are a
+ * reading preference and are deliberately not pinned by a test; only the
+ * four settings above are, because only those can silently disagree with
+ * what a signal was measured against.
+ *
+ * **`MA(200)` and the explicit 20/80 horizontal lines are gone.** The free
+ * tier allows three overlays per chart and the three above use them; the
+ * stochastic panel draws its own reference lines at 20, 50 and 80, so the
+ * thresholds stayed legible. Superseded ids: `p18455069802` (OHLC bars,
+ * panel above price), `p79286883726` (candlesticks, MA200, drawn lines).
  *
  * **A source constant, deliberately not an environment variable.** The id
  * decides which indicators a reader sees next to this project's signals, so
@@ -47,7 +59,7 @@
  * reason, and re-checking the rendered chart is a manual step in any change
  * to the indicator config.
  */
-export const CHART_ID = "p79286883726";
+export const CHART_ID = "p35839673656";
 
 /** SharpCharts workbench. The interactive page, not the rendered PNG at
  * `c-sc/sc` -- a reader following one of these links wants to pan and zoom. */

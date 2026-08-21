@@ -65,11 +65,32 @@ describe("the chart the id points at still matches the config", () => {
     ["stoch_window", "14", "Full STO %K(14,3)"],
     ["stoch_smooth_k", "3", "Full STO %K(14,3)"],
     ["stoch_smooth_d", "3", "Full STO %D(3)"],
-    ["stoch_oversold", "20.0", "horizontal line at 20"],
-    ["stoch_overbought", "80.0", "horizontal line at 80"],
-    ["sma_long", "200", "MA(200)"],
+    ["stoch_oversold", "20.0", "the stochastic panel's lower gridline"],
+    ["stoch_overbought", "80.0", "the stochastic panel's upper gridline"],
   ])("%s is still %s, which is what the chart draws as %s", (field, expected) => {
     expect(configValue(field)).toBe(expected);
+  });
+
+  /**
+   * **What is deliberately not pinned.**
+   *
+   * The chart also draws `EMA(10)`, `EMA(50)` and `RSI(14)` (user's
+   * specification, 2026-08-21). This project computes none of them, so
+   * there is no config value they could drift away from and nothing here
+   * could usefully assert. `sma_long` was pinned until that rebuild dropped
+   * `MA(200)` for a second EMA -- the free tier allows three overlays and
+   * the three on price use them.
+   *
+   * The rule this file follows: pin a setting when the chart and
+   * `core/config.py` could silently disagree about what a signal was
+   * measured against. A reading preference is not that.
+   */
+  it("does not claim the chart draws anything this project computes but it does not", () => {
+    const source = readFileSync(join(__dirname, "..", "lib", "stockcharts.ts"), "utf8");
+    // `sma_long` is still a real config field; the chart just stopped
+    // drawing it. Naming it here would be a claim about someone else's
+    // database that nothing checks.
+    expect(source).not.toMatch(/MA\(200\)`? -- `sma_long/);
   });
 
   it("names a permanent chart, not a session-scoped draft", () => {
