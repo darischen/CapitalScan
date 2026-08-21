@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -721,5 +724,54 @@ describe("gate 10: identical input renders identically", () => {
     const html = render();
     const today = new Date().toISOString().slice(0, 10);
     expect(html).not.toContain(today);
+  });
+});
+
+
+/* --- the picker returns to base state after opening (ADR 139) ----------- */
+
+describe("opening the charts resets the picker", () => {
+  /**
+   * Asserted against the source rather than by simulating clicks: the reset
+   * is one line inside a `window.open` loop, and a DOM harness for it would
+   * be exercising jsdom's pop-up blocker rather than this decision.
+   *
+   * What matters is the *guard*. Resetting unconditionally is the obvious
+   * implementation and it destroys the one thing the reader still needs when
+   * the browser refuses a tab -- `disarm` routes through `sync`, which calls
+   * `setBlocked([])`.
+   */
+  const source = readFileSync(join(__dirname, "..", "components", "OpenSelected.tsx"), "utf8");
+  const openBody = source.slice(
+    source.indexOf("const open = useCallback"),
+    source.indexOf("const count = selected.length"),
+  );
+
+  it("reuses the cancel handler rather than reimplementing it", () => {
+    expect(openBody).toContain("disarm()");
+  });
+
+  it("only resets when nothing was refused", () => {
+    expect(openBody).toMatch(/if \(refused\.length === 0\) disarm\(\)/);
+  });
+
+  it("records what was blocked before it resets anything", () => {
+    // `setBlocked(refused)` must precede the reset. Reversed, the guard
+    // would read stale state and a blocked open could still collapse.
+    expect(openBody.indexOf("setBlocked(refused)")).toBeLessThan(openBody.indexOf("disarm()"));
+  });
+
+  it("keeps `sync` clearing blocked, which is why the guard is required", () => {
+    /**
+     * The two halves of the same fact. `sync` clearing `blocked` is correct
+     * -- a changed selection invalidates a list of refused tickers -- and it
+     * is exactly what makes an unguarded `disarm()` after a partial block
+     * wrong.
+     */
+    const syncBody = source.slice(
+      source.indexOf("const sync = useCallback"),
+      source.indexOf("const setAll = useCallback"),
+    );
+    expect(syncBody).toContain("setBlocked([])");
   });
 });

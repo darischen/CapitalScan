@@ -97,7 +97,24 @@ export default function OpenSelected({ children }: { children: React.ReactNode }
       else opened.opener = null;
     }
     setBlocked(refused);
-  }, [selected]);
+
+    // **Back to base state once the tabs are open** (user's request,
+    // 2026-08-21). The selection has been acted on, so leaving it ticked
+    // invites a second click that reopens the same charts -- and leaves a
+    // checkbox column standing over a table nobody is selecting from.
+    //
+    // `disarm` is the cancel button's own handler, reused rather than
+    // reimplemented. It routes through `sync`, which clears `blocked` --
+    // harmless here and *only* here, because this branch runs when nothing
+    // was refused, so there is no notice to lose.
+    //
+    // **Only when nothing was refused.** A partial block is the one case
+    // where the reader still has work to do on this page: the fallback links
+    // are theirs to click, and collapsing the control out from under them
+    // would read as the button having failed twice. So a blocked open stays
+    // armed, keeps its selection, and keeps the notice up.
+    if (refused.length === 0) disarm();
+  }, [selected, disarm]);
 
   const count = selected.length;
 

@@ -18,13 +18,43 @@ cofire_count        corrected, 0 mismatched groups
 fwd_window_days     195,827 / 195,911
 rho_era             4 eras
 cell_stats          512 rows (train + validate, 16-cell grid)
-benchmarks          409 rows
+benchmarks          409 rows (train ONLY -- see below, validate still owed)
 screener            79 rows for 2026-08-20 (63 under the old config)
 migration           c3f91a70b8d4 applied to BOTH databases
 ```
 
 **The 16:30 nightly hazard is cleared** — the migration was applied at 04:49
 once the backtest released the table, so `compute_all` has its column.
+
+### Owed: the validate half of `benchmarks`
+
+Step 7 above ran `--split-key train` and nothing ran `--split-key validate`,
+so `f66729c7eda212a4` has 409 benchmark rows instead of 818. The run exited 0
+and wrote every row it was asked for, which is why this looked complete.
+
+**What it breaks.** `web/lib/research.ts` pins `split_key = 'validate'` in
+both `NULL_SQL` and the arms query, so the /research page renders the null
+distribution and the arm comparison empty. Nothing errors: the `split_key`
+literal simply matches no row. Caught by two live-database tests, which are
+the only thing in the repo that reads that split.
+
+    tests/research.test.ts
+      x the null distribution is 200 replications per breadth split
+      x the signal arm has a row per breadth split, and they differ
+
+**Not run yet, and why.** Found 2026-08-21 10:57 PT, inside the poller's
+quiet window (06:30-13:00 PT). 200 replications over 783,644 events is real
+load. Run after 13:00 PT:
+
+    uv run cscan stats benchmarks --config-hash f66729c7eda212a4 --split-key validate
+
+Reversible on its own `run_id`: `DELETE FROM benchmarks WHERE run_id = '...'`.
+
+**`bbc99a02ebdc999f` has the same gap** and is superseded, so leave it.
+
+**The serving store has it too.** Neon holds benchmarks only under the older
+hashes while its `serving_config` now names `f66729c7eda212a4`, so /research
+is empty on the deployed site until the rows above exist and are synced.
 
 **Result: ADR 112 holds a third time.** Zero cells survive FDR on either
 split over a 43% larger universe. Full numbers in `RESULTS.md`.
@@ -69,6 +99,7 @@ invisible on the screener until the GUC moves. Not a bug, and it self-resolves.
 5. cscan stats cells  --config-hash f66729c7eda212a4 --split-key train
 6. cscan stats cells  --config-hash f66729c7eda212a4 --split-key validate
 7. cscan stats benchmarks --config-hash f66729c7eda212a4 --split-key train
+7b. cscan stats benchmarks --config-hash f66729c7eda212a4 --split-key validate
 8. move the GUC (above)
 9. cscan db sync-config, then the Neon sync
 ```
