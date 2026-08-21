@@ -47,11 +47,28 @@ FORBIDDEN_ON_BAR = (
     "atr_14",
 )
 
-# ADR 108 adds exactly one: a precomputed boolean, not a price. The
-# negative assertions below are what carry the guarantee — a test asserting
-# only that this field is permitted would pass on a probe with no
-# restrictions at all.
-PERMITTED_ON_BAR = {"low", "high", "ts", "ticker", "bear_close_above_upper"}
+# ADR 108 added exactly one field, and ADR 144 its mirror: precomputed
+# booleans, not prices. The negative assertions below are what carry the
+# guarantee — a test asserting only that these fields are permitted would
+# pass on a probe with no restrictions at all.
+#
+# **Widening this set is the most consequential edit in the repository**, so
+# the standard for joining it is stated rather than left to judgement. A
+# field belongs here only if it is a boolean whose entire causality was
+# resolved in `core/indicators.py` before `detect` saw the bar. That is what
+# keeps the probe's real purpose intact: an *intraday* condition written
+# against the close must remain impossible to express in `detect`, and a
+# boolean naming its own derivation cannot be repurposed into one. A raw
+# price could be, which is why `FORBIDDEN_PRICES_ON_BAR` below never
+# shrinks — it is the half of this pair that actually does the work.
+PERMITTED_ON_BAR = {
+    "low",
+    "high",
+    "ts",
+    "ticker",
+    "bear_close_above_upper",
+    "bull_close_below_lower",
+}
 
 # Raw prices `detect` must never read. `open` and `close` are the pair ADR
 # 108's flag is derived from, and they stay forbidden precisely because the
@@ -387,16 +404,37 @@ def test_detect_never_reads_a_raw_price_beyond_low_and_high():
 
 
 def test_the_permitted_set_did_not_quietly_widen():
-    """Pins the exact membership. A future edit adding `close` "for
-    convenience" changes this set, and this fails before the look-ahead
-    ships rather than after."""
+    """Pins the exact membership, in a second place on purpose.
+
+    A future edit adding `close` "for convenience" changes the set at its
+    definition, and this fails -- before the look-ahead ships rather than
+    after. The duplication is the mechanism: widening requires editing two
+    files that both say why, so it cannot happen as a side effect.
+
+    **Widened once, 2026-08-21, for ADR 144's `bull_close_below_lower`.**
+    The first widening was ADR 108's `bear_close_above_upper`. Both are
+    booleans resolved in `core/indicators.py` before `detect` sees the bar,
+    and both are structurally forced rather than convenient: the flag
+    describes bar *t*'s own close against bar *t*'s own band, while `ind`
+    carries t-1, so there is no route for it except the bar. A raw price has
+    no such justification and never will -- `FORBIDDEN_PRICES_ON_BAR` is the
+    half of this pair that does the real work, and it has never changed.
+    """
     assert PERMITTED_ON_BAR == {
         "low",
         "high",
         "ts",
         "ticker",
         "bear_close_above_upper",
+        "bull_close_below_lower",
     }
+    # The guarantee that matters, restated here so this test cannot pass by
+    # someone simply appending to the set above.
+    assert PERMITTED_ON_BAR.isdisjoint(FORBIDDEN_PRICES_ON_BAR)
+    assert all(
+        f.endswith(("_upper", "_lower")) or f in {"low", "high", "ts", "ticker"}
+        for f in PERMITTED_ON_BAR
+    )
 
 
 def test_the_flag_firing_does_not_widen_what_is_read():

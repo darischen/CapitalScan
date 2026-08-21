@@ -901,12 +901,35 @@ def test_the_specificity_order_is_fully_pinned():
     )
 
 
-def test_the_long_side_ranking_is_unchanged():
+def test_the_long_side_ranking_puts_the_close_confirmed_type_first():
+    """Renamed from `..._is_unchanged` on 2026-08-21.
+
+    That name asserted the *absence* of ADR 144's long-side counterpart, so
+    adding one made the name a lie while the assertion stayed correct -- the
+    same failure `test_fast_agreement_disabled_lets_a_disagreeing_confluence_fire`
+    had when `require_fast_agreement` flipped. A test name should describe
+    the rule, not the state of the world when it was written.
+    """
     assert sig._SPECIFICITY[Side.LONG] == (
+        SignalType.BULL_CLOSE_BELOW_LOWER,
         SignalType.CONFLUENCE_LOW,
         SignalType.BB_LOWER_TOUCH,
         SignalType.STOCH_OVERSOLD,
     )
+
+
+def test_the_two_sides_rank_their_types_the_same_way():
+    """ADR 144's mirror, asserted as a shape rather than as two lists.
+
+    ADR 106 forbids *assuming* the sides pay alike; it does not forbid
+    labelling them alike. This pins the labelling symmetry so that breaking
+    it later is deliberate, and says nothing about returns.
+    """
+    long_kinds = [t.value.split("_")[0] for t in sig._SPECIFICITY[Side.LONG]]
+    short_kinds = [t.value.split("_")[0] for t in sig._SPECIFICITY[Side.SHORT]]
+    assert long_kinds == ["bull", "confluence", "bb", "stoch"]
+    assert short_kinds == ["bear", "confluence", "bb", "stoch"]
+    assert len(sig._SPECIFICITY[Side.LONG]) == len(sig._SPECIFICITY[Side.SHORT])
 
 
 def test_breach_live_never_returns_the_close_confirmed_type():

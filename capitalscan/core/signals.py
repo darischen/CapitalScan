@@ -32,16 +32,26 @@ from capitalscan.core.types import Bands, Bound, Side, SignalHit, SignalType
 # preserves this order so the stored array is deterministic.
 _SPECIFICITY: dict[Side, tuple[SignalType, ...]] = {
     Side.LONG: (
+        # ADR 144 (user's decision, 2026-08-21). The long side gained its
+        # counterpart and ranks it the same way the short side does: a band
+        # breach plus a confirmed rejection of it is strictly more specific
+        # than a band touch plus a stochastic extreme.
+        #
+        # This comment used to read "the two sides are deliberately not
+        # mirrors — ADR 106 already rejects long/short symmetry as an
+        # assumption, and no bullish counterpart was requested." The second
+        # clause is what has changed; one was requested. The first still
+        # holds and is worth restating: ADR 106 forbids *assuming* the sides
+        # behave alike, not describing them alike. Ranking is a labelling
+        # rule, not a measured claim -- what ADR 016 and 106 require to be
+        # measured rather than assumed is whether the two sides *pay* alike,
+        # and nothing here asserts that.
+        SignalType.BULL_CLOSE_BELOW_LOWER,
         SignalType.CONFLUENCE_LOW,
         SignalType.BB_LOWER_TOUCH,
         SignalType.STOCH_OVERSOLD,
     ),
     Side.SHORT: (
-        # ADR 108 ranks the close-confirmed type first: a band breach plus a
-        # confirmed rejection of it is strictly more specific than a band
-        # touch plus a stochastic extreme. The two sides are deliberately
-        # not mirrors — ADR 106 already rejects long/short symmetry as an
-        # assumption, and no bullish counterpart was requested.
         SignalType.BEAR_CLOSE_ABOVE_UPPER,
         SignalType.CONFLUENCE_HIGH,
         SignalType.BB_UPPER_TOUCH,
@@ -54,6 +64,7 @@ _SPECIFICITY: dict[Side, tuple[SignalType, ...]] = {
 # only the resolved boolean, so an intraday condition written against the
 # raw close stays impossible to express.
 BEAR_CLOSE_FIELD = "bear_close_above_upper"
+BULL_CLOSE_FIELD = "bull_close_below_lower"
 
 # ADR 108. The **only** fields a caller may read from bar t's own indicator
 # row and attach to the bar. Everything else comes from t-1 (invariant 3).
@@ -184,6 +195,7 @@ def _types_fired(
     ind: pd.Series | Bands,
     sp: SignalParams,
     bear_close: bool = False,
+    bull_close: bool = False,
 ) -> dict[Side, list[SignalType]]:
     """Evaluate every pinned condition and group the results by side.
 
@@ -216,6 +228,8 @@ def _types_fired(
 
     fired: dict[Side, list[SignalType]] = {Side.LONG: [], Side.SHORT: []}
     allowed = enabled_types(sp)
+    if bull_close:
+        fired[Side.LONG].append(SignalType.BULL_CLOSE_BELOW_LOWER)
     if lower_touch and oversold and agrees_long:
         fired[Side.LONG].append(SignalType.CONFLUENCE_LOW)
     if lower_touch:
@@ -274,8 +288,14 @@ def _bar_date(bar: pd.Series) -> date:
     return pd.Timestamp(label).date()  # type: ignore[arg-type]
 
 
-def _bear_close_flag(bar: pd.Series) -> bool:
-    """ADR 108's precomputed condition off the bar, defaulting to False.
+def _close_flag(bar: pd.Series, field: str) -> bool:
+    """A precomputed close-confirmed condition off the bar, defaulting False.
+
+    Serves both `bear_close_above_upper` (ADR 108) and
+    `bull_close_below_lower` (ADR 144). One reader rather than two, because
+    the three failure cases below are properties of *how the column is
+    stored*, not of which side it describes -- and a second copy is how the
+    two would drift apart on the NaN case, which is the subtle one.
 
     Three inputs must all read as "did not fire", and each is a real case:
 
@@ -288,7 +308,7 @@ def _bear_close_flag(bar: pd.Series) -> bool:
     - **False.** The ordinary negative.
     """
     try:
-        value = bar[BEAR_CLOSE_FIELD]
+        value = bar[field]
     except (KeyError, IndexError):
         return False
     if value is None or _isnan(value):
@@ -306,13 +326,15 @@ def detect(bar: pd.Series, ind: pd.Series, sp: SignalParams) -> list[SignalHit]:
     **The t-1 guarantee is structural, and this signature is what carries
     it** (TESTS.md §3.1b). `ind` is one row, not a frame, so bar t's
     indicators are not in scope and no code path can reach them. Five
-    fields are ever read from `bar`: `low`, `high`, `ts`, `ticker`, and
-    `bear_close_above_upper`. Widening that set is how look-ahead would get
-    reintroduced, so it is asserted by test rather than left to review.
+    fields are ever read from `bar`: `low`, `high`, `ts`, `ticker`,
+    `bear_close_above_upper` and `bull_close_below_lower`. Widening that set
+    is how look-ahead would get reintroduced, so it is asserted by test
+    rather than left to review.
 
     **Why the fifth field is not a hole in that guarantee** (ADR 108). It is
     a precomputed boolean, not a price: `core/indicators.py` resolved
-    `open > close AND close >= bb_upper[t-1]` before `detect` ever saw the
+    `open > close AND close >= bb_upper[t]` -- and its ADR 144 mirror
+    `close > open AND close <= bb_lower[t]` -- before `detect` ever saw the
     bar. Raw `open` and `close` remain forbidden, which is the property that
     actually matters — the probe exists to make an *intraday* condition
     written against the close impossible to express, and a boolean naming
@@ -332,7 +354,12 @@ def detect(bar: pd.Series, ind: pd.Series, sp: SignalParams) -> list[SignalHit]:
         raise TypeError("detect() takes a single indicator row (pd.Series), not a DataFrame")
 
     fired = _types_fired(
-        _get(bar, "low"), _get(bar, "high"), ind, sp, bear_close=_bear_close_flag(bar)
+        _get(bar, "low"),
+        _get(bar, "high"),
+        ind,
+        sp,
+        bear_close=_close_flag(bar, BEAR_CLOSE_FIELD),
+        bull_close=_close_flag(bar, BULL_CLOSE_FIELD),
     )
     if not any(fired.values()):
         return []

@@ -25,6 +25,19 @@ class SignalType(str, Enum):
     # intraday touch (ADR 005). `breach_live` never returns this one — the
     # live path has no close to confirm against.
     BEAR_CLOSE_ABOVE_UPPER = "bear_close_above_upper"
+    # ADR 144, the long-side mirror (user's request, 2026-08-21):
+    # `close > open AND close <= bb_lower[t]`. Same close-confirmed nature,
+    # same absence from `breach_live`.
+    #
+    # **Defined but not enabled.** `SignalParams.enabled_signal_types` does
+    # not list it, so `enabled_types` never resolves it and `_types_fired`
+    # filters it out. Adding an enum member does not move `config_hash` --
+    # the hash is over `dataclasses.asdict(Config)` and a member is not a
+    # field, which is the exact trap ADR 108 documents. That is the property
+    # relied on here: the type can exist, be tested, and be reviewed while a
+    # backtest runs against the current hash, and turning it on later is a
+    # deliberate one-line config change that moves the hash on purpose.
+    BULL_CLOSE_BELOW_LOWER = "bull_close_below_lower"
 
 
 class ExitReason(str, Enum):

@@ -58,6 +58,25 @@ Three traps, all hit for real on 2026-08-09:
 - **`ruff format --check` is a separate gate from `ruff check`.** A file can pass lint and still fail formatting, and nothing warns you.
 - **`uv run mypy` bare is wider than any explicit path list.** It reads `pyproject.toml` and covers 137 files including tests; `mypy capitalscan/core capitalscan/jobs` covers 43 and proves much less.
 
+**Bash on this machine does not see user or system environment variables.**
+Anything not on the default PATH needs its full path -- `psql`, `docker.exe`,
+`node`. This is why every command below is written out in full.
+
+**Postgres runs in Docker** as container `capitalscan-postgres`, mapped to
+5432. A *separate* native PostgreSQL 18 service listens on **15432** and
+rejects the `capscan` password. So `connection refused` on 5432 means the
+container is down, not that the server moved -- check it before diagnosing
+anything else:
+
+```
+"C:\Program Files\Docker\Dockeresourcesin\docker.exe" ps -a
+"C:\Program Files\Docker\Dockeresourcesin\docker.exe" start capitalscan-postgres
+```
+
+It exited 255 unprompted on 2026-08-21 at ~01:00 PT, killing a 1h55m
+backtest. No OOM, no disk error in its log, nobody touched it. Crash
+recovery lost nothing. Long jobs should be assumed interruptible.
+
 `docker` is not on PATH in agent shells. Reach Postgres directly:
 
 ```

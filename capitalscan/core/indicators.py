@@ -205,6 +205,66 @@ def drawdown_from_high(bars: pd.DataFrame, p: IndicatorParams) -> pd.DataFrame:
     return pd.DataFrame({"dd_52w": dd_52w}, index=bars.index)
 
 
+@register("bull_close_below_lower", deps=["open", "close"], warmup=272, dtype="boolean")
+def bull_close_below_lower(bars: pd.DataFrame, p: IndicatorParams) -> pd.DataFrame:
+    """An up bar closing at or below **that same day's** lower band (ADR 144).
+
+    ```
+    close > open  AND  close <= bb_lower[t]
+    ```
+
+    The long-side mirror of `bear_close_above_upper`, and deliberately a
+    mirror in every respect that matters -- the same band lag, the same
+    same-day band, the same `_breach` call, the same null-through-warmup
+    treatment. Where the two differ it is only by `Bound` and by the
+    direction of the open/close comparison, because any *other* difference
+    between them would be a claim that the long and short sides behave
+    asymmetrically, which ADR 016 says must be measured rather than assumed.
+
+    **Why here and not in `core/signals.py`**: identical to the bear case.
+    `detect` may read only `low`, `high`, `ts` and `ticker` from the bar --
+    the signature probe pins it and CLAUDE.md calls that probe the real
+    guarantee. This needs `open` and `close`, so it goes on the indicator
+    row that `detect` already receives.
+
+    **The band is bar t's own**, per ADR 109's correction to ADR 108. At the
+    closing bell today's band is fully computable from information that
+    already exists, so reading it is not look-ahead; and the circularity runs
+    conservative in this direction too -- a low close *lowers* the band and
+    makes it harder to close beneath.
+
+    `bear_close_band_lag` governs both flags. One field rather than two,
+    because the lag is a statement about how a close-confirmed band is read,
+    not about which side is being read -- and two fields would let the sides
+    silently disagree, which is invariant 9's failure mode.
+
+    **Structural consequence, mirroring the bear case.** `bars_check1`
+    enforces `close >= low`, so `close <= bb_lower[t]` implies
+    `low <= bb_lower[t]`: every flagged bar necessarily also touched its own
+    lower band. The flag refines an existing population rather than creating
+    a new one.
+    """
+    from capitalscan.core.signals import _breach
+    from capitalscan.core.types import Bound
+
+    lower = bollinger(bars, p)["bb_lower"]
+    if p.bear_close_band_lag:
+        lower = lower.shift(p.bear_close_band_lag)
+    close = bars["close"]
+    at_or_below = pd.Series(
+        [
+            _breach(float(c), float(lo), Bound.LOWER)
+            for c, lo in zip(close.to_numpy(), lower.to_numpy())
+        ],
+        index=bars.index,
+    )
+    flag = (close > bars["open"]) & at_or_below
+    return pd.DataFrame(
+        {"bull_close_below_lower": flag.where(lower.notna())},
+        index=bars.index,
+    )
+
+
 @register("bear_close_above_upper", deps=["open", "close"], warmup=272, dtype="boolean")
 def bear_close_above_upper(bars: pd.DataFrame, p: IndicatorParams) -> pd.DataFrame:
     """A down bar closing at or above **that same day's** upper band (ADR 109).
