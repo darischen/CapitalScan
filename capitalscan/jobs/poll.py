@@ -336,7 +336,35 @@ def _state_json(
     # would reach the jsonb insert as a Python object. Found by
     # `test_state_json_carries_the_open_and_the_reversal_block`.
     payload["bear_reversal"] = _json_safe(asdict(reversal_state(price, day_open, band)))
+    # ADR 144. Stored beside it rather than instead of it: a wide bar can
+    # break both bands, and a reader asking "how close was this?" should get
+    # the same answer shape whichever side they are looking at.
+    payload["bull_reversal"] = _json_safe(asdict(bull_reversal_state(price, day_open, band)))
     return _json_safe(payload)  # type: ignore[no-any-return]
+
+
+def is_bull_reversal(price: float, day_open: float, bands: Bands) -> bool:
+    """ADR 144's live half: price below the band, but above today's open.
+
+    ```
+    price <= bb_lower  AND  price > day_open
+    ```
+
+    The long-side mirror of `is_bear_reversal`, and a mirror in the same
+    limited sense the stored flags are: same shape, opposite `Bound` and
+    opposite open/close comparison, nothing else different. The stored flag
+    is `close > open AND close <= bb_lower[t]` and can only be evaluated at
+    the close; mid-session the current quote stands in for it, so this is a
+    live estimate that can stop being true before the bell.
+
+    `bb_lower` comes from the prior close (the poller's `bands`), matching
+    the stored flag's band and invariant 3.
+
+    A NaN `day_open` returns False. "Cannot evaluate" is not "fired".
+    """
+    if _isnan(price) or _isnan(day_open):
+        return False
+    return _breach(price, bands.bb_lower, Bound.LOWER) and price > day_open
 
 
 def is_bear_reversal(price: float, day_open: float, bands: Bands) -> bool:
@@ -402,6 +430,45 @@ class ReversalState:
         if not self.above_band:
             return "n/a"
         return "confirmed" if self.confirmed else "not_confirmed"
+
+
+def bull_reversal_state(price: float, day_open: float, bands: Bands) -> ReversalState:
+    """ADR 144's mirror of `reversal_state`, reusing the same dataclass.
+
+    **`above_band` means "beyond the band on this signal's own side."** For a
+    long-side state that is *below* the lower band, so the field reads True
+    when price has broken down through it. Reusing the name rather than
+    adding `below_band` keeps one shape for the two sides -- the screener's
+    badge, the notification and the CSV all read one set of fields -- and the
+    field's meaning is "the band condition holds", which is side-relative by
+    nature. `ReversalState.label` works unchanged for the same reason.
+
+    **`open_gap_atr` keeps its sign convention, and so its reading flips.**
+    It is always `(price - open) / ATR`. For a bear reversal *negative*
+    confirms (price below its open); here *positive* confirms (price above
+    it). The alternative -- negating it so "negative is always confirming" --
+    would make the same column mean two different things depending on a
+    sibling field, which is worse than a sign the reader has to interpret
+    once.
+    """
+    below_band = _breach(price, bands.bb_lower, Bound.LOWER)
+    confirmed = is_bull_reversal(price, day_open, bands)
+
+    band_gap = None if _isnan(price) or _isnan(bands.bb_lower) else price - bands.bb_lower
+    open_gap = None if _isnan(price) or _isnan(day_open) else price - day_open
+
+    atr = bands.atr_14
+    open_gap_atr = None
+    if open_gap is not None and not _isnan(atr) and atr > 0:
+        open_gap_atr = open_gap / atr
+
+    return ReversalState(
+        above_band=below_band,
+        confirmed=confirmed,
+        band_gap=band_gap,
+        open_gap=open_gap,
+        open_gap_atr=open_gap_atr,
+    )
 
 
 def reversal_state(price: float, day_open: float, bands: Bands) -> ReversalState:

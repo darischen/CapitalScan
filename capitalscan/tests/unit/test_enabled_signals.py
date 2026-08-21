@@ -116,10 +116,18 @@ def test_the_hash_is_sensitive_to_the_order_the_set_is_written_in():
     assert config_hash(a) != config_hash(b)
 
 
+# The types deliberately defined but not enabled. Pinned as a set rather
+# than left implicit, because the guard below is what stops "added a type and
+# forgot to enable it" -- a silent, permanent no-op -- and that guard is only
+# as good as this line being maintained.
+DORMANT_BY_DESIGN = {"bull_close_below_lower"}
+
+
 def test_the_default_is_written_in_enum_declaration_order():
     """The convention above, enforced. A reordered default would mint a new
     hash for an identical config."""
-    assert SignalParams().enabled_signal_types == tuple(s.value for s in SignalType)
+    expected = tuple(s.value for s in SignalType if s.value not in DORMANT_BY_DESIGN)
+    assert SignalParams().enabled_signal_types == expected
 
 
 # --------------------------------------------------------------------------
@@ -127,8 +135,32 @@ def test_the_default_is_written_in_enum_declaration_order():
 # --------------------------------------------------------------------------
 
 
-def test_every_type_is_enabled_by_default():
-    assert set(SignalParams().enabled_signal_types) == {s.value for s in SignalType}
+def test_every_type_is_enabled_except_the_ones_deliberately_dormant():
+    """**Rewritten 2026-08-21, and it must not be weakened further.**
+
+    This used to read `set(enabled) == every SignalType`, which caught the
+    failure that matters: adding a type and forgetting to enable it makes it
+    a permanent no-op that nothing reports. ADR 144 introduced a type that
+    is *deliberately* disabled -- defined so it could be reviewed and tested
+    while a backtest ran under the current hash, since enabling it moves
+    `config_hash`.
+
+    So the assertion is not relaxed to "some subset"; the exception is
+    named. A new type still fails this unless it is either enabled or added
+    to `DORMANT_BY_DESIGN` on purpose.
+    """
+    enabled = set(SignalParams().enabled_signal_types)
+    every = {s.value for s in SignalType}
+    assert enabled == every - DORMANT_BY_DESIGN
+    # And dormancy is real, not a typo that silently enables nothing.
+    assert DORMANT_BY_DESIGN <= every
+
+
+def test_a_dormant_type_cannot_fire():
+    """The consequence, asserted end to end rather than assumed from config."""
+    for value in DORMANT_BY_DESIGN:
+        assert value not in SignalParams().enabled_signal_types
+        assert SignalType(value) not in sig.enabled_types(SignalParams())
 
 
 def test_disabling_the_new_type_suppresses_it():

@@ -44,8 +44,9 @@ def test_signal_type_values():
         "stoch_overbought",
         "confluence_low",
         "confluence_high",
-        # ADR 108, the only close-confirmed member.
+        # ADR 108 and ADR 144: the two close-confirmed members, one per side.
         "bear_close_above_upper",
+        "bull_close_below_lower",
     }
 
 

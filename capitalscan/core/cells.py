@@ -28,21 +28,35 @@ from capitalscan.core.types import SignalType
 # ADR 102: signal type pairs *with* side rather than crossing it, which is
 # what makes the grid twelve cells instead of thirty-six.
 #
-# **The two tuples are no longer the same length** (ADR 108, 2026-08-13).
-# They used to be positionally paired — index i of each was the same family
-# read from the opposite side — and `BEAR_CLOSE_ABOVE_UPPER` breaks that,
-# because no bullish counterpart was requested and ADR 106 already rejects
-# long/short symmetry as an assumption. `headline_grid` iterates each tuple
-# independently and never zips them, so the asymmetry is expressible; this
-# comment exists because the old pairing was load-bearing documentation and
-# a reader could reasonably still assume it.
+# **The two tuples were briefly different lengths, and are equal again**
+# (ADR 108 broke the pairing 2026-08-13; ADR 144 restored it 2026-08-21).
+# They are positionally paired -- index i of each is the same family read
+# from the opposite side. `headline_grid` iterates them independently and
+# never zips them, so an asymmetry stays expressible; the pairing is
+# documentation, not a mechanism.
 #
-# Grid size is now 3x2 + 4x2 = 14 cells, and the Benjamini-Hochberg family
-# in DESIGN 6.8 grows from 48 tests to 56 (14 cells x 4 targets).
+# Grid size is 4x2 + 4x2 = 16 cells, and the Benjamini-Hochberg family in
+# DESIGN 6.8 is 64 tests (16 cells x 4 targets).
+#
+# **Two of those cells cannot fire yet, and that is deliberate.**
+# `bull_close_below_lower` is dormant -- `SignalParams.enabled_signal_types`
+# does not list it -- so its cells are empty until it is enabled. An empty
+# cell falls below `min_n_eff` and is suppressed, and **BH corrects over
+# measured cells, not over declared ones** (ADR 112 reports 48 measured of
+# 56, not 56 of 56). So a dormant cell does not dilute any other cell's
+# q-value. If that ever changes, this is the line to revisit: adding tests
+# that cannot produce a signal would make every real cell's q-value worse
+# for nothing.
+#
+# It is listed here rather than held back because these tuples are also the
+# side lookup `handlers.enums.side_for_signal_type` reads, and every
+# `SignalType` member must have a side. Classification and grid membership
+# share one source, which is why a dormant type still appears.
 LONG_SIGNALS: tuple[str, ...] = (
     SignalType.BB_LOWER_TOUCH.value,
     SignalType.STOCH_OVERSOLD.value,
     SignalType.CONFLUENCE_LOW.value,
+    SignalType.BULL_CLOSE_BELOW_LOWER.value,
 )
 SHORT_SIGNALS: tuple[str, ...] = (
     SignalType.BB_UPPER_TOUCH.value,

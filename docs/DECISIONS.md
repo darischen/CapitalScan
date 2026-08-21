@@ -4576,6 +4576,90 @@ A second limb, additive. The two columns agree when **either** is true:
 **Nine tests**, and the ones that carry the weight are not "99/89 now fires". They are the 15/90 case, which is the only thing separating this rule from one that fires on contradiction; the tolerance limb still firing alone; and the flag-off case, which is what keeps the superseded population reachable from a config rather than only from a database snapshot.
 
 
+---
+
+---
+
+## 143. The universe is seeded from two sources, and the floor drops to $20B
+
+**Date:** 2026-08-21. **Status:** Pinned. Moves `config_hash` to `f66729c7eda212a4`.
+
+**Context.**
+
+NBIS did not resolve on the screener. It is not excluded by a criterion -- it is Netherlands-domiciled, so it is not an S&P 500 constituent, so it never enters `tickers` and is never evaluated at all. Investigating that turned up something the docs had wrong: **the universe was already not S&P-500-only.** QQQ had been added by hand and was participating fully -- 5,280 bars, 66 universe evaluations, `in_trade` true at $289B, 29,343 events -- with market cap resolved through a Yahoo fallback that already served 68 tickers without a CIK.
+
+So "S&P 500" described where the ticker list was *seeded*, not what the engine accepted. Index membership was enforced nowhere: the four criteria in `required_criteria` read price, SMA200, slope and relative return.
+
+**Decision.**
+
+**A second seed source.** `jobs/fetch/nasdaq.py` reads the exchange screener, which returns every listed security with a market cap in one request, and keeps those at or above `INGEST_MIN_MCAP_USD`. Measured 2026-08-21 across 4,193 listings: 158 clear $30B, 212 clear $20B, 336 clear $10B, 529 clear $5B, and rank #1000 sits at **$1.60B**. A "top 1000" rule and a market-cap floor are therefore not the same request, and the floor is the one that binds.
+
+**The ingest floor is $5B and the trade floor is $20B, deliberately apart.** `min_mcap_usd` decides tradeability quarter by quarter from point-in-time shares and price; the ingest floor decides only which tickers are worth holding bars for. A name at $6B today may have been above $20B earlier in the window, and ingesting it is the only way those quarters can ever be measured. Equal floors would silently delete that history.
+
+**`min_mcap_usd` 30e9 -> 20e9**, the third value ADR 014's threshold has taken.
+
+**Preferred series, warrants and units are excluded.** The screener gives every security the *issuer's* market cap, so AGNC Investment appears seven times -- the common plus six depositary-preferred series, each reporting the same $10B+. 29 of 176 new names were this shape. BTSGU is the clearest case: a "Tangible Equity Unit" whose reported cap ($38.8B) exceeds its own common's ($11.8B). **Ordinary ADRs survive**, because ADR 011 admits non-US exposure through exactly those, and matching on "depositary" alone dropped all 16 of ARM, ARGX, BNTX and the rest on the first attempt.
+
+**Consequences.**
+
+**Survivorship is weakened, knowingly.** The S&P union is *complete* -- every historical member, including the failures -- which is what ADR 035 depends on. A current-listings snapshot is a list of things that survived, so a company worth $60B in 2013 and $400M now never enters and contributes nothing to 2013. The user accepted this, and the reasoning is worth recording because it is not merely a shrug: `crit_above_sma200` and `crit_sma200_slope` exclude names in structural decline, so a Cisco-2000 collapse leaves the trade universe as it falls rather than sitting in it; and the model is trained on percent returns rather than prices. The $5B ingest floor is the other mitigation -- it carries names currently *below* the trade floor precisely so the quarters when they were above it remain measurable.
+
+**The expansion was inert until shares ran, and nothing said so.** `cscan universe` succeeded across 66 quarters with 296 rows carrying a NULL market cap -- every new ticker failing `crit_mcap` for want of `shares_outstanding`. No error, no warning, and the only tell was a count nobody prints by default. The order is: bars, indicators, **shares**, then universe.
+
+**Scale after ingest**: 1,029 tickers (929 active, 316 tagged NASDAQ), 1,024,046 new daily bars from 2005-10-11, 58,213 share rows with 79 tickers served by the Yahoo fallback, `null_mcap` 296 -> 2, and **541 tickers ever `in_trade`** against 378 before.
+
+**ORKA is excluded** (`is_active = false`, nothing deleted). Oruka Therapeutics reverse-merged into ARCA biopharma's listing, and Yahoo back-adjusts the whole history through the accumulated reverse splits: $1,632,960 in 2005 decaying smoothly to $30 by 2022. It caused a `numeric(12,6)` overflow that aborted a 34-ticker batch. No reject rule catches it -- `unexplained_split_like_move` looks for a jump, and a back-adjustment cascade is smooth at every consecutive pair.
+
+**`UniverseParams.min_price` was deleted** in the same rebuild window (see ADR 142), dead config since Session 9. Note that a *live* `price_below_min` rule exists in the ingest rejects and fired 5,454 times on the new bars -- same idea, different layer, and unaffected.
+
+
+## 144. The long side gets its own close-confirmed type, defined dormant
+
+**Date:** 2026-08-21. **Status:** Pinned, **not enabled**. Mirrors ADR 108/109 onto the long side.
+
+**Context.**
+
+ADR 108 added `bear_close_above_upper` and ADR 109 corrected its band to bar *t*'s own:
+
+```
+open > close  AND  close >= bb_upper[t]
+```
+
+No bullish counterpart existed, and `core/cells.py` said so in a comment: "no bullish counterpart was requested and ADR 106 already rejects long/short symmetry as an assumption." One was requested on 2026-08-21.
+
+**Decision.**
+
+```
+close > open  AND  close <= bb_lower[t]
+```
+
+A mirror in every respect that could otherwise drift: the same `bear_close_band_lag` field governs both, the same same-day band, the same `_breach` call, the same null-through-warmup treatment. Where the two differ it is only by `Bound` and by the direction of the open/close comparison.
+
+**ADR 106 is not contradicted, and the distinction matters.** That ADR forbids *assuming* the two sides pay alike. Ranking them alike in `_SPECIFICITY`, and giving them matching labels, is a statement about how rows are named -- not about what they return. Nothing here asserts the sides are symmetric in outcome; measuring that is still the open question ADR 016 poses.
+
+**It is defined and deliberately not enabled.** `SignalParams.enabled_signal_types` does not list it, so `enabled_types` never resolves it and `_types_fired` filters it out before it reaches a hit.
+
+**This is ADR 108's trap, used on purpose.** `config_hash` is taken over `dataclasses.asdict(Config)`, and an enum member is not a field -- ADR 108 records that adding `BEAR_CLOSE_ABOVE_UPPER` did *not* move the hash, which was the defect that ADR forced into the open. Here the same property is the feature: the type could be written, tested and reviewed while a five-hour backtest ran under `f66729c7eda212a4`, without invalidating a row of it. Enabling it is a one-line config change that moves the hash deliberately and requires a rebuild.
+
+**Consequences.**
+
+**The signature probe was widened, and this is the session's most consequential edit.** `detect` now reads a sixth bar field. CLAUDE.md calls that probe "the real guarantee" and says never to widen it, so the justification is written into the test rather than left to review:
+
+- The field is a **boolean whose causality was fully resolved in `core/indicators.py`** before `detect` saw the bar -- the category ADR 108 already admitted, not a new one.
+- It is **structurally forced**: the flag compares bar *t*'s close against bar *t*'s band, while `ind` carries t-1, so the bar is the only route.
+- `FORBIDDEN_PRICES_ON_BAR` is unchanged. `open`, `close`, `adj_close` and `volume` remain unreachable, and that is the half of the pair that does the work.
+
+The revert, if this is judged wrong: remove the field from `PERMITTED_ON_BAR` in both places it is pinned, drop `bull_close` from `_types_fired` and `detect`, and leave the indicator computing but unread.
+
+**The headline grid grows 14 cells to 16**, and the BH family 56 to 64. Two of the new cells cannot fire while the type is dormant, and that costs the other cells nothing: an empty cell falls below `min_n_eff` and is suppressed, and BH corrects over *measured* cells rather than declared ones -- ADR 112 reports 48 measured of 56, not 56 of 56. If suppressed cells ever entered the family, adding tests that cannot produce a signal would make every real cell's q-value worse for nothing.
+
+**The two sides are positionally paired again.** ADR 108 broke that pairing; this restores it. `headline_grid` still iterates the tuples independently and never zips them, so an asymmetry stays expressible.
+
+**The live half mirrors too.** `is_bull_reversal` is `price <= bb_lower AND price > day_open`, and `bull_reversal_state` reuses `ReversalState` rather than defining a second shape. Two fields there are worth knowing: `above_band` means "beyond the band **on this signal's own side**", so for a long state it is true when price is *below* the lower band; and `open_gap_atr` keeps one sign convention, always `(price - open) / ATR`, so *negative* confirms a bear reversal and *positive* confirms a bull one. Negating it per side would make one column mean two things depending on a sibling field.
+
+**A migration exists and was not applied.** `c3f91a70b8d4` adds `indicators.bull_close_below_lower`, nullable, no server default -- a default would populate every existing row with False, asserting a negative that was never measured. It was written while a backtest held the table and `cscan db migrate` takes an ACCESS EXCLUSIVE lock.
+
+
 ## Open items
 
 | Item | Options | Current lean |

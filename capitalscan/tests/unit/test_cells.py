@@ -145,15 +145,25 @@ class TestHeadlineGrid:
     """ADR 102 as amended by ADR 108: `3 long x 2 + 4 short x 2 = 14`.
 
     Was `2 sides x 3 families x 2 buckets = 12` until 2026-08-13.
-    `BEAR_CLOSE_ABOVE_UPPER` is short-side only, so the sides carry
-    different family counts and the grid is no longer a clean cross product.
+    ADR 144 gave the long side its own close-confirmed type, so the sides
+    carry equal family counts again and the grid is a clean cross product
+    once more -- 4 types x 2 dd buckets x 2 sides.
     """
 
-    def test_exactly_fourteen_cells(self):
+    def test_exactly_sixteen_cells(self):
         """The Benjamini-Hochberg family in DESIGN 6.8 is this count times
-        four targets, so a silent change here resizes the correction."""
-        assert len(headline_grid(StatsParams())) == 14
-        assert len(headline_grid(StatsParams())) * len(StatsParams().reach_targets) == 56
+        four targets, so a silent change here resizes the correction.
+
+        14 -> 16 on 2026-08-21 (ADR 144). **Two of the new cells cannot fire
+        while `bull_close_below_lower` is dormant**, and that costs the
+        other cells nothing: an empty cell falls below `min_n_eff` and is
+        suppressed, and BH corrects over *measured* cells rather than
+        declared ones -- ADR 112 reports 48 measured of 56, not 56 of 56.
+        If suppressed cells ever entered the family, this line is where the
+        dilution would start.
+        """
+        assert len(headline_grid(StatsParams())) == 16
+        assert len(headline_grid(StatsParams())) * len(StatsParams().reach_targets) == 64
 
     def test_matches_the_adr_102_table(self):
         expected = {
@@ -174,6 +184,11 @@ class TestHeadlineGrid:
             # assumption rather than treating it as the default.
             ("short", "bear_close_above_upper", "0-10"),
             ("short", "bear_close_above_upper", "10-20"),
+            # ADR 144's long-side mirror. Declared here even though the type
+            # is dormant, because the grid is built from `LONG_SIGNALS` --
+            # which is also the side lookup and must cover every SignalType.
+            ("long", "bull_close_below_lower", "0-10"),
+            ("long", "bull_close_below_lower", "10-20"),
         }
         assert {
             (c.side, c.signal_type, c.dd_bucket) for c in headline_grid(StatsParams())
@@ -219,7 +234,7 @@ class TestHeadlineGrid:
             )
             for c in headline_grid(StatsParams())
         }
-        assert len(ids) == 14
+        assert len(ids) == 16
 
     def test_cell_id_passes_null_strength_and_null_era(self):
         spec = CellSpec(side="long", signal_type="bb_lower_touch", dd_bucket="0-10")

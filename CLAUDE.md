@@ -21,7 +21,7 @@ expansion to other markets and more ETFs is in `BACKLOG.md`.
 
 ## Before writing any code
 
-Read `docs/DECISIONS.md`. It holds 142 ADRs. They are decisions, not suggestions.
+Read `docs/DECISIONS.md`. It holds 144 ADRs. They are decisions, not suggestions.
 
 If a task appears to require contradicting one, **stop and ask.** Do not work around it.
 
@@ -69,8 +69,10 @@ container is down, not that the server moved -- check it before diagnosing
 anything else:
 
 ```
-"C:\Program Files\Docker\Dockeresourcesin\docker.exe" ps -a
-"C:\Program Files\Docker\Dockeresourcesin\docker.exe" start capitalscan-postgres
+"C:\Program Files\Docker\Docker
+esourcesin\docker.exe" ps -a
+"C:\Program Files\Docker\Docker
+esourcesin\docker.exe" start capitalscan-postgres
 ```
 
 It exited 255 unprompted on 2026-08-21 at ~01:00 PT, killing a 1h55m

@@ -935,6 +935,9 @@ SIGNAL_TYPE_LABELS = {
     "confluence_low": "Confluence Low",
     "confluence_high": "Confluence High",
     "bear_close_above_upper": "Bear Reversal Above Upper Band",
+    # ADR 144's mirror, worded to match its sibling word for word so the two
+    # read as one pair in a scan report rather than as two conventions.
+    "bull_close_below_lower": "Bull Reversal Below Lower Band",
 }
 
 SIDE_LABELS = {

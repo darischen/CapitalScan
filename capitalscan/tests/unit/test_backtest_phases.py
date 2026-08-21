@@ -19,7 +19,6 @@ import pytest
 from capitalscan.jobs import cli
 from capitalscan.research import backtest
 
-
 # ---------------------------------------------------------------------------
 # The resume check
 # ---------------------------------------------------------------------------

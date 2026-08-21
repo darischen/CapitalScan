@@ -125,6 +125,7 @@ def test_the_new_type_has_a_csv_label():
         "confluence_low",
         "confluence_high",
         "bear_close_above_upper",
+        "bull_close_below_lower",
     }
 
 
