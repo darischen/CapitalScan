@@ -3184,6 +3184,52 @@ signal type and bucket. Left out rather than duplicated.
 
 ---
 
+## ADR 143 measured — the expanded universe, 2026-08-21
+
+**ADR 112 holds a third time.** Zero cells survive FDR correction on either
+split, now over a universe 43% larger than the one that produced the
+original result.
+
+| | measured | survive FDR | min q | avg n_eff |
+|---|---|---|---|---|
+| train, `bbc99a02ebdc999f` (378 tickers) | 48 | **0** | 0.7167 | 265 |
+| train, `f66729c7eda212a4` (540 tickers) | 48 | **0** | **0.5727** | 265 |
+| validate, `bbc99a02ebdc999f` | 28 | **0** | 0.7327 | 45 |
+| validate, `f66729c7eda212a4` | 28 | **0** | 0.7402 | 41 |
+
+Population: **540 tickers against 378**, and **195,911 in-trade `next_open`
+events against 139,387**. `n_pairs` in the correlation estimate roughly
+doubled, 31,599 to 55,916 in the 2024+ era.
+
+**The minimum q-value fell from 0.7167 to 0.5727 on train and did not move
+on validate.** That is the shape of noise, not of signal: a 43% larger
+population moves the best-looking cell's q by a quarter on one split and
+0.007 the wrong way on the other, while `fdr_alpha` is 0.05 -- still more
+than eleven times away. Nothing crossed, nothing approached crossing.
+
+**`n_eff` is flat at 265 on train and *fell* on validate, 45 to 41.** More
+tickers did not buy more independent information. Pooled rho runs 0.34 to
+0.46 across the eras, and adding names to the same market on the same days
+adds correlated observations -- the validate split has fewer years for those
+correlations to average out, which is why it went down rather than up.
+
+**Grid is 16 cells / 64 tests**, up from 14 / 56 (ADR 144 added the long
+side's close-confirmed type). Two of the sixteen cannot fire while
+`bull_close_below_lower` is dormant; empty cells suppress and BH corrects
+over measured cells, so 48 and 28 measured are unchanged from the previous
+config.
+
+**Provenance.** The compute phase ran as 38 resumable chunks in 61 minutes
+(783,644 rows, 540 tickers, zero chunk failures). `--phase finalize`
+corrected `cofire_count` on all 783,644 -- the chunked writes had stored
+undercounts capped near the chunk size, 8 where 110 tickers actually
+co-fired, which would have inflated `n_eff` roughly fourteenfold. Verified
+afterwards: zero mismatched groups. The path backfill was killed twice by
+external process termination and resumed both times without loss, being
+idempotent on `fwd_window_days`.
+
+---
+
 ## ADR 142 re-measured against ADR 112 — 2026-08-21
 
 **ADR 112 holds.** Zero cells survive FDR correction on either split under
