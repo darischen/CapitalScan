@@ -101,6 +101,51 @@ describe("everything else is refused", () => {
   });
 });
 
+describe("SITE_AUTH_DISABLED is an explicit opt-out", () => {
+  /**
+   * Requested 2026-08-20 and recorded in `docs/BACKLOG.md`.
+   *
+   * The tests that matter are the ones separating "deliberately open" from
+   * "accidentally open": only the exact string `"1"` opens the site, and an
+   * unset password still locks it.
+   */
+  it("opens every route when set to exactly 1", () => {
+    withPassword(PASSWORD, () => {
+      process.env.SITE_AUTH_DISABLED = "1";
+      try {
+        for (const route of ["/", "/research", "/api/chat", "/ticker/AMGN"]) {
+          expect(middleware(request(route)).status).not.toBe(401);
+        }
+      } finally {
+        delete process.env.SITE_AUTH_DISABLED;
+      }
+    });
+  });
+
+  it.each(["0", "true", "yes", "", "TRUE", " 1"])(
+    "does not open the site for %o",
+    (value) => {
+      // A loose truthiness check here would make `SITE_AUTH_DISABLED=0`
+      // open the site, which is the opposite of what someone typing it
+      // means.
+      withPassword(PASSWORD, () => {
+        process.env.SITE_AUTH_DISABLED = value;
+        try {
+          expect(middleware(request("/")).status).toBe(401);
+        } finally {
+          delete process.env.SITE_AUTH_DISABLED;
+        }
+      });
+    },
+  );
+
+  it("an unset password still locks the site even though the flag exists", () => {
+    withPassword(undefined, () => {
+      expect(middleware(request("/")).status).toBe(503);
+    });
+  });
+});
+
 describe("an unset SITE_PASSWORD locks the site rather than opening it", () => {
   /**
    * The failure this control most plausibly has: someone deploys without

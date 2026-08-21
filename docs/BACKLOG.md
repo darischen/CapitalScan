@@ -8,6 +8,58 @@ Ordered by when it blocks something, not by size.
 
 ## Open
 
+### The deployed site is open — `SITE_AUTH_DISABLED=1`
+
+**Turned off deliberately 2026-08-20**, at the user's request and with
+their reasoning recorded: a Vercel deployment URL is hard to discover, and
+the content is public market data plus one operator's own analysis. No
+PII, no credentials, no user accounts — there is no user model at all.
+
+Implemented as an explicit variable rather than by weakening the default.
+`SITE_PASSWORD` unset still returns 503; only `SITE_AUTH_DISABLED=1`
+opens the site, and only that exact string — `0`, `true` and `yes` are all
+refused, because a loose truthiness check would make `=0` mean "open",
+which is the opposite of what someone typing it intends.
+
+**What to check before deciding this is permanent.** `/api/chat` spends
+Anthropic tokens per request. It is currently harmless because the route
+connects to MCP on `127.0.0.1` and fails *before* any model call — an open
+page, not an open wallet. That stops being true the moment MCP is
+reachable remotely. If ADR 118's boundary ever moves, restore auth or
+carve `/api/chat` out of the opt-out **in the same change**.
+
+**To restore**: delete `SITE_AUTH_DISABLED` in Vercel and redeploy. The
+middleware and its 38 tests are unchanged and still enforce everything.
+
+---
+
+### `ServingParams.history_years` is set for a limit that turned out to be 10x larger
+
+ADR 137 chose three years by measuring against **512 MB**, which is what
+Neon's free tier was assumed to be. The account's actual limit is **5 GB**,
+and the synced store reports **0.45 GB — 9% used**, not the 80% that ADR
+recorded.
+
+Every window fits:
+
+```
+1 year   139 MB     3 years  393 MB (current)     full  2,149 MB
+2 years  266 MB     5 years  638 MB
+```
+
+Full history is 43% of the plan. So the three-year cut is now a *choice*
+about what the deployed site should show, not a constraint — and the
+tradeoff it was making (no screener dates before 2023-08-21, chart ranges
+beyond ~2 years stopping early) is no longer being paid for anything.
+
+**What would settle it**: change `history_years` and re-run `cscan sync`.
+The job upserts and never deletes, so widening the window adds rows
+without disturbing what is there. ADR 137's measurement table should gain
+the corrected limit either way, so the next reader does not re-derive a
+constraint that does not exist.
+
+---
+
 ### `UniverseParams.min_price` is declared and enforced nowhere
 
 Found 2026-08-20 while checking why `cscan nightly` warned that SBNY was

@@ -4299,6 +4299,13 @@ reference data                  12 MB
 
 None of those were mistakes. The estimate simply describes a system that no longer exists.
 
+**Correction, 2026-08-20 (same day).** The 512MB figure below is wrong for
+this account: Neon reports **5 GB**, and the synced three-year store uses
+**0.45 GB, 9%**. Full history at 2,149MB would fit in 43%. The decision
+stands as a *choice* about what the deployed site shows; it is no longer a
+constraint, and `BACKLOG.md` carries the question of whether to widen it.
+The measurements themselves were taken correctly and are unchanged.
+
 **Decision.**
 
 `ServingParams.history_years = 3`. Measured against the free tier:

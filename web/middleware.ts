@@ -75,6 +75,24 @@ export function middleware(request: NextRequest): NextResponse {
     return NextResponse.next();
   }
 
+  // **An explicit opt-out, deliberately not the absence of a password.**
+  // Requested 2026-08-20: the deployment URL is hard to discover and the
+  // content is public market data plus the operator's own analysis, so the
+  // gate costs more than it protects for now.
+  //
+  // It is its own variable rather than "unset SITE_PASSWORD means open"
+  // because those are different intents and only one of them is safe to
+  // infer. Forgetting to set a password is an accident; setting
+  // `SITE_AUTH_DISABLED=1` is a decision, and it reads as one in the
+  // Vercel dashboard next to the password it overrides.
+  //
+  // Recorded in `docs/BACKLOG.md`. The thing to re-check before removing
+  // this is `/api/chat`: it spends Anthropic tokens per request, and is
+  // currently harmless only because it reaches MCP on 127.0.0.1 and fails
+  // before any model call. Exposing MCP remotely without restoring this
+  // turns an open page into an open wallet.
+  if (process.env.SITE_AUTH_DISABLED === "1") return NextResponse.next();
+
   const expected = process.env.SITE_PASSWORD;
 
   // **Fails closed.** An unset secret locks the site rather than opening
