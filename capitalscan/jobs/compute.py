@@ -76,6 +76,10 @@ INDICATOR_COLUMNS = [
     # ADR 108. Boolean, unlike every column above it, and nullable through
     # the 273-bar warmup (invariant 4). Migration a9d3c04f7b15.
     "bear_close_above_upper",
+    # ADR 144. Absent until 2026-08-21, so the column stayed NULL across all
+    # 3.93M rows while every run exited 0 — `merged[cols]` drops what is not
+    # named here. `test_indicator_columns_persist.py` now pins the set.
+    "bull_close_below_lower",
 ]
 DD_BUCKETS = (
     (0.10, "0-10"),
