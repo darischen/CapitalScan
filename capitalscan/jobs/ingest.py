@@ -1223,7 +1223,18 @@ def _implausible_shares_reason(shares: int, bounds: SharesPlausibility) -> str |
 # instead of being silently swallowed alongside this. Kept here, not in
 # `jobs/fetch/sec.py`, because which tickers to skip is ingest policy, not
 # a fact about how to talk to SEC.
-SEC_NON_FILER_TICKERS = frozenset({"QQQ"})
+SEC_NON_FILER_TICKERS = frozenset({"QQQ", "VOO", "IBIT"})
+# `VOO` and `IBIT` added 2026-08-21 with the ETF expansion (ADR 143). Same
+# reason as QQQ: an ETF files no 10-K/10-Q/8-K, so the XBRL endpoints 404 by
+# design and `run_shares` falls through to the Yahoo source that already
+# serves 68 tickers.
+#
+# **`IBIT` is the one that needs watching**, and not for its shares. A spot
+# Bitcoin trust has no sector, no industry and no earnings date, and
+# `cell_id` is built from exactly those columns -- so it lands in a
+# NULL-sector cell rather than being excluded, and ADR 041's earnings-window
+# exclusion silently does nothing for it. Tradeable and uncellable is a
+# state nothing in the schema forbids. See `BACKLOG.md`.
 
 
 def run_shares(
