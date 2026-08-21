@@ -107,12 +107,22 @@ def test_default_config_hash_is_pinned():
     invariant 9's failure mode exactly.
     Old value: `541f84a384b07ba2`. New value: `86e91448a65aa40b`.
 
+    Updated 2026-08-20 for ADR 142, and this move carries two changes at
+    once. `SignalParams.fast_agreement_both_extreme` widens the fast/full
+    agreement rule so two %K columns also agree when both sit beyond the same
+    threshold -- the fourth instance of the ADR 108/109 mechanism, and again
+    reached through a formula: the comparison lives in `core/signals.py` and
+    would not have moved the hash on its own. `UniverseParams.min_price` was
+    deleted in the same commit, dead config since Session 9, bundled here
+    because removing it moves the hash and did not justify a rebuild alone.
+    Old value: `86e91448a65aa40b`. New value: `bbc99a02ebdc999f`.
+
     **The Postgres GUC must not move until a backtest has written events
     under the new hash.** `v_screen` and `compute.scan` both read
     `capitalscan.default_config_hash`, and pointing them at a config with no
     rows yet returns an empty screener rather than an error (invariant 5b's
     deliberate behaviour). Set it after the backtest, not before."""
-    assert config_hash(Config()) == "86e91448a65aa40b"
+    assert config_hash(Config()) == "bbc99a02ebdc999f"
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +210,7 @@ def test_indicators_command_malformed_config_exits_clean(monkeypatch, capsys):
 
 
 def test_universe_command_threads_resolved_params(monkeypatch, tmp_path):
-    monkeypatch.setattr(cli, "_CONFIG_FILE", _toml(tmp_path, "[universe]\nmin_price = 5.0\n"))
+    monkeypatch.setattr(cli, "_CONFIG_FILE", _toml(tmp_path, "[universe]\nmin_mcap_usd = 5.0\n"))
     captured = {}
 
     def _fake_run_universe(quarter, tickers=None, engine=None, up=None, today=None):
@@ -212,7 +222,10 @@ def test_universe_command_threads_resolved_params(monkeypatch, tmp_path):
     result = runner.invoke(cli.app, ["universe", "--quarter", "2026Q3", "--tickers", "AAPL"])
 
     assert result.exit_code == 0, result.output
-    assert captured["up"].min_price == 5.0
+    # Any `UniverseParams` field would do; this asserts the section is
+    # threaded, not the field. It read `min_price` until ADR 142 removed
+    # that field as dead config.
+    assert captured["up"].min_mcap_usd == 5.0
 
 
 # ---------------------------------------------------------------------------

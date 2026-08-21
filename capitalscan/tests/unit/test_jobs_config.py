@@ -112,7 +112,7 @@ def test_every_section_is_resolvable(missing):
             "signals": {"stoch_oversold": 25.0},
             "exits": {"max_hold_days": 7},
             "costs": {"slippage_bps": 5.0},
-            "universe": {"min_price": 2.0},
+            "universe": {"min_mcap_usd": 2.0},
             "stats": {"min_n_eff": 40},
             "splits": {"train_end": "2020-12-31"},
         },
@@ -122,7 +122,7 @@ def test_every_section_is_resolvable(missing):
     assert cfg.signals.stoch_oversold == 25.0
     assert cfg.exits.max_hold_days == 7
     assert cfg.costs.slippage_bps == 5.0
-    assert cfg.universe.min_price == 2.0
+    assert cfg.universe.min_mcap_usd == 2.0
     assert cfg.stats.min_n_eff == 40
     assert cfg.splits.train_end == "2020-12-31"
 

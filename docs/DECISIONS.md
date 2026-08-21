@@ -4520,6 +4520,62 @@ Sorting had to decide where to run. In the browser it is instant and needs no ro
 **The headers do not look like links.** Twelve underlined words above a dense table would be the loudest thing on the page, and the header row is chrome. They inherit the header's own type and colour; only a 7px caret marks the active column, in a fixed-width slot so switching columns does not shift the row.
 
 
+---
+
+## 142. Agreement means agreeing about the state, not being close
+
+**Date:** 2026-08-20. **Status:** Pinned. Supersedes ADR 044's rule as the sole test. Forces a `config_hash` move and a full rebuild.
+
+**Context.**
+
+ADR 044 defined fast/full Stochastic agreement as a tolerance band: `|k_fast - k_full| <= fast_agreement_tol`, default 5. The user noticed it rejects a case it should accept — %K_fast 99 with %K_full 89 is 10 points apart, so no confluence fires, while both columns are deeply overbought and saying the same thing as loudly as they can.
+
+The rule measures **numeric proximity**. The question it is asked is whether the two columns *agree the stochastic is extreme*. Those come apart in both directions:
+
+| %K_fast | %K_full | Both overbought? | Fired before this ADR? |
+|---|---|---|---|
+| 99 | 89 | yes | **no** — 10 apart |
+| 81 | 77 | no, 77 is not | **yes** — 4 apart |
+
+Measured across the daily indicator history, 2026-08-20:
+
+| | bars |
+|---|---|
+| both overbought, rejected by the tolerance | **216,298** |
+| both oversold, rejected by the tolerance | **140,653** |
+| fired anyway with %K_full *not* overbought | 14,728 |
+| fired anyway with %K_full *not* oversold | 11,058 |
+
+So the rule was refusing agreement roughly fifteen times more often than it was granting it to a disagreeing pair.
+
+**Decision.**
+
+A second limb, additive. The two columns agree when **either** is true:
+
+1. `|k_fast - k_full| <= fast_agreement_tol` — ADR 044, untouched.
+2. Both beyond the same threshold, at any distance apart.
+
+**Additive was the user's requirement**: nothing that fired before this stops firing. The 14,728 + 11,058 rows in the table above still fire on limb 1. This ADR is about what was being missed, not about tightening what was not.
+
+**The second limb reads a side, and that is the part worth pinning.** Proximity is symmetric and needs no direction; "both extreme" does. %K_fast 15 with %K_full 90 has both columns beyond a threshold and is the most opposed pair they can produce — a rule phrased without naming *which* threshold would read maximal disagreement as agreement and fire a confluence on it. `_fast_agrees` therefore takes the `Bound` the price is already being tested against, and `_types_fired` asks it once per side.
+
+**`SignalParams.fast_agreement_both_extreme` is what moves `config_hash`.** The change itself is a comparison inside `core/signals.py`, and `jobs.config.config_hash` hashes `dataclasses.asdict(Config)` — a formula is not a field. Without the flag the hash would not have moved and the backtest would have overwritten 139,253 measured rows in place. This is the fourth time that trap has been reached: ADR 108 through a new enum member, ADR 109 through a changed formula, ADR 115 through a threshold in SQL, and now this. Setting the flag to `False` reconstructs every event measured before today.
+
+**`UniverseParams.min_price` was deleted in the same commit.** Dead config since Session 9 — declared, resolvable, read nowhere. `BACKLOG.md` scheduled its removal for "the next change that moves `config_hash` for a reason that stands on its own", and this is that change. Market cap subsumes it: SBNY trades at $0.64 with a $0.03B cap and fails `crit_mcap` by three orders of magnitude.
+
+`config_hash` moves `86e91448a65aa40b` -> **`bbc99a02ebdc999f`**.
+
+**Consequences.**
+
+**The row count does not change; the labels do.** `detect` returns one hit per side, the most specific type, so a bar that gains agreement is not a new event — its existing row is relabelled from `bb_upper_touch` to `confluence_high`, and `signal_types_all` and `signal_strength` move with it. 10,172 short and 6,606 long events are affected, which is **+59%** and **+71%** on the two confluence populations against an unchanged ~139,253 rows.
+
+**ADR 112 must be re-measured and republished.** Its result — no cell survives FDR correction — was computed over a confluence population this change grows by roughly 60%. It may still hold. It may not. It gets published either way, which is the standing rule for this project's headline result.
+
+**The Postgres GUC moves only after the backtest has written rows under the new hash.** `v_screen` and `compute.scan` both read `capitalscan.default_config_hash`, and pointing them at a config with no events yet returns an empty screener rather than an error — invariant 5b's deliberate behaviour, and the reason the order matters.
+
+**Nine tests**, and the ones that carry the weight are not "99/89 now fires". They are the 15/90 case, which is the only thing separating this rule from one that fires on contradiction; the tolerance limb still firing alone; and the flag-off case, which is what keeps the superseded population reachable from a config rather than only from a database snapshot.
+
+
 ## Open items
 
 | Item | Options | Current lean |

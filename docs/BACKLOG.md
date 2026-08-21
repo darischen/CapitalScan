@@ -81,44 +81,6 @@ that is months away. Revisit when the number moves, not on a schedule.
 
 ---
 
-### `UniverseParams.min_price` is declared and enforced nowhere
-
-Found 2026-08-20 while checking why `cscan nightly` warned that SBNY was
-"possibly delisted". `min_price: float = 1.0` appears exactly once in the
-tree — its own declaration in `core/config.py`. No criterion reads it and
-`is_tradeable` never sees it.
-
-**Same shape as `rebalance_freq` before ADR 135**, which sat unused from
-Session 9 until it was given a consumer. A config field that nothing reads
-is a claim the system makes and does not honour: someone tuning
-`min_price` would change a number, see the hash move, rebuild, and get
-identical results.
-
-**Currently harmless, which is why it is here rather than fixed.** The four
-enforced criteria already exclude penny stocks through market cap — SBNY
-trades at $0.64 with a $0.03B cap and fails `crit_mcap` by three orders of
-magnitude. Adding a fifth criterion would change the universe definition
-and therefore `config_hash`, invalidating every measured row, to exclude
-names that are already excluded.
-
-**What would settle it**: either add `crit_min_price` to
-`UniverseParams.required_criteria` and accept the rebuild, or delete the
-field and record that market cap subsumes it. Deleting also moves
-`config_hash`, so neither option is free — which is the argument for
-deciding deliberately rather than drifting.
-
-**Decided 2026-08-20: delete it, bundled.** The user's reading is that it
-may once have been intended as penny-stock protection, that it currently
-does nothing and affects nothing, and that it is not worth a rebuild of its
-own. So the field comes out in the next change that moves `config_hash` for
-a reason that stands on its own, in the same commit, with the ADR for that
-change recording that market cap subsumes a price floor.
-
-**This item stays open until that happens** — it is scheduled, not settled,
-and the thing that would close it is a commit rather than a decision. If a
-hash-moving change lands without removing it, that was a missed chance and
-this entry is the reminder.
-
 ---
 
 The file is kept so the next finding has a home. Adding one means saying

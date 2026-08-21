@@ -108,12 +108,27 @@ def _isnan(x: object) -> bool:
         return True
 
 
-def _fast_agrees(ind: pd.Series | Bands, sp: SignalParams) -> bool:
-    """ADR 044: fast/full Stochastic agreement as a tolerance band.
+def _fast_agrees(ind: pd.Series | Bands, sp: SignalParams, bound: Bound) -> bool:
+    """Do the two %K columns agree the stochastic is extreme on `bound`'s side?
+
+    ADR 044 asked this as a tolerance band and ADR 142 widened it. Two limbs,
+    either of which is agreement:
+
+    1. `|k_fast - k_full| <= fast_agreement_tol` — the original rule.
+    2. Both columns beyond the same threshold, at any distance apart.
+
+    **Why the second limb needed a side.** Proximity is symmetric and needs
+    no direction; "both extreme" does. %K_fast 15 with %K_full 90 has both
+    columns beyond a threshold and is the most opposed pair they can produce,
+    so a rule phrased without naming *which* threshold would read maximal
+    disagreement as agreement. `bound` is what the caller is already testing
+    the price against, so the stochastic question and the band question are
+    answered about the same side.
 
     Scoped to the confluence definitions, which is where DESIGN §3.6 attaches
-    it. A missing or null %K_fast fails the check rather than passing it —
-    the flag exists to *restrict* the event set.
+    it. A missing or null %K fails both limbs rather than passing either —
+    the flag exists to *restrict* the event set, and an absent value cannot
+    be beyond a threshold (invariant 4's shape).
     """
     if not sp.require_fast_agreement:
         return True
@@ -121,7 +136,13 @@ def _fast_agrees(ind: pd.Series | Bands, sp: SignalParams) -> bool:
     k_full = _get(ind, "k_full")
     if _isnan(k_fast) or _isnan(k_full):
         return False
-    return abs(float(k_fast) - float(k_full)) <= sp.fast_agreement_tol
+    if abs(float(k_fast) - float(k_full)) <= sp.fast_agreement_tol:
+        return True
+    if not sp.fast_agreement_both_extreme:
+        return False
+    if bound is Bound.LOWER:
+        return k_fast <= sp.stoch_oversold and k_full <= sp.stoch_oversold
+    return k_fast >= sp.stoch_overbought and k_full >= sp.stoch_overbought
 
 
 def _get(row: pd.Series | Bands, field: str) -> float:
@@ -187,11 +208,15 @@ def _types_fired(
     upper_touch = _breach(high, bb_upper, Bound.UPPER, sp.price_tolerance)
     oversold = not _isnan(k) and k <= sp.stoch_oversold
     overbought = not _isnan(k) and k >= sp.stoch_overbought
-    agrees = _fast_agrees(ind, sp)
+    # Once per side, because ADR 142's second limb is directional: the two
+    # %K columns can agree about being oversold and say nothing about being
+    # overbought, and the same boolean cannot carry both answers.
+    agrees_long = _fast_agrees(ind, sp, Bound.LOWER)
+    agrees_short = _fast_agrees(ind, sp, Bound.UPPER)
 
     fired: dict[Side, list[SignalType]] = {Side.LONG: [], Side.SHORT: []}
     allowed = enabled_types(sp)
-    if lower_touch and oversold and agrees:
+    if lower_touch and oversold and agrees_long:
         fired[Side.LONG].append(SignalType.CONFLUENCE_LOW)
     if lower_touch:
         fired[Side.LONG].append(SignalType.BB_LOWER_TOUCH)
@@ -199,7 +224,7 @@ def _types_fired(
         fired[Side.LONG].append(SignalType.STOCH_OVERSOLD)
     if bear_close:
         fired[Side.SHORT].append(SignalType.BEAR_CLOSE_ABOVE_UPPER)
-    if upper_touch and overbought and agrees:
+    if upper_touch and overbought and agrees_short:
         fired[Side.SHORT].append(SignalType.CONFLUENCE_HIGH)
     if upper_touch:
         fired[Side.SHORT].append(SignalType.BB_UPPER_TOUCH)

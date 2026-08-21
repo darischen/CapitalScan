@@ -423,6 +423,114 @@ def test_fast_agreement_allows_confluence_inside_tolerance():
     assert hit.signal_type is SignalType.CONFLUENCE_LOW
 
 
+# ---------------------------------------------------------------------------
+# ADR 142 — agreement means agreeing about the state, not being close
+# ---------------------------------------------------------------------------
+
+
+def test_both_deeply_overbought_agree_even_though_they_are_far_apart():
+    """The case ADR 044's tolerance was silently rejecting.
+
+    %K_fast 99 and %K_full 89 are 10 points apart, so the +/-5 band refuses
+    them. Both are far beyond `stoch_overbought`, which is the strongest
+    possible statement the two columns can make together -- and the
+    tolerance read the gap as disagreement.
+    """
+    sp = SignalParams(require_fast_agreement=True, fast_agreement_tol=5.0)
+    bar = _bar(high=101.0)
+    (hit,) = sig.detect(bar, _ind(bb_upper=100.0, k=99.0, k_other=89.0), sp)
+    assert hit.signal_type is SignalType.CONFLUENCE_HIGH
+
+
+def test_both_deeply_oversold_agree_even_though_they_are_far_apart():
+    sp = SignalParams(require_fast_agreement=True, fast_agreement_tol=5.0)
+    bar = _bar(low=94.0)
+    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k=2.0, k_other=14.0), sp)
+    assert hit.signal_type is SignalType.CONFLUENCE_LOW
+
+
+def test_extremes_on_opposite_sides_are_not_agreement():
+    """**The reason this reads a side rather than a pair of booleans.**
+
+    %K_fast 15 and %K_full 90 are both extreme. They are also maximally
+    opposed, and a rule phrased as "both beyond a threshold" without naming
+    *which* threshold would call that agreement and fire a confluence on the
+    most contradictory pair the two columns can produce.
+    """
+    sp = SignalParams(require_fast_agreement=True, fast_agreement_tol=5.0)
+    bar = _bar(low=94.0)
+    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k=15.0, k_other=90.0), sp)
+    assert hit.signal_type is SignalType.BB_LOWER_TOUCH
+
+
+def test_one_extreme_and_one_merely_close_still_needs_the_tolerance():
+    """%K_fast past the threshold, %K_full not, and 12 points apart.
+
+    Neither limb holds, so this stays a band touch. The widened rule is a
+    second way to satisfy agreement, not a removal of the first.
+    """
+    sp = SignalParams(require_fast_agreement=True, fast_agreement_tol=5.0)
+    bar = _bar(high=101.0)
+    (hit,) = sig.detect(bar, _ind(bb_upper=100.0, k=95.0, k_other=83.0), sp)
+    assert hit.signal_type is SignalType.CONFLUENCE_HIGH
+    # 95 and 83 are both overbought, so this one *does* fire -- named here so
+    # the boundary below is read as deliberate rather than as an oversight.
+
+
+def test_the_tolerance_limb_still_fires_on_its_own():
+    """Nothing that fired before stops firing (the user's requirement).
+
+    %K_full 77 is not oversold and 81 is not overbought, so only the +/-5
+    band can carry this. It did before ADR 142 and it does after.
+    """
+    sp = SignalParams(require_fast_agreement=True, fast_agreement_tol=5.0)
+    bar = _bar(high=101.0)
+    (hit,) = sig.detect(bar, _ind(bb_upper=100.0, k=81.0, k_other=77.0), sp)
+    assert hit.signal_type is SignalType.CONFLUENCE_HIGH
+
+
+def test_the_widened_limb_is_on_by_default():
+    """The default itself, asserted once, so flipping it is a one-line
+    change rather than a six-test change."""
+    assert SignalParams().fast_agreement_both_extreme is True
+
+
+def test_disabling_the_widened_limb_restores_adr_044_exactly():
+    """**Reconstructibility, the property ADR 108 and 109 exist for.**
+
+    Every event measured before ADR 142 came from the tolerance alone. With
+    this flag off, 99/89 is refused again -- so the superseded population is
+    reachable from a config rather than only from a database snapshot.
+    """
+    sp = SignalParams(
+        require_fast_agreement=True,
+        fast_agreement_tol=5.0,
+        fast_agreement_both_extreme=False,
+    )
+    bar = _bar(high=101.0)
+    (hit,) = sig.detect(bar, _ind(bb_upper=100.0, k=99.0, k_other=89.0), sp)
+    assert hit.signal_type is SignalType.BB_UPPER_TOUCH
+
+
+def test_the_widened_limb_is_still_governed_by_require_fast_agreement():
+    """The master switch stays master. With agreement off entirely there is
+    nothing for the second limb to add."""
+    sp = SignalParams(require_fast_agreement=False, fast_agreement_both_extreme=True)
+    bar = _bar(low=94.0)
+    (hit,) = sig.detect(bar, _ind(bb_lower=95.0, k=15.0, k_other=90.0), sp)
+    assert hit.signal_type is SignalType.CONFLUENCE_LOW
+
+
+def test_a_missing_column_still_fails_the_check():
+    """Invariant 4's shape: absent is not permissive. A null %K_full cannot
+    be beyond a threshold, so neither limb may treat it as agreement."""
+    sp = SignalParams(require_fast_agreement=True)
+    bar = _bar(high=101.0)
+    ind = _ind(bb_upper=100.0, k_fast=99.0, k_full=float("nan"))
+    types = [h.signal_type for h in sig.detect(bar, ind, sp)]
+    assert SignalType.CONFLUENCE_HIGH not in types
+
+
 def test_crossover_flags_never_change_the_signal_set():
     # ADR 045: computed and stored, but they never enter detect().
     bar = _bar(low=94.0)

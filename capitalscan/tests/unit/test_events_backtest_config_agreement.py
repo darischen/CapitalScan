@@ -271,8 +271,13 @@ class TestRunEventsBackwardCompatibility:
         Moved again 2026-08-15 by the new `ExitParams.exit_stoch_source`,
         which defaults to `k_full` — the value `core/exits.py` hardcoded —
         so it moves the hash without moving any measured exit. New value:
-        `86e91448a65aa40b`."""
-        assert jobs_config_hash(Config()) == "86e91448a65aa40b"
+        `86e91448a65aa40b`.
+
+        Moved again 2026-08-20 by ADR 142's
+        `SignalParams.fast_agreement_both_extreme` and the deletion of the
+        dead `UniverseParams.min_price`, in one commit. New value:
+        `bbc99a02ebdc999f`."""
+        assert jobs_config_hash(Config()) == "bbc99a02ebdc999f"
 
     def test_sp_only_caller_still_works_and_matches_config_signals_default(
         self, stub_events_reads, captured_events_upsert
@@ -293,8 +298,8 @@ class TestRunEventsBackwardCompatibility:
         events_calls = [c for c in captured_events_upsert if c["table_name"] == "events"]
         row = events_calls[0]["data"][0]
         assert (
-            row["config_hash"] == "86e91448a65aa40b"
-        )  # k_fast + require_fast_agreement (was 1b97abf7e458d537)
+            row["config_hash"] == "bbc99a02ebdc999f"
+        )  # ADR 142 widened agreement; min_price deleted (was 86e91448a65aa40b)
         assert row["split_key"] == "holdout"  # 2026-07-30 is past the default validate_end
 
     def test_sp_and_config_disagreeing_raises_rather_than_silently_picking_one(

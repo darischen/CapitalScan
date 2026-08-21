@@ -75,6 +75,36 @@ class SignalParams:
     # and `confluence_low` while leaving the single-condition types alone.
     require_fast_agreement: bool = True
     fast_agreement_tol: float = 5.0
+    # ADR 142 (user's decision, 2026-08-20). Widens agreement: the two %K
+    # columns also agree when **both** sit beyond the same threshold, however
+    # far apart they are.
+    #
+    # `fast_agreement_tol` measures numeric proximity, which is not the
+    # question the rule is asking. %K_fast 99 with %K_full 89 is the
+    # strongest joint statement the two columns can make and the +/-5 band
+    # refused it; %K_fast 81 with %K_full 77 is inside the band while the
+    # smoothed column says the stochastic is not extreme at all. Measured on
+    # 2026-08-20: 216,298 daily bars had both columns overbought and were
+    # rejected, against 14,728 that fired while %K_full was not overbought.
+    #
+    # Additive, not a replacement. The tolerance limb is untouched, so no
+    # event that fired before this stops firing -- the user's requirement.
+    # 10,172 short and 6,606 long events are relabelled from a bare band
+    # touch to a confluence, which is a 59% and 71% increase in the two
+    # confluence populations and no change at all in the row count.
+    #
+    # **Set it to False to reconstruct every event measured before ADR 142.**
+    # That is the same property `enabled_signal_types` (ADR 108) and
+    # `bear_close_band_lag` (ADR 109) exist for: a superseded rule stays
+    # reachable from a config rather than only from a database snapshot.
+    #
+    # **This field is also what moves `config_hash`.** ADR 142 changes a
+    # comparison inside `core/signals.py`, and `jobs.config.config_hash`
+    # hashes `dataclasses.asdict(Config)` -- a formula is not a field, so the
+    # hash would not have moved and a backtest would have overwritten
+    # 139,253 measured rows in place. ADR 108 and 109 were both reached by
+    # this exact route.
+    fast_agreement_both_extreme: bool = True
     price_tolerance: float = 0.0  # 0.0 == "at or beyond", exact
     # Which %K column decides oversold/overbought (2026-08-05, user's
     # decision — an A/B test, not a permanent swap). `k_full` (the
@@ -219,7 +249,19 @@ class UniverseParams:
     # different universe threshold is genuinely a different config). Report
     # the new hash prominently — a Postgres GUC is set from it.
     min_mcap_usd: float = 30e9
-    min_price: float = 1.0
+    # `min_price` was removed here on 2026-08-20, bundled into ADR 142's
+    # rebuild because deleting it moves `config_hash` and was not worth a
+    # five-hour run of its own (`BACKLOG.md`, the user's decision).
+    #
+    # It was declared in Session 9 and read nowhere in the tree for eleven
+    # months: no criterion consulted it and `is_tradeable` never saw it. A
+    # config field nothing reads is a claim the system makes and does not
+    # honour -- someone tuning it would move the hash, rebuild, and get an
+    # identical universe.
+    #
+    # Market cap subsumes it. SBNY trades at $0.64 with a $0.03B cap and
+    # fails `crit_mcap` by three orders of magnitude, so there is no ticker a
+    # price floor would exclude that `min_mcap_usd` does not already.
     rel_return_lookback_days: int = 756  # 3 years
     rebalance_freq: str = "Q"
     # ADR 014 names five criteria; this is the honest subset actually
