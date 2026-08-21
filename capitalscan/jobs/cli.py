@@ -557,6 +557,32 @@ def _load_events_for_run(engine, run_id: str):
         )
 
 
+def _load_events_for_config(engine, chash: str):
+    """Every `events` row for a config -- the harness phase's `events`
+    argument.
+
+    Scoped on `config_hash`, deliberately unlike `_load_events_for_run`
+    above. The compute phase writes one `run_id` **per chunk**, so no single
+    `run_id` holds the universe and a run-scoped load would validate one
+    twenty-five-ticker slice while reporting on the config.
+
+    Widening the scope is safe here for the reason the upsert key gives:
+    `events` conflicts on `(config_hash, ticker, signal_date, signal_type,
+    entry_kind)`, so exactly one row survives per key no matter how many
+    runs wrote it. The hash selects the current state, not an accumulation
+    of every run that ever produced it.
+    """
+    import pandas as pd
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        return pd.read_sql(
+            text("SELECT * FROM events WHERE config_hash = :chash"),
+            conn,
+            params={"chash": chash},
+        )
+
+
 def _print_harness_report(report) -> None:
     checks = [
         report.no_lookahead,
@@ -601,7 +627,8 @@ def backtest(
     phase: str = typer.Option(
         "all",
         "--phase",
-        help="all (default) | compute (resumable, per-chunk) | finalize (cross-ticker cofire)",
+        help="all (default) | compute (resumable, per-chunk) | finalize (cross-ticker cofire) "
+        "| harness (validate an already-written config, writes nothing)",
     ),
     chunk_size: int = typer.Option(
         25, "--chunk-size", help="Tickers per checkpoint unit in --phase compute"
@@ -755,9 +782,62 @@ def backtest(
 
     resolved = _resolve_tickers(tickers)
 
-    if phase not in {"all", "compute", "finalize"}:
-        console.print(f"[red]error[/red]: --phase must be all, compute or finalize (got {phase!r})")
+    if phase not in {"all", "compute", "finalize", "harness"}:
+        console.print(
+            f"[red]error[/red]: --phase must be all, compute, finalize or harness (got {phase!r})"
+        )
         raise typer.Exit(code=1)
+
+    # ---- phase: harness --------------------------------------------------
+    #
+    # Validation, detached from the write it validates.
+    #
+    # `run_harness` used to be reachable only from `--phase all`, which made
+    # the sole path that checks a config also the sole path with no
+    # checkpoint. Five unresumable hours is a run nobody repeats after a
+    # crash, so the validation stops happening -- and it had: the expanded
+    # universe shipped 2026-08-21 on compute + finalize with the harness
+    # never run against it.
+    #
+    # Detaching costs nothing, because the harness reads `events` and `bars`
+    # and writes no row. It holds no lock the compute phase needs and can be
+    # re-run any number of times against a config already on disk.
+    if phase == "harness":
+        from capitalscan.research.harness import run_harness
+
+        events_for_harness = _load_events_for_config(engine, chash)
+        if events_for_harness.empty:
+            # Not an exception: an empty result means the compute phase has
+            # not run for this hash, which is a sequencing mistake with an
+            # obvious next command -- not a failed validation. Exiting 1 on
+            # "nothing to check" would read as "the checks failed".
+            console.print(
+                f"[yellow]no events for {chash}[/yellow] — run "
+                "`cscan backtest --phase compute` first"
+            )
+            raise typer.Exit(code=1)
+
+        harness_tickers = sorted(events_for_harness["ticker"].unique().tolist())
+        console.print(
+            f"[bold]harness[/bold]: {len(events_for_harness)} event(s), "
+            f"{len(harness_tickers)} ticker(s), config_hash={chash}"
+        )
+        bars_by_ticker = _load_bars_by_ticker(engine, harness_tickers, config)
+        hourly_by_ticker = _load_hourly_by_ticker(engine, harness_tickers, config)
+
+        with ingest.run_job(
+            engine, "backtest_harness", {"config_hash": chash, "phase": "harness"}
+        ) as report:
+            harness_report = run_harness(
+                events_for_harness, bars_by_ticker, config, hourly_by_ticker=hourly_by_ticker
+            )
+            # `rows_written` stays 0 and that is the honest number. This
+            # phase reads.
+            report.notes = "harness passed" if harness_report.all_passed else "harness FAILED"
+        _print_harness_report(harness_report)
+        if not harness_report.all_passed:
+            raise typer.Exit(code=1)
+        return
 
     # ---- phase: finalize -------------------------------------------------
     #

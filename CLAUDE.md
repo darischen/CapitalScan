@@ -215,7 +215,13 @@ Native Windows. The only Linux is inside the Postgres container, and that is tra
 
 `ProcessPoolExecutor` uses **spawn**, not fork. Every job module must be importable with no side effects, every entry point needs `if __name__ == "__main__":`, and workers open their own database connections because connections are not picklable. Getting this wrong causes recursive process creation, which looks like a hang.
 
-Scheduling is Windows Task Scheduler with catch-up enabled, not cron or systemd.
+Scheduling is *intended* to be Windows Task Scheduler with catch-up enabled,
+not cron or systemd. **Nothing is registered today.** Checked 2026-08-21:
+`Get-ScheduledTask` returns no entry for `nightly`, `weekly` or the poller,
+and every row in `runs` got there from a hand-run command. This line asserted
+a live schedule until then, and that assertion was quoted back as fact in a
+session before anyone checked it. Treat `nightly` and `weekly` as manual, and
+`scripts/wait_and_poll.ps1` as something the user starts.
 
 ## Conventions
 

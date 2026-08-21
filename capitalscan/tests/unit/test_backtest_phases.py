@@ -13,6 +13,8 @@ the only step allowed to touch that column.
 
 from __future__ import annotations
 
+import inspect
+
 import pandas as pd
 import pytest
 
@@ -211,11 +213,11 @@ class TestFinalizeUpdatesRatherThanUpserts:
         import capitalscan.research.backtest as bt
 
         original = bt.pd.read_sql
-        bt.pd.read_sql = lambda *a, **k: _events(rows)  # type: ignore[assignment]
+        bt.pd.read_sql = lambda *a, **k: _events(rows)
         try:
             written = bt.finalize_cofire(_TxEngine(conn), "abc123")
         finally:
-            bt.pd.read_sql = original  # type: ignore[assignment]
+            bt.pd.read_sql = original
         return written, conn
 
     def test_it_issues_an_update_not_an_insert(self):
@@ -273,3 +275,97 @@ class TestPhaseValidation:
         # Accepting an unrecognised phase and falling through to the default
         # would run a *whole* backtest for someone who asked for a slice.
         assert bad not in {"all", "compute", "finalize"}
+
+
+# ---------------------------------------------------------------------------
+# The harness phase
+# ---------------------------------------------------------------------------
+
+
+class TestHarnessPhase:
+    """**Why a third phase exists at all.**
+
+    `run_harness` lived only inside `--phase all`, so the one path that
+    validates a config was also the one path with no checkpoint. Five
+    unresumable hours is a run nobody repeats after a crash, so the
+    validation quietly stops happening -- and it had: the expanded universe
+    shipped 2026-08-21 on compute + finalize, with the harness never run
+    against it.
+
+    Detaching costs nothing. The harness reads `events` and `bars`, writes
+    no row, and holds no state the compute phase needs.
+    """
+
+    def test_harness_is_an_accepted_phase(self):
+        src = inspect.getsource(cli.backtest)
+        assert '{"all", "compute", "finalize", "harness"}' in src
+
+    def test_the_error_message_lists_it(self):
+        # A phase the code accepts but the error text omits is worse than an
+        # undocumented flag: it tells a reader their correct spelling is wrong.
+        src = inspect.getsource(cli.backtest)
+        assert "all, compute, finalize or harness" in src
+
+    def test_it_writes_nothing(self):
+        """`rows_written` stays 0 and the phase issues no write.
+
+        The value of a detached validation pass is that re-running it is
+        free of consequence. A phase that quietly corrected a row would make
+        "run the harness again" a decision rather than a reflex.
+        """
+        src = inspect.getsource(cli.backtest)
+        harness_block = src[src.index('if phase == "harness":') :]
+        harness_block = harness_block[: harness_block.index("# ---- phase: finalize")]
+        for write in ("UPDATE", "INSERT", "upsert(", "DELETE"):
+            assert write not in harness_block
+
+    def test_an_unwritten_config_is_a_sequencing_error_not_a_failed_check(self):
+        """Empty events must not read as "the checks failed".
+
+        Both exit 1, so the distinction lives in the message: one names the
+        command to run next, the other names violated invariants.
+        """
+        src = inspect.getsource(cli.backtest)
+        assert "no events for" in src
+        assert "--phase compute` first" in src
+
+
+class TestHarnessEventScoping:
+    """**The scoping is the whole correctness argument.**
+
+    `_load_events_for_run` is `run_id`-scoped so a rerun does not pull a
+    previous run's rows. The harness phase cannot use it: the compute phase
+    writes one `run_id` **per chunk**, so no single `run_id` holds the
+    universe and a run-scoped load would validate a twenty-five-ticker slice
+    while reporting on the config.
+    """
+
+    def _capture(self, chash: str) -> dict:
+        captured: dict = {}
+        real = pd.read_sql
+
+        def fake(stmt, conn, params=None):
+            captured["sql"] = str(stmt)
+            captured["params"] = params or {}
+            return pd.DataFrame()
+
+        pd.read_sql = fake  # type: ignore[assignment]
+        try:
+            cli._load_events_for_config(_Engine(_Conn()), chash)
+        finally:
+            pd.read_sql = real
+        return captured
+
+    def test_it_binds_the_config_hash(self):
+        assert self._capture("abc123")["params"] == {"chash": "abc123"}
+
+    def test_it_does_not_scope_on_run_id(self):
+        sql = self._capture("abc123")["sql"]
+        assert "config_hash = :chash" in sql
+        assert "run_id" not in sql
+
+    def test_its_sibling_still_scopes_on_run_id(self):
+        # The two loaders exist because they answer different questions. If
+        # this ever collapses into one, a `--phase all` rerun starts
+        # validating every prior run's rows alongside its own.
+        assert "run_id = :run_id" in inspect.getsource(cli._load_events_for_run)
