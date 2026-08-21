@@ -1,3 +1,4 @@
+import OpenSelected from "@/components/OpenSelected";
 import { EmptyState, ErrorState, ScreenerTable, StatusStrip } from "@/components/Screener";
 import { lastFire, screen } from "@/lib/screen";
 
@@ -75,7 +76,12 @@ export default async function ScreenerPage({
             <EmptyState last={last} />
           ) : (
             <>
-              <ScreenerTable rows={result.rows} withStats={result.withStats} />
+              {/* The table stays a server component and is passed through as
+                  children; `OpenSelected` only wraps it in a form and reads
+                  the checkboxes it rendered (ADR 139). */}
+              <OpenSelected>
+                <ScreenerTable rows={result.rows} withStats={result.withStats} />
+              </OpenSelected>
               <p className="dim" style={{ marginTop: 12, fontSize: 12 }}>
                 {/* The pre-limit count. A page showing 200 of 640 rows and
                     saying only "200" misstates how much fired. */}

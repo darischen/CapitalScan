@@ -4244,9 +4244,9 @@ An indicator row older than one rebalance period does not evaluate the quarter. 
 
 **Consequences.**
 
-**The benchmark arms were the only thing actually harmed, and the harm was invisible.** `core/arms.py:588` selects `[t for t in members[i] if last_price.get(t, 0.0) > 0]`, and `last_price` persists once a price has been seen — so AET stayed a *priced* member and was **rebalanced into every quarter for seven years** at a frozen 2018 price. In an equal-weight book that is roughly 1/140th of capital that can neither gain nor lose, dragging every buy-and-hold and DCA measurement. `cscan stats benchmarks` must re-run, and this is a candidate explanation for the record-versus-database disagreement in `BACKLOG.md` item 2.
+**The benchmark arms were the only thing actually harmed, and the harm was invisible.** `core/arms.py:588` selects `[t for t in members[i] if last_price.get(t, 0.0) > 0]`, and `last_price` persists once a price has been seen — so AET stayed a *priced* member and was **rebalanced into every quarter for seven years** at a frozen 2018 price. In an equal-weight book that is roughly 1/140th of capital that can neither gain nor lose, dragging every buy-and-hold and DCA measurement. `cscan stats benchmarks` must re-run, and this is a candidate explanation for the record-versus-database disagreement then open in `BACKLOG.md`. **It was not the explanation.** Re-measured 2026-08-20: the record and the database never disagreed — both figures were right and neither carried its `config_hash`. Recorded in `RESULTS.md`; the backlog item is closed and gone.
 
-**`ArmWindow.delisted_on` is a dead field.** `research/benchmarks.py:195` selects `WHERE delisted_on IS NOT NULL` to resolve delisted positions, `arms.py:504` documents the mechanism in prose — and `delisted_on` is **read nowhere in the code and written nowhere in the tree**, so all 712 rows are NULL and the query returns zero every time. The mechanism was documented, plumbed, and never connected. This ADR does not fix that; it makes it redundant for the case that mattered, and `BACKLOG.md` keeps it.
+**`ArmWindow.delisted_on` is a dead field.** `research/benchmarks.py:195` selects `WHERE delisted_on IS NOT NULL` to resolve delisted positions, `arms.py:504` documents the mechanism in prose — and `delisted_on` is **read nowhere in the code and written nowhere in the tree**, so all 712 rows are NULL and the query returns zero every time. The mechanism was documented, plumbed, and never connected. This ADR does not fix that; it makes it redundant for the case that mattered. **Connected 2026-08-20**, after this ADR: `is_active` and `delisted_on` are derived from each ticker's `last_bar`, 18 names carry a date, and the sentence above stopped being true that day. `RESULTS.md` has the numbers.
 
 ---
 
@@ -4376,6 +4376,110 @@ HTTP Basic auth in `web/middleware.ts`, so the control sits where the hosting pl
 **38 tests**, and the ones that matter are not "a good password works". They are the failure modes: an unset secret, a route nobody remembered to list, six near-miss flag values, and a response that differs depending on why it failed. The route sweep walks `app/` rather than a written list, so a new page joins it automatically.
 
 ---
+
+---
+
+## 139. The screener links out to a stored chart, and the indicators live on someone else's server
+
+**Date:** 2026-08-20. **Status:** Pinned.
+
+**Context.**
+
+Reading a signal against a third-party chart meant re-entering `20,2.0` and `14,3,3` by hand, per ticker, every time. None of this project's parameters are a charting site's defaults, so the chart a reader reached for by habit was drawn with the wrong windows unless they remembered to fix it.
+
+StockCharts retired the inline chart-args format that used to encode overlays in a URL. `def/servlet/SC.web?c=TSLA,uu[...][pb20!b50]` now returns nothing, and no current parameter names an indicator. What does exist is their split between symbol and style: a ChartStyle is documented as "everything about a chart except its ticker symbol", stored server-side behind an opaque key.
+
+Measured 2026-08-20: `s=DAL&id=p79286883726` renders DAL as candlesticks with `BB(20,2.0)` and `MA(200)`, over a `Full STO %K(14,3) %D(3)` panel carrying lines at 20/80, from a cookieless request, with no account on either side. Their "Reload with Link" button mints that key and is available to anonymous visitors — the paid feature is *saving* a chart to an account, which this does not use.
+
+**Decision.**
+
+`web/lib/stockcharts.ts` builds the URL. `OpenSelected` puts a checkbox on each screener row and opens the selected charts.
+
+**The interaction is two clicks.** The first arms selection and the checkboxes appear; the second opens what is ticked (user's request). On the common visit nobody is selecting anything, so the default is one button and a table with no checkbox column. The column is always in the server-rendered markup and revealed by a class on the form, so arming costs a CSS state change rather than a re-render of every row — and `display: none` rather than `visibility` keeps a hidden checkbox out of the tab order.
+
+**Candlesticks, stochastic below price** (user's request). Layout rather than measurement, so neither can disagree with a config value and neither is pinned by a test. `p18455069802` is the superseded id: OHLC bars, panel above.
+
+**The chart id is a source constant, not an environment variable.** It decides which indicators a reader sees beside this project's signals, so changing it changes what the page claims and belongs in a diff someone reads. It also lets a test assert which settings are being pointed at.
+
+**`p=D` is pinned rather than inherited.** The stored chart's period lives somewhere this project does not control. A chart that silently became weekly would draw 20-*week* bands beside a signal computed on 20 days.
+
+**Class-share symbols are translated.** The database follows Yahoo and writes `BRK-B`; StockCharts writes `BRK/B`. Asking for `BRK-B` does not error — it returns a 305x176 "not found" image where a 990x664 chart should be. Two of 712 tickers, which is few enough to never notice.
+
+**Consequences.**
+
+**This is a reference to a row in someone else's database, and that is the real cost.** If the stored chart is edited or expires, every link keeps resolving and quietly draws the wrong indicators. There is no error to catch and nothing in this repo changes.
+
+`stockcharts.test.ts` closes the half that is checkable: it reads `core/config.py` and fails if `bb_window`, `bb_std`, `stoch_window`, `stoch_smooth_k`, `stoch_smooth_d`, `stoch_oversold`, `stoch_overbought` or `sma_long` moves away from what the stored chart draws. Sweeping `bb_std` to 2.5 fails there rather than silently mismatching a reader's screen. The fix is to rebuild the chart and move the id, never to edit the expected numbers. The other half — the chart changing while the config holds — is unobservable from here and stays a manual check.
+
+**The table stayed a server component.** The checkboxes are plain form inputs it renders; the client island wraps them without rendering the table, so `/` grew about 1 kB rather than shipping the screener to the browser.
+
+**Browsers allow one `window.open` per gesture.** Opening six tabs opens one and drops five, which reads as a broken button rather than a browser policy, so the refused tickers fall back to ordinary links — a direct click is its own gesture. `noopener` is not passed as a window feature, because Chrome then returns `null` whether it succeeded or was blocked, and that return value is the only way to detect the block; `opener` is severed on the handle instead.
+
+**The numbers will not match, and that is invariant 3.** The screener shows indicators at t-1, the row the signal compared against. StockCharts draws bar t. DAL on 2026-08-20 reads `82.57 / 88.65 / 94.72` on the screener and `82.32 - 88.60 - 94.89` on the chart. Both are right.
+
+
+---
+
+## 140. The nightly is authoritative for every grain, and the poller's observation is not an entry price
+
+**Date:** 2026-08-20. **Status:** Pinned.
+
+**Context.**
+
+Three jobs write `events`, all upserting on `(config_hash, ticker, signal_date, signal_type, entry_kind)`. `run_backtest` owns `touch_5m`, `touch_30m` and `next_open`. `run_events` hardcodes `entry_kind='touch'` (`jobs/compute.py:721`). So does the poller. Two writers share one grain, and `entry_price` is in `_RUN_EVENTS_UPDATE_COLUMNS`, so the nightly rewrites it every time.
+
+Ruling C4 sanctioned two jobs owning the same column on the grounds that both derive it from the same t-1 indicator row and therefore cannot disagree. That reasoning holds for `run_events` against `run_backtest`. It does not extend to the poller, which is a third writer that means something different by the word:
+
+| Writer | `entry_price` |
+|---|---|
+| `run_events` | where a touch order **would have filled** — the band level, or the open when the bar gapped through it (`core/returns.py::entry_price_for`) |
+| `poller` | what the price **was** when the breach was seen, from a five-minute quote |
+
+A modelled fill and an observation, in one column. Measured on 2026-08-20: of 210 poller-reported touch rows across the history, **46 still carry a `poll` run_id and 164 have been reassigned to the nightly.**
+
+**Decision.**
+
+**The nightly is authoritative for every grain, including `touch`.** The poller's row is provisional — written mid-session against a partial bar, by a process that samples every five minutes — and it yields to the version computed from the completed session.
+
+**The observation is not lost and is not an entry price.** It lives in `signal_reports.state_json -> 'live_price'`, alongside the bands and the open that produced the call, and in that session's `reports/poller/*.csv`, which is written before the nightly runs and never rewritten.
+
+**A `NULL` here is honest.** `run_events` sets no entry price when `touch_level` is `None`, and a `stoch_oversold` signal has no band touch — 30 of that day's 80 rows. "Where would a touch order fill" has no answer for a signal that is not a touch. The poller had put a real observed price in that column, and replacing it with `NULL` is the column becoming correct, not data being lost.
+
+**The objection, and why it does not change this.**
+
+Raised by the user, and it is the right question: the detected price is closer to what you could actually transact. A notification arrives, you act, and you fill near the price that fired it — where filling at the exact band needs a resting limit order sitting at a level you chose in advance.
+
+**The answer is that an entry price is a measurement input, not an execution record**, and the user reached it first: this column exists to train and evaluate, and nothing in the system places an order.
+
+That settles it on reproducibility rather than on preference. ADR 060 and TESTS.md 3.3 require that the same config over the same database produce the same output, asserted by `test_identical_config_identical_output` and run with ordering randomisation on. A poller-sourced entry price is a network quote taken at a wall-clock instant on a five-minute sampling grid. It cannot be reconstructed from `bars` and a config, so it cannot be recomputed — rebuild the table tomorrow and the number is different or absent, with an unchanged `config_hash` asserting it is the same. That is the failure ADR 034's provenance guarantee exists to prevent, reached through a column nobody was watching.
+
+The population makes the same point from the other side. Measurement runs over the full history, and the poller has existed for a few weeks of it — so an observed price is available for a rounding error's worth of rows and undefined for the rest. A field that is real when a background process happened to be running and null otherwise is not a variable a model can be trained on; the presence of the value would encode "was the workstation on that morning".
+
+Three further things follow.
+
+**A modelled series has to stay one model.** `touch` exists to be compared against `touch_5m`, `touch_30m` and `next_open` across the whole history. Observed prices exist only for days the poller ran. Letting them into the grain would make recent rows mean something different from every row before them, and the comparison the four grains exist for would quietly stop being valid.
+
+**The model is not flattering, which was the worry.** Signed against each side, where positive means the modelled fill is the better price:
+
+| Side | n | Model advantage |
+|---|---|---|
+| long | 24 | **+1.0 bps** |
+| short | 26 | **−10.8 bps** |
+
+Roughly neutral for longs and conservative for shorts, because a short fires *above* its band and the poller usually saw a better price than the band the model fills at. The gap between the two is not small — 14.3 bps on average and 107.8 at the extreme — but it does not run in the direction that would flatter a result. One session, 50 rows: enough to answer the worry, not enough to be a finding.
+
+**And nothing measured reads it.** `GRID_ENTRY_KIND` is `next_open`. No cell, baseline or benchmark has ever consulted a touch-grain entry price.
+
+**Consequences.**
+
+**A `touch` row's `run_id` names the job that last wrote it, not the one that detected it.** Invariant 6 is satisfied — the row carries a `run_id` and a `git_sha` — but the provenance question "who saw this first" is answered by `signal_reports`, not by the event.
+
+**Two places hold the live price**, and a reader has to know that. `state_json` is the durable one; the CSV is the convenient one.
+
+**If the notification workflow is ever worth measuring, it needs its own entry kind.** `EntryKind.NOTIFIED`, filled at the price the poller saw plus a reaction delay, sitting beside the other four rather than redefining one of them. That is a real question — it is the only entry timing that describes what a person using this system actually does — and it is a Phase 6 question, not a reason to blur `touch` now.
+
+**It would have to be modelled too**, for the reason above: a reaction delay applied to the bar, not a replayed quote. "The price a notified reader could have got" is computable from `bars` for every event in the history; "the price the poller saw" is not computable for any event before the poller existed. The first is an entry timing. The second is a log line.
+
 
 ## Open items
 

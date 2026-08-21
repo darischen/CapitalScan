@@ -12,6 +12,13 @@
  */
 
 :root {
+  /* Tells the browser to draw its own controls dark: checkboxes, scrollbars,
+   * and the date input's calendar. Without it a checkbox is a bright white
+   * square on a #14171a ground, which is the loudest thing on the screener
+   * and means nothing. `accent-color` only covers the *checked* state, so it
+   * cannot fix this on its own. */
+  color-scheme: dark;
+
   /* Ground. Slightly blue rather than neutral, so the warm short accent
    * reads as warm rather than as "less grey". */
   --ground: #14171a;
@@ -2003,4 +2010,147 @@ table.research tr.dimmed td {
 
 .md a:hover {
   border-bottom-color: var(--long);
+}
+
+/* --- open on stockcharts ------------------------------------------------ */
+
+/* A selection column and a bar under the table (ADR 139). Deliberately
+ * quiet: the screener already spends its boldness on the side rail, so this
+ * reads as instrument chrome until something is selected. */
+
+/* The column is always in the server-rendered markup and hidden until the
+ * first click arms selection (ADR 139). `display: none` rather than opacity
+ * or visibility, so a hidden checkbox is out of the tab order and out of the
+ * accessibility tree -- a focusable control nobody can see is worse than no
+ * control. */
+table.screen th.pick,
+table.screen td.pick {
+  display: none;
+}
+
+.picker-form.armed table.screen th.pick,
+.picker-form.armed table.screen td.pick {
+  display: table-cell;
+  width: 22px;
+  padding-left: 0;
+  padding-right: 6px;
+}
+
+table.screen td.pick input {
+  display: block;
+  margin: 0;
+  width: 13px;
+  height: 13px;
+  /* Native control, tinted. A hand-built checkbox would have to reimplement
+   * focus, the space key, and the indeterminate state. */
+  accent-color: var(--long);
+  cursor: pointer;
+}
+
+/* The global rule covers `a` and `button`; a checkbox is neither. */
+table.screen td.pick input:focus-visible {
+  outline: 2px solid var(--long);
+  outline-offset: 1px;
+}
+
+.picker {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+/* Fixed, so the row does not shift as the count changes width. */
+.picker-count {
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 96px;
+}
+
+.picker-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.picker-link:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.picker-link:disabled {
+  opacity: 0.4;
+  cursor: default;
+  text-decoration: none;
+}
+
+.picker-open {
+  margin-left: auto;
+  padding: 5px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--panel);
+  font-family: var(--sans);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.picker-open:hover:not(:disabled) {
+  border-color: var(--long);
+}
+
+.picker-open:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The pop-up blocker notice. Gold rather than the short colour: this is a
+ * condition to resolve, not a loss. */
+.picker-blocked {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--flag);
+  background: var(--panel);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.picker-links {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+@media (max-width: 720px) {
+  /* The card grid gains a column for the checkbox, ahead of the rail —
+   * only once armed, or every card would carry an empty 22px gutter. */
+  .picker-form.armed table.screen tr {
+    grid-template-columns: auto 3px 1fr 1fr;
+  }
+
+  .picker-form.armed table.screen td.pick {
+    display: block;
+    grid-row: 1 / -1;
+    align-self: start;
+    padding-top: 2px;
+    padding-right: 10px;
+  }
+
+  .picker {
+    flex-wrap: wrap;
+    gap: 10px 14px;
+  }
+
+  .picker-open {
+    margin-left: 0;
+    width: 100%;
+  }
 }

@@ -215,20 +215,25 @@ describe("the client boundary", () => {
    * external, which turns a stray import into a build error, and this is the
    * cheaper check that says which file did it.
    */
-  it("the client components are exactly the six that need a browser", () => {
+  it("the client components are exactly the seven that need a browser", () => {
     const clients = sources()
       .filter((p) => /^\s*["']use client["']/.test(read(p)))
       .map((p) => relative(ROOT, p).split(sep).join("/"))
       .sort();
     // Each earns it: a streaming transcript, a popover calendar, an
-    // IntersectionObserver, a polled quote, a canvas chart, and a
-    // keyboard-driven menu. The list is asserted whole rather than as a
-    // count, so adding one is a decision someone makes here.
+    // IntersectionObserver, a polled quote, `window.open`, a canvas chart,
+    // and a keyboard-driven menu. The list is asserted whole rather than as
+    // a count, so adding one is a decision someone makes here.
+    //
+    // `OpenSelected` is the cheapest of the seven on purpose: it wraps the
+    // screener table without rendering it, so the table stays a server
+    // component and only the form around it ships (ADR 139).
     expect(clients).toEqual([
       "components/Chat.tsx",
       "components/DatePicker.tsx",
       "components/EventRows.tsx",
       "components/LivePrice.tsx",
+      "components/OpenSelected.tsx",
       "components/TickerChart.tsx",
       "components/TickerSearch.tsx",
     ]);

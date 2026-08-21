@@ -15,6 +15,13 @@ their reasoning recorded: a Vercel deployment URL is hard to discover, and
 the content is public market data plus one operator's own analysis. No
 PII, no credentials, no user accounts — there is no user model at all.
 
+**Reaffirmed the same day when the item was reviewed.** The user's argument
+is that there is no edge to protect: Bollinger Bands and the stochastic
+oscillator have been studied exhaustively by people paid to do it, and
+ADR 112 is the house result that no cell here survives correction. The thing
+an observer would learn from this site is already public, and the part that
+is not public — that the measured edge is absent — is published deliberately.
+
 Implemented as an explicit variable rather than by weakening the default.
 `SITE_PASSWORD` unset still returns 503; only `SITE_AUTH_DISABLED=1`
 opens the site, and only that exact string — `0`, `true` and `yes` are all
@@ -67,6 +74,13 @@ point.
 Not acted on: all three change what the deployed site is or how the sync
 behaves, and the store is not full today.
 
+**Reviewed 2026-08-20 and deliberately left.** The user's read is that 100MB
+of headroom against a daily increment measured in kilobytes is a long
+runway, and that all three fixes cost something real now to solve a problem
+that is months away. Revisit when the number moves, not on a schedule.
+
+---
+
 ### `UniverseParams.min_price` is declared and enforced nowhere
 
 Found 2026-08-20 while checking why `cscan nightly` warned that SBNY was
@@ -93,31 +107,19 @@ field and record that market cap subsumes it. Deleting also moves
 `config_hash`, so neither option is free — which is the argument for
 deciding deliberately rather than drifting.
 
+**Decided 2026-08-20: delete it, bundled.** The user's reading is that it
+may once have been intended as penny-stock protection, that it currently
+does nothing and affects nothing, and that it is not worth a rebuild of its
+own. So the field comes out in the next change that moves `config_hash` for
+a reason that stands on its own, in the same commit, with the ADR for that
+change recording that market cap subsumes a price floor.
+
+**This item stays open until that happens** — it is scheduled, not settled,
+and the thing that would close it is a commit rather than a decision. If a
+hash-moving change lands without removing it, that was a missed chance and
+this entry is the reminder.
+
 ---
 
 The file is kept so the next finding has a home. Adding one means saying
 what is wrong, what it costs, and what would settle it.
-
----
-
-## Closed 2026-08-20
-
-Five items, all recorded where the reasoning belongs rather than
-summarised here.
-
-| Was | Outcome |
-|---|---|
-| `in_trade` failed open | **ADR 129.** 6h25m of rebuild; 11.9% of the training population left the trade universe. ADR 112 re-established rather than assumed — still zero cells surviving FDR |
-| Benchmark record vs database | **Never disagreed.** Both figures were right; neither carried its `config_hash`. Fixed by labelling, not re-measuring — `RESULTS.md` |
-| A delisted ticker passed the health filter forever | **ADR 135.** AET passed all four criteria at 2026-06-30 on November 2018 data, 31 quarters with no bars |
-| `is_active` / `delisted_on` not derived from `last_bar` | **Done.** 18 names stamped, HUBB and Q re-admitted, 19 junk bars deleted and the fetch guarded |
-| Three "documented limitations" | **Two were buildable.** Half-days fixed (`d2f6b48e1a07`) — the calendar already knew. Fonts self-hosted. The edge bar rejected in **ADR 136** |
-
-## Closed 2026-08-19
-
-The poller's four-hour timestamp offset (ADR 127), today's live candle
-(ADR 128), the live price reading a stale `quotes_live` row (ADR 131), the
-`/chat` and `/` date disagreement (ADR 132), the ticker history's blank
-outcomes (ADR 133), the live price outliving the session (ADR 134), and the
-Neon sizing objection — which measured 157,915 rows against ADR 053's
-~200k estimate and did not hold.

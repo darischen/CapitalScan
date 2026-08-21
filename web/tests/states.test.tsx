@@ -309,6 +309,53 @@ describe("the two reversals are told apart", () => {
     const html = render({ reversal: null });
     expect(html).not.toContain("reversal");
   });
+
+  /**
+   * **A near miss requires something to have nearly happened.**
+   *
+   * The poller attaches a `bear_reversal` block to every report regardless
+   * of side, and `open_gap_atr` is computed from the open and the ATR,
+   * which every row has. So a `confluence_low` carries a fully populated
+   * reversal block whose only honest field is `above_band: false`.
+   *
+   * Every test above this one sets `aboveBand: true`, which is why the
+   * suite was green while 68 of 80 live rows on 2026-08-20 rendered a
+   * short-side measurement on a long-side signal.
+   */
+  it("says nothing about a reversal on a row that is not above its band", () => {
+    const html = render({
+      signalType: "confluence_low",
+      signalTypesAll: ["confluence_low", "bb_lower_touch", "stoch_oversold"],
+      reversal: {
+        confirmed: false,
+        aboveBand: false,
+        openGapAtr: 0.13,
+        ts: "2026-08-20T18:05:00.000Z",
+      },
+    });
+    expect(html).not.toContain("ATR vs open");
+    expect(html).not.toContain("reversal");
+  });
+
+  /**
+   * The case that made this worth a guard rather than a tidy-up. DAL fired
+   * `confluence_low` on 2026-08-20 with `open_gap_atr = -1.99`. A large
+   * negative is what a *confirming* reversal looks like, so the row most
+   * likely to be misread was a long-side signal where the measurement does
+   * not apply at all.
+   */
+  it("does not report a long-side row as strongly reversing", () => {
+    const html = render({
+      signalType: "confluence_low",
+      reversal: {
+        confirmed: false,
+        aboveBand: false,
+        openGapAtr: -1.99,
+        ts: "2026-08-20T18:05:00.000Z",
+      },
+    });
+    expect(html).not.toContain("-1.99");
+  });
 });
 
 /* --- gate 4/5: suppressed and companions -------------------------------- */

@@ -229,6 +229,25 @@ function ReversalBadge({ row }: { row: ScreenRow }) {
   const rev = row.reversal;
   if (!rev) return null;
 
+  // **Only where a bear reversal is a thing that could happen.** The poller
+  // attaches a `bear_reversal` block to every report regardless of side
+  // (`poll.py::_state_json`), so a `confluence_low` carries one too — and
+  // `open_gap_atr` is computed from the open and the ATR, which exist on
+  // every row. Rendering it there states a short-side near-miss about a
+  // long-side signal.
+  //
+  // It read as *confirming* rather than as noise, which is what makes it
+  // worth a guard: DAL fired `confluence_low` on 2026-08-20 and showed
+  // `-1.99 ATR vs open`. On a row above its band that large negative is the
+  // reversal; on this one the measurement does not apply. 68 of that day's
+  // 80 rows were in this state.
+  //
+  // `above_band` is the field that says so, it has been in the view as
+  // `rev_above_band` since ADR 117, and `ReversalState.label` already
+  // returns "n/a" for it. The judgement existed at every layer and was
+  // dropped at the last one.
+  if (!rev.aboveBand) return null;
+
   // Negative is below the open and therefore reversing.
   const gap = rev.openGapAtr === null ? null : `${rev.openGapAtr.toFixed(2)} ATR vs open`;
 
@@ -266,6 +285,10 @@ export function ScreenerTable({
     <table className="screen">
       <thead>
         <tr>
+          {/* Its own column rather than a share of the rail: the rail is 3px
+              and carries side, which is the table's signature element.
+              Select-all lives in the bar below, so this header stays empty. */}
+          <th className="pick" aria-label="select" />
           <th className="rail" aria-label="side" />
           <th>Ticker</th>
           <th>Signal</th>
@@ -293,6 +316,18 @@ export function ScreenerTable({
       <tbody>
         {rows.map((row) => (
           <tr key={`${row.ticker}-${row.signalDate}-${row.signalType}`}>
+            {/* An uncontrolled checkbox, read by `OpenSelected` on demand
+                (ADR 139). Keeping it uncontrolled is what lets this table
+                stay a server component -- a `checked` prop would need state,
+                and state would pull the whole screener into the bundle.
+
+                The label is the ticker alone: a row-selection checkbox is
+                announced with its row context already, so "Select ROST"
+                would read as "Select ROST checkbox" in a row that just said
+                ROST. */}
+            <td className="pick">
+              <input type="checkbox" name="ticker" value={row.ticker} aria-label={row.ticker} />
+            </td>
             <td className="rail">
               {/* The signature element. `title` rather than visible text so
                   the rail stays 3px, with the side still reachable by

@@ -3167,6 +3167,15 @@ symbols delisted years ago are a data-quality question about symbol reuse.
 And `tickers.delisted_on` is NULL on all 96 rows while `is_active` is false,
 so the date a listing ended is not recorded anywhere.
 
+**Both were fixed on 2026-08-20**, which this paragraph predates. `is_active`
+and `delisted_on` are now derived from each ticker's `last_bar`: **18 names
+carry a delisting date**, HUBB and Q were re-admitted as live listings, and
+the 19 junk bars behind the symbol-reuse question were deleted with the fetch
+guarded against writing more. 99 tickers are inactive as of that date. The
+paragraph above is kept as the measurement that prompted it — ADR 129's note
+that `delisted_on` is "written nowhere in the tree" was true when written and
+is not now.
+
 **Statistics on the ticker page are absent, not hidden.** ADR 114 puts the
 screener's statistics one action away; the ticker page has no equivalent
 because `cell_stats` has no ticker dimension (ADR 102, ADR 104). A per-cell
