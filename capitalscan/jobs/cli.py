@@ -369,6 +369,39 @@ def _prior_clean_default_run_exists(engine, config_hash: str) -> bool:
     return row is not None
 
 
+def _chunk_already_done(engine, config_hash: str, chunk: int, of: int) -> bool:
+    """Has this compute-phase chunk already landed cleanly?
+
+    The same shape as `_sweep_config_already_done` below, at a finer grain:
+    that one checkpoints a sweep at one config per unit, this checkpoints a
+    single config's compute phase at one *chunk of tickers* per unit.
+
+    Matched on `(config_hash, chunk, of)` together, not on `chunk` alone.
+    `of` is in the key because a chunk index means nothing without the split
+    it came from -- rerunning with a different `--chunk-size` produces a
+    different partition of the same tickers, and "chunk 3 of 13" is not the
+    work "chunk 3 of 26" would do. Without `of`, changing the chunk size on
+    a resume would skip work that was never done.
+
+    `events` writes are idempotent on the natural key, so a chunk re-run is
+    wasted time and never wrong. That asymmetry is why this check is allowed
+    to be conservative: a false negative costs minutes, a false positive
+    loses a slice of the universe silently.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT 1 FROM runs WHERE job = 'backtest_compute' AND status = 'ok' "
+                "AND params->>'config_hash' = :chash "
+                "AND params->>'chunk' = :chunk AND params->>'of' = :of LIMIT 1"
+            ),
+            {"chash": config_hash, "chunk": str(chunk), "of": str(of)},
+        ).fetchone()
+    return row is not None
+
+
 def _sweep_config_already_done(engine, config_hash: str) -> bool:
     """Task 12's per-config checkpoint/resume check for `--sweep`.
 
@@ -565,6 +598,14 @@ def backtest(
     config_name: Optional[str] = typer.Option(
         None, "--config-name", help="Not implemented — see `cscan backtest --help` output on error"
     ),
+    phase: str = typer.Option(
+        "all",
+        "--phase",
+        help="all (default) | compute (resumable, per-chunk) | finalize (cross-ticker cofire)",
+    ),
+    chunk_size: int = typer.Option(
+        25, "--chunk-size", help="Tickers per checkpoint unit in --phase compute"
+    ),
 ) -> None:
     """Run the backtest engine (DESIGN §5): default config in, `events` rows
     out, then the Phase 3 validation harness (DESIGN §5.10) against what
@@ -713,6 +754,86 @@ def backtest(
         return
 
     resolved = _resolve_tickers(tickers)
+
+    if phase not in {"all", "compute", "finalize"}:
+        console.print(f"[red]error[/red]: --phase must be all, compute or finalize (got {phase!r})")
+        raise typer.Exit(code=1)
+
+    # ---- phase: finalize -------------------------------------------------
+    #
+    # The cross-ticker pass, run alone. `add_cofire_count` groups across
+    # tickers by `(signal_date, signal_type)`, so it is the one step that
+    # needs the whole universe present at once -- which is exactly why it
+    # cannot live inside a resumable per-chunk loop.
+    if phase == "finalize":
+        from capitalscan.research.backtest import finalize_cofire
+
+        with ingest.run_job(
+            engine, "backtest_finalize", {"config_hash": chash, "phase": "finalize"}
+        ) as report:
+            report.rows_written = finalize_cofire(engine, chash)
+        console.print(
+            f"[bold]finalize[/bold]: cofire_count written on "
+            f"[bold]{report.rows_written}[/bold] rows for {chash}"
+        )
+        console.print(
+            "[dim]correct only if the compute phase finished for this config; "
+            "an early run counts honestly over fewer rows[/dim]"
+        )
+        return
+
+    # ---- phase: compute --------------------------------------------------
+    #
+    # Resumable. Tickers are split into fixed chunks, each its own `runs`
+    # row, and a chunk with a clean row is skipped on a rerun -- the same
+    # checkpoint shape `--sweep` already uses at one-config granularity.
+    #
+    # Every chunk writes with `full_universe=False`, which drops
+    # `cofire_count` from the write rather than letting a chunk-sized
+    # undercount overwrite a universe-wide value. `--phase finalize` puts it
+    # back. Running compute without ever running finalize leaves
+    # `cofire_count` at whatever it was, which for a new `config_hash` is
+    # NULL -- visible, and not a silently wrong number.
+    if phase == "compute":
+        chunks = [resolved[i : i + chunk_size] for i in range(0, len(resolved), chunk_size)]
+        n_done = n_run = 0
+        for i, chunk in enumerate(chunks, start=1):
+            if _chunk_already_done(engine, chash, i, len(chunks)):
+                n_done += 1
+                continue
+            params = {
+                "config_hash": chash,
+                "phase": "compute",
+                "chunk": i,
+                "of": len(chunks),
+                "n_tickers": len(chunk),
+                "workers": workers,
+            }
+            with ingest.run_job(engine, "backtest_compute", params) as report:
+                bt = run_backtest(
+                    chunk,
+                    config,
+                    report.run_id,
+                    engine=engine,
+                    max_workers=workers,
+                    full_universe=False,
+                )
+                report.rows_written = bt.rows_written
+                if bt.failed_tickers:
+                    report.notes = f"{len(bt.failed_tickers)} ticker(s) failed: " + ", ".join(
+                        sorted(bt.failed_tickers)[:10]
+                    )
+            n_run += 1
+            console.print(
+                f"  chunk {i}/{len(chunks)}: {bt.rows_written} rows ({len(chunk)} tickers)"
+            )
+        console.print(f"[bold]compute complete[/bold]: {n_run} chunk(s) run, {n_done} already done")
+        console.print(
+            "[yellow]cofire_count is not written by this phase[/yellow] — "
+            "run `cscan backtest --phase finalize` when every chunk is done"
+        )
+        return
+
     # A `--tickers` subset is a partial run by definition: `run_backtest`'s
     # `full_universe` guard exists so this cannot silently overwrite a
     # previously-correct universe-wide `cofire_count` (see its docstring).

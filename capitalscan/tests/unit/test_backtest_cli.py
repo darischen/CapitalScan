@@ -80,8 +80,24 @@ def _no_real_io(monkeypatch):
     )
 
 
-def _call(tickers=None, workers=1, sweep=False, config_name=None):
-    return cli.backtest(tickers=tickers, workers=workers, sweep=sweep, config_name=config_name)
+def _call(tickers=None, workers=1, sweep=False, config_name=None, phase="all", chunk_size=25):
+    """Every option passed explicitly, including the ones a test does not care
+    about.
+
+    Calling the command as a plain function binds any omitted parameter to
+    its `typer.Option(...)` object rather than to that option's default, so
+    `phase` arrives as an `OptionInfo` and fails validation. Adding an option
+    to the command means adding it here -- which is the trade for testing the
+    real function instead of going through `CliRunner`.
+    """
+    return cli.backtest(
+        tickers=tickers,
+        workers=workers,
+        sweep=sweep,
+        config_name=config_name,
+        phase=phase,
+        chunk_size=chunk_size,
+    )
 
 
 # ---------------------------------------------------------------------------

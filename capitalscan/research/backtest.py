@@ -888,6 +888,78 @@ def run_backtest(
     )
 
 
+# The four columns `add_cofire_count` groups on, plus the key it writes
+# back against. Deliberately not `SELECT *`: `events` is 75 columns wide and
+# the finalize pass needs five of them, so reading the rest would pull ~10x
+# the bytes across the wire to compute one integer.
+_COFIRE_COLUMNS = (
+    "config_hash",
+    "ticker",
+    "signal_date",
+    "signal_type",
+    "entry_kind",
+)
+
+
+def finalize_cofire(
+    engine: Engine,
+    config_hash: str,
+    *,
+    chunk_size: int = 50_000,
+) -> int:
+    """Recompute `cofire_count` across every event of one config, and write it.
+
+    **Phase two of a split backtest, and the only step that needs the whole
+    universe in hand at once.** `add_cofire_count` groups across tickers by
+    `(signal_date, signal_type)`; a per-ticker worker structurally cannot see
+    that, and neither can a chunk of tickers. So the compute phase writes its
+    rows with `full_universe=False` -- which drops `cofire_count` from the
+    write, leaving a previously-correct value intact rather than replacing it
+    with an undercount -- and this pass fills it in afterwards from what
+    actually landed in the database.
+
+    Reading from `events` rather than from a frame the caller kept is the
+    point: it is what makes the two phases independent processes, so the
+    compute phase can be interrupted, resumed, or run in pieces across a day
+    without this pass caring how the rows got there.
+
+    Returns the number of rows written.
+
+    **Correct only when the compute phase has finished for this config.**
+    Running it early is not an error and produces no warning -- it computes
+    an honest count over the rows that exist, which is an undercount of the
+    intended population. The caller owns that judgement, the same way
+    `run_backtest`'s `full_universe` parameter makes the caller own it there.
+    """
+    with engine.connect() as conn:
+        events = pd.read_sql(
+            text(
+                f"SELECT {', '.join(_COFIRE_COLUMNS)} FROM events WHERE config_hash = :config_hash"
+            ),
+            conn,
+            params={"config_hash": config_hash},
+        )
+    if events.empty:
+        return 0
+
+    events = add_cofire_count(events)
+
+    # `cofire_count` alone. Every other column on these rows belongs to the
+    # compute phase and must not be touched -- naming the update column
+    # explicitly is what keeps this pass from reverting them to the five
+    # values read above.
+    written = 0
+    for start in range(0, len(events), chunk_size):
+        written += db_io.upsert(
+            engine,
+            "events",
+            events.iloc[start : start + chunk_size],
+            ["config_hash", "ticker", "signal_date", "signal_type", "entry_kind"],
+            update_columns=["cofire_count"],
+        )
+    return written
+
+
 def sweep_configs(base: BacktestConfig) -> list[BacktestConfig]:
     """DESIGN §5.9's exit-parameter grid (Session 9 Task 12): exactly 18
     `Config` variants of `base`, each with a distinct `config_hash`.

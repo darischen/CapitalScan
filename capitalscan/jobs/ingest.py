@@ -29,6 +29,7 @@ from capitalscan.core.config import (
 )
 from capitalscan.jobs import db_io
 from capitalscan.jobs.fetch import finnhub, sec, wikipedia, yahoo
+from capitalscan.jobs.fetch.base import NotFoundError
 from capitalscan.jobs.provenance import git_sha, new_run_id
 
 console = Console()
@@ -1292,7 +1293,28 @@ def run_shares(
             if cik is None:
                 skipped.append((ticker, "no CIK in SEC ticker lookup"))
                 continue
-            facts = sec.fetch_company_facts(int(cik))
+            try:
+                facts = sec.fetch_company_facts(int(cik))
+            except NotFoundError:
+                # **Recorded, not raised** (2026-08-21). SEC's own
+                # ticker->CIK map can point at a CIK with no `companyfacts`
+                # document: OZK (Bank OZK) resolves to CIK 1569650, which
+                # 404s, almost certainly a predecessor entity left in the
+                # map after a reorganisation.
+                #
+                # This used to propagate, and one such ticker aborted the
+                # whole run -- 316 tickers, zero rows written, `status =
+                # failed`. The intent behind letting it escape was right and
+                # is preserved: a 404 on a real operating company is a data
+                # problem and must not be swallowed. It is now swallowed
+                # *per ticker* into `skipped`, which the report surfaces, so
+                # the signal survives without taking 315 healthy tickers
+                # with it.
+                #
+                # Same shape as `run_backtest`'s `failed_tickers`: collect
+                # per unit, continue, and let the caller see the list.
+                skipped.append((ticker, f"SEC has no companyfacts for CIK {int(cik)}"))
+                continue
             if facts.empty:
                 skipped.append((ticker, f"no shares-outstanding fact for CIK {int(cik)}"))
                 continue

@@ -339,7 +339,9 @@ def test_backtest_command_uses_resolved_config(monkeypatch, tmp_path):
 
     monkeypatch.setattr(backtest_mod, "run_backtest", _fake_run_backtest)
 
-    cli.backtest(tickers="AAPL", workers=1, sweep=False, config_name=None)
+    cli.backtest(
+        tickers="AAPL", workers=1, sweep=False, config_name=None, phase="all", chunk_size=25
+    )
 
     assert captured["config"].indicators.bb_window == 25
 
@@ -348,7 +350,9 @@ def test_backtest_command_malformed_config_exits_clean_not_traceback(monkeypatch
     monkeypatch.setenv("CAPSCAN_INDICATORS", "{bad json")
 
     with pytest.raises(typer.Exit) as exc_info:
-        cli.backtest(tickers="AAPL", workers=1, sweep=False, config_name=None)
+        cli.backtest(
+            tickers="AAPL", workers=1, sweep=False, config_name=None, phase="all", chunk_size=25
+        )
 
     assert exc_info.value.exit_code == 1
     out = capsys.readouterr().out
