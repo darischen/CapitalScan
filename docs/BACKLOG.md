@@ -8,7 +8,7 @@ Ordered by when it blocks something, not by size.
 
 ## Open
 
-### The deployed site is open — `SITE_AUTH_DISABLED=1`
+### The deployed site is open — `SITE_AUTH_DISABLED=1` (ADR 138)
 
 **Turned off deliberately 2026-08-20**, at the user's request and with
 their reasoning recorded: a Vercel deployment URL is hard to discover, and

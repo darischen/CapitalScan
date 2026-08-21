@@ -4338,6 +4338,45 @@ Three fits with 23% headroom, covers every chart range through 1y and most of 2y
 
 ---
 
+## 138. The deployment authenticates itself, and opening it is an explicit act
+
+**Date:** 2026-08-20. **Status:** Pinned. Currently disabled by request — see below and `BACKLOG.md`.
+
+**Context.**
+
+`capitalscan.vercel.app` went up carrying the screener, the ticker page, `/research` and `/chat`. Vercel Authentication cannot protect a production URL on the Hobby plan — the API refuses outright:
+
+```
+invalid_sso_protection: Vercel Authentication is not available
+on your plan for production deployments
+```
+
+Enabling it for `prod_deployment_urls_and_all_previews` gated only the immutable deployment URL. The two URLs anyone would actually use, `capitalscan.vercel.app` and the branch alias, stayed open. That is not a lockdown, and the alternative was $20/month for a plan whose other features this project does not use.
+
+**Decision.**
+
+HTTP Basic auth in `web/middleware.ts`, so the control sits where the hosting plan has no say.
+
+**Middleware runs before any page, route handler or server component**, which is the property that matters: an unauthenticated request never reaches `lib/db.ts` and never opens a connection. Authentication that runs after the query has already paid for the thing it was protecting.
+
+**It fails closed.** An unset `SITE_PASSWORD` returns 503, not 200. Treating "no password configured" as "no password required" turns a deployment that forgot a variable into a public one, silently — and that is the exact state this exists to prevent. The site locked itself the moment it first deployed and stayed locked until the variable existed, which is the correct default for a control whose absence is invisible.
+
+**It matches every path**, with two exemptions: `/_next/static` and `/favicon.ico`, both immutable build assets containing no data. A matcher enumerating protected routes goes stale the day someone adds one, and the new route is the unprotected one. `/_next/image` is deliberately not exempt — it proxies arbitrary URLs.
+
+**Comparison is constant-time and every failure is identical.** `===` returns as soon as two bytes differ, so rejection latency leaks how many leading characters were right. A different response for "wrong password" than for "no header" tells an attacker which half they got.
+
+**Opening it is its own variable.** `SITE_AUTH_DISABLED=1`, and only that exact string — `0`, `true` and `yes` are refused, because a truthiness check would make `=0` mean "open", the opposite of what someone typing it intends. It is not "unset `SITE_PASSWORD` means open", because forgetting a password and deciding against one are different intents and only one of them is safe to infer.
+
+**Consequences.**
+
+**Currently disabled**, at the user's request, 2026-08-20: a deployment URL is hard to discover and the content is public market data plus one operator's own analysis — no PII, no credentials, no user model at all. `BACKLOG.md` carries the decision and its reasoning.
+
+**The thing to re-check before that becomes permanent is `/api/chat`.** It spends Anthropic tokens per request and is harmless today only because it reaches MCP on `127.0.0.1` and fails *before* any model call — an open page, not an open wallet. If ADR 118's boundary ever moves, restore auth or carve that route out of the opt-out **in the same change**.
+
+**38 tests**, and the ones that matter are not "a good password works". They are the failure modes: an unset secret, a route nobody remembered to list, six near-miss flag values, and a response that differs depending on why it failed. The route sweep walks `app/` rather than a written list, so a new page joins it automatically.
+
+---
+
 ## Open items
 
 | Item | Options | Current lean |

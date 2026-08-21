@@ -3295,6 +3295,40 @@ one split is not the FDR-corrected cell grid — which is where an edge would
 have to appear, and does not.
 
 
+## Deployed, 2026-08-20
+
+`capitalscan.vercel.app`, built from `main` on every push. Neon Postgres
+16.15 behind it, migrated to the same head as research (`d2f6b48e1a07`) —
+ADR 053's "same migrations applied to both" is now literally true rather
+than aspirational.
+
+**921,533 rows synced**, every table verified row-for-row against the
+local subset, 0 mismatches. 410MB, 80% of Neon's 512MB free tier.
+
+| route | serves |
+|---|---|
+| `/` | the screener, three years of dates |
+| `/ticker/[sym]` | chart and history, ending at the last closed bar |
+| `/research` | the cell grid, computing ADR 112's result from the synced rows |
+| `/chat` | renders and states the finding; **cannot answer** |
+
+`/chat` reaches MCP on `127.0.0.1`, which on Vercel is Vercel's own
+loopback. That is ADR 118's boundary, not a defect.
+
+**What the deployed site deliberately does not have**: a live price or
+today's candle. `bars_live` is not synced (ADR 137), because a nightly
+copy would show a price frozen at the last sync and label it live — the
+failure ADRs 131 and 134 fixed, and worse remotely because nobody there
+can see whether the poller is running. The deployed chart ends at
+yesterday's close.
+
+**It is as current as the last `cscan nightly`, not as current as the
+poller.** The poller writes locally; the nightly chain syncs. Those are
+different clocks and the deployed site tracks the slower one.
+
+Authentication is ADR 138, currently disabled by request.
+
+
 ## Holdout
 
 **Evaluated once. Published whatever it says.**
