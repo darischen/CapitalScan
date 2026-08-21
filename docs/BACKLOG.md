@@ -85,6 +85,10 @@ that is months away. Revisit when the number moves, not on a schedule.
 
 ### Expanding the universe beyond the S&P 500 seed
 
+**Largely done 2026-08-21 — see ADR 143.** Nasdaq listings at or above $5B
+are ingested, `min_mcap_usd` is $20B, and 541 tickers are ever `in_trade`
+against 378 before. What remains open is below.
+
 Raised 2026-08-21: the user intends to add other markets and more ETFs,
 prompted by NBIS not resolving. NBIS is not excluded by a criterion -- it is
 Netherlands-domiciled, so it is not an S&P 500 constituent, so it never
@@ -124,47 +128,24 @@ NULL-sector cell or needs its own dimension. `days_to_earnings` has no
 meaning for one either, and ADR 041's earnings-window exclusion silently
 does nothing.
 
-**What would settle it**: name the rule (Nasdaq-100 union? a liquidity
-floor? an explicit ETF list?), decide whether ETFs get their own cell
-dimension or are excluded from cells while still being tradeable, and
-schedule the rebuild alongside the next hash-moving change rather than on
-its own.
+**Still open, and the sharper half.** ETFs are not companies: `sector` and
+`industry` are NULL on QQQ, and `cell_id` is built from exactly those
+columns, so an ETF lands in a NULL-sector cell rather than being excluded.
+`days_to_earnings` is meaningless for one too, so ADR 041's earnings-window
+exclusion silently does nothing. **IBIT makes this concrete rather than
+hypothetical** -- a spot Bitcoin trust with no sector, no industry and no
+earnings date, now on the non-filer list and one `cscan bars` away from
+being tradeable and uncellable at once.
+
+**Also still open**: NYSE. The current seeds are the S&P union and Nasdaq,
+so a $50B NYSE-listed name outside the index is still unreachable, exactly
+as NBIS was.
+
+**What would settle it**: decide whether ETFs get their own cell dimension
+or are excluded from cells while remaining tradeable, and pick a mechanical
+NYSE rule that could have been written in 2010.
 
 ---
-
-### `cscan bars --tickers` builds a filename the OS refuses, and exits 0
-
-Found 2026-08-21 ingesting 317 Nasdaq tickers in one invocation.
-
-`jobs/fetch/yahoo.py`'s `_batch_key` is `tickers_start_end` -- every symbol
-joined, verbatim, into the cache filename. At 317 tickers that is several
-thousand characters, past the Windows path limit, and the write fails:
-
-```
-OSError: [Errno 22] Invalid argument:
-'...\data\cache\yahoo_daily_v2\AAOI-AAON-ABVX-ACAD-...-CAKE_2005-10-11_2026-08-21.parquet'
-```
-
-**The command exits 0 and writes no bars.** The fetch succeeds, the parse
-succeeds, and the failure happens on the cache write after the data is in
-hand -- so the exit code describes the job and not the outcome, which is the
-same shape as the `VACUUM` failure CLAUDE.md already documents.
-
-Worked around by chunking into batches of 20 (longest filename 100 chars).
-That is why tonight's ingest ran as 16 invocations rather than one.
-
-**What would settle it**: hash the ticker list into the key --
-`sha256(",".join(sorted(tickers)))[:16]` -- so the filename is bounded
-regardless of batch size. Sorting also makes `A,B` and `B,A` one cache entry
-rather than two, which they should always have been.
-
-**Bumping the source is not required.** CLAUDE.md's rule is that the source
-string must move when a fetcher's *output* changes for unchanged arguments.
-This changes only where the answer is filed, so existing entries go
-unreferenced rather than wrong -- they can be deleted or left to rot. Worth
-saying explicitly, because the instinct after reading that section is to bump
-the source for any cache change, and doing so here would discard a working
-cache for nothing.
 
 ---
 

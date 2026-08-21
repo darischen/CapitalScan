@@ -7,6 +7,7 @@ and upserts belong to the `jobs/ingest` layer (BUILD session 5), not here.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date, timedelta
 from typing import cast
 
@@ -154,8 +155,39 @@ def _tidy_daily(sub: pd.DataFrame, ticker: str) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
+# Above this many tickers the joined form is replaced by a digest. 20 keeps
+# every existing single-ticker and small-batch key byte-identical, so the
+# cache built before 2026-08-21 stays readable -- the threshold exists to
+# bound the filename, not to re-file work already done.
+_KEY_TICKER_LIMIT = 20
+
+
 def _batch_key(tickers: list[str], start: date, end: date) -> str:
-    return f"{'-'.join(sorted(tickers))}_{start}_{end}"
+    """A cache key for one batch fetch, bounded in length.
+
+    **The joined form has an OS limit and the failure is silent.** Windows
+    caps a filename at 255 characters; 317 tickers joined by hyphens is
+    several thousand, and `to_parquet` raises `OSError: [Errno 22]` *after*
+    the fetch and parse have succeeded. `cscan bars` exited **0** having
+    written no rows, on 2026-08-21, because the error landed on the cache
+    write rather than on the work.
+
+    So a long list is keyed by digest instead. The digest is over the same
+    sorted ticker list the joined form uses, so two batches differing only in
+    argument order remain one entry, and it is truncated to 16 hex characters
+    -- 64 bits, against a corpus of at most a few thousand batch shapes.
+
+    **Short batches keep their readable key**, and that is deliberate rather
+    than nostalgic: it means this change re-files nothing. Every entry
+    written before today still answers, which matters because CLAUDE.md's
+    rule is that a *source* bump is what discards a cache, and this is not
+    one -- what a fetcher returns for given arguments is untouched.
+    """
+    joined = "-".join(sorted(tickers))
+    if len(tickers) <= _KEY_TICKER_LIMIT:
+        return f"{joined}_{start}_{end}"
+    digest = hashlib.sha256(joined.encode()).hexdigest()[:16]
+    return f"batch{len(tickers)}-{digest}_{start}_{end}"
 
 
 # `_v2` invalidates every entry written before the exclusive-`end` fix.

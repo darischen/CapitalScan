@@ -241,3 +241,60 @@ class TestETFsSkipTheSecEndpoints:
         # is right for a fund and wrong for a company, so the list stays
         # short and its growth is a decision someone makes here.
         assert ingest.SEC_NON_FILER_TICKERS == frozenset({"QQQ", "VOO", "IBIT"})
+
+
+# ---------------------------------------------------------------------------
+# The batch cache key (unrelated source, same night's bug)
+# ---------------------------------------------------------------------------
+
+
+class TestBatchKeyIsBounded:
+    """`cscan bars --tickers <317 symbols>` exited 0 and wrote nothing on
+    2026-08-21: the joined key produced a filename past the OS limit and
+    `to_parquet` raised *after* the fetch had already succeeded."""
+
+    def test_a_large_batch_key_stays_short(self):
+        from datetime import date
+
+        from capitalscan.jobs.fetch.yahoo import _batch_key
+
+        key = _batch_key([f"TICK{i:04d}" for i in range(400)], date(2020, 1, 1), date(2021, 1, 1))
+        assert len(key) < 120, key
+        assert "TICK0000" not in key
+
+    def test_a_small_batch_keeps_its_readable_key(self):
+        """Existing cache entries must still answer.
+
+        CLAUDE.md's rule is that bumping the *source* is what discards a
+        cache, and this change is not one -- what the fetcher returns for
+        given arguments is untouched, so re-filing old work would be pure
+        waste.
+        """
+        from datetime import date
+
+        from capitalscan.jobs.fetch.yahoo import _batch_key
+
+        assert (
+            _batch_key(["AAPL", "MSFT"], date(2020, 1, 1), date(2021, 1, 1))
+            == "AAPL-MSFT_2020-01-01_2021-01-01"
+        )
+
+    def test_argument_order_does_not_split_the_entry(self):
+        from datetime import date
+
+        from capitalscan.jobs.fetch.yahoo import _batch_key
+
+        many_a = [f"T{i}" for i in range(50)]
+        many_b = list(reversed(many_a))
+        d0, d1 = date(2020, 1, 1), date(2021, 1, 1)
+        assert _batch_key(many_a, d0, d1) == _batch_key(many_b, d0, d1)
+
+    def test_different_batches_do_not_collide(self):
+        from datetime import date
+
+        from capitalscan.jobs.fetch.yahoo import _batch_key
+
+        d0, d1 = date(2020, 1, 1), date(2021, 1, 1)
+        a = _batch_key([f"T{i}" for i in range(50)], d0, d1)
+        b = _batch_key([f"T{i}" for i in range(1, 51)], d0, d1)
+        assert a != b
