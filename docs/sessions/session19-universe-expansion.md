@@ -6,6 +6,30 @@ needed to pick this up is here.
 
 ---
 
+## URGENT if resuming after 16:30 PT
+
+`cscan indicators` — and therefore `cscan nightly`, scheduled 16:30 local —
+**will fail** until migration `c3f91a70b8d4` is applied. `compute_all` runs
+the whole registry and now emits `bull_close_below_lower`; the column does
+not exist yet. Verified, not assumed.
+
+```
+cscan db migrate          # applies c3f91a70b8d4 to both databases
+```
+
+It was written and not applied because `cscan db migrate` takes an ACCESS
+EXCLUSIVE lock and a backtest held the table. **The poller is unaffected** —
+it reads bands from `indicators` and never writes them — so 06:30 is safe
+and the real deadline is 16:30.
+
+After applying, recompute so the column is populated rather than NULL:
+
+```
+cscan indicators --lookback 7619 --workers 8      # chunk it, see below
+```
+
+---
+
 ## The one thing to check first
 
 ```
