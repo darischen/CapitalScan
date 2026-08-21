@@ -345,7 +345,7 @@ function SortHeader({
         {label}
         {/* Reserved whether or not it is showing, so switching columns does
             not shift the header row by the width of a glyph. */}
-        <span className="caret" aria-hidden="true">
+        <span className="caret" data-dir={active ? ctx.dir : undefined} aria-hidden="true">
           {active ? (ctx.dir === "asc" ? "▲" : "▼") : ""}
         </span>
       </a>

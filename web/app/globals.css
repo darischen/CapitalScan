@@ -2181,13 +2181,21 @@ table.screen td.pick input:focus-visible {
 }
 
 /* Reserved at a fixed width whether or not a caret is in it, so moving the
- * sort from one column to another does not shift the header row sideways. */
+ * sort from one column to another does not shift the header row sideways.
+ *
+ * Cool for ascending, warm for descending — the same convention the side
+ * rail and the close column already use, so direction reads the same way
+ * everywhere on the page rather than the arrow needing its own key. */
 .caret {
   display: inline-block;
   width: 7px;
   font-size: 7px;
   line-height: 1;
   color: var(--long);
+}
+
+.caret[data-dir="desc"] {
+  color: var(--short);
 }
 
 /* A right-aligned header puts the caret on the left of the label, so the
