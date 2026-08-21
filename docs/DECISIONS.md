@@ -4299,12 +4299,15 @@ reference data                  12 MB
 
 None of those were mistakes. The estimate simply describes a system that no longer exists.
 
-**Correction, 2026-08-20 (same day).** The 512MB figure below is wrong for
-this account: Neon reports **5 GB**, and the synced three-year store uses
-**0.45 GB, 9%**. Full history at 2,149MB would fit in 43%. The decision
-stands as a *choice* about what the deployed site shows; it is no longer a
-constraint, and `BACKLOG.md` carries the question of whether to widen it.
-The measurements themselves were taken correctly and are unchanged.
+**Confirmed against the live store, 2026-08-20.** The synced three-year
+subset is **410MB, 80% of the 512MB free tier** — `pg_database_size` on
+Neon, matching the estimate. A momentary reading of "5 GB" was misread and
+briefly recorded here as a correction; it was wrong and is withdrawn. The
+limit is 512MB and three years is a constraint, not a preference.
+
+**80% is tight, and `run_sync` never deletes.** The cutoff bounds what is
+*sent*, not what is *stored*, so rows that age past three years stay on
+serving forever and the store grows with every nightly. See `BACKLOG.md`.
 
 **Decision.**
 

@@ -33,32 +33,39 @@ middleware and its 38 tests are unchanged and still enforce everything.
 
 ---
 
-### `ServingParams.history_years` is set for a limit that turned out to be 10x larger
+### The serving store grows without bound and is at 80% of the free tier
 
-ADR 137 chose three years by measuring against **512 MB**, which is what
-Neon's free tier was assumed to be. The account's actual limit is **5 GB**,
-and the synced store reports **0.45 GB — 9% used**, not the 80% that ADR
-recorded.
+Measured 2026-08-20: **410MB against Neon's 512MB free tier.** A "5 GB"
+reading was misread earlier and briefly recorded in ADR 137 as a
+correction; that has been withdrawn. 512MB is the limit.
 
-Every window fits:
+**The real problem is not the current number, it is the direction.**
+`run_sync` deliberately never deletes — the docstring says why: a bug in
+the cutoff arithmetic would otherwise silently empty the served history.
+But that means `ServingParams.history_years` bounds what is *sent*, not
+what is *stored*. Rows that age past three years stay on serving forever,
+and every nightly adds a day.
 
-```
-1 year   139 MB     3 years  393 MB (current)     full  2,149 MB
-2 years  266 MB     5 years  638 MB
-```
+So the store only grows, from 80%, on a 512MB ceiling.
 
-Full history is 43% of the plan. So the three-year cut is now a *choice*
-about what the deployed site should show, not a constraint — and the
-tradeoff it was making (no screener dates before 2023-08-21, chart ranges
-beyond ~2 years stopping early) is no longer being paid for anything.
+**Rough rate**: a session adds roughly 620 bars and 620 indicator rows
+across the trade universe plus its events — small daily, and monotonic.
+The question is months rather than days, but it has no natural stopping
+point.
 
-**What would settle it**: change `history_years` and re-run `cscan sync`.
-The job upserts and never deletes, so widening the window adds rows
-without disturbing what is there. ADR 137's measurement table should gain
-the corrected limit either way, so the next reader does not re-derive a
-constraint that does not exist.
+**What would settle it**, in increasing order of what they claim:
 
----
+- **Prune on serving**: delete rows older than the cutoff after each sync.
+  Straightforward, and it makes the deleted-by-mistake failure mode real
+  again — which is exactly what `run_sync` avoided. Would need the delete
+  scoped by the same cutoff expression the insert uses, and a test that
+  the two cannot drift.
+- **Narrow the window**: two years is 266MB, one year 139MB. Buys time and
+  costs screener history.
+- **Pay**: Neon Launch is 10GB, and full history is 2,149MB.
+
+Not acted on: all three change what the deployed site is or how the sync
+behaves, and the store is not full today.
 
 ### `UniverseParams.min_price` is declared and enforced nowhere
 
