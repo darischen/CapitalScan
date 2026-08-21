@@ -18,6 +18,7 @@ never sees a clock; the caller supplies the as-of row.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 
 import pandas as pd
@@ -67,6 +68,45 @@ def adr_adjusted_shares(ticker: str, shares: float | None, up: UniverseParams) -
         return None
     ratio = dict(up.adr_ordinary_per_adr).get(ticker.upper(), 1.0)
     return shares / ratio
+
+
+def split_adjusted_shares(shares: float | None, ratios: Sequence[float]) -> float | None:
+    """As-filed share count restated onto the price series' split basis.
+
+    `bars.close` is split-adjusted, and Yahoo re-adjusts the **whole**
+    history whenever a new split lands, so every close is expressed in
+    today's share basis. `shares_outstanding` holds the count as filed. The
+    two agree only while no split has occurred since the filing, and
+    multiplying them regardless understates market cap by exactly the
+    cumulative factor.
+
+    Measured 2026-08-21, AAPL at `as_of` 2011-06-30: $11.1B against a real
+    ~$310B, a ratio of 28 = 7 (2014-06-09) x 4 (2020-08-31). The error
+    falls to 4x by 2016 and vanishes by 2021 as those splits are absorbed
+    into the filed count. 446 of ~929 tickers carry at least one split.
+
+    This is `adr_adjusted_shares`'s defect one layer deeper -- a share
+    count on a different basis than the price it multiplies -- and it did
+    the damage that one did not: `crit_mcap` decides `in_trade`, so the
+    historical trade universe was undersized and biased toward names that
+    never split.
+
+    **`ratios` must be every split with `ex_date > filed_on`, including
+    splits after `as_of`.** That reads like look-ahead and is not. Market
+    cap is split-invariant, so the factor cancels; the only requirement is
+    that price and shares share one basis, and the price side has already
+    absorbed those later splits. Filtering to `ex_date <= as_of` would
+    leave the two mismatched, which is the bug being fixed.
+
+    `None` passes through unchanged rather than becoming 0.0: "no filing
+    yet" is not "no shares" (invariant 4).
+    """
+    if shares is None:
+        return None
+    factor = 1.0
+    for ratio in ratios:
+        factor *= float(ratio)
+    return shares * factor
 
 
 def evaluate_criteria(

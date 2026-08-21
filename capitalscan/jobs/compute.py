@@ -276,7 +276,7 @@ def _latest_indicator_row(
     )
 
 
-def _latest_shares(engine: Engine, ticker: str, as_of: date) -> float | None:
+def _latest_shares(engine: Engine, ticker: str, as_of: date) -> tuple[float, date] | None:
     """Latest filing with `filed_on < as_of` (DESIGN §2.4) — the ~45-day
     10-Q lag is real and deliberate, not a bug to fix.
 
@@ -291,16 +291,42 @@ def _latest_shares(engine: Engine, ticker: str, as_of: date) -> float | None:
     2016 regardless of which fetcher produced it, so ordering by `filed_on`
     alone already prevents a current count from silently answering a
     historical `as_of` — the one thing this function must not do.
+
+    Returns `(shares, filed_on)`. The filing date is not decoration: it is
+    the left edge of the split window `_split_ratios_since` needs, because
+    the count is stated on that date's share basis and every split after it
+    has already moved the price series without moving this number.
     """
     with engine.connect() as conn:
         row = conn.execute(
             text(
-                "SELECT shares FROM shares_outstanding WHERE ticker = :ticker "
+                "SELECT shares, filed_on FROM shares_outstanding WHERE ticker = :ticker "
                 "AND filed_on < :as_of ORDER BY filed_on DESC LIMIT 1"
             ),
             {"ticker": ticker, "as_of": as_of},
         ).one_or_none()
-    return float(row.shares) if row is not None else None
+    return (float(row.shares), row.filed_on) if row is not None else None
+
+
+def _split_ratios_since(engine: Engine, ticker: str, filed_on: date) -> tuple[float, ...]:
+    """Every split ratio with `ex_date > filed_on`, in any order.
+
+    **Deliberately unbounded on the right.** Splits dated after the `as_of`
+    being evaluated are included, because `bars.close` is adjusted to
+    today's basis and has already absorbed them. See
+    `core.universe.split_adjusted_shares` for why that is not look-ahead:
+    market cap is split-invariant, so the factor cancels and only the
+    agreement of the two bases matters.
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT ratio FROM corporate_actions WHERE ticker = :ticker "
+                "AND action_type = 'split' AND ex_date > :filed_on AND ratio IS NOT NULL"
+            ),
+            {"ticker": ticker, "filed_on": filed_on},
+        ).fetchall()
+    return tuple(float(r.ratio) for r in rows)
 
 
 def _rel_return_756d(
@@ -593,9 +619,18 @@ def run_universe(
             # ADR filings report ordinary shares while `close` is per ADR;
             # `adr_adjusted_shares` reconciles the two before pricing. A
             # non-ADR passes through untouched.
+            # Two corrections, both restating the filed count onto the
+            # basis `close` is already on. ADR first (ordinary -> ADR), then
+            # splits (filing basis -> today's basis); they commute, and the
+            # order is for reading rather than arithmetic.
+            filing = _latest_shares(engine, ticker, as_of)
             shares = core_universe.adr_adjusted_shares(
-                ticker, _latest_shares(engine, ticker, as_of), up
+                ticker, filing[0] if filing is not None else None, up
             )
+            if shares is not None and filing is not None:
+                shares = core_universe.split_adjusted_shares(
+                    shares, _split_ratios_since(engine, ticker, filing[1])
+                )
             mcap = shares * float(ind_row["close"]) if shares is not None else None
             rel_return = _rel_return_756d(
                 engine, ticker, as_of, up.rel_return_lookback_days, rel_return_cache

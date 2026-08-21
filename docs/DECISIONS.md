@@ -4904,3 +4904,80 @@ one month of real Polygon chains to measure and publish the synthetic pricing
 error. Deferred to this phase by ADR 018.
 
 Holdout evaluation runs once, at the end, and gets published whatever it says.
+
+---
+
+## 145. Market cap prices split-adjusted closes against split-adjusted shares
+
+**Date:** 2026-08-21. **Status:** Pinned. Extends ADR 014's filter; same defect class as `adr_adjusted_shares`.
+
+**Context.**
+
+`jobs/compute.py` priced every quarter's market cap as:
+
+```python
+mcap = shares * float(ind_row["close"])
+```
+
+`close` comes from `bars` and is **split-adjusted**. Yahoo re-adjusts the
+entire price history whenever a new split lands, so every close is expressed
+in today's share basis. `shares` comes from `shares_outstanding` and is the
+count **as filed** that quarter. The two agree only while no split has
+occurred between the filing and today.
+
+Found while explaining why CHRW carried only two months of events. It does,
+and correctly — CHRW is in-trade for one of 66 quarters — but checking the
+criterion that decides that surfaced this.
+
+**Measurement.** AAPL, whose splits bracket the study window:
+
+| `as_of` | Priced | Actual | Ratio | Splits after the filing |
+|---|---|---|---|---|
+| 2011-06-30 | $11.1B | ~$310B | 28x | 7:1 (2014-06-09), 4:1 (2020-08-31) |
+| 2016-06-30 | $130.9B | ~$523B | 4x | 4:1 (2020-08-31) |
+| 2021-06-30 | $2,285B | ~$2,285B | 1x | none |
+
+The ratio is exactly the cumulative split factor and vanishes once the filed
+count has absorbed those splits. KLAC shows the same signature at 10x (split
+2026-06-12, latest filing 2026-04-30): $9.4B priced against ~$95B.
+**446 of ~929 tickers carry at least one split.**
+
+**Decision.**
+
+`core.universe.split_adjusted_shares(shares, ratios)` restates the filed
+count onto the price series' basis before pricing, alongside the existing ADR
+correction. `jobs/compute.py::_latest_shares` now returns `(shares,
+filed_on)`, and `_split_ratios_since` reads every split with `ex_date >
+filed_on`.
+
+**`ratios` includes splits dated after `as_of`, and that is not look-ahead.**
+Market cap is split-invariant: adjust price and shares by the same factor and
+the product does not move. The price side has *already* absorbed those later
+splits, so the only requirement is that both sides share one basis. Filtering
+to `ex_date <= as_of` would leave price adjusted further than shares, which
+is the bug. `test_split_adjusted_shares.py` states this as a property rather
+than as prose.
+
+**Consequences.**
+
+- **The historical trade universe was undersized and biased.** `crit_mcap`
+  decides `in_trade`, `in_trade` gates `apply_eligibility` (DESIGN §5.2 step
+  4), and eligibility decides which events the backtest writes at all. The
+  bias favoured names that never split, and grew with distance into the past.
+  AAPL's first in-trade quarter was 2012-09-30; it should be in-trade from
+  the start.
+- **Every published result predates the fix**, ADR 112 included. This does
+  not by itself overturn ADR 112 — a larger, less biased universe can move a
+  negative result either way — but ADR 112's third confirmation was measured
+  on a distorted membership and must be re-measured before it is quoted
+  again.
+- **`mcap_usd` and `mcap_rank` are stored on every event as context tags**,
+  so anything conditioning on company size inherited the error. Same
+  consequence ADR 014's TSM defect had, at far greater scope.
+- The fix changes no config field, so `config_hash` does not move. The
+  universe must be rebuilt and the backtest re-run for the corrected
+  membership to reach `events`.
+
+**What this does not fix.** `bars.close` remains the split-adjusted series
+and should: indicators depend on it (CLAUDE.md, Price series). The correction
+belongs on the share count, which is the side that was stale.
