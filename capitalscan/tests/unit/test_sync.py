@@ -83,13 +83,35 @@ def test_the_live_session_is_not_shipped():
 
 
 def test_local_only_tables_are_never_shipped():
-    """`bar_rejects`, `runs` and `quotes_live` are local diagnostics.
+    """`bar_rejects` and `quotes_live` are local diagnostics.
 
     A table appearing in a serving view is not consent to publish it, which
     is why the list is written down rather than discovered from `pg_depend`.
     """
-    for local in ("bar_rejects", "runs", "quotes_live", "shares_outstanding", "earnings"):
+    for local in ("bar_rejects", "quotes_live", "shares_outstanding", "earnings", "path"):
         assert local not in NAMES
+
+
+def test_runs_ships_only_what_the_foreign_key_needs():
+    """`events.run_id` references `runs`, so shipping none fails every insert.
+
+    ADR 053 keeps `runs` local and that is still right — 1,057 rows of job
+    params, mostly ingests. Six are referenced by the synced window, and
+    those six are what invariant 6 needs: "every generated row carries
+    `run_id` and `git_sha`" is only true if the id resolves.
+
+    Dropping the FK on serving instead would make the two schemas differ,
+    which is exactly what `test_schema_drift.py` exists to catch.
+    """
+    runs = next(t for t in TABLES if t.name == "runs")
+    assert runs.key == ("run_id",)
+    # Narrowed by subquery, not shipped whole.
+    assert "WHERE run_id IN" in runs.sql
+    assert ":config_hash" in runs.sql and ":cutoff" in runs.sql
+
+
+def test_runs_ships_before_the_events_that_reference_it():
+    assert NAMES.index("runs") < NAMES.index("events")
 
 
 def test_both_screener_grains_ship():
@@ -130,7 +152,7 @@ def test_the_large_tables_are_bounded_and_the_small_ones_are_not():
     knows.
     """
     bounded = {t.name for t in TABLES if ":cutoff" in t.sql}
-    assert bounded == {"bars", "indicators", "events", "signal_reports"}
+    assert bounded == {"bars", "indicators", "events", "signal_reports", "runs"}
     for whole in ("tickers", "trading_days", "universe", "cell_stats", "benchmarks"):
         assert ":cutoff" not in next(t for t in TABLES if t.name == whole).sql
 
@@ -172,6 +194,29 @@ def test_every_table_has_a_conflict_key():
         assert table.key, f"{table.name} has no conflict key"
 
 
+def test_the_cell_stats_key_excludes_run_id():
+    """`(cell_id, config_hash)` is the primary key; `run_id` is not in it.
+
+    **The wrong key here would not have failed.** The first version of this
+    file used `(cell_id, config_hash, run_id)`, which Postgres would accept
+    only if such a constraint existed — it does not, so this one raised.
+    But the shape of the mistake is worth pinning: a key that includes
+    `run_id` makes every re-run insert a *second* row for the same cell
+    rather than replacing it, and the serving store accumulates stale
+    statistics that look current.
+    """
+    cells = next(t for t in TABLES if t.name == "cell_stats")
+    assert set(cells.key) == {"cell_id", "config_hash"}
+    assert "run_id" not in cells.key
+
+
+def test_serving_config_conflicts_on_its_real_key():
+    """`only_row`, not `id`. `serving_config` is a one-row table whose
+    uniqueness is the boolean that keeps it that way."""
+    cfg = next(t for t in TABLES if t.name == "serving_config")
+    assert cfg.key == ("only_row",)
+
+
 def test_the_events_key_is_the_natural_key():
     """`(config_hash, ticker, signal_date, signal_type, entry_kind)` is the
     unique constraint on `events`. A shorter key would silently collapse
@@ -184,6 +229,49 @@ def test_the_events_key_is_the_natural_key():
         "signal_type",
         "entry_kind",
     }
+
+
+# ---------------------------------------------------------------------------
+# The parameter ceiling
+# ---------------------------------------------------------------------------
+
+
+def test_the_batch_fits_the_widest_table_under_the_parameter_limit():
+    """Postgres accepts at most 65,535 bound parameters per statement.
+
+    SQLAlchemy's `insertmanyvalues` pages at 1,000 rows by default, which
+    is a latent overflow for any table wider than 65 columns. `events` has
+    **75**, so the default sends 75,000 parameters and the driver refuses
+    with a message naming neither the table nor the page size.
+
+    Asserted against the real column count rather than a remembered one, so
+    a column added to `events` fails here instead of in a seven-minute sync.
+    """
+    widest_columns = 75  # events, measured 2026-08-20
+    assert sync._rows_per_batch(widest_columns) * widest_columns < 65_535
+
+
+def test_the_batch_shrinks_as_a_table_widens():
+    """Self-adjusting, so a column added to `events` costs round trips
+    rather than breaking the sync minutes in."""
+    assert sync._rows_per_batch(150) < sync._rows_per_batch(75) < sync._rows_per_batch(14)
+    for cols in (7, 14, 26, 45, 75, 120, 400):
+        assert sync._rows_per_batch(cols) * cols <= sync.MAX_BIND_PARAMS
+
+
+def test_a_narrow_table_is_capped_by_the_read_batch_not_the_parameter_limit():
+    """`runs` is 9 columns; 60,000/9 is 6,666, but reading 5,000 at a time
+    is the binding constraint and the smaller of the two wins."""
+    assert sync._rows_per_batch(9) == sync.BATCH_ROWS
+
+
+def test_an_absurdly_wide_table_still_sends_at_least_one_row():
+    assert sync._rows_per_batch(100_000) == 1
+
+
+def test_the_headroom_is_real():
+    """60,000 against Postgres's hard 65,535."""
+    assert sync.MAX_BIND_PARAMS < 65_535
 
 
 # ---------------------------------------------------------------------------

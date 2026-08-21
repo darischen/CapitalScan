@@ -32,6 +32,17 @@ close, and the header shows the close alone. That is honest: live data is
 local because the poller is local. `test_bars_live_isolation.py` caught the
 first version of this file shipping it.
 
+**Conflict keys are the tables' real constraints, checked against
+`pg_constraint` rather than guessed.** The first version of this file
+guessed three of them wrong — `serving_config` conflicts on `only_row` not
+`id`, `cell_stats` on `(cell_id, config_hash)` with `run_id` deliberately
+outside it, and `predictions` on `id`. Postgres rejects an `ON CONFLICT`
+that names no unique constraint, so the wrong two failed loudly; the
+`cell_stats` one would not have. Adding `run_id` to that key makes every
+re-run insert a second row for the same cell instead of replacing it, and
+the serving store would accumulate stale statistics that look current.
+`test_sync.py` now asserts each key against the live constraint.
+
 **Ordering is a foreign-key requirement, not a preference.** `tickers`
 before everything that references it, `universe` before `events` reads it
 for membership. `TABLES` is applied in order and `test_sync.py` asserts
@@ -40,6 +51,7 @@ that order satisfies the real constraints rather than trusting the list.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
@@ -51,11 +63,41 @@ from capitalscan.core.config import ServingParams
 from capitalscan.jobs import db_io
 from capitalscan.jobs.ingest import run_job
 
-# Rows per upsert batch. Neon is over the network rather than a local
-# socket, so the round trip dominates and small batches are slow; 5,000
-# keeps a batch's parameter count inside psycopg's comfortable range while
-# making the trip worth taking.
+# Rows read from the source per round trip. Neon is over the network rather
+# than a local socket, so the trip dominates and small batches are slow.
 BATCH_ROWS = 5_000
+
+# **Postgres accepts at most 65,535 bound parameters in one statement**, and
+# SQLAlchemy's `insertmanyvalues` splits a multi-row INSERT into pages of
+# 1,000 rows by default. That default is a latent overflow for any table
+# wider than 65 columns:
+#
+#     events   75 columns x 1,000 rows = 75,000 parameters   FAILS
+#     bars     14 columns x 1,000 rows = 14,000              fine
+#
+# `events` is 75 columns, so the third sync attempt died on it after seven
+# minutes of successfully copying the narrow tables. The failure is a
+# driver-level `OperationalError` reading "number of parameters must be
+# between 0 and 65535", which names neither the table nor the page size.
+#
+# Chunked here rather than through SQLAlchemy's `insertmanyvalues_page_size`,
+# which an `ON CONFLICT DO UPDATE` does not honour — setting it on the
+# engine changed nothing and `events` failed identically. Computing the
+# batch from the frame's own width is also self-adjusting: a column added
+# to `events` shrinks the batch instead of breaking the sync.
+MAX_BIND_PARAMS = 60_000
+
+
+def _rows_per_batch(n_columns: int) -> int:
+    """How many rows fit in one statement, given the table's width.
+
+    `MAX_BIND_PARAMS` is 60,000 against Postgres's hard 65,535, leaving
+    headroom for the `ON CONFLICT DO UPDATE SET` clause, which binds no
+    parameters today but is one refactor away from doing so.
+    """
+    if n_columns <= 0:
+        return BATCH_ROWS
+    return max(1, min(BATCH_ROWS, MAX_BIND_PARAMS // n_columns))
 
 
 @dataclass(frozen=True)
@@ -86,7 +128,7 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
         SyncTable("trading_days", "SELECT * FROM trading_days", ("d",)),
         SyncTable("market_days", "SELECT * FROM market_days", ("ts",)),
         SyncTable("universe", "SELECT * FROM universe", ("ticker", "as_of")),
-        SyncTable("serving_config", "SELECT * FROM serving_config", ("id",)),
+        SyncTable("serving_config", "SELECT * FROM serving_config", ("only_row",)),
         # Scoped by trade-universe membership rather than by ticker list:
         # the deployed chart only ever draws a name the screener can show.
         SyncTable(
@@ -100,6 +142,28 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
             "SELECT i.* FROM indicators i WHERE i.interval = '1d' AND i.ts >= :cutoff "
             "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = i.ticker AND u.in_trade)",
             ("ticker", "ts", "interval"),
+        ),
+        # **`runs`, narrowed to what the foreign key needs.** ADR 053 keeps
+        # this table local and that is still right: 1,057 rows of job
+        # params, most of them ingests the serving store has no use for.
+        # But `events.run_id` references it, so shipping zero rows makes
+        # every event insert fail the constraint.
+        #
+        # Six rows, measured — the backtests and event runs that produced
+        # the synced window. That is what invariant 6 asks for: "every
+        # generated row carries `run_id` and `git_sha`", which is only true
+        # if the id resolves. Dropping the FK on serving instead would make
+        # the two schemas differ, and ADR 053's "same migrations applied to
+        # both" is the property `test_schema_drift.py` checks.
+        #
+        # Ordered before `events` because that is what a foreign key means.
+        SyncTable(
+            "runs",
+            "SELECT * FROM runs WHERE run_id IN ("
+            "  SELECT DISTINCT run_id FROM events"
+            "   WHERE config_hash = :config_hash AND entry_kind IN ('next_open', 'touch')"
+            "     AND signal_date >= :cutoff AND run_id IS NOT NULL)",
+            ("run_id",),
         ),
         # **One config, two grains.** `v_screen` reads `next_open` and
         # `v_screen_live` reads `touch`; shipping one would leave a route
@@ -116,9 +180,9 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
             "SELECT * FROM signal_reports WHERE fired_at >= :cutoff",
             ("id",),
         ),
-        SyncTable("cell_stats", "SELECT * FROM cell_stats", ("cell_id", "config_hash", "run_id")),
+        SyncTable("cell_stats", "SELECT * FROM cell_stats", ("cell_id", "config_hash")),
         SyncTable("benchmarks", "SELECT * FROM benchmarks", ("id",)),
-        SyncTable("predictions", "SELECT * FROM predictions", ("ticker", "as_of")),
+        SyncTable("predictions", "SELECT * FROM predictions", ("id",)),
         SyncTable("positions", "SELECT * FROM positions", ("id",)),
     )
 
@@ -205,15 +269,57 @@ def run_sync(
                 params={"cutoff": cutoff, "config_hash": config_hash},
             )
             written = 0
-            for start in range(0, len(frame), BATCH_ROWS):
-                batch = frame.iloc[start : start + BATCH_ROWS]
+            per_batch = _rows_per_batch(len(frame.columns))
+            for start in range(0, len(frame), per_batch):
+                batch = frame.iloc[start : start + per_batch]
                 written += db_io.upsert(
                     target, table.name, batch.to_dict("records"), list(table.key)
                 )
             rows[table.name] = written
 
+        _pin_config_hash(target, str(config_hash))
         report.rows_written = sum(rows.values())
     return SyncReport(rows=rows)
+
+
+def _pin_config_hash(target: Engine, config_hash: str) -> None:
+    """Set `capitalscan.default_config_hash` on the serving database.
+
+    **Without this a freshly synced store serves zero rows**, silently.
+    Every screener and statistics view filters on
+    `current_setting('capitalscan.default_config_hash', true)`, and the
+    `true` makes it return NULL rather than raising when unset — so
+    `config_hash = NULL` matches nothing and `/` renders an empty screener
+    that looks exactly like a quiet day.
+
+    ADR 100 records the GUC as a manual step: "must be re-pinned by hand —
+    no migration records it." That is right for the research database,
+    where a human decides when a new config becomes the default. It is
+    wrong here: the sync has just copied rows *for one specific hash*, so
+    it already knows the only answer that makes the copy readable, and
+    leaving a human to remember it is leaving the serving store broken by
+    default.
+
+    `ALTER DATABASE` applies to new connections, not the one issuing it,
+    which is why the caller verifies through a fresh connect rather than
+    reading it back here.
+    """
+    with target.begin() as conn:
+        database = conn.execute(text("SELECT current_database()")).scalar_one()
+        # Identifier, so it cannot be a bound parameter. `database` comes
+        # from the server itself and the hash is 16 hex characters from
+        # `jobs.config.config_hash`; both are checked before interpolation.
+        if not re.fullmatch(r"[A-Za-z0-9_]+", database):
+            raise ValueError(f"refusing to ALTER DATABASE {database!r}: unexpected name")
+        if not re.fullmatch(r"[0-9a-f]{16}", config_hash):
+            raise ValueError(f"refusing to pin {config_hash!r}: not a config hash")
+        conn.execute(
+            text(
+                f'ALTER DATABASE "{database}" SET capitalscan.default_config_hash = :h'.replace(
+                    ":h", f"'{config_hash}'"
+                )
+            )
+        )
 
 
 def describe(sp: ServingParams | None = None, today: date | None = None) -> dict[str, Any]:

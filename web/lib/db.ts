@@ -44,6 +44,32 @@ export function readOnlyRole(env: Env = process.env): boolean {
   return Boolean(env.DATABASE_URL_MCP);
 }
 
+/**
+ * Pins `capitalscan.default_config_hash` on every new connection.
+ *
+ * **Without it the screener renders empty and looks like a quiet day.**
+ * Every screener and statistics view filters on
+ * `current_setting('capitalscan.default_config_hash', true)`, and the
+ * `true` makes that return NULL rather than raising when unset — so
+ * `config_hash = NULL` matches nothing and `/` shows zero rows with no
+ * error anywhere.
+ *
+ * Locally the GUC is set on the database with `ALTER DATABASE` (ADR 100).
+ * **Neon does not allow that**: custom parameters need superuser and
+ * `neondb_owner` is not one, so `ALTER DATABASE ... SET
+ * capitalscan.default_config_hash` fails with `InsufficientPrivilege`. A
+ * session-level `SET` is permitted, which is what this is.
+ *
+ * The value comes from `serving_config`, not from an environment variable.
+ * That table is synced with the rows it describes, so the hash a
+ * connection pins is by construction the hash whose events were copied —
+ * there is no second place to update when the config changes, and no way
+ * for a URL and a dataset to disagree.
+ */
+const PIN_CONFIG_HASH =
+  "SELECT set_config('capitalscan.default_config_hash', " +
+  "(SELECT config_hash FROM serving_config LIMIT 1), false)";
+
 export function getPool(): Pool {
   if (!pool) {
     pool = new Pool({
@@ -57,6 +83,12 @@ export function getPool(): Pool {
       // staleness banner exists to report a database that stopped being
       // updated; a request that never returns reports nothing at all.
       connectionTimeoutMillis: 5_000,
+    });
+    // Per connection, not per query: `SET` is session-scoped and the pool
+    // reuses connections, so once per connect is both sufficient and the
+    // cheapest place to put it.
+    pool.on("connect", (client) => {
+      void client.query(PIN_CONFIG_HASH);
     });
   }
   return pool;
