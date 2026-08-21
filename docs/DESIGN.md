@@ -10,7 +10,9 @@ Last updated: 2026-08-11
 
 ## 1. System overview
 
-A Bollinger Band and Stochastic Oscillator event-study engine for US mega-cap equities. It detects indicator events, measures what historically followed, and notifies the user. It is advisory only: no execution path exists (ADR 043).
+A Bollinger Band and Stochastic Oscillator event-study engine for US large-cap equities and ETFs. It detects indicator events, measures what historically followed, and notifies the user. It is advisory only: no execution path exists (ADR 043).
+
+**"S&P 500" describes where the ticker list is seeded, not what the engine accepts.** `run_tickers_refresh` scrapes the Wikipedia constituent table and ADR 035 keeps the historical union to remove survivorship bias. But index membership is enforced nowhere: the four universe criteria are index-agnostic, and a hand-added ticker is evaluated like any other. QQQ has been in the trade universe with 29,343 events since before this paragraph was written.
 
 ### 1.1 Four planes
 
@@ -2412,7 +2414,7 @@ Short, because guardrails live in code. The prompt handles framing, not enforcem
 
 ```
 You answer questions about a Bollinger Band and Stochastic Oscillator
-event-study database covering US mega-cap equities, 2010 to present.
+event-study database covering US large-cap equities and ETFs, 2010 to present.
 
 Rules:
 - Every statistical claim comes from a tool result. You perform no

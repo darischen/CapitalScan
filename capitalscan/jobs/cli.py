@@ -103,7 +103,11 @@ def membership(
     backfill: bool = typer.Option(False, help="Backfill membership history"),
     force: bool = typer.Option(False, help="Regenerate even if the CSV is reviewed and frozen"),
 ) -> None:
-    """Build universe membership from S&P 500 history."""
+    """Build universe membership from S&P 500 history.
+
+    Seeds the ticker list; does not bound it. Tickers added by other means
+    (QQQ) are evaluated by the same criteria and are not touched here.
+    """
     from capitalscan.jobs import ingest
 
     if not backfill:

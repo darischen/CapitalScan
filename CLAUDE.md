@@ -1,8 +1,21 @@
 # CapitalScan
 
-Bollinger Band + Stochastic Oscillator event-study engine for US mega-cap equities.
+Bollinger Band + Stochastic Oscillator event-study engine for US large-cap equities and ETFs.
 
 **Advisory only. No execution path exists or may be added.**
+
+**The universe is *seeded* from S&P 500 membership, not restricted to it.**
+`run_tickers_refresh` scrapes the Wikipedia constituent table and ADR 035
+keeps the historical union for survivorship reasons, so that is where the
+712 rows come from. Nothing downstream requires index membership: the four
+criteria in `UniverseParams.required_criteria` read price, SMA200, slope and
+relative return, and market cap resolves from SEC XBRL by CIK **with a Yahoo
+fallback for names that have none** (68 tickers today, `shares_outstanding.source`).
+
+QQQ is the proof and it was added by hand: no CIK, no sector, 5,280 daily
+bars, 66 universe evaluations, `in_trade` true at $289B, and 29,343 events.
+A ticker outside the S&P 500 participates fully once its rows exist. Planned
+expansion to other markets and more ETFs is in `BACKLOG.md`.
 
 ---
 

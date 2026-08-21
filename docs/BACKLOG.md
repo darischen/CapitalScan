@@ -83,5 +83,54 @@ that is months away. Revisit when the number moves, not on a schedule.
 
 ---
 
+### Expanding the universe beyond the S&P 500 seed
+
+Raised 2026-08-21: the user intends to add other markets and more ETFs,
+prompted by NBIS not resolving. NBIS is not excluded by a criterion -- it is
+Netherlands-domiciled, so it is not an S&P 500 constituent, so it never
+enters `tickers` and is never evaluated at all.
+
+**Most of the machinery already works.** QQQ was added by hand and
+participates fully: 5,280 daily bars, 66 universe evaluations, `in_trade`
+true at $289B, 29,343 events. Market cap resolved without a CIK because
+`shares_outstanding` already has a Yahoo fallback -- 68 of 653 tickers use
+it today. The four criteria in `required_criteria` read price, SMA200,
+slope and relative return, none of which mention an index.
+
+So the work is not "support non-index names". It is deciding what the
+universe *is*, and paying for the change.
+
+**Four things bite, in increasing order of awkwardness.**
+
+**The `config_hash` and the rebuild.** Universe definition is config (ADR
+060). Broadening it moves the hash and invalidates every measured row --
+another full `cscan backtest`, ~3h31m at the current population.
+
+**ADR 035's survivorship argument does not survive hand-picking.** The S&P
+union is *complete*: every historical member is present, including the ones
+that failed. A ticker added because it looks interesting today is selected
+on an outcome the study is trying to measure. Any expansion needs a rule
+that could have been written in 2010 and applied mechanically -- "the
+Nasdaq-100 union" is such a rule; "NBIS and a few others" is not.
+
+**Relative return needs a benchmark that means something.** `crit_rel_return`
+compares against the S&P series in `market_days`. For a Nasdaq name that is
+defensible; for a foreign listing or a sector ETF it quietly changes what
+the criterion tests.
+
+**ETFs are not companies.** `sector` and `industry` are NULL on QQQ, and
+`cell_id` is built from component columns -- so an ETF either lands in a
+NULL-sector cell or needs its own dimension. `days_to_earnings` has no
+meaning for one either, and ADR 041's earnings-window exclusion silently
+does nothing.
+
+**What would settle it**: name the rule (Nasdaq-100 union? a liquidity
+floor? an explicit ETF list?), decide whether ETFs get their own cell
+dimension or are excluded from cells while still being tradeable, and
+schedule the rebuild alongside the next hash-moving change rather than on
+its own.
+
+---
+
 The file is kept so the next finding has a home. Adding one means saying
 what is wrong, what it costs, and what would settle it.
