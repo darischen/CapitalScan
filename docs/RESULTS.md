@@ -3184,6 +3184,52 @@ signal type and bucket. Left out rather than duplicated.
 
 ---
 
+## ADR 142 re-measured against ADR 112 — 2026-08-21
+
+**ADR 112 holds.** Zero cells survive FDR correction on either split under
+the widened fast/full agreement rule.
+
+| | train | | validate | |
+|---|---|---|---|---|
+| | measured | survive | measured | survive |
+| ADR 112 (`86e91448a65aa40b`) | 48 | **0** | 28 | **0** |
+| ADR 142 (`bbc99a02ebdc999f`) | 48 | **0** | 28 | **0** |
+| min q, train | 0.7604 | | 0.7167 | |
+| min q, validate | 0.7061 | | 0.7327 | |
+
+Both minima sit roughly fourteen times `fdr_alpha = 0.05`. The result is not
+an artifact of ADR 044's tolerance: it now holds under two different
+definitions of when the two %K columns agree.
+
+**The benchmark arms agree.** `signal total_ret = +0.8067` against the
+200-replication randomization null's 97.5th percentile of `+2.2684` — at or
+below the null, 409 rows written.
+
+**What the population did.** ADR 142 relabelled 10,172 short and 6,606 long
+events from a bare band touch to a confluence, +59% and +71% on the two
+confluence populations, with the row count unchanged (139,387 `next_open`
+against 139,253 before — the rule renames events rather than creating them).
+Average events per confluence cell went 471 -> 736.
+
+**And effective sample size barely moved: `n_eff` 256 -> 265, +3.5%.**
+
+That gap is the finding worth keeping. A 60% larger confluence population
+bought 3.5% more independent information, because the new events co-fire on
+the same days across the same names as the ones already there — exactly what
+`rho_bar` is measured to account for. Pooled ρ for this config: 0.4516
+(2010-2014), 0.3618 (2015-2019), 0.4707 (2020-2023), 0.2438 (2024+). Raw `n`
+would have suggested the grid gained real power. It did not.
+
+**Provenance.** The backtest under this hash was killed at 01:18 PT when the
+`capitalscan-postgres` container exited 255 mid-harness; the write phase had
+completed and crash recovery lost nothing (139,387 rows, all four entry
+grains at identical counts). The validation harness did not run, which does
+not bear on the numbers above — ADR 059's harness gates sweeping and
+hand-inspection, while these come from `cell_stats` and `benchmarks`. The
+`runs` row records the kill and the reason.
+
+---
+
 ## ADR 116 — `v_ticker_state` rewritten, 2026-08-18
 
 Not a session. A performance fix taken on its own because Sessions 17 and 18
