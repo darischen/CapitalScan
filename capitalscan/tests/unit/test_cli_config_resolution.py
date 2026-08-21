@@ -117,12 +117,18 @@ def test_default_config_hash_is_pinned():
     because removing it moves the hash and did not justify a rebuild alone.
     Old value: `86e91448a65aa40b`. New value: `bbc99a02ebdc999f`.
 
+    Updated 2026-08-21 for `UniverseParams.min_mcap_usd` 30e9 -> 20e9, the
+    universe expansion's own move. Unlike ADR 142's, this one changes *which
+    names are measured* rather than which bars fire, so it invalidates every
+    row under `bbc99a02ebdc999f` as thoroughly as a signal change would.
+    Old value: `bbc99a02ebdc999f`. New value: `f66729c7eda212a4`.
+
     **The Postgres GUC must not move until a backtest has written events
     under the new hash.** `v_screen` and `compute.scan` both read
     `capitalscan.default_config_hash`, and pointing them at a config with no
     rows yet returns an empty screener rather than an error (invariant 5b's
     deliberate behaviour). Set it after the backtest, not before."""
-    assert config_hash(Config()) == "bbc99a02ebdc999f"
+    assert config_hash(Config()) == "f66729c7eda212a4"
 
 
 # ---------------------------------------------------------------------------

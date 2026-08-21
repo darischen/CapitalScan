@@ -76,11 +76,28 @@ def test_criteria_keys_match_the_universe_table_columns():
 
 
 def test_mcap_criterion_uses_the_configured_floor():
-    # Session 10 (2026-08-03): UniverseParams.min_mcap_usd moved
-    # 100e9 -> 30e9. These probe values move with it, straddling the
-    # current $30B floor rather than the earlier $100B one.
-    assert _healthy(mcap=31e9)["crit_mcap"] is True
-    assert _healthy(mcap=29e9)["crit_mcap"] is False
+    """**States its own floor rather than reading the default.**
+
+    This test twice had to be rewritten because its probe values were
+    pinned to whatever `min_mcap_usd` happened to be -- 100e9 in Session 9,
+    30e9 in Session 10, 20e9 on 2026-08-21 -- so a config change turned a
+    rule test into a failing assertion about a number nobody had asked it
+    about. Straddling an explicit floor makes it test the comparison, which
+    is its actual subject, and it now passes under any default.
+    """
+    up = UniverseParams(min_mcap_usd=30e9)
+    assert _healthy(mcap=31e9, up=up)["crit_mcap"] is True
+    assert _healthy(mcap=29e9, up=up)["crit_mcap"] is False
+    # And again at a different floor, so the test cannot pass by coincidence.
+    low = UniverseParams(min_mcap_usd=20e9)
+    assert _healthy(mcap=21e9, up=low)["crit_mcap"] is True
+    assert _healthy(mcap=19e9, up=low)["crit_mcap"] is False
+
+
+def test_the_default_floor_is_twenty_billion():
+    """The default itself, asserted once and in one place, so moving it is a
+    one-line change rather than a four-test change."""
+    assert UniverseParams().min_mcap_usd == 20e9
 
 
 def test_above_sma200_compares_close_to_the_200_day_sma():
@@ -135,8 +152,11 @@ def test_is_tradeable_true_when_every_criterion_passes():
 
 
 def test_is_tradeable_false_when_any_criterion_fails():
-    # Below the current $30B floor (Session 10: min_mcap_usd 100e9 -> 30e9).
-    assert uni.is_tradeable(_healthy(mcap=20e9)) is False
+    # The floor is stated, not inherited: `mcap=20e9` read as "failing" only
+    # while the default was 30e9, and became exactly the floor when the
+    # default moved there on 2026-08-21.
+    up = UniverseParams(min_mcap_usd=30e9)
+    assert uni.is_tradeable(_healthy(mcap=20e9, up=up)) is False
 
 
 def test_is_tradeable_treats_null_as_failing():
@@ -151,8 +171,9 @@ def test_is_tradeable_ignores_criteria_outside_the_required_subset():
 
 
 def test_is_tradeable_with_a_single_required_criterion():
-    # Below the current $30B floor (Session 10: min_mcap_usd 100e9 -> 30e9).
-    criteria = _healthy(mcap=20e9)
+    # Same reason as above: the failing criterion has to be made to fail
+    # explicitly rather than by relying on where the default sits.
+    criteria = _healthy(mcap=20e9, up=UniverseParams(min_mcap_usd=30e9))
     assert uni.is_tradeable(criteria, required={"crit_above_sma200"}) is True
     assert uni.is_tradeable(criteria, required={"crit_mcap"}) is False
 

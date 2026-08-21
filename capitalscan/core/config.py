@@ -248,7 +248,12 @@ class UniverseParams:
     # This value changes `config_hash` for every `Config` (ADR 060: a
     # different universe threshold is genuinely a different config). Report
     # the new hash prominently — a Postgres GUC is set from it.
-    min_mcap_usd: float = 30e9
+    # 30e9 -> 20e9 on 2026-08-21 (the user's decision), with the Nasdaq
+    # expansion. Measured that day against the live listing: 190 Nasdaq
+    # names clear $20B against 142 at $30B, and `jobs/fetch/nasdaq.py`
+    # ingests down to $5B so a name below the floor today still has the
+    # bars to be measured in the quarters when it was above it.
+    min_mcap_usd: float = 20e9
     # `min_price` was removed here on 2026-08-20, bundled into ADR 142's
     # rebuild because deleting it moves `config_hash` and was not worth a
     # five-hour run of its own (`BACKLOG.md`, the user's decision).

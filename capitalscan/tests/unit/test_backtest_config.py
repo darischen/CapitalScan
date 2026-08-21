@@ -39,12 +39,20 @@ class TestConfigHashReexport:
 
 
 class TestUniverseMinMcapThreshold:
-    def test_default_min_mcap_usd_is_30_billion(self):
-        """Session 10 (user's decision, 2026-08-03): ADR 014's mega-cap
-        threshold moves from $100B nominal to $30B nominal, widening the
-        candidate pool further. See `UniverseParams`'s docstring and
-        `docs/DECISIONS.md` ADR 014's 2026-08-03 dated note for why."""
-        assert UniverseParams().min_mcap_usd == 30e9
+    def test_default_min_mcap_usd_is_twenty_billion(self):
+        """ADR 014's threshold, third value.
+
+        $100B nominal originally; $30B on 2026-08-03 (Session 10); $20B on
+        2026-08-21 with the Nasdaq expansion, both the user's decisions.
+        Each move widens the candidate pool and each one moves
+        `config_hash`, which is the point -- a universe definition is config
+        (ADR 060), so a different threshold is a different study.
+
+        Duplicated from `test_universe.py`'s own default assertion on
+        purpose: that file tests the *rule* and states its own floors, this
+        one pins the *value* the rest of the system is measured under.
+        """
+        assert UniverseParams().min_mcap_usd == 20e9
 
 
 class TestSplitKeyFor:

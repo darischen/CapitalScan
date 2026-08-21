@@ -83,12 +83,16 @@ class TestEvaluateUniverseRow:
             ticker="XYZ",
             as_of=date(2026, 6, 30),
             ind_row=_healthy_ind_row(),
-            mcap=20e9,  # below the current $30B floor
+            # Made to fail against a stated floor rather than against
+            # whatever the default happens to be. `20e9` read as "below" only
+            # while the default was 30e9; it became exactly the floor when
+            # the default moved there on 2026-08-21.
+            mcap=20e9,
             rel_return=0.60,
             sector_median=0.10,
             rev_growth=None,
             adv_20d=1e9,
-            up=UniverseParams(),
+            up=UniverseParams(min_mcap_usd=30e9),
         )
         assert row["crit_mcap"] is False
         assert row["in_trade"] is False

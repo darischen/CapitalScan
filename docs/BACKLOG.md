@@ -132,5 +132,41 @@ its own.
 
 ---
 
+### `cscan bars --tickers` builds a filename the OS refuses, and exits 0
+
+Found 2026-08-21 ingesting 317 Nasdaq tickers in one invocation.
+
+`jobs/fetch/yahoo.py`'s `_batch_key` is `tickers_start_end` -- every symbol
+joined, verbatim, into the cache filename. At 317 tickers that is several
+thousand characters, past the Windows path limit, and the write fails:
+
+```
+OSError: [Errno 22] Invalid argument:
+'...\data\cache\yahoo_daily_v2\AAOI-AAON-ABVX-ACAD-...-CAKE_2005-10-11_2026-08-21.parquet'
+```
+
+**The command exits 0 and writes no bars.** The fetch succeeds, the parse
+succeeds, and the failure happens on the cache write after the data is in
+hand -- so the exit code describes the job and not the outcome, which is the
+same shape as the `VACUUM` failure CLAUDE.md already documents.
+
+Worked around by chunking into batches of 20 (longest filename 100 chars).
+That is why tonight's ingest ran as 16 invocations rather than one.
+
+**What would settle it**: hash the ticker list into the key --
+`sha256(",".join(sorted(tickers)))[:16]` -- so the filename is bounded
+regardless of batch size. Sorting also makes `A,B` and `B,A` one cache entry
+rather than two, which they should always have been.
+
+**Bumping the source is not required.** CLAUDE.md's rule is that the source
+string must move when a fetcher's *output* changes for unchanged arguments.
+This changes only where the answer is filed, so existing entries go
+unreferenced rather than wrong -- they can be deleted or left to rot. Worth
+saying explicitly, because the instinct after reading that section is to bump
+the source for any cache change, and doing so here would discard a working
+cache for nothing.
+
+---
+
 The file is kept so the next finding has a home. Adding one means saying
 what is wrong, what it costs, and what would settle it.

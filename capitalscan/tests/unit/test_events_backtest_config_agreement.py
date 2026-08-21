@@ -276,8 +276,11 @@ class TestRunEventsBackwardCompatibility:
         Moved again 2026-08-20 by ADR 142's
         `SignalParams.fast_agreement_both_extreme` and the deletion of the
         dead `UniverseParams.min_price`, in one commit. New value:
-        `bbc99a02ebdc999f`."""
-        assert jobs_config_hash(Config()) == "bbc99a02ebdc999f"
+        `bbc99a02ebdc999f`.
+
+        Moved again 2026-08-21 by `min_mcap_usd` 30e9 -> 20e9. New value:
+        `f66729c7eda212a4`."""
+        assert jobs_config_hash(Config()) == "f66729c7eda212a4"
 
     def test_sp_only_caller_still_works_and_matches_config_signals_default(
         self, stub_events_reads, captured_events_upsert
@@ -298,8 +301,8 @@ class TestRunEventsBackwardCompatibility:
         events_calls = [c for c in captured_events_upsert if c["table_name"] == "events"]
         row = events_calls[0]["data"][0]
         assert (
-            row["config_hash"] == "bbc99a02ebdc999f"
-        )  # ADR 142 widened agreement; min_price deleted (was 86e91448a65aa40b)
+            row["config_hash"] == "f66729c7eda212a4"
+        )  # min_mcap_usd 30e9 -> 20e9 (was bbc99a02ebdc999f)
         assert row["split_key"] == "holdout"  # 2026-07-30 is past the default validate_end
 
     def test_sp_and_config_disagreeing_raises_rather_than_silently_picking_one(

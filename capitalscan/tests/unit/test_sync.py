@@ -59,7 +59,7 @@ def test_serving_params_is_not_part_of_config():
     assert not hasattr(Config(), "serving")
     # Moves whenever a real `Config` field does -- ADR 142 last, 2026-08-20.
     # The point of the assertion is that `ServingParams` is *not* one of them.
-    assert config_hash(Config()) == "bbc99a02ebdc999f"
+    assert config_hash(Config()) == "f66729c7eda212a4"
 
 
 # ---------------------------------------------------------------------------
