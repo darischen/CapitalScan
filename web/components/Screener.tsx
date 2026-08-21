@@ -1,6 +1,14 @@
 import DatePicker from "./DatePicker";
 import { SIGNAL_LABELS, clock, fmt, pct, screenHref, sessionsBetween, vol } from "@/lib/format";
-import type { CellStats, Meta, ScreenRow, Suppressed } from "@/lib/screen";
+import { nextDir } from "@/lib/screen";
+import type {
+  CellStats,
+  Meta,
+  ScreenRow,
+  SortDir,
+  SortKey,
+  Suppressed,
+} from "@/lib/screen";
 
 /**
  * The screener table and the four states around it.
@@ -274,12 +282,76 @@ function ReversalBadge({ row }: { row: ScreenRow }) {
   );
 }
 
+/**
+ * A column header that sorts (user's request, 2026-08-20).
+ *
+ * A link, not a button: the sort lives in the URL, so it is shareable,
+ * survives a refresh, and needs no client component. The active column
+ * carries a caret and `aria-sort`; every other header looks exactly as it
+ * did before this existed.
+ *
+ * The sort runs in SQL over the whole day rather than over the rendered
+ * rows. That distinction stopped being visible when the 50-row cap was
+ * removed, but it is the reason this is a link rather than an onClick.
+ */
+function SortHeader({
+  label,
+  sortKey,
+  ctx,
+  className,
+  title,
+}: {
+  label: React.ReactNode;
+  sortKey: SortKey;
+  ctx: SortContext;
+  className?: string;
+  title?: string;
+}) {
+  const active = ctx.sort === sortKey;
+  const dir = nextDir(sortKey, ctx.sort, ctx.dir);
+  return (
+    <th
+      className={className}
+      title={title}
+      aria-sort={active ? (ctx.dir === "asc" ? "ascending" : "descending") : "none"}
+    >
+      <a
+        className={active ? "sortlink on" : "sortlink"}
+        href={screenHref(ctx.date, {
+          withStats: ctx.withStats,
+          confluenceOnly: ctx.confluenceOnly,
+          sort: sortKey,
+          dir,
+        })}
+      >
+        {label}
+        {/* Reserved whether or not it is showing, so switching columns does
+            not shift the header row by the width of a glyph. */}
+        <span className="caret" aria-hidden="true">
+          {active ? (ctx.dir === "asc" ? "▲" : "▼") : ""}
+        </span>
+      </a>
+    </th>
+  );
+}
+
+/** What every header needs to build its own link. */
+export interface SortContext {
+  sort: SortKey | null;
+  dir: SortDir;
+  date: string | null;
+  withStats: boolean;
+  confluenceOnly: boolean;
+}
+
 export function ScreenerTable({
   rows,
   withStats,
+  sortCtx,
 }: {
   rows: ScreenRow[];
   withStats: boolean;
+  sortCtx: SortContext;
 }) {
   return (
     <table className="screen">
@@ -290,26 +362,53 @@ export function ScreenerTable({
               Select-all lives in the bar below, so this header stays empty. */}
           <th className="pick" aria-label="select" />
           <th className="rail" aria-label="side" />
-          <th>Ticker</th>
-          <th>Signal</th>
-          <th className="r">Str</th>
-          <th className="r" title="Bollinger bands at t-1, the row the signal compared against. Mid is the 20-day SMA.">
-            Bollinger Lower / Mid / Upper
-          </th>
-          <th className="r" title="Raw %K is the trigger (ADR 110); smoothed must agree within tolerance">
-            fast / slow Stochastic
-          </th>
-          <th className="r" title="The signal date's own bar. Empty until that night's ingest.">
-            Open
-          </th>
-          <th className="r">High</th>
-          <th className="r">Low</th>
-          <th className="r" title="Coloured against the open: cool closed up, warm closed down">
-            Close
-          </th>
-          <th className="r">Vol</th>
-          <th className="r" title="Newest price the poller saw">Live</th>
-          <th className="r">Fired</th>
+          <SortHeader label="Ticker" sortKey="ticker" ctx={sortCtx} />
+          <SortHeader
+            label="Signal"
+            sortKey="signal"
+            ctx={sortCtx}
+            title="Confluence first, then band, then stochastic; short side above long within each"
+          />
+          <SortHeader label="Str" sortKey="strength" ctx={sortCtx} className="r" />
+          <SortHeader
+            label="Bollinger Lower / Mid / Upper"
+            sortKey="bollinger"
+            ctx={sortCtx}
+            className="r"
+            title="Bollinger bands at t-1, the row the signal compared against. Mid is the 20-day SMA. Sorts on the lower band."
+          />
+          <SortHeader
+            label="fast / slow Stochastic"
+            sortKey="stochastic"
+            ctx={sortCtx}
+            className="r"
+            title="Raw %K is the trigger (ADR 110); smoothed must agree within tolerance. Sorts on the raw %K."
+          />
+          <SortHeader
+            label="Open"
+            sortKey="open"
+            ctx={sortCtx}
+            className="r"
+            title="The signal date's own bar. Empty until that night's ingest."
+          />
+          <SortHeader label="High" sortKey="high" ctx={sortCtx} className="r" />
+          <SortHeader label="Low" sortKey="low" ctx={sortCtx} className="r" />
+          <SortHeader
+            label="Close"
+            sortKey="close"
+            ctx={sortCtx}
+            className="r"
+            title="Coloured against the open: cool closed up, warm closed down"
+          />
+          <SortHeader label="Vol" sortKey="volume" ctx={sortCtx} className="r" />
+          <SortHeader
+            label="Live"
+            sortKey="live"
+            ctx={sortCtx}
+            className="r"
+            title="Newest price the poller saw"
+          />
+          <SortHeader label="Fired" sortKey="fired" ctx={sortCtx} className="r" />
           {withStats && <th>Cell</th>}
         </tr>
       </thead>

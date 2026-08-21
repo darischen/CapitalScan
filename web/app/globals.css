@@ -2154,3 +2154,44 @@ table.screen td.pick input:focus-visible {
     width: 100%;
   }
 }
+
+/* --- sortable headers --------------------------------------------------- */
+
+/* Column headers are links (ADR 141). They must not look like links: the
+ * header row is chrome, and twelve underlined blue words above a dense table
+ * would be the loudest thing on the page. So they inherit the header's own
+ * type and colour, and only the caret says anything. */
+
+.sortlink {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.sortlink:hover {
+  color: var(--text);
+}
+
+/* The active column, and the only header that is not muted. */
+.sortlink.on {
+  color: var(--text);
+}
+
+/* Reserved at a fixed width whether or not a caret is in it, so moving the
+ * sort from one column to another does not shift the header row sideways. */
+.caret {
+  display: inline-block;
+  width: 7px;
+  font-size: 7px;
+  line-height: 1;
+  color: var(--long);
+}
+
+/* A right-aligned header puts the caret on the left of the label, so the
+ * numbers below stay flush with the column edge. */
+table.screen th.r .sortlink {
+  flex-direction: row-reverse;
+}

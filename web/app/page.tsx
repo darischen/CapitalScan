@@ -1,6 +1,6 @@
 import OpenSelected from "@/components/OpenSelected";
 import { EmptyState, ErrorState, ScreenerTable, StatusStrip } from "@/components/Screener";
-import { lastFire, screen } from "@/lib/screen";
+import { isSortKey, lastFire, screen } from "@/lib/screen";
 
 /**
  * `/` — today's screener, the default landing route.
@@ -21,17 +21,30 @@ import { lastFire, screen } from "@/lib/screen";
 // longer has, which is the one thing the banner exists to prevent.
 export const dynamic = "force-dynamic";
 
-/** The two toggles as one URL, so neither clears the other. */
+/** The toggles as one URL, so none of them clears the others. */
 function href({
   withStats,
   confluenceOnly,
+  date,
+  sort,
+  dir,
 }: {
   withStats: boolean;
   confluenceOnly: boolean;
+  date: string | null;
+  sort: string | null;
+  dir: string;
 }): string {
   const q = new URLSearchParams();
+  if (date) q.set("date", date);
   if (withStats) q.set("stats", "1");
   if (!confluenceOnly) q.set("all", "1");
+  // Toggling statistics must not silently reset the column a reader sorted
+  // by, nor drop them back to the newest date.
+  if (sort) {
+    q.set("sort", sort);
+    q.set("dir", dir);
+  }
   const s = q.toString();
   return s ? `/?${s}` : "/";
 }
@@ -39,13 +52,24 @@ function href({
 export default async function ScreenerPage({
   searchParams,
 }: {
-  searchParams: Promise<{ date?: string; stats?: string; limit?: string; all?: string }>;
+  searchParams: Promise<{
+    date?: string;
+    stats?: string;
+    limit?: string;
+    all?: string;
+    sort?: string;
+    dir?: string;
+  }>;
 }) {
   const params = await searchParams;
   const withStats = params.stats === "1";
   // ADR 111's `--confluence-only`, on by default (user's request). `?all=1`
   // clears it, so every signal stays one click away rather than unreachable.
   const confluenceOnly = params.all !== "1";
+  // An unknown `?sort=` falls back to the default order rather than
+  // erroring: a stale bookmark should render the page, not a stack trace.
+  const sort = isSortKey(params.sort) ? params.sort : null;
+  const dir = params.dir === "asc" ? "asc" : params.dir === "desc" ? "desc" : undefined;
 
   try {
     const result = await screen({
@@ -55,6 +79,8 @@ export default async function ScreenerPage({
       withStats,
       confluenceOnly,
       limit: params.limit ? Number(params.limit) : undefined,
+      sort,
+      dir,
     });
 
     const empty = result.rows.length === 0;
@@ -80,22 +106,78 @@ export default async function ScreenerPage({
                   children; `OpenSelected` only wraps it in a form and reads
                   the checkboxes it rendered (ADR 139). */}
               <OpenSelected>
-                <ScreenerTable rows={result.rows} withStats={result.withStats} />
+                <ScreenerTable
+                  rows={result.rows}
+                  withStats={result.withStats}
+                  sortCtx={{
+                    sort: result.sort,
+                    dir: result.dir,
+                    date: params.date || null,
+                    withStats,
+                    confluenceOnly,
+                  }}
+                />
               </OpenSelected>
               <p className="dim" style={{ marginTop: 12, fontSize: 12 }}>
-                {/* The pre-limit count. A page showing 200 of 640 rows and
-                    saying only "200" misstates how much fired. */}
-                Showing <span className="num">{result.rows.length}</span> of{" "}
-                <span className="num">{result.totalMatched}</span>
-                {result.confluenceOnly && " confluence"}
+                {/* Every row for the date renders, so this is a count rather
+                    than a ratio. It still says "N of M" when an explicit
+                    `?limit=` truncated the page, because then the two
+                    genuinely differ and a bare count would misstate how much
+                    fired. */}
+                {result.rows.length === result.totalMatched ? (
+                  <>
+                    <span className="num">{result.totalMatched}</span>
+                    {result.confluenceOnly ? " confluence signals" : " signals"}
+                  </>
+                ) : (
+                  <>
+                    Showing <span className="num">{result.rows.length}</span> of{" "}
+                    <span className="num">{result.totalMatched}</span>
+                    {result.confluenceOnly && " confluence"}
+                  </>
+                )}
                 {" · "}
-                <a href={href({ withStats: !withStats, confluenceOnly })}>
+                <a
+                  href={href({
+                    withStats: !withStats,
+                    confluenceOnly,
+                    date: params.date || null,
+                    sort: result.sort,
+                    dir: result.dir,
+                  })}
+                >
                   {withStats ? "hide statistics" : "show statistics"}
                 </a>
                 {" · "}
-                <a href={href({ withStats, confluenceOnly: !confluenceOnly })}>
+                <a
+                  href={href({
+                    withStats,
+                    confluenceOnly: !confluenceOnly,
+                    date: params.date || null,
+                    sort: result.sort,
+                    dir: result.dir,
+                  })}
+                >
                   {confluenceOnly ? "show every signal" : "confluence only"}
                 </a>
+                {result.sort !== null && (
+                  <>
+                    {" · "}
+                    {/* The way back to the default order. Without it a sort
+                        can only be changed, never cleared. */}
+                    <a
+                      href={href({
+                        withStats,
+                        confluenceOnly,
+                        date: params.date || null,
+                        sort: null,
+                        dir: result.dir,
+                      })}
+                    >
+                      clear sort
+                    </a>
+                  </>
+                )}
               </p>
             </>
           )}

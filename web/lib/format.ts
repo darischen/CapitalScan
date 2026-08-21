@@ -121,12 +121,29 @@ export function normalizeSymbol(raw: string): string {
  */
 export function screenHref(
   date: string | null,
-  { withStats, confluenceOnly }: { withStats: boolean; confluenceOnly: boolean },
+  {
+    withStats,
+    confluenceOnly,
+    sort,
+    dir,
+  }: {
+    withStats: boolean;
+    confluenceOnly: boolean;
+    /** Carried so stepping a date or toggling statistics keeps the sort. */
+    sort?: string | null;
+    dir?: string;
+  },
 ): string {
   const q = new URLSearchParams();
   if (date) q.set("date", date);
   if (withStats) q.set("stats", "1");
   if (!confluenceOnly) q.set("all", "1");
+  // Both or neither. A `dir` with no `sort` names a direction for the
+  // default order, which is not a thing the query can honour.
+  if (sort) {
+    q.set("sort", sort);
+    if (dir) q.set("dir", dir);
+  }
   const query = q.toString();
   return query ? `/?${query}` : "/";
 }

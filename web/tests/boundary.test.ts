@@ -196,6 +196,12 @@ describe("parameterisation", () => {
     // from the outer row. Added 2026-08-20 when a second benchmark run for
     // one config made `/research` read both and double everything.
     "${LATEST_RUN}",
+    // The screener's ORDER BY. `orderBy` returns either the default clause
+    // or a string built from `SORT_COLUMNS`, a frozen map; the only thing a
+    // request chooses is which *key* of that map to use, and `isSortKey`
+    // rejects anything that is not one. No caller text reaches the query,
+    // which is the same closed-enum discipline ADR 074 applies to the tools.
+    "${order}",
   ]);
 
   it.each(sources())("%s interpolates nothing user-supplied into SQL", (path) => {

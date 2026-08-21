@@ -2,7 +2,7 @@
 
 System design for `CapitalScan`.
 
-This document describes **what the system is**. `DECISIONS.md` records **why each choice was made** and holds 140 numbered ADRs. Where this document states a rule, the ADR reference is given. If the two ever disagree, `DECISIONS.md` wins and this file is stale.
+This document describes **what the system is**. `DECISIONS.md` records **why each choice was made** and holds 141 numbered ADRs. Where this document states a rule, the ADR reference is given. If the two ever disagree, `DECISIONS.md` wins and this file is stale.
 
 Last updated: 2026-08-11
 
@@ -2648,7 +2648,7 @@ Mobile scope: screener as cards, ticker page with the price panel plus state rai
 
 | Topic | Document |
 |---|---|
-| Why any decision was made | `DECISIONS.md` (140 ADRs) |
+| Why any decision was made | `DECISIONS.md` (141 ADRs) |
 | Build order and task breakdown | `BUILD.md` |
 | Test inventory and acceptance gates | `TESTS.md` |
 | Rules for Claude Code | `CLAUDE.md` |

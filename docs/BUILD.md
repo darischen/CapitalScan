@@ -502,7 +502,7 @@ answerable-ness, then read `first_touch_day` for the day.
 
 ## 1. Ground rules for every session
 
-1. **Read `DECISIONS.md` before writing code.** 140 ADRs. They are decisions, not suggestions. If a task appears to require contradicting one, stop and ask.
+1. **Read `DECISIONS.md` before writing code.** 141 ADRs. They are decisions, not suggestions. If a task appears to require contradicting one, stop and ask.
 2. **Tests before implementation for anything in `core/`.** Coverage gate is 90% on `core/` only.
 3. **No magic numbers outside `core/config.py`.**
 4. **Every generated row carries `run_id` and `git_sha`.**

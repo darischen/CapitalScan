@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { clampLimit, DEFAULT_LIMIT, isoDate, MAX_LIMIT, sideFor } from "../lib/screen";
+import { clampLimit, isoDate, MAX_LIMIT, sideFor } from "../lib/screen";
 import { databaseUrl, num, readOnlyRole } from "../lib/db";
 
 /**
@@ -62,8 +62,11 @@ describe("limit (ADR 074)", () => {
     expect(clampLimit(25)).toBe(25);
   });
 
-  it("takes the default when absent", () => {
-    expect(clampLimit(undefined)).toBe(DEFAULT_LIMIT);
+  it("means no limit when absent, so the page shows the whole day", () => {
+    // The 50-row default this replaced truncated roughly one trading day in
+    // twenty: measured over 4,108 days, the largest is 134 rows and the
+    // 95th percentile is 79. `null` becomes `LIMIT ALL` in Postgres.
+    expect(clampLimit(undefined)).toBeNull();
   });
 
   it("clamps a nonsense value rather than throwing", () => {
@@ -71,7 +74,7 @@ describe("limit (ADR 074)", () => {
     // not raise somewhere unrelated to limits.
     expect(clampLimit(0)).toBe(1);
     expect(clampLimit(-5)).toBe(1);
-    expect(clampLimit(Number.NaN)).toBe(DEFAULT_LIMIT);
+    expect(clampLimit(Number.NaN)).toBeNull();
   });
 });
 

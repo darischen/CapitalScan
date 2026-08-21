@@ -117,6 +117,9 @@ export interface ScreenResult {
   withStats: boolean;
   confluenceOnly: boolean;
   headsOnly: boolean;
+  /** What the header row should mark as active. `null` is the default order. */
+  sort: SortKey | null;
+  dir: SortDir;
   /**
    * The signal date actually being displayed, which is **not** the same as
    * `meta.asOf`.
@@ -175,14 +178,126 @@ export function sideFor(signalType: string): Side {
   return SHORT_SIGNALS.has(signalType) ? "short" : "long";
 }
 
-/** ADR 074: capped server-side at 200 regardless of what the caller passes. */
+/**
+ * The ceiling for an explicitly requested `?limit=`.
+ *
+ * **ADR 074's cap is the MCP tool surface, not this page.** That ADR closes
+ * the seven tools' enums and caps their `limit` argument at 200; ADR 118
+ * makes `/` a different surface that selects from the views directly. The
+ * constant is shared here only because the number is a sensible ceiling for
+ * a hand-typed parameter.
+ */
 export const MAX_LIMIT = 200;
-export const DEFAULT_LIMIT = 50;
 
-export function clampLimit(value: number | undefined): number {
-  if (value === undefined || Number.isNaN(value)) return DEFAULT_LIMIT;
+/**
+ * **The screener shows every row for the date** (user's request,
+ * 2026-08-20). `null` means no `LIMIT` clause at all.
+ *
+ * The 50-row default this replaced was cutting real days. Measured across
+ * 4,108 trading days: the largest is 134 rows, the mean 34, the 95th
+ * percentile 79. So the default truncated roughly one day in twenty while
+ * the page said `Showing 50 of 85`, and a reader sorting by any column
+ * would have been sorting a slice chosen by a different ordering.
+ *
+ * A caller may still ask for fewer with `?limit=`, clamped to `MAX_LIMIT`.
+ */
+export function clampLimit(value: number | undefined): number | null {
+  if (value === undefined || Number.isNaN(value)) return null;
   return Math.max(1, Math.min(Math.trunc(value), MAX_LIMIT));
 }
+
+/**
+ * Signal ordering for the `signal` sort key (user's specification,
+ * 2026-08-20): confluence above single conditions, band above stochastic,
+ * and the short side above the long side within each pair.
+ *
+ * `bear_close_above_upper` is not in the user's list and takes rank 0. It
+ * is the most specific type ADR 057 assigns, and ADR 111 makes the
+ * close-confirmed reversal *the* actionable short condition — so a row
+ * carrying it as its `signal_type` is the strongest short signal on the
+ * page, and "high above low" puts it above `confluence_high` rather than
+ * below anything.
+ */
+export const SIGNAL_ORDER = [
+  "bear_close_above_upper",
+  "confluence_high",
+  "confluence_low",
+  "bb_upper_touch",
+  "bb_lower_touch",
+  "stoch_overbought",
+  "stoch_oversold",
+] as const;
+
+const SIGNAL_RANK = `CASE s.signal_type
+${SIGNAL_ORDER.map((t, i) => `  WHEN '${t}' THEN ${i}`).join("\n")}
+  ELSE ${SIGNAL_ORDER.length} END`;
+
+/**
+ * Every column the header row can sort by, mapped to the SQL that orders it.
+ *
+ * **A closed map, and the only thing a request can choose is a key of it.**
+ * `sortKey` below rejects anything else, so no caller-supplied text reaches
+ * the query — the interpolation in `feedSql` is one of these seven strings
+ * and nothing else. That is the same closed-enum discipline ADR 074 applies
+ * to the tools, for the same reason.
+ */
+const SORT_COLUMNS = {
+  ticker: "s.ticker",
+  signal: SIGNAL_RANK,
+  strength: "s.signal_strength",
+  bollinger: "s.bb_lower",
+  // The raw %K, because ADR 110 makes it the trigger and the smoothed one
+  // only has to agree with it.
+  stochastic: "s.k_fast",
+  open: "s.open",
+  high: "s.high",
+  low: "s.low",
+  close: "s.close",
+  volume: "s.volume",
+  live: "s.live_price",
+  fired: "s.fired_at",
+} as const;
+
+export type SortKey = keyof typeof SORT_COLUMNS;
+export type SortDir = "asc" | "desc";
+
+/**
+ * The direction a column takes on its *first* click, chosen so one click
+ * answers the question the column is usually asked.
+ *
+ * Prices, volume, strength and recency are read largest-first; a name is
+ * read A to Z; the signal rank and the stochastic are read from their most
+ * specific and most oversold ends, which are the low values.
+ */
+const FIRST_DIR: Record<SortKey, SortDir> = {
+  ticker: "asc",
+  signal: "asc",
+  strength: "desc",
+  bollinger: "asc",
+  stochastic: "asc",
+  open: "desc",
+  high: "desc",
+  low: "desc",
+  close: "desc",
+  volume: "desc",
+  live: "desc",
+  fired: "desc",
+};
+
+export function isSortKey(value: string | undefined): value is SortKey {
+  return value !== undefined && Object.prototype.hasOwnProperty.call(SORT_COLUMNS, value);
+}
+
+/** The direction a header link should request. Flips only the active one. */
+export function nextDir(key: SortKey, active: SortKey | null, dir: SortDir): SortDir {
+  if (key !== active) return FIRST_DIR[key];
+  return dir === "asc" ? "desc" : "asc";
+}
+
+export function defaultDir(key: SortKey): SortDir {
+  return FIRST_DIR[key];
+}
+
 
 interface ScreenOptions {
   date?: string;
@@ -226,6 +341,9 @@ interface ScreenOptions {
    */
   headsOnly?: boolean;
   limit?: number;
+  /** A key of `SORT_COLUMNS`, already validated by `isSortKey`. */
+  sort?: SortKey | null;
+  dir?: SortDir;
 }
 
 /**
@@ -319,6 +437,31 @@ const CONFLUENCE_FILTER = `
 `;
 
 /**
+ * The default order, unchanged from before sorting existed: confluence
+ * first, then newest, then alphabetical. A page with no `?sort=` is
+ * byte-identical to what it rendered before this feature.
+ *
+ * Declared here rather than beside `SORT_COLUMNS` because it reads
+ * `CONFLUENCE_RANK`, and a `const` cannot be referenced above its own
+ * initialiser.
+ */
+const DEFAULT_ORDER = `${CONFLUENCE_RANK}, s.fired_at DESC NULLS LAST, s.ticker`;
+
+/**
+ * `ORDER BY` for one sort key.
+ *
+ * **`NULLS LAST` in both directions, deliberately.** Postgres puts nulls
+ * first on `DESC`, which would open a descending sort with the rows that
+ * have no value — and an absent close is not a large close. `s.ticker` is
+ * the tiebreaker in every case, so equal values never reorder between two
+ * renders of the same data.
+ */
+function orderBy(key: SortKey | null, dir: SortDir): string {
+  if (key === null) return DEFAULT_ORDER;
+  return `${SORT_COLUMNS[key]} ${dir === "asc" ? "ASC" : "DESC"} NULLS LAST, s.ticker`;
+}
+
+/**
  * **No `v_universe` join, and no cluster-head filter** (ADR 124).
  *
  * The join was redundant once ADR 122 put point-in-time `in_trade` on the
@@ -332,7 +475,16 @@ const CONFLUENCE_FILTER = `
  * projected and repeats are marked, so nothing is hidden and nothing is
  * unlabelled.
  */
-const FEED_SQL = `
+/**
+ * The feed, ordered by one of `SORT_COLUMNS` or by the default.
+ *
+ * **`ORDER` is interpolated; nothing a caller sends is.** `orderBy` returns
+ * either `DEFAULT_ORDER` or a string built from `SORT_COLUMNS`, and the only
+ * thing a request decides is which key of that closed map to use — `isSortKey`
+ * rejects everything else before this is reached. `$2` is `null` when no
+ * limit was asked for, which Postgres reads as `LIMIT ALL`.
+ */
+const feedSql = (order: string) => `
   SELECT s.ticker, s.signal_date, s.signal_type, s.signal_types_all,
          s.signal_strength, s.k_full, s.k_fast,
          s.dd_bucket, s.sector, s.cell_id, s.side, s.is_cluster_head,
@@ -344,7 +496,7 @@ const FEED_SQL = `
    WHERE s.signal_date = $1::date
      AND ($4::boolean IS NOT TRUE OR s.is_cluster_head IS NOT FALSE)
      ${CONFLUENCE_FILTER}
-   ORDER BY ${CONFLUENCE_RANK}, s.fired_at DESC NULLS LAST, s.ticker
+   ORDER BY ${order}
    LIMIT $2
 `;
 
@@ -395,6 +547,8 @@ interface FeedRowRaw {
 
 export async function screen(options: ScreenOptions = {}): Promise<ScreenResult> {
   const limit = clampLimit(options.limit);
+  const sort = options.sort ?? null;
+  const dir: SortDir = options.dir ?? (sort === null ? "desc" : defaultDir(sort));
   // Default on. `?all=1` clears it, so nothing is unreachable.
   const confluenceOnly = options.confluenceOnly !== false;
   const headsOnly = options.headsOnly === true;
@@ -411,6 +565,8 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
       withStats: false,
       confluenceOnly,
       headsOnly,
+      sort,
+      dir,
       signalDate: null,
       prevDate: null,
       nextDate: null,
@@ -419,7 +575,7 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
   }
 
   const [rowsRaw, countRows, neighbours, meta] = await Promise.all([
-    query<FeedRowRaw>(FEED_SQL, [date, limit, confluenceOnly, headsOnly]),
+    query<FeedRowRaw>(feedSql(orderBy(sort, dir)), [date, limit, confluenceOnly, headsOnly]),
     query<{ n: number }>(COUNT_SQL, [date, confluenceOnly, headsOnly]),
     query<{ prev: Date | null; next: Date | null }>(NEIGHBOURS_SQL, [date, confluenceOnly]),
     readMeta(),
@@ -478,6 +634,8 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
     totalMatched: countRows[0]?.n ?? 0,
     withStats: Boolean(options.withStats),
     confluenceOnly,
+    sort,
+    dir,
     headsOnly,
     signalDate: typeof date === "string" ? date : isoDate(date),
     prevDate: neighbours[0]?.prev ? isoDate(neighbours[0].prev) : null,

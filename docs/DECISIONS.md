@@ -4481,6 +4481,45 @@ Roughly neutral for longs and conservative for shorts, because a short fires *ab
 **It would have to be modelled too**, for the reason above: a reaction delay applied to the bar, not a replayed quote. "The price a notified reader could have got" is computable from `bars` for every event in the history; "the price the poller saw" is not computable for any event before the poller existed. The first is an entry timing. The second is a log line.
 
 
+---
+
+## 141. The screener sorts in SQL over the whole day, and shows all of it
+
+**Date:** 2026-08-20. **Status:** Pinned.
+
+**Context.**
+
+Two user requests on the same surface, and they turn out to be one decision.
+
+The screener rendered at most `DEFAULT_LIMIT = 50` rows. Measured over 4,108 trading days: the largest day is **134 rows**, the mean 34, the 95th percentile 79. So the cap truncated roughly one day in twenty, and on 2026-08-20 the page said `Showing 50 of 85` while 35 rows sat unreachable behind a parameter nobody types.
+
+Sorting had to decide where to run. In the browser it is instant and needs no round trip — and it would have sorted **the 50 rows the previous ordering happened to select**. "Sort by volume" would then return the heaviest of an arbitrary 50 rather than of 85: a wrong answer that renders perfectly, which is the failure this codebase spends most of its effort on.
+
+**Decision.**
+
+**Every row for the date renders.** `clampLimit(undefined)` returns `null`, which Postgres reads as `LIMIT ALL`. An explicit `?limit=` still works and is still clamped.
+
+**ADR 074's 200-row cap is the MCP tool surface, not this page.** That ADR closes the seven tools' enums and bounds their `limit` argument; ADR 118 makes `/` a separate surface that selects from the views directly. `MAX_LIMIT` stays as the ceiling for a hand-typed parameter, and stops being a default.
+
+**Sorting runs in `ORDER BY`, carried in the URL.** `?sort=volume&dir=desc`, the same mechanism as `?date=`, `?stats=1` and `?all=1`. It sorts before it limits, survives a refresh, and can be shared. Headers are links, so the table stays a server component and `/` grew from 2.65 kB to 2.68 kB.
+
+**The sort key is a closed enum, and that is what makes the interpolation safe.** `feedSql` interpolates its `ORDER BY` — `boundary.test.ts` permits `${order}` by name — and the string it interpolates comes from `SORT_COLUMNS`, a frozen map of twelve entries. A request chooses a *key*; `isSortKey` uses `hasOwnProperty` and rejects everything else, including inherited properties like `constructor`. Nothing a caller sends reaches the query. This is ADR 074's closed-enum discipline applied to a different surface for the same reason.
+
+**Signal order, specified by the user**: confluence above single conditions, band above stochastic, short side above long within each pair. `bear_close_above_upper` was not in that list and takes rank 0 — ADR 057 makes it the most specific type and ADR 111 makes the close-confirmed reversal the actionable short condition, so "high above low" puts it above `confluence_high`.
+
+**Consequences.**
+
+**An unsorted page is byte-identical to before.** No `?sort=` yields `DEFAULT_ORDER`, still confluence rank then `fired_at DESC` then ticker.
+
+**`NULLS LAST` in both directions.** Postgres puts nulls first on `DESC`, which would open a descending sort with the rows that have no value — an absent close is not a large close. `s.ticker` is the tiebreaker everywhere, so equal values never reorder between two renders of the same data.
+
+**Every control carries the sort.** The date arrows, the calendar, the statistics toggle and the confluence toggle all rebuild the URL; any one of them dropping `sort` would reorder the table as a side effect of an unrelated click, and a reader would read the new order as new data. A `clear sort` link appears once a sort is active, because otherwise a sort can be changed but never removed.
+
+**Two columns are ambiguous and were chosen deliberately.** Bollinger is three numbers in one cell and sorts on `bb_lower`; the stochastic is two and sorts on `k_fast`, because ADR 110 makes the raw %K the trigger. Both say so in their `title`.
+
+**The headers do not look like links.** Twelve underlined words above a dense table would be the loudest thing on the page, and the header row is chrome. They inherit the header's own type and colour; only a 7px caret marks the active column, in a fixed-width slot so switching columns does not shift the row.
+
+
 ## Open items
 
 | Item | Options | Current lean |

@@ -137,6 +137,15 @@ function row(over: Partial<ScreenRow> = {}): ScreenRow {
 
 /* --- gate 7: staleness ------------------------------------------------- */
 
+/** The default (unsorted) header state. Sorting has its own test file. */
+const SORT_CTX = {
+  sort: null,
+  dir: "desc",
+  date: null,
+  withStats: false,
+  confluenceOnly: true,
+} as const;
+
 describe("gate 7: the staleness banner triggers above 2 days", () => {
   const strip = (days: number) => {
     const m = meta({ stalenessDays: days, stale: days > STALE_AFTER_DAYS });
@@ -245,7 +254,7 @@ describe("gate 6: the empty state carries a last-fire reference", () => {
 
 describe("the two reversals are told apart", () => {
   const render = (over: Partial<ScreenRow>) =>
-    renderToStaticMarkup(<ScreenerTable rows={[row(over)]} withStats={false} />);
+    renderToStaticMarkup(<ScreenerTable rows={[row(over)]} withStats={false} sortCtx={SORT_CTX} />);
 
   it("shows the close-confirmed reversal as a solid badge", () => {
     const html = render({
@@ -370,6 +379,7 @@ describe("gates 4 and 5: statistics render whole or not at all", () => {
           }),
         ]}
         withStats
+        sortCtx={SORT_CTX}
       />,
     );
     expect(html).toContain("n_eff 12 &lt; min_n_eff 30");
@@ -398,6 +408,7 @@ describe("gates 4 and 5: statistics render whole or not at all", () => {
           }),
         ]}
         withStats
+        sortCtx={SORT_CTX}
       />,
     );
     expect(html).toContain("51%");
@@ -689,7 +700,7 @@ describe("gate 8: both %K series are named and distinguishable", () => {
 describe("gate 10: identical input renders identically", () => {
   const cases: [string, () => string][] = [
     ["StatusStrip", () => renderToStaticMarkup(<StatusStrip meta={meta()} fired={4} signalDate="2026-08-18" />)],
-    ["ScreenerTable", () => renderToStaticMarkup(<ScreenerTable rows={[row()]} withStats={false} />)],
+    ["ScreenerTable", () => renderToStaticMarkup(<ScreenerTable rows={[row()]} withStats={false} sortCtx={SORT_CTX} />)],
     ["StateRail", () => renderToStaticMarkup(<StateRail state={state()} />)],
     ["BandGauge", () => renderToStaticMarkup(<BandGauge state={state()} />)],
     ["EventHistory", () => renderToStaticMarkup(<EventHistory sym="TSM" events={[event()]} all={false} total={1} />)],

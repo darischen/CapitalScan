@@ -8,7 +8,7 @@ Bollinger Band + Stochastic Oscillator event-study engine for US mega-cap equiti
 
 ## Before writing any code
 
-Read `docs/DECISIONS.md`. It holds 140 ADRs. They are decisions, not suggestions.
+Read `docs/DECISIONS.md`. It holds 141 ADRs. They are decisions, not suggestions.
 
 If a task appears to require contradicting one, **stop and ask.** Do not work around it.
 
