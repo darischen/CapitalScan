@@ -15,6 +15,11 @@ export const SIGNAL_LABELS: Record<string, string> = {
   confluence_low: "confluence low",
   confluence_high: "confluence high",
   bear_close_above_upper: "bear close",
+  // ADR 144's mirror. Dormant in `enabled_signal_types`, so it cannot reach
+  // a row today -- present because the fallback for an unmapped type is the
+  // raw enum value, and "bull_close_below_lower" in a 12px cell is how a
+  // label gap shows up on the day the type is switched on.
+  bull_close_below_lower: "bull close",
 };
 
 /** The em-dash placeholder. One spelling, so a missing value never renders
