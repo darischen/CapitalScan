@@ -6,50 +6,33 @@ needed to pick this up is here.
 
 ---
 
-## URGENT if resuming after 16:30 PT
+## COMPLETE — 05:44 PT
 
-`cscan indicators` — and therefore `cscan nightly`, scheduled 16:30 local —
-**will fail** until migration `c3f91a70b8d4` is applied. `compute_all` runs
-the whole registry and now emits `bull_close_below_lower`; the column does
-not exist yet. Verified, not assumed.
+The whole chain finished before the poller window. Nothing is outstanding
+and no job is running.
 
 ```
-cscan db migrate          # applies c3f91a70b8d4 to both databases
+GUC                 f66729c7eda212a4     (moved, screener resolves)
+events              783,644 · 540 tickers · 4 grains
+cofire_count        corrected, 0 mismatched groups
+fwd_window_days     195,827 / 195,911
+rho_era             4 eras
+cell_stats          512 rows (train + validate, 16-cell grid)
+benchmarks          409 rows
+screener            79 rows for 2026-08-20 (63 under the old config)
+migration           c3f91a70b8d4 applied to BOTH databases
 ```
 
-It was written and not applied because `cscan db migrate` takes an ACCESS
-EXCLUSIVE lock and a backtest held the table. **The poller is unaffected** —
-it reads bands from `indicators` and never writes them — so 06:30 is safe
-and the real deadline is 16:30.
+**The 16:30 nightly hazard is cleared** — the migration was applied at 04:49
+once the backtest released the table, so `compute_all` has its column.
 
-After applying, recompute so the column is populated rather than NULL:
+**Result: ADR 112 holds a third time.** Zero cells survive FDR on either
+split over a 43% larger universe. Full numbers in `RESULTS.md`.
 
-```
-cscan indicators --lookback 7619 --workers 8      # chunk it, see below
-```
-
----
-
-## The one thing to check first
-
-```
-cscan backtest --phase compute --chunk-size 25 --workers 8
-```
-
-was launched **03:42 PT** and is resumable. It must be **killed before 06:20 PT**
-so the user's `./scripts/wait_and_poll.ps1` owns the database from 06:30.
-Re-running the identical command resumes: completed chunks are skipped via
-`runs.job = 'backtest_compute'` with `status = 'ok'`.
-
-Progress:
-
-```sql
-SELECT count(*) FILTER (WHERE status='ok') || ' of 38'
-FROM runs WHERE job='backtest_compute' AND params->>'of'='38';
-```
-
-**It is not finished until all 38 chunks are `ok` AND `--phase finalize` has
-run.** Compute deliberately does not write `cofire_count`.
+Not done, and deliberately: `cscan db sync-config` and the Neon sync. Those
+push to the serving store, which is at 80% of the free tier, and the
+expansion makes that item live again -- it is the user's call. `ADR 144`'s
+`bull_close_below_lower` remains dormant by design.
 
 ---
 
