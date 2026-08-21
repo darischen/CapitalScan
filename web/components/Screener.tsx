@@ -293,6 +293,24 @@ function ReversalBadge({ row }: { row: ScreenRow }) {
  * The sort runs in SQL over the whole day rather than over the rendered
  * rows. That distinction stopped being visible when the 50-row cap was
  * removed, but it is the reason this is a link rather than an onClick.
+ *
+ * **A bare `<a>`, and `next/link` does not work here.** Measured
+ * 2026-08-20 on Next 15.5.23: a `Link` to this route with different search
+ * params issues the RSC request, receives `200 text/x-component` carrying
+ * the correctly sorted payload, and then never commits it -- the URL does
+ * not change and the table does not move. It calls `preventDefault` on the
+ * click first, so the browser navigation is cancelled too and the result is
+ * a header that does nothing at all.
+ *
+ * Not caused by the surrounding `<form>`: a `Link` placed outside
+ * `OpenSelected` in `app/page.tsx` failed identically. Not `prefetch`
+ * either; it fails with and without.
+ *
+ * So the reload is the cost of the control working. It is worth being clear
+ * about what the reload is *not*: it is not a consequence of sorting in SQL.
+ * The server round trip is (the ordering happens in Postgres), but tearing
+ * down the document is a separate thing, and it would go away if this
+ * navigation ever commits.
  */
 function SortHeader({
   label,
