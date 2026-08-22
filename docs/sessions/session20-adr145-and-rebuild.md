@@ -195,3 +195,57 @@ and this rebuild is that measurement.
 - **`cscan backtest --phase harness`** was added this session so validation is
   reachable without a 5-hour unresumable block. Session 19 shipped
   `f66729c7eda212a4` with the harness never run against it.
+
+---
+
+## Every rebuild that changes eligibility needs a stale-event sweep
+
+`events` upserts on `(config_hash, ticker, signal_date, signal_type,
+entry_kind)` and **never deletes**. So when a rebuild changes which
+ticker-quarters are `in_trade`, the new run writes its own rows and the rows
+it no longer produces simply stay. They keep the old run's `run_id`, and
+because cluster tagging is per-run, the old cluster and the new one can each
+claim a head — which is what `_check_non_overlap` catches.
+
+Hit twice on 2026-08-21/22, both times discovered through a failing gate
+rather than anticipated:
+
+```
+ADR 145 rebuild      1,779 stale events
+ADR-share + mcap fix 4,946 stale events, 22,744 path rows, 7 tickers
+```
+
+The 7 were exactly the 7 that lost membership: NTES 2252, ONC 1152, HTHT
+740, GRMN 328, PKG 288, AAP 144, SIMO 42.
+
+**The sweep**, run after compute and finalize, before the harness:
+
+```sql
+DELETE FROM events
+ WHERE config_hash = :chash AND run_id < 'backtest_compute_<today>';
+```
+
+Correct because a full compute covers every ticker, so anything still
+carrying an older `run_id` is an event the current population does not
+produce. `path` follows via `path_event_id_fkey` (`ON DELETE CASCADE`), so
+its rows go too — which is right, since an ineligible event should not keep
+a priced path.
+
+**Do not bulk-delete by `config_hash`.** The cascade covers millions of
+`path` rows and `signal_reports` references `events.id`, so recreating rows
+reassigns serials and orphans every poller-session record. Scope by
+`run_id`, always.
+
+**Verify with three counts, not with the exit code:**
+
+```sql
+SELECT count(*) FILTER (WHERE run_id < 'backtest_compute_<today>') AS stale,
+       count(*) FILTER (WHERE NOT in_trade AND entry_price IS NOT NULL) AS oot_priced
+  FROM events WHERE config_hash = :chash;
+SET max_parallel_workers_per_gather = 0;   -- the orphan scan needs this
+SELECT count(*) FROM path p
+ WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.id = p.event_id);
+```
+
+All three must be zero. The last one hits `could not resize shared memory
+segment` without the `SET`, and `psql` exits 0 on that error.
