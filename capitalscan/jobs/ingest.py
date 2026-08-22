@@ -21,6 +21,7 @@ from rich.progress import Progress
 from rich.table import Table
 from sqlalchemy import Engine, text
 
+from capitalscan.core import universe as core_universe
 from capitalscan.core.config import (
     DEFAULT_HOURLY_SPLIT_DETECTION,
     DEFAULT_HOURLY_SPLIT_GUARD,
@@ -1193,6 +1194,22 @@ def _parse_filed_on(value: object) -> date | None:
         return None
 
 
+def _depositary_tickers(engine: Engine, tickers: list[str]) -> set[str]:
+    """Which of `tickers` are depositary listings, by name.
+
+    Read here rather than passed in because `run_shares` takes a ticker
+    list, and the listing name is the only signal that a price is per
+    receipt (`core.universe.is_depositary_listing` explains why the name
+    and not `ADR`/`ADS` substrings).
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT ticker, name FROM tickers WHERE ticker = ANY(:tickers)"),
+            {"tickers": tickers},
+        ).fetchall()
+    return {r.ticker for r in rows if core_universe.is_depositary_listing(r.name)}
+
+
 def _implausible_shares_reason(shares: int, bounds: SharesPlausibility) -> str | None:
     """`None` when `shares` is plausible; otherwise the `bar_rejects.rule`.
 
@@ -1404,9 +1421,28 @@ def run_shares(
             for (t, raw_filed_on) in best
             if (parsed := _parse_filed_on(raw_filed_on)) is not None
         }
+        # Depositary listings always take the Yahoo call, however fresh SEC
+        # is. SEC reports the issuer's *ordinary* shares while `bars.close`
+        # is per ADR, so a current SEC filing is not a usable count here --
+        # it is the right number in the wrong unit. NTES priced at $1,666.9B
+        # against a real ~$100B on 3,349,335,066 ordinary shares.
+        #
+        # Source switch, not a scale factor. The ratio is not reliably
+        # derivable: VOD measures 11.54 against a real 10:1, and LI and ONC
+        # land nowhere near an integer, because SEC's latest filing and
+        # Yahoo's current count are months apart. Inferring one is what
+        # `_implausible_shares_reason` warns turns into "a plausible-looking
+        # wrong number". Yahoo's count is already per ADR, so nothing is
+        # computed and nothing is rounded.
+        depositary = _depositary_tickers(engine, tickers)
+
         for ticker in tickers:
             latest = latest_sec_filed_on.get(ticker)
-            if latest is not None and (as_of - latest).days <= SHARES_STALENESS_DAYS:
+            if (
+                latest is not None
+                and (as_of - latest).days <= SHARES_STALENESS_DAYS
+                and ticker not in depositary
+            ):
                 continue  # SEC is current enough; do not spend a Yahoo call
             try:
                 full = yahoo.fetch_shares_full(ticker, SHARES_FULL_HISTORY_START, as_of)

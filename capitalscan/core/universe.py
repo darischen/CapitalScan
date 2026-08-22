@@ -45,6 +45,42 @@ def _cmp(left: object, right: object, strict: bool = True) -> bool | None:
     return lhs > rhs if strict else lhs >= rhs
 
 
+_DEPOSITARY_PHRASE = "american depositary"
+
+
+def is_depositary_listing(name: str | None) -> bool:
+    """True when this listing's price is per depositary receipt.
+
+    The share count SEC reports for such a filer is the issuer's
+    **ordinary** shares, while `bars.close` is per **ADR**, so pricing one
+    against the other overstates market cap by the ADR ratio. NTES carried
+    a $1,666.9B peak against a real ~$100B before this.
+
+    **Matched on the phrase, not on `ADR` or `ADS`.** A first attempt used
+    `%ADR%` and flagged Bro*adr*idge, a US company with ordinary shares.
+    Those three letters occur inside ordinary English words; "american
+    depositary" does not.
+
+    **Name is the only signal available.** There is no `is_adr` column and
+    SEC exposes none, so the listing name is what there is. A missing name
+    is therefore `False` rather than unknown-so-assume-ADR: 317 of the
+    Nasdaq additions arrived with a NULL name, and treating those as
+    depositary listings would swap a correct SEC count for a Yahoo one
+    across hundreds of ordinary listings.
+
+    No ratio is computed here or anywhere downstream of it. The caller
+    switches *source* rather than scaling a number, because the ratio is
+    not reliably derivable: VOD measures 11.54 against a real 10:1, and LI
+    and ONC land nowhere near an integer, since SEC's latest filing and
+    Yahoo's current count are months apart. Inferring a scale factor from
+    the data's own shape is what `jobs.ingest._implausible_shares_reason`
+    warns produces "a plausible-looking wrong number".
+    """
+    if not name:
+        return False
+    return _DEPOSITARY_PHRASE in " ".join(name.lower().split())
+
+
 def adr_adjusted_shares(ticker: str, shares: float | None, up: UniverseParams) -> float | None:
     """Ordinary share count converted to ADR-equivalent, for pricing.
 

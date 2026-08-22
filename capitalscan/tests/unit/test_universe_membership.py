@@ -425,9 +425,9 @@ class TestRunUniverseQueryCountIsLinear:
                 if "FROM indicators i" in sql:
                     counts["indicator"] += 1
                     return _OneRow(close=100.0, sma_200=90.0, sma200_slope_60=0.05)
-                if "SELECT cik, sector FROM tickers WHERE ticker" in sql:
+                if "FROM tickers WHERE ticker" in sql:
                     counts["ticker_meta"] += 1
-                    return _OneRow(cik=None, sector=None)
+                    return _OneRow(cik=None, sector=None, name=None)
                 if "FROM shares_outstanding" in sql:
                     counts["shares"] += 1
                     return _OneRow()

@@ -36,8 +36,6 @@ for the shift ladder.
 
 from __future__ import annotations
 
-import math
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
 from typing import cast
@@ -916,7 +914,6 @@ def run_harness(
     bars_by_ticker: dict[str, pd.DataFrame],
     config: Config,
     hourly_by_ticker: dict[str, pd.DataFrame] | None = None,
-    max_workers: int = 1,
 ) -> HarnessReport:
     """DESIGN §5.10. Runs all five checks and returns a `HarnessReport`
     regardless of whether any individual check failed — this is the Phase 3
@@ -939,9 +936,6 @@ def run_harness(
     since a check that cannot fail is worse than one reporting it lacks
     the data it needs (task brief).
     """
-    if max_workers > 1 and bars_by_ticker:
-        return _run_harness_parallel(events, bars_by_ticker, config, hourly_by_ticker, max_workers)
-
     indexed_bars = _indexed_bars(bars_by_ticker)
     return HarnessReport(
         no_lookahead=_check_no_lookahead(events, bars_by_ticker, config),
@@ -950,135 +944,3 @@ def run_harness(
         return_identity=_check_return_identity(events),
         non_overlap=_check_non_overlap(events, indexed_bars, config),
     )
-
-
-def _chunk_slice(
-    tickers: list[str],
-    events: pd.DataFrame,
-    bars_by_ticker: dict[str, pd.DataFrame],
-    hourly_by_ticker: dict[str, pd.DataFrame] | None,
-    shuffled: pd.DataFrame,
-) -> tuple:
-    """Everything one worker needs, and nothing else.
-
-    Slicing rather than sharing is what keeps peak memory proportional to
-    `1 / max_workers` instead of holding all 543 tickers per process --
-    which is what makes a 4 GB machine viable at all.
-    """
-    want = set(tickers)
-    return (
-        events[events["ticker"].isin(want)],
-        {t: bars_by_ticker[t] for t in tickers},
-        None
-        if hourly_by_ticker is None
-        else {t: hourly_by_ticker[t] for t in tickers if t in hourly_by_ticker},
-        shuffled[shuffled["ticker"].isin(want)],
-    )
-
-
-def _harness_chunk(args: tuple) -> tuple:
-    """One slice of tickers: lookahead counts plus the four per-event checks.
-
-    Returns counts and violation lists, never ratios or verdicts. The parent
-    sums and decides once (see `LookaheadCounts`).
-    """
-    events, bars_by_ticker, hourly_by_ticker, shuffled, config = args
-    combined = pd.concat(bars_by_ticker.values(), ignore_index=True)
-    indicator_cols = [c for c in combined.columns if c not in _BAR_COLUMNS]
-    counts = _lookahead_counts(combined, shuffled, indicator_cols, config)
-
-    indexed = _indexed_bars(bars_by_ticker)
-    # Whole `CheckResult`s, not just violations: `detail` carries counts
-    # (`n_priced`, `n_checked`, `n_heads`, ...) that a reader compares against
-    # the population, and dropping them made the parallel report differ from
-    # the serial one on a field nothing asserted on until now.
-    return (
-        counts,
-        _check_entry_sanity(events, indexed, config, hourly_by_ticker),
-        _check_exit_sanity(events, indexed, config),
-        _check_return_identity(events),
-        _check_non_overlap(events, indexed, config),
-    )
-
-
-def _run_harness_parallel(
-    events: pd.DataFrame,
-    bars_by_ticker: dict[str, pd.DataFrame],
-    config: Config,
-    hourly_by_ticker: dict[str, pd.DataFrame] | None,
-    max_workers: int,
-) -> HarnessReport:
-    """Ticker-chunked equivalent of the serial path.
-
-    Every check is per-ticker or per-event, and `scan_candidates` is called
-    unmodified in each worker -- invariant 2 holds, there is no second
-    detection path.
-    """
-    tickers = sorted(bars_by_ticker)
-    combined = pd.concat(bars_by_ticker.values(), ignore_index=True)
-    indicator_cols = [c for c in combined.columns if c not in _BAR_COLUMNS]
-    if not indicator_cols:
-        return HarnessReport(
-            no_lookahead=CheckResult(
-                "no_lookahead", False, [{"reason": "no_indicator_columns_in_bars_by_ticker"}]
-            ),
-            entry_sanity=_check_entry_sanity(
-                events, _indexed_bars(bars_by_ticker), config, hourly_by_ticker
-            ),
-            exit_sanity=_check_exit_sanity(events, _indexed_bars(bars_by_ticker), config),
-            return_identity=_check_return_identity(events),
-            non_overlap=_check_non_overlap(events, _indexed_bars(bars_by_ticker), config),
-        )
-
-    # Shuffled once, over the whole universe, *before* chunking. See
-    # `_lookahead_counts` for why doing this per worker weakens the control.
-    shuffled = _shuffled_control(combined, indicator_cols, _SHUFFLE_SEED)
-
-    size = math.ceil(len(tickers) / max_workers)
-    chunks = [tickers[i : i + size] for i in range(0, len(tickers), size)]
-    args = [
-        _chunk_slice(c, events, bars_by_ticker, hourly_by_ticker, shuffled) + (config,)
-        for c in chunks
-    ]
-
-    with ProcessPoolExecutor(max_workers=max_workers) as pool:
-        results = list(pool.map(_harness_chunk, args))
-
-    total = LookaheadCounts(
-        base_n=sum(r[0].base_n for r in results),
-        intersect={k: sum(r[0].intersect[k] for r in results) for k in _SHIFT_LEVELS},
-        union={k: sum(r[0].union[k] for r in results) for k in _SHIFT_LEVELS},
-        control_intersect=sum(r[0].control_intersect for r in results),
-        control_union=sum(r[0].control_union for r in results),
-    )
-
-    def merged(idx: int, name: str) -> CheckResult:
-        parts = [r[idx] for r in results]
-        violations = [v for part in parts for v in part.violations]
-        # Every `detail` these four produce is an integer count over the
-        # events the chunk saw, so the universe-wide value is their sum. A
-        # non-numeric field would be a new kind and is left to the first
-        # chunk rather than silently combined.
-        detail: dict = {}
-        for part in parts:
-            for key, value in part.detail.items():
-                if isinstance(value, bool) or not isinstance(value, (int, float)):
-                    detail.setdefault(key, value)
-                else:
-                    detail[key] = detail.get(key, 0) + value
-        return CheckResult(name, not violations, violations, detail)
-
-    return HarnessReport(
-        no_lookahead=_lookahead_verdict(total),
-        entry_sanity=merged(1, "entry_sanity"),
-        exit_sanity=merged(2, "exit_sanity"),
-        return_identity=merged(3, "return_identity"),
-        non_overlap=merged(4, "non_overlap"),
-    )
-
-
-if __name__ == "__main__":
-    # CLAUDE.md "Platform": every module needs this guard for Windows spawn
-    # safety, even one with no worker-process usage of its own — nothing to
-    # run standalone here, Task 11 owns the CLI entry point.
-    pass

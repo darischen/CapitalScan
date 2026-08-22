@@ -441,7 +441,37 @@ floor for reasons unrelated to the engine.
 
 **Invariant 2 is untouched** — workers call `scan_candidates` unmodified.
 
-**Expected**: ~50 min at 8 workers, ~1h40m at 4. Note this makes the machine
+**Attempted 2026-08-22 and reverted — it deadlocks at production scale.**
+
+The implementation chunked tickers and passed the sliced frames through
+`ProcessPoolExecutor.map`. Correct on the fixture (four tickers, 400 bars)
+and all nine equivalence tests passed. Against the real population it hung:
+858 tickers, 46 minutes, **CPU frozen at 197.2s across repeated samples**,
+no worker processes, no active database queries. Not slow — stopped.
+
+**Cause: the frames are the payload.** `pool.map` pickles every argument
+through a pipe. Bars for 858 tickers plus the equally large shuffled control
+is roughly **2.7 GB** of DataFrames pushed through Windows pipes, which
+deadlocks rather than erroring. The unit fixture is ~1 MB, so nothing about
+the test suite could have surfaced this — the bug is purely a function of
+size.
+
+**The fix is to move the orchestration, not to tune the chunking.** Workers
+must load their own tickers from Postgres rather than receive frames, the
+way `compute._compute_one_ticker` already takes a `database_url` and opens
+its own connection. `harness.py` is pure by design and must stay that way,
+so the chunking belongs in `jobs/cli.py`, which owns IO: chunk tickers,
+have each worker call `_load_bars_by_ticker` for its slice and then
+`run_harness` serially on it, and merge with the counts machinery below.
+
+**What was kept.** `_lookahead_counts` / `_lookahead_verdict` remain split,
+with `LookaheadCounts` and its tests. That refactor is what makes any
+parallel merge correct and is worth having on its own. `max_workers` was
+removed from `run_harness` rather than left accepting-and-ignoring, so the
+equivalence tests skip again on their signature guard until a working
+implementation lands.
+
+**Expected once fixed**: ~50 min at 8 workers, ~1h40m at 4. Note this makes the machine
 *hotter*, not cooler: eight cores at full load for 50 minutes rather than one
 for six hours. A `--workers` flag lets the operator trade speed for a usable
 machine.

@@ -280,7 +280,9 @@ def _latest_indicator_row(
     )
 
 
-def _latest_shares(engine: Engine, ticker: str, as_of: date) -> tuple[float, date] | None:
+def _latest_shares(
+    engine: Engine, ticker: str, as_of: date, depositary: bool = False
+) -> tuple[float, date] | None:
     """Latest filing with `filed_on < as_of` (DESIGN §2.4) — the ~45-day
     10-Q lag is real and deliberate, not a bug to fix.
 
@@ -305,9 +307,19 @@ def _latest_shares(engine: Engine, ticker: str, as_of: date) -> tuple[float, dat
         row = conn.execute(
             text(
                 "SELECT shares, filed_on FROM shares_outstanding WHERE ticker = :ticker "
-                "AND filed_on < :as_of ORDER BY filed_on DESC LIMIT 1"
+                "AND filed_on < :as_of "
+                # A depositary listing takes the Yahoo row and only the
+                # Yahoo row. SEC reports the issuer's *ordinary* shares
+                # while `close` is per ADR, so letting the two compete on
+                # `filed_on` recency silently alternates between units --
+                # the same ticker priced correctly one quarter and 5x high
+                # the next. `run_shares` guarantees the Yahoo rows exist
+                # for these tickers by forcing the fetch regardless of SEC
+                # freshness.
+                "AND (NOT :depositary OR source = 'yahoo_shares_full') "
+                "ORDER BY filed_on DESC LIMIT 1"
             ),
-            {"ticker": ticker, "as_of": as_of},
+            {"ticker": ticker, "as_of": as_of, "depositary": depositary},
         ).one_or_none()
     return (float(row.shares), row.filed_on) if row is not None else None
 
@@ -614,11 +626,12 @@ def run_universe(
                 continue
             with engine.connect() as conn:
                 tk = conn.execute(
-                    text("SELECT cik, sector FROM tickers WHERE ticker = :ticker"),
+                    text("SELECT cik, sector, name FROM tickers WHERE ticker = :ticker"),
                     {"ticker": ticker},
                 ).one_or_none()
             sector = tk.sector if tk else None
             cik = tk.cik if tk else None
+            depositary = core_universe.is_depositary_listing(tk.name if tk else None)
 
             # ADR filings report ordinary shares while `close` is per ADR;
             # `adr_adjusted_shares` reconciles the two before pricing. A
@@ -627,7 +640,7 @@ def run_universe(
             # basis `close` is already on. ADR first (ordinary -> ADR), then
             # splits (filing basis -> today's basis); they commute, and the
             # order is for reading rather than arithmetic.
-            filing = _latest_shares(engine, ticker, as_of)
+            filing = _latest_shares(engine, ticker, as_of, depositary=depositary)
             shares = core_universe.adr_adjusted_shares(
                 ticker, filing[0] if filing is not None else None, up
             )

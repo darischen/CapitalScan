@@ -45,7 +45,33 @@ class _FakeConn:
         return None
 
 
+class _NoNamesResult:
+    """`run_shares` looks up listing names to find depositary tickers.
+
+    These suites test SEC/Yahoo selection, not ADR handling, so the lookup
+    answers "no names on file" — which makes `_depositary_tickers` empty and
+    leaves every assertion below about ordinary listings unchanged.
+    """
+
+    def fetchall(self):  # noqa: ANN201
+        return []
+
+
+class _NameLookupConn:
+    def execute(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN201
+        return _NoNamesResult()
+
+    def __enter__(self):  # noqa: ANN204
+        return self
+
+    def __exit__(self, *exc):  # noqa: ANN002, ANN204
+        return False
+
+
 class _FakeEngine:
+    def connect(self):  # noqa: ANN201
+        return _NameLookupConn()
+
     @contextmanager
     def begin(self):  # noqa: ANN201
         yield _FakeConn()
