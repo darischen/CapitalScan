@@ -148,11 +148,33 @@ AAP    72,924,659,000          real ~73 million      ->  $6,459B
 ALK    35,828,450,000          real ~35.8 million    ->  $2,453B
 ```
 
-Exactly three orders of magnitude on every one, which points at a scale
-factor in the XBRL parse rather than at anything statistical. The largest
-`sec_xbrl` value in the table is **251,931,774,000**, which no US listing
-approaches. `AAP`'s *recent* filings are correct (~60M), so this is
-per-filing, not per-ticker — the parser gets it right most of the time.
+Exactly three orders of magnitude on every one. The raw cached facts show
+why: GRMN's clean range is 190,687,357..208,077,418 and its bad values are
+**208,077,418,000** — the same digits with `000` appended. A filer tagging
+error in SEC's companyfacts feed, on 3 of PKG's 64 rows and 5 of GRMN's 70.
+`jobs/fetch/sec.py` stores `val` verbatim, which is correct.
+
+**This is a documented, deliberate gap — not a new finding.** The first
+version of this entry claimed otherwise and was wrong.
+`core.config.SharesPlausibility` predicts it precisely: *"a x1,000 error on
+a company with real shares in the tens of millions (tens of billions after
+corruption) now lands inside `[min_shares, max_shares]` and is accepted
+undetected"*. It even enumerates the tickers — "AAP (4), GRMN (5), PKG (3),
+ALK (3), FTNT (2), SWKS (2), MAA (2), and one each for AIZ, CNX, EOG, PNR,
+REG" — 26 filings across 12 tickers.
+
+The ceiling was widened 32B -> 320B knowingly, and the reasoning holds:
+**rejecting good data is worse than admitting bad data here.** A rejected
+genuine filing is invisible and freezes that ticker's share count forever;
+a bad one surfaces as an absurd market cap. That mechanism worked — this
+was found by looking at the largest market caps in the universe.
+
+**What is new**: `BNTX` (241,521,065,000 shares, real ~240M) and `WWD`
+(62,383,699,000, real ~60M) are the same class and are not in the note's
+list, presumably added with the universe expansion after it was written.
+BNTX produces the single worst value in the database, **$65.9T over 7
+in-trade quarters**. Also confirmed: **zero** rows exceed 320B, so the
+ceiling itself is doing its job.
 
 **Impact is small but not zero**: 22 of 51,828 `universe` rows carry a
 market cap above $5T, which is impossible (the largest company on earth is
@@ -185,10 +207,21 @@ was never real.
 
 **What would settle it**
 
-- A plausibility check at ingest that rejects a share count implying a
-  market cap above some era-appropriate bound, logged to `bar_rejects` the
-  way price outliers already are. That catches defect 1 as a class rather
-  than as a list of eight tickers.
+- **Guard `mcap_usd`, not `shares`** — the layer `SharesPlausibility`'s
+  reasoning does not cover. Tightening the share ceiling is rejected for
+  good reason (it freezes real tickers silently). But a market cap above
+  any plausible bound can be set NULL at `universe` write time and logged,
+  which rejects nothing at ingest, cannot freeze a ticker, and keeps the
+  absurd value out of `crit_mcap` and out of `events.mcap_usd`. A NULL
+  mcap already fails `crit_mcap`, so the effect is to exclude a name whose
+  size cannot be measured rather than to admit it at a fabricated size.
+  **This changes `in_trade` for 6 rows and needs a universe rebuild to
+  take effect.**
+- A relative check *inside* the band is the other option and is not as
+  naive as `SharesPlausibility` rejects: the PSKY counterexample fails
+  because that ticker has three filings, two of them bad. Requiring a
+  minimum count of clean filings before trusting a ticker's own median
+  would fire on GRMN (70 rows, 5 bad) and stay silent on PSKY.
 - Populate the ADR map, or better, derive the ratio rather than hard-code
   it — `dei:EntityCommonStockSharesOutstanding` against the ADS count is
   available for most filers.
