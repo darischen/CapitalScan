@@ -149,6 +149,65 @@ NYSE rule that could have been written in 2010.
 
 ---
 
+### The validation harness is single-threaded and takes ~6 hours
+
+**Measured 2026-08-21**: 5h58m for 865,984 events / 543 tickers, at a
+sustained 99.5% of *one* core. CLAUDE.md's "more workers do not shorten it"
+is accurate — there is no pool, no chunking and no `max_workers` anywhere in
+`research/harness.py`. It is structurally serial, not configurably serial.
+
+**Where the time goes.** `_check_no_lookahead` does not inspect `events`; it
+re-runs detection from scratch **six times** — a base pass, one per
+`_SHIFT_LEVELS` entry `(1, 2, 5, 20)`, and a shuffled control. Each pass calls
+`scan_candidates` over every ticker's bars concatenated, ~2.85M rows, and that
+function iterates `for _, bar in bar_group.iterrows()`. Roughly **17.1M row
+iterations at ~1.27 ms each**. The other four checks walk the events once and
+are not the driver.
+
+**Why it re-walks instead of computing all six variants in one pass.** Fusing
+would remove five-sixths of the iteration overhead while keeping all 17.1M
+`detect` calls, so the win depends entirely on how that 1.27 ms splits — which
+has never been profiled. More importantly it would cost invariant 2: the
+harness routes through `scan_candidates` precisely because that is the
+production detection path, and the shift ladder's guarantee is "run the
+*production* detector on shifted data and watch the event set change." A
+hand-rolled fused walker validates the walker. Fusing is the last optimisation
+to reach for, not the first.
+
+**Plan, agreed 2026-08-21.** Implement only after a `cscan nightly` run has
+completed; nothing edits `harness.py` while it is producing a verdict.
+
+```
+0  profile one ticker x 6 passes (cProfile) -- decides whether step 3 matters
+1  split _check_no_lookahead into counts + verdict (tests first)
+2  add max_workers, ticker chunking, merge; --workers on `backtest --phase harness`
+3  only if the profile justifies it: itertuples / hoisted null checks in scan_candidates
+```
+
+**Two correctness details that would fail silently if missed.**
+
+*Jaccard must aggregate counts, not average ratios.* Tickers are disjoint, so
+workers return `(|A∩B|, |A∪B|)` per shift level and the parent computes
+`J = Σ|∩| / Σ|∪|` once. Averaging per-chunk Jaccards yields a different number
+that still looks plausible.
+
+*The control shuffle stays global.* `_shuffled_control` mixes indicator values
+**across** tickers on purpose. The parent must shuffle the whole frame and then
+cut chunks from the shuffled result; shuffling inside a worker only mixes that
+worker's tickers, which is a weaker control and would push `jc` toward the 0.15
+floor for reasons unrelated to the engine.
+
+**Invariant 2 is untouched** — workers call `scan_candidates` unmodified.
+
+**Expected**: ~50 min at 8 workers, ~1h40m at 4. Note this makes the machine
+*hotter*, not cooler: eight cores at full load for 50 minutes rather than one
+for six hours. A `--workers` flag lets the operator trade speed for a usable
+machine.
+
+**Not an option: pruning the input.** The harness validates the population that
+was actually produced. Shrinking its input to save time means the Phase 3 gate
+passes on a subset while `events` ships whole — a weaker gate, not a speedup.
+
 ### `cscan db sync-config` writes only to research, never to serving
 
 Found 2026-08-21, when the deployed site kept showing the previous session
