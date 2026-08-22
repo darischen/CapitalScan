@@ -186,6 +186,14 @@ def test_alk_1e3_scaled_filing_is_no_longer_caught_by_raised_ceiling(
     test pins that known, accepted tradeoff rather than silently losing
     coverage of it — do not "fix" this test by shrinking max_shares back
     down; that reintroduces the frozen-ticker defect Change 1 exists to fix.
+
+    **The bounds still do not catch it, and ADR 146 does.** What changed on
+    2026-08-22 is a second, series-level pass, not the band — see
+    `test_the_series_level_pass_catches_what_the_bounds_cannot` below. It
+    stays silent here because ALK is stubbed with **one** filing and a
+    window needs neighbours to have an opinion, which is the same gate that
+    protects PSKY. So this test is unaffected by ADR 146 by construction,
+    and remains the correct statement about `max_shares` alone.
     """
     _stub(
         monkeypatch,
@@ -208,6 +216,116 @@ def test_alk_1e3_scaled_filing_is_no_longer_caught_by_raised_ceiling(
     assert len(upserted) == 1
     assert upserted[0]["shares"] == 35831543000
     assert report.rows_rejected == 0
+
+
+# ============ 5. the series-level pass, where the bounds cannot reach ============
+
+
+def test_the_series_level_pass_catches_what_the_bounds_cannot(monkeypatch, upserted, rejected):
+    """ALK's real filing series, not one row of it (ADR 146).
+
+    The test above is right that `[min_shares, max_shares]` cannot see this
+    class. A ticker's own series can: three filings sit ~1,000x their
+    neighbours and drop straight back, which no split does. Values verbatim
+    from `shares_outstanding`.
+
+    This is the ingest wiring, so it also pins where the pass runs. It must
+    come **after** the `(ticker, filed_on)` dedup: one filing reports facts
+    for several periods, and on the raw rows the same value repeats and
+    drags the local median toward whichever filing carried the most
+    periods.
+    """
+    filed = [
+        "2010-08-05",
+        "2011-02-23",
+        "2011-05-04",
+        "2011-08-04",
+        "2011-11-03",
+        "2012-02-21",
+        "2012-05-03",
+        "2012-08-08",
+        "2012-11-07",
+        "2013-02-14",
+        "2013-05-08",
+        "2013-08-07",
+    ]
+    values = [
+        35_817_109,
+        35_831_543_000,  # bad
+        35_828_450_000,  # bad
+        36_006_026_000,  # bad
+        35_514_972,
+        35_453_202,
+        71_097_685,
+        70_494_808,
+        70_314_136,
+        70_341_799,
+        70_313_337,
+        69_869_025,
+    ]
+    _stub(
+        monkeypatch,
+        pd.DataFrame({"ticker": ["ALK"], "cik": [766421]}),
+        {
+            766421: pd.DataFrame(
+                {
+                    "filed_on": filed,
+                    "end": filed,
+                    "value": values,
+                    "accn": [f"0000766421-11-{i:06d}" for i in range(len(filed))],
+                }
+            )
+        },
+    )
+
+    report = ingest.run_shares(["ALK"], engine=_FakeEngine())
+
+    assert {r["payload"]["shares"] for r in rejected} == {
+        35_831_543_000,
+        35_828_450_000,
+        36_006_026_000,
+    }
+    assert {r["rule"] for r in rejected} == {"shares_scale_error_x1000"}
+    assert report.rows_rejected == 3
+
+    # The 2012 doubling is a real 2:1 split and must survive intact.
+    kept = sorted(row["shares"] for row in upserted)
+    assert kept == sorted(v for v in values if v < 1e9)
+    assert 71_097_685 in kept
+
+
+def test_nothing_is_divided_only_dropped(monkeypatch, upserted, rejected):
+    """The rejected value is never written back at 1/1000 (invariant 4).
+
+    Naming the factor is a *precondition* for rejection, not a repair.
+    A corrected-looking 35,831,543 appearing in the upsert would mean the
+    guard had started guessing at scale factors, which is the failure mode
+    `_implausible_shares_reason` exists to avoid.
+    """
+    filed = [f"20{y:02d}-05-01" for y in range(10, 22)]
+    values = [50_000_000 + i for i in range(12)]
+    values[5] = 50_000_005_000  # x1000 of its own neighbourhood
+    _stub(
+        monkeypatch,
+        pd.DataFrame({"ticker": ["TEST"], "cik": [999]}),
+        {
+            999: pd.DataFrame(
+                {
+                    "filed_on": filed,
+                    "end": filed,
+                    "value": values,
+                    "accn": [f"0000000999-00-{i:06d}" for i in range(12)],
+                }
+            )
+        },
+    )
+
+    ingest.run_shares(["TEST"], engine=_FakeEngine())
+
+    written = {row["shares"] for row in upserted}
+    assert 50_000_005_000 not in written
+    assert 50_000_005 not in written
+    assert len(rejected) == 1
 
 
 # ============ 3. an implausibly small filing is rejected (the PSKY shape) ============
