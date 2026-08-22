@@ -34,6 +34,7 @@ from datetime import date
 from types import SimpleNamespace
 from typing import cast
 
+import numpy as np
 import pandas as pd
 
 from capitalscan.core import signals as core_signals
@@ -103,12 +104,27 @@ def scan_candidates(
         # misdate to the epoch (compute.py:724-728 hits the same trap).
         bar_group = bar_group.set_index(bar_group["ts"].dt.date, drop=False)
 
+        # `searchsorted` instead of scanning. The index holds `datetime.date`
+        # objects, so `ind_group.index < bar_date` was an object-dtype
+        # comparison across every entry, once per bar -- 27.5M comparisons
+        # for a 5,248-bar ticker, and the harness runs six passes over 543
+        # of them. Profiled 2026-08-21: 1.9s of an 11.3s pass, 125x slower
+        # than the search below on the same data.
+        #
+        # Correct only because the index is sorted, two lines above. "The
+        # last entry strictly before `bar_date`" is exactly what a left-side
+        # search minus one returns, which is invariant 3's t-1 rule --
+        # `side="left"` is what keeps a same-day row from being selected.
+        # `test_candidates_prior_lookup.py` pins the equivalence against the
+        # original expression as an oracle.
+        ind_dates = ind_group.index.to_numpy()
+
         for _, bar in bar_group.iterrows():
             bar_date = bar["ts"].date()
-            prior_dates = ind_group.index[ind_group.index < bar_date]
-            if len(prior_dates) == 0:
+            prior_pos = int(np.searchsorted(ind_dates, bar_date, side="left")) - 1
+            if prior_pos < 0:
                 continue
-            prior_ind = ind_group.loc[prior_dates.max()]
+            prior_ind = ind_group.iloc[prior_pos]
 
             missing = [f for f in _REQUIRED_INDICATOR_FIELDS if pd.isna(prior_ind.get(f))]
             if missing:
