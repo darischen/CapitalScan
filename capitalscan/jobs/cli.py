@@ -1476,6 +1476,35 @@ def db_sync_config() -> None:
     else:
         console.print("unchanged")
 
+    # The serving store, written second and on purpose. Research is the
+    # source of truth and is already committed above, so a network problem
+    # reaching the cloud copy cannot discard the local row -- the same
+    # reasoning `cscan nightly` applies to its own sync step.
+    #
+    # Without this the deployed site keeps reading the previous config
+    # generation, and reads it *silently*: `web/lib/db.ts` pins every
+    # connection from this table (ADR 115), so `ALTER DATABASE ... SET` does
+    # not reach it, and `current_setting(..., true)` returns NULL rather
+    # than raising. Cost on 2026-08-21: five hours of a stale screener.
+    from capitalscan.jobs import sync as sync_job
+
+    try:
+        serving = sync_job.serving_engine()
+    except RuntimeError as exc:
+        # Visible, matching `cscan db migrate`'s `skip <target>: <VAR> not
+        # set`. A chain that quietly stops one step short is how a deployed
+        # site goes stale without anyone noticing.
+        console.print(f"[yellow]skip[/yellow] serving: {exc}")
+        return
+
+    try:
+        with serving.begin() as conn:
+            conn.execute(text(SERVING_CONFIG_UPSERT), values)
+    except Exception as exc:  # noqa: BLE001 - research is already written
+        console.print(f"[yellow]warn[/yellow] serving write failed, research is unaffected: {exc}")
+        raise typer.Exit(code=1) from None
+    console.print(f"[green]serving[/green]: serving_config set to {values['config_hash']}")
+
 
 @db_app.command("grant-readonly")
 def db_grant_readonly(

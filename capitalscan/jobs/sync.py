@@ -51,13 +51,16 @@ that order satisfies the real constraints rather than trusting the list.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
 import pandas as pd
+from psycopg.errors import InsufficientPrivilege
 from sqlalchemy import Engine, text
+from sqlalchemy.exc import ProgrammingError
 
 from capitalscan.core.config import ServingParams
 from capitalscan.jobs import db_io
@@ -187,6 +190,9 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
     )
 
 
+logger = logging.getLogger(__name__)
+
+
 def serving_engine() -> Engine:
     """An engine against `DATABASE_URL_SERVING`.
 
@@ -277,8 +283,36 @@ def run_sync(
                 )
             rows[table.name] = written
 
-        _pin_config_hash(target, str(config_hash))
+        # Assigned *before* the pin, which can raise. Measured 2026-08-21:
+        # a pin failure discarded the count and recorded rows_written = 0
+        # for a sync that had committed ~100,000 rows.
         report.rows_written = sum(rows.values())
+
+        # The pin is a convenience and must not fail a sync that worked.
+        # ADR 115 moved the serving views onto the `serving_config` table,
+        # written above; the GUC only helps a human in `psql`. Neon and
+        # other managed Postgres refuse `ALTER DATABASE ... SET` to
+        # non-superuser roles, and that is not a reason to report failure.
+        #
+        # Only this error is tolerated. `_pin_config_hash` raises
+        # `ValueError` when an identifier does not look like one, and
+        # swallowing everything here would hide that guard.
+        # SQLAlchemy wraps the driver error, so the psycopg class arrives on
+        # `.orig` rather than as the raised type. Catching
+        # `InsufficientPrivilege` directly never fires.
+        try:
+            _pin_config_hash(target, str(config_hash))
+        except ProgrammingError as err:
+            if not isinstance(err.orig, InsufficientPrivilege):
+                raise
+            logger.warning(
+                "could not pin capitalscan.default_config_hash on the serving "
+                "database: the role lacks ALTER DATABASE. The sync itself "
+                "succeeded and the serving views read the `serving_config` "
+                "table (ADR 115), not this GUC, so nothing is broken. Set it "
+                "by hand if you want `psql` sessions to default to %s.",
+                config_hash,
+            )
     return SyncReport(rows=rows)
 
 
