@@ -41,6 +41,7 @@ from capitalscan.core.config import (
     Config,
     ExitParams,
     IndicatorParams,
+    McapPlausibility,
     SignalParams,
     SplitParams,
     UniverseParams,
@@ -595,6 +596,8 @@ def run_universe(
         )
 
     with run_job(engine, "universe", {"quarter": quarter}) as report:
+        mcap_bounds = McapPlausibility()
+        mcap_rejects: list[dict] = []
         if tickers is None:
             with engine.connect() as conn:
                 tickers = [
@@ -649,6 +652,31 @@ def run_universe(
                     shares, _split_ratios_since(engine, ticker, filing[1])
                 )
             mcap = shares * float(ind_row["close"]) if shares is not None else None
+
+            # A market cap no company could have does not reach `crit_mcap`.
+            # `SharesPlausibility` guards the filing and documents why it
+            # cannot close the x1,000 class; this guards the derived value,
+            # where nulling one quarter excludes a ticker for that quarter
+            # only rather than freezing it forever.
+            #
+            # Logged, not merely nulled. The absurd market cap *is* the
+            # detection mechanism -- it is how the 32B-ceiling defect and
+            # the PKG/GRMN/BNTX values were both found -- so replacing a
+            # loud wrong number with a quiet missing one would repeat the
+            # error one layer up.
+            mcap_reason = core_universe.implausible_mcap_reason(mcap, mcap_bounds)
+            if mcap_reason is not None:
+                mcap_rejects.append(
+                    {
+                        "ticker": ticker,
+                        "ts": as_of,
+                        "rule": mcap_reason,
+                        "severity": "reject",
+                        "payload": {"mcap_usd": mcap, "shares": shares},
+                    }
+                )
+                mcap = None
+
             rel_return = _rel_return_756d(
                 engine, ticker, as_of, up.rel_return_lookback_days, rel_return_cache
             )
@@ -663,6 +691,11 @@ def run_universe(
                     ticker, as_of, ind_row, mcap, rel_return, sector_median, rev_growth, adv_20d, up
                 )
             )
+
+        if mcap_rejects:
+            for r in mcap_rejects:
+                r["run_id"] = report.run_id
+            db_io.append(engine, "bar_rejects", mcap_rejects)
 
         report.rows_written = db_io.upsert(engine, "universe", rows, ["ticker", "as_of"])
         report.tickers = [str(r["ticker"]) for r in rows]

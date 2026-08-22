@@ -23,7 +23,7 @@ from datetime import date
 
 import pandas as pd
 
-from capitalscan.core.config import UniverseParams
+from capitalscan.core.config import McapPlausibility, UniverseParams
 from capitalscan.core.signals import _isnan
 
 # The five ADR 014 criteria, matching the `universe` table's crit_* columns
@@ -143,6 +143,29 @@ def split_adjusted_shares(shares: float | None, ratios: Sequence[float]) -> floa
     for ratio in ratios:
         factor *= float(ratio)
     return shares * factor
+
+
+def implausible_mcap_reason(mcap: float | None, bounds: McapPlausibility) -> str | None:
+    """`None` when `mcap` is usable; otherwise the `bar_rejects.rule`.
+
+    Reject, never correct — the same rule `_implausible_shares_reason`
+    follows. Dividing by an inferred scale factor would be guessing at the
+    factor from the data's own shape, and a wrong guess is a
+    plausible-looking wrong number rather than an obvious one.
+
+    `None` in means `None` out: "no shares on file" was never a measurement
+    and is not a rejection.
+    """
+    if mcap is None:
+        return None
+    if mcap <= 0:
+        # Not a small company, a bad computation. `crit_mcap` would fail it
+        # either way; naming it puts the cause in `bar_rejects` instead of
+        # leaving it to look like a genuine miss.
+        return "mcap_not_positive"
+    if mcap > bounds.max_mcap_usd:
+        return "mcap_above_plausible_ceiling"
+    return None
 
 
 def evaluate_criteria(

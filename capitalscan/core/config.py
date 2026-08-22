@@ -517,6 +517,51 @@ DEFAULT_RHO = RhoParams()
 
 
 @dataclass(frozen=True)
+class McapPlausibility:
+    """Ceiling for a single `universe.mcap_usd`, applied in
+    `jobs.compute.run_universe`.
+
+    Deliberately **not** a field of `Config`, same rationale as
+    `SweepParams` and `SharesPlausibility` above: nothing here varies a
+    backtest result, and folding it in would move `config_hash` for every
+    existing config.
+
+    **Why a second guard, when `SharesPlausibility` already exists.** That
+    one guards the *filing* and documents why it cannot close the x1,000
+    class: an error on a company with real shares in the tens of millions
+    lands inside `[min_shares, max_shares]` and is accepted. It accepts
+    them deliberately, because rejecting a genuine filing freezes that
+    ticker's share count forever and silently, while a bad one surfaces as
+    an absurd market cap.
+
+    This guard sits on the derived value instead, where neither property
+    holds: nulling one quarter's `mcap_usd` excludes that ticker for that
+    quarter only, and the next quarter recomputes from scratch.
+
+    **It logs rather than merely nulling.** The absurd market cap *is* the
+    detection mechanism — it is how the 32B-ceiling defect was found in
+    Session 9 and how the PKG/GRMN/BNTX values were found on 2026-08-22. A
+    guard that silently replaced a loud wrong number with a quiet missing
+    one would repeat the error one layer up, so `run_universe` writes a
+    `bar_rejects` row for every value it drops.
+
+    **`max_mcap_usd` = $6T.** AAPL sat at $4.25T on 2026-06-30 in this
+    database, so the ceiling has to clear the largest real company by a
+    real margin or it rejects the truth. $6T catches BNTX ($65.9T), PKG
+    ($18.9T), GRMN ($13.9T) and AAP ($6.5T).
+
+    **The known gap, stated rather than implied.** This is a backstop
+    against the *impossible*, not a fix for the merely wrong. ALK carried
+    $2,453B — plainly wrong for Alaska Air, and comfortably inside any
+    bound that also has to clear AAPL. Tightening far enough to catch it
+    would start rejecting real mega-caps, which is the same trade
+    `SharesPlausibility` refused at the ingest end.
+    """
+
+    max_mcap_usd: float = 6e12
+
+
+@dataclass(frozen=True)
 class SharesPlausibility:
     """Absolute floor/ceiling for a single `shares_outstanding.shares` value,
     ingested in `jobs.ingest.run_shares` (Session 9 shares-guard task).

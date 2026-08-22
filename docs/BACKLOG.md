@@ -263,36 +263,6 @@ plausibility filter on the training query, so it does not force the rebuild.
 
 ---
 
-### `cscan sync` always exits 1 against Neon
-
-The final step pins the config hash on the serving database:
-
-```
-ALTER DATABASE "neondb" SET capitalscan.default_config_hash = ...
-InsufficientPrivilege: permission denied to set parameter
-```
-
-Neon does not grant `ALTER DATABASE ... SET` to non-superuser roles. **The
-sync itself succeeds** — 2026-08-21 wrote events, cell_stats and benchmarks
-in full and then raised on this line, 15m43s in.
-
-**Nothing is broken by the failure.** ADR 115 made the serving views read
-the one-row `serving_config` *table* rather than the GUC, and `sync` writes
-that table before it reaches the pin. The site serves correctly.
-
-**Two things it does cost.** A working job reports `status = 'failed'`, so
-the `runs` history cannot be read for whether serving is current. And
-`report.rows_written` is assigned after the pin, so the row count is lost —
-the failed run recorded `rows_written = 0` having written ~100,000 rows.
-
-**Fix**: catch `InsufficientPrivilege` on the pin, warn, and continue. The
-GUC is a convenience for `psql` sessions; the table is the authority. Assign
-`rows_written` before the pin regardless.
-
----
-
----
-
 ### Expanding the universe beyond the S&P 500 seed
 
 **Largely done 2026-08-21 — see ADR 143.** Nasdaq listings at or above $5B
@@ -480,50 +450,3 @@ machine.
 was actually produced. Shrinking its input to save time means the Phase 3 gate
 passes on a subset while `events` ships whole — a weaker gate, not a speedup.
 
-### `cscan db sync-config` writes only to research, never to serving
-
-Found 2026-08-21, when the deployed site kept showing the previous session
-after a `config_hash` change.
-
-`db_sync_config` calls `db_io.get_engine()` and writes one row. That engine
-is the *research* store, and there is no second target -- unlike `cscan db
-migrate`, which applies to both by default and prints a visible `skip` line
-when one is unset. So the serving store's `serving_config` row can only be
-updated by a full `cscan sync`, which copies that table as one of its
-fourteen.
-
-**Why it is not merely cosmetic.** `web/lib/db.ts` pins every connection
-from `serving_config`:
-
-```sql
-SELECT set_config('capitalscan.default_config_hash',
-                  (SELECT config_hash FROM serving_config LIMIT 1), false)
-```
-
-That is ADR 115 working as designed -- the deployed site reads its config
-from a table so it cannot drift with whatever a session happens to set. The
-consequence is that `ALTER DATABASE ... SET` has **no effect on the web
-app**, and a stale `serving_config` row makes the site query a config
-generation nobody is writing to. It renders an empty or outdated screener
-with no error, because `current_setting(..., true)` returns NULL rather
-than raising.
-
-Cost this morning: the site served 2026-08-20 for five hours after the
-research GUC moved, and the diagnosis went to the server and the browser
-before the table.
-
-**A test already encodes the rule and cannot enforce it here.**
-`test_v_positions_config.py::test_the_stored_row_matches_the_live_config`
-compares the stored row against the live config -- but it runs against the
-research store, so it stays green while serving is stale.
-
-**What would settle it**: give `db_sync_config` the same two-target loop
-`db migrate` uses, including the visible skip when `DATABASE_URL_SERVING`
-is unset. Small change; the reason it is here rather than done is that it
-touches the serving store and this was found mid-session with a poller
-running.
-
----
-
-The file is kept so the next finding has a home. Adding one means saying
-what is wrong, what it costs, and what would settle it.
