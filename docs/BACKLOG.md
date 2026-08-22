@@ -205,6 +205,29 @@ is no longer true: with the floor at $20B, an ADR genuinely worth $5B and
 overstated 5x lands at $25B and enters the trade universe on a number that
 was never real.
 
+**MEASURED 2026-08-22: this no longer produces a wrong number, and the claim
+below that it does is stale.** The fix that landed was not the ratio map but
+`is_depositary_listing`, which switches the *source* to Yahoo rather than
+scaling a number. `_latest_shares` therefore never sees the ordinary-share
+count for these tickers.
+
+Across all 970 depositary universe rows: **zero above $1T**, and the largest
+is ARM at $377.3B, with PDD between $184B and $218B. Both are real. NTES,
+which peaked at $1,666.9B, now reads $58.9B in 2020 and $82.1B in 2026.
+
+**The remaining cost is different, and is a loss of history rather than a
+wrong value.** 360 of those 970 rows are NULL, because Yahoo's `shares_full`
+series starts around 2018 (NTES: 2018-11-13) and nothing else is trusted for
+these tickers. A NULL fails `crit_mcap`, so depositary listings are simply
+absent from the trade universe before roughly 2018 instead of entering it at
+a fabricated size. That is the correct behaviour under invariant 4, and it is
+a suppression, not a corruption — but it is survivorship-relevant and should
+be stated when quoting ADR coverage.
+
+Deriving the ratio from `dei:EntityCommonStockSharesOutstanding` against the
+ADS count would recover that pre-2018 history. That, not correctness, is now
+the reason to do it.
+
 **What would settle it**
 
 - **Guard `mcap_usd`, not `shares`** — the layer `SharesPlausibility`'s
@@ -222,6 +245,9 @@ was never real.
   because that ticker has three filings, two of them bad. Requiring a
   minimum count of clean filings before trusting a ticker's own median
   would fire on GRMN (70 rows, 5 bad) and stay silent on PSKY.
+  **This is what ADR 146 implemented**, with the median taken over a local
+  window rather than the whole series — the global form is defeated by WULF,
+  whose 16 genuine filings sit up to 247x its own global median.
 - Populate the ADR map, or better, derive the ratio rather than hard-code
   it — `dei:EntityCommonStockSharesOutstanding` against the ADS count is
   available for most filers.
@@ -272,10 +298,10 @@ and re-running the backtest to push corrected membership into `events` —
 hours of compute to move six rows. Do it inside the next rebuild, where it
 costs nothing extra.
 
-**The ADR ratio is the one worth fixing on its own schedule.** Unlike the
-x1000 class it is not a rare filer error but a systematic units mismatch on
-~14 currently-live tickers, and it produces a wrong number on every future
-nightly rather than on 26 historical filings.
+**The ADR ratio was the one worth fixing on its own schedule**, and it was
+fixed first, by source switching rather than by ratio. Superseded by the
+measurement above: it no longer produces a wrong number on any nightly. What
+it still costs is ~360 unpriced pre-2018 quarters.
 
 **Before Phase 6 either way**: a model taking `mcap_usd` as a feature would
 train on a column containing 1000x outliers, which gradient boosting will
