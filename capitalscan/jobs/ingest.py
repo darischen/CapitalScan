@@ -1393,6 +1393,43 @@ def run_shares(
             ):
                 best[key] = row
 
+        # The x1,000 class, which `_implausible_shares_reason` cannot see.
+        #
+        # **After the dedup, not before.** The check reads a ticker's filing
+        # series and compares each value to its time-neighbours, so it needs
+        # exactly one row per `filed_on` -- the shape `shares_outstanding`
+        # itself has. Run against `rows`, where one filing contributes
+        # several facts, the same value repeats and drags the local median
+        # toward whichever filing happened to report the most periods.
+        #
+        # Rejected and logged like any other bad filing (invariant 4);
+        # nothing is divided or corrected. See
+        # `core.universe.scale_error_indices` for why a *local* window is
+        # not the relative test `SharesPlausibility` rules out.
+        by_ticker: dict[str, list[tuple[str, object]]] = {}
+        for key in best:
+            by_ticker.setdefault(key[0], []).append(key)
+        for tkr, keys in by_ticker.items():
+            keys.sort(key=lambda k: _parse_filed_on(best[k]["filed_on"]) or date.min)
+            series = [float(best[k]["shares"]) for k in keys]
+            for i in core_universe.scale_error_indices(series, shares_bounds):
+                row = best.pop(keys[i])
+                share_rejects.append(
+                    {
+                        "ticker": tkr,
+                        "ts": row["filed_on"],
+                        "rule": "shares_scale_error_x1000",
+                        "severity": "reject",
+                        "payload": {
+                            "shares": row["shares"],
+                            "filed_on": row["filed_on"],
+                            "period_end": row.get("period_end"),
+                            "source": "sec_xbrl",
+                            "accn": row.get("accn"),
+                        },
+                    }
+                )
+
         upsert_rows = [{k: v for k, v in row.items() if k != "accn"} for row in best.values()]
 
         # Fallback: SEC's dei fact does not degrade, it disappears the

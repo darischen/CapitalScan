@@ -671,6 +671,45 @@ class SharesPlausibility:
     min_shares: int = 1_000_000
     max_shares: int = 320_000_000_000
 
+    # --- The x1,000 class the absolute band above cannot see ------------
+    #
+    # The docstring names 26 filings across 12 tickers that sit inside
+    # `[min_shares, max_shares]` and are still wrong by three orders of
+    # magnitude. These four values close that gap with a *local* test,
+    # which is not the relative test the docstring rejects: that argument
+    # is against comparing a filing to its ticker's **global** median, and
+    # it stands. See `core.universe.scale_error_indices`.
+    #
+    # Every number here was set from the live table on 2026-08-22, not
+    # tuned to make a test pass.
+
+    # Neighbours per side. Four is the smallest window that outvotes the
+    # longest observed run of consecutive bad filings (AAP's four, from
+    # 2011-08-24 to 2012-05-29) while staying inside the ~2 years either
+    # side over which a share count moves by tens of percent, not orders
+    # of magnitude.
+    scale_window: int = 4
+
+    # Below this, decline to rule rather than ruling from too little. This
+    # is the gate that excludes PSKY (3 filings, two of them corrupt),
+    # which is the counterexample that sinks a global-median test.
+    min_filings_for_scale_check: int = 8
+
+    # A filing must exceed its local median by this much to be a
+    # candidate. WULF's genuine dilution peaks at 247x its *global* median
+    # and never exceeds ~1.3x locally, so it is not close to this line.
+    scale_anomaly_ratio: float = 50.0
+
+    # The only factor this guard will name. Not inferred from the data.
+    scale_factor: float = 1_000.0
+
+    # ...and dividing by it must actually explain the anomaly, landing the
+    # filing within this factor of its neighbours in both directions. An
+    # anomaly a x1,000 scale does not explain is left alone, because
+    # removing it would mean guessing at some other factor from the data's
+    # own shape -- exactly what `_implausible_shares_reason` refuses to do.
+    scale_recovery_tolerance: float = 5.0
+
 
 DEFAULT_SHARES_PLAUSIBILITY = SharesPlausibility()
 

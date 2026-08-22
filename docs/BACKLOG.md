@@ -226,6 +226,27 @@ was never real.
   it — `dei:EntityCommonStockSharesOutstanding` against the ADS count is
   available for most filers.
 
+**RESOLVED 2026-08-22 by ADR 146** — inside the rebuild, as decided below.
+
+`core.universe.scale_error_indices` catches the class by *local* shape: a
+filing is rejected when it exceeds the median of its four nearest neighbours
+per side by >50x **and** dividing by exactly 1,000 puts it back within 5x of
+them. Tickers with fewer than 8 filings are not judged, which is what makes
+it survive the PSKY counterexample that sinks a global-median test. WULF is
+the other way round: 16 genuine filings up to 247x its *global* median, and
+1.0-1.3x locally, so a global rule would have rejected all 16.
+
+Swept over all 142,278 rows: **33 filings across 17 tickers**, every one
+ending in `000`, zero false positives. Reproduces the hand-curated list of 26
+exactly and adds 7 — including BNTX and WWD, which this file had already
+identified by hand.
+
+**Still owed: the 33 stored rows.** Ingest is fixed going forward, but
+`run_shares` never re-offers a rejected accession, so they must be deleted
+before the `universe` rebuild that propagates the fix.
+
+The original decision, kept because its reasoning is what scheduled the work:
+
 **Decided 2026-08-22, on the x1000 class: fix it when the universe is next
 rebuilt anyway, not before.**
 

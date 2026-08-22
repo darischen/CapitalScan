@@ -21,7 +21,7 @@ expansion to other markets and more ETFs is in `BACKLOG.md`.
 
 ## Before writing any code
 
-Read `docs/DECISIONS.md`. It holds 144 ADRs. They are decisions, not suggestions.
+Read `docs/DECISIONS.md`. It holds 146 ADRs. They are decisions, not suggestions.
 
 If a task appears to require contradicting one, **stop and ask.** Do not work around it.
 

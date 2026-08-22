@@ -20,10 +20,15 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import date
+from statistics import median
 
 import pandas as pd
 
-from capitalscan.core.config import McapPlausibility, UniverseParams
+from capitalscan.core.config import (
+    McapPlausibility,
+    SharesPlausibility,
+    UniverseParams,
+)
 from capitalscan.core.signals import _isnan
 
 # The five ADR 014 criteria, matching the `universe` table's crit_* columns
@@ -143,6 +148,81 @@ def split_adjusted_shares(shares: float | None, ratios: Sequence[float]) -> floa
     for ratio in ratios:
         factor *= float(ratio)
     return shares * factor
+
+
+def scale_error_indices(shares: Sequence[float], bounds: SharesPlausibility) -> list[int]:
+    """Positions of filings corrupted by a x1,000 tagging error.
+
+    `_implausible_shares_reason` tests one value against an absolute band
+    and cannot see this class -- `SharesPlausibility` says so explicitly
+    and enumerates the 26 filings across 12 tickers that slip through. A
+    share count in the tens of millions, multiplied by 1,000, lands in the
+    tens of billions, which is exactly where a genuine mega-cap lives.
+    No bound drawn on one number separates those two.
+
+    **The series does.** A real share count moves by tens of percent
+    between quarterly filings, including across splits; the largest real
+    step in the tracked universe is NVDA's 10:1, and it *persists*. A
+    tagging error spikes ~1,000x and returns three or four filings later.
+
+    **This is not the relative test `SharesPlausibility` rejects**, and the
+    distinction is the whole design. That argument is against comparing a
+    filing to its ticker's **global** median, and it is right: PSKY's
+    global median *is* the corruption, so a global test flags its one good
+    filing. Two things make a local window survive it:
+
+    - **The minimum-filings gate.** PSKY has three filings. Rather than
+      out-voting it, the guard declines to rule at all -- silence, not a
+      verdict from two data points.
+    - **The window itself.** WULF is the case a global test gets backwards:
+      TeraWulf diluted from a tiny base, so 16 **genuine** consecutive
+      filings sit up to 247x its global median and a global rule would
+      reject every one. Locally each is ~1.0-1.3x its neighbours, so no
+      window ever looks at it twice.
+
+    **One-sided, deliberately.** A clean filing bracketed by corrupt ones
+    sits at ~0.001x its local median -- AAP has two such rows, on
+    2011-06-01 and 2012-08-20, on either side of a run of four. They are
+    correct and must survive, so distance alone is never the test.
+
+    **Naming the factor is a precondition, not a step.** A filing is
+    flagged only when dividing by 1,000 puts it back on top of its
+    neighbours. An anomaly that a x1,000 scale does not explain is left
+    alone, because removing it would mean inferring some other factor from
+    the data's own shape -- the thing `_implausible_shares_reason` refuses
+    to do, for the reason it gives. The caller **rejects** these rows and
+    logs them (invariant 4); nothing here divides anything.
+
+    Returns positions rather than a filtered series so the caller keeps the
+    identity of what it dropped for `bar_rejects`.
+    """
+    n = len(shares)
+    if n < bounds.min_filings_for_scale_check:
+        return []
+
+    flagged: list[int] = []
+    low = 1.0 / bounds.scale_recovery_tolerance
+    for i, value in enumerate(shares):
+        if value is None or value <= 0 or _isnan(value):
+            continue
+        neighbours = [
+            other
+            for j, other in enumerate(shares)
+            if j != i
+            and abs(j - i) <= bounds.scale_window
+            and other is not None
+            and other > 0
+            and not _isnan(other)
+        ]
+        if not neighbours:
+            continue
+        local = median(neighbours)
+        if local <= 0 or value / local <= bounds.scale_anomaly_ratio:
+            continue
+        recovered = (value / bounds.scale_factor) / local
+        if low <= recovered <= bounds.scale_recovery_tolerance:
+            flagged.append(i)
+    return flagged
 
 
 def implausible_mcap_reason(mcap: float | None, bounds: McapPlausibility) -> str | None:

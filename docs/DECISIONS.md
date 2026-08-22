@@ -4981,3 +4981,98 @@ than as prose.
 **What this does not fix.** `bars.close` remains the split-adjusted series
 and should: indicators depend on it (CLAUDE.md, Price series). The correction
 belongs on the share count, which is the side that was stale.
+
+---
+
+## 146. The x1,000 share-scale class is caught by local shape, not by bounds
+
+**Date:** 2026-08-22. **Status:** Pinned. Closes the gap `SharesPlausibility` documented and left open; extends ADR 145's rebuild.
+
+**Context.**
+
+`SharesPlausibility` tests one filing against an absolute band and states its
+own blind spot precisely: *"a x1,000 error on a company with real shares in
+the tens of millions (tens of billions after corruption) now lands inside
+`[min_shares, max_shares]` and is accepted undetected."* It enumerates the
+casualties by ticker — 26 filings across 12 tickers — and the widening from
+32B to 320B that created the gap was itself deliberate and correct, because a
+real 10:1 split on Citigroup would otherwise freeze that ticker forever.
+
+`BACKLOG.md` deferred the fix to "the next rebuild, where it costs nothing
+extra". This is that rebuild.
+
+**The obvious fix is already refuted, in the code.** `SharesPlausibility`
+argues against a test relative to the ticker's own history and gives the
+counterexample: PSKY's median **is** the corruption (two of its three filings
+are a placeholder-shaped `1,000`), so a median test flags its one genuine
+filing. That argument stands and is not overturned here.
+
+**Decision.**
+
+`core.universe.scale_error_indices(shares, bounds)` compares each filing to
+the median of its four nearest neighbours *per side* and flags it only when
+both hold:
+
+1. it exceeds that local median by more than 50x, and
+2. dividing by **exactly 1,000** puts it back within 5x of its neighbours.
+
+Tickers with fewer than 8 filings are not judged at all. `jobs.ingest`
+applies it per ticker after the `(ticker, filed_on)` dedup and **rejects**
+the rows to `bar_rejects` under rule `shares_scale_error_x1000`. Nothing is
+divided or corrected: condition 2 is a precondition for rejection, not a
+repair.
+
+**Why a local window survives PSKY and a global one does not.**
+
+- **PSKY has three filings.** The minimum-filings gate declines to rule
+  rather than out-voting it. Silence is the correct answer from two data
+  points.
+- **WULF is the case a global test gets backwards.** TeraWulf diluted from a
+  tiny base, so 16 consecutive **genuine** filings sit up to 247x its global
+  median and a global rule would reject every one. Locally each is 1.0-1.3x
+  its neighbours and no window looks at it twice.
+- **A real split persists; a tagging error returns.** NVDA's 10:1 is the
+  largest real step in the tracked universe and holds at ~1.8x a straddling
+  window. The errors spike ~1,000x and drop back three to four filings later.
+
+**Naming the factor is what keeps this inside invariant 4.**
+`_implausible_shares_reason` refuses to infer a scale factor from the data's
+own shape, because "a wrong guess turns into a plausible-looking wrong
+number". Condition 2 tests one hard-coded factor and rejects the row when it
+fits. An anomaly a x1,000 scale does not explain is left alone — a ~100x
+spike is not touched, because removing it would require inferring some other
+factor. The guard only removes rows whose corruption it can name.
+
+**Measurement.** Swept over all 142,278 rows of `shares_outstanding`:
+**33 filings across 17 tickers**, every one ending in exactly `000` and every
+one recovering to a plausible count.
+
+It reproduces the docstring's hand-curated list exactly — AAP (4), GRMN (5),
+PKG (3), ALK (3), FTNT (2), SWKS (2), MAA (2), and one each for AIZ, CNX,
+EOG, PNR, REG — and adds 7 across 5 tickers ingested after that note was
+written: BNTX (2), ENSG (2), CRNX, SANM, WWD. BNTX and WWD had already been
+confirmed by hand in `BACKLOG.md` as "the same class ... not in the note's
+list", so the detector found them independently.
+
+Zero false positives. WULF, PSKY, BRK-B and EXE are all absent.
+
+**Consequences.**
+
+- The four new fields live on `SharesPlausibility`, which is deliberately
+  **not** a `Config` field, so `config_hash` does not move (same rationale as
+  `SweepParams`). Propagating the fix still needs a `universe` rebuild and a
+  backtest re-run, which is why it is done inside this one.
+- **Ingest is fixed from now; the 33 rows already stored are not.** A future
+  `run_shares` never re-offers a rejected accession, so the existing rows
+  need a one-off delete before the universe rebuild that follows.
+- This closes the `crit_mcap` half of the defect. Six `in_trade` quarters
+  passed the market-cap criterion on a number wrong by three orders of
+  magnitude.
+- **The ADR-ratio class is untouched** and remains the more damaging of the
+  two, being systematic rather than a rare filer error. It stays open in
+  `BACKLOG.md`.
+
+**Relationship to the `McapPlausibility` ceiling.** The $6T ceiling stays.
+It is a last-resort catch on the *output* and covers corruption classes this
+does not (the x10^5/x10^6 rows above 320B). This guard removes the cause;
+that one logs whatever still gets through.
