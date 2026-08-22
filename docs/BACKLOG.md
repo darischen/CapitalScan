@@ -247,10 +247,34 @@ is accurate — there is no pool, no chunking and no `max_workers` anywhere in
 **Where the time goes.** `_check_no_lookahead` does not inspect `events`; it
 re-runs detection from scratch **six times** — a base pass, one per
 `_SHIFT_LEVELS` entry `(1, 2, 5, 20)`, and a shuffled control. Each pass calls
-`scan_candidates` over every ticker's bars concatenated, ~2.85M rows, and that
-function iterates `for _, bar in bar_group.iterrows()`. Roughly **17.1M row
-iterations at ~1.27 ms each**. The other four checks walk the events once and
-are not the driver.
+`scan_candidates` over every ticker's bars concatenated, ~2.85M rows. The
+other four checks walk the events once and are not the driver.
+
+**The `iterrows` hypothesis above was wrong.** Profiled 2026-08-22 on AAPL,
+5,248 bars, one pass, 11.3s:
+
+```
+.loc -> xs -> fast_xs      6.0s / 53%   two per-row Series extractions
+comp_method_OBJECT_ARRAY   1.5s / 13%   object-dtype index scan, per row
+datetimelike.__getitem__   2.5s         31,429 datetime index operations
+```
+
+`iterrows` itself barely registers. The cost was an **O(n²) scan**:
+`scan_candidates` indexed the indicator frame by `datetime.date` *objects*
+and evaluated `ind_group.index[ind_group.index < bar_date]` for every bar —
+27.5M object comparisons per ticker per pass. **Fixed 2026-08-22** with
+`searchsorted` (125x on that step); detection went ~7.5s -> 2.77s per
+ticker-pass, and the projected harness **3h58m -> ~2.5h with no parallelism**.
+
+Event sets before and after are byte-identical across AAPL, KLAC, CHRW and
+NVDA — 11,686 events, zero difference either way.
+
+**The remaining 53% is row extraction**, and it is not an indexing problem:
+`.iloc[pos]` measured only 1.1x faster than `.loc[label]`. Pulling a row out
+of a 39-column mixed-dtype frame as a Series costs what it costs. The lever
+is issuing *one* extraction per bar instead of two — `own_ind` is looked up
+only for `CLOSE_CONFIRMED_FIELDS` and could be precomputed into arrays
+before the loop — not changing how either is indexed.
 
 **Why it re-walks instead of computing all six variants in one pass.** Fusing
 would remove five-sixths of the iteration overhead while keeping all 17.1M
