@@ -26,7 +26,7 @@ scored grid is 48 cells on train and 28 on validate in every one of them,
 so the comparison is like-for-like.
 
 The benchmark arms agree independently. Over the training window the signal
-arm returns 2.71 against 4.47 for simply buying and holding the same universe,
+arm returns 2.53 against 4.42 for simply buying and holding the same universe,
 and sits below the 97.5th percentile of a 200-replication random-entry null
 with matched firing counts.
 
