@@ -16,11 +16,14 @@ buried:
 > **Zero cells survive FDR correction on either split.** Across a 16-cell grid
 > of signal type × drawdown bucket, no conditional hit rate is distinguishable
 > from its baseline once multiple testing is accounted for. Minimum q-value
-> 0.60 on train, 0.72 on validate, against α = 0.05.
+> 0.64 on train, 0.73 on validate, against α = 0.05.
 
-That finding (ADR 112) has now held four times: under the original
+That finding (ADR 112) has now held five times: under the original
 measurement, under a widened stochastic-agreement rule, on a 43% larger
-universe, and on a universe corrected for a market-cap defect.
+universe, on a universe corrected for a market-cap defect, and on the
+rebuild that also corrected the share basis and the ADR share counts. The
+scored grid is 48 cells on train and 28 on validate in every one of them,
+so the comparison is like-for-like.
 
 The benchmark arms agree independently. Over the training window the signal
 arm returns 2.71 against 4.47 for simply buying and holding the same universe,
