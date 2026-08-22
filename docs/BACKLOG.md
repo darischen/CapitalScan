@@ -133,6 +133,73 @@ buys time; it does not change the direction.
 
 ---
 
+### `mcap_usd` has two bad inputs, and neither is ADR 145
+
+Found 2026-08-22 while listing the Nasdaq additions. **Both predate ADR 145
+and are unrelated to it** — verified against `universe_pre_adr145`, where
+every affected row has a before/after factor of exactly 1.0.
+
+**1. Share counts 1000x too large, from `sec_xbrl`.**
+
+```
+PKG    89,213,394,000 shares   real ~89.2 million    -> $18,933B
+GRMN  198,077,418,000          real ~190 million     -> $13,875B
+AAP    72,924,659,000          real ~73 million      ->  $6,459B
+ALK    35,828,450,000          real ~35.8 million    ->  $2,453B
+```
+
+Exactly three orders of magnitude on every one, which points at a scale
+factor in the XBRL parse rather than at anything statistical. The largest
+`sec_xbrl` value in the table is **251,931,774,000**, which no US listing
+approaches. `AAP`'s *recent* filings are correct (~60M), so this is
+per-filing, not per-ticker — the parser gets it right most of the time.
+
+**Impact is small but not zero**: 22 of 51,828 `universe` rows carry a
+market cap above $5T, which is impossible (the largest company on earth is
+about $4.8T). Six of those are `in_trade`, so they passed `crit_mcap` on a
+number that is wrong by 1000x. Across 8 tickers: BNTX (7 quarters, peak
+$65.9T), GRMN (5), PKG (3), AAP (3), MAA, SWKS, WWD, CNX.
+
+**$5T is a conservative floor, not the real count.** ALK at $2.4T and NTES
+at $1.7T are equally wrong and sit under it. A proper sweep needs a
+plausibility bound per era rather than one constant.
+
+**2. The ADR ratio map has one entry.**
+
+`UniverseParams.adr_ordinary_per_adr` contains `TSM: 5.0` and nothing else.
+ADR 014 records why it exists: a Form 20-F reports the issuer's **ordinary**
+shares while the bar price is per **ADR**, and TSM priced at $10.5T against
+an actual ~$2.1T before the correction.
+
+The universe expansion added many depositary listings that are not in the
+map and are therefore treated 1:1. NTES peaks at **$1,666.9B** against a real
+NetEase peak near $100B — roughly the 1:16 ordinary-per-ADS ratio. Others
+ingested and unmapped include BILI, JD, PDD, SNY, VOD, ERIC, TCOM, GRAB, LI,
+FUTU, RYAAY, HTHT, ARGX, CCEP.
+
+**Why this one is worse than it looks.** TSM cleared its threshold at either
+figure, so ADR 014 could record the defect as harmless to `crit_mcap`. That
+is no longer true: with the floor at $20B, an ADR genuinely worth $5B and
+overstated 5x lands at $25B and enters the trade universe on a number that
+was never real.
+
+**What would settle it**
+
+- A plausibility check at ingest that rejects a share count implying a
+  market cap above some era-appropriate bound, logged to `bar_rejects` the
+  way price outliers already are. That catches defect 1 as a class rather
+  than as a list of eight tickers.
+- Populate the ADR map, or better, derive the ratio rather than hard-code
+  it — `dei:EntityCommonStockSharesOutstanding` against the ADS count is
+  available for most filers.
+
+**Not acted on tonight**: both are fetch-layer investigations rather than
+one-line fixes, and the study impact is 22 rows in 51,828. Worth doing
+before Phase 6, since a model trained on `mcap_usd` as a feature would learn
+from a column with 1000x outliers in it.
+
+---
+
 ### `cscan sync` always exits 1 against Neon
 
 The final step pins the config hash on the serving database:
