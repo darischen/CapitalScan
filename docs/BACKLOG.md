@@ -226,10 +226,40 @@ was never real.
   it — `dei:EntityCommonStockSharesOutstanding` against the ADS count is
   available for most filers.
 
-**Not acted on tonight**: both are fetch-layer investigations rather than
-one-line fixes, and the study impact is 22 rows in 51,828. Worth doing
-before Phase 6, since a model trained on `mcap_usd` as a feature would learn
-from a column with 1000x outliers in it.
+**Decided 2026-08-22, on the x1000 class: fix it when the universe is next
+rebuilt anyway, not before.**
+
+The user's challenge was the right one — if the note argues that keeping bad
+data beats removing good data, why add a guard at all? The answer separates
+two layers, and concedes most of the point:
+
+*The documented asymmetry is about ingest.* Rejecting a filing is permanent
+and silent, because `run_shares` never retries a rejected accession, so the
+ticker freezes at its last accepted count forever. Nulling one quarter's
+`mcap_usd` has neither property: the next quarter recomputes from scratch.
+
+*But the absurd market cap is the detection mechanism.* The note says so, and
+it is how both this and the original 32B-ceiling defect were found. A guard
+that silently nulls $65.9T trades a loud wrong number for a quiet missing
+one — the same error the note warns against, moved one layer up. **Any such
+guard must log to `bar_rejects`, not merely null**, which makes it strictly
+more detectable than today rather than less.
+
+*And the economics do not justify it standing alone.* 22 rows in 51,828 is
+0.04%, six of them `in_trade`. Propagating a fix means rebuilding `universe`
+and re-running the backtest to push corrected membership into `events` —
+hours of compute to move six rows. Do it inside the next rebuild, where it
+costs nothing extra.
+
+**The ADR ratio is the one worth fixing on its own schedule.** Unlike the
+x1000 class it is not a rare filer error but a systematic units mismatch on
+~14 currently-live tickers, and it produces a wrong number on every future
+nightly rather than on 26 historical filings.
+
+**Before Phase 6 either way**: a model taking `mcap_usd` as a feature would
+train on a column containing 1000x outliers, which gradient boosting will
+happily learn. That is also solvable at feature-engineering time with a
+plausibility filter on the training query, so it does not force the rebuild.
 
 ---
 
