@@ -193,3 +193,75 @@ class TestTheControlIsShuffledGlobally:
             for n in (1, 4)
         }
         assert len(values) == 1
+
+
+# ---------------------------------------------------------------------------
+# The fixture the equivalence tests run against
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def harness_fixture():
+    """A small synthetic universe: `(events, bars_by_ticker, config)`.
+
+    **What this does and does not cover.** The equivalence tests assert that
+    serial and parallel agree, not that the checks pass — so synthetic data
+    that *produces* violations is useful rather than a problem, because it
+    exercises the violation merging as well as the counts.
+
+    The lookahead merge is the part that can be wrong while looking right
+    (see `LookaheadCounts`), and it is driven entirely by `bars_by_ticker`,
+    which is real in shape here: four tickers, 400 bars each, indicators
+    from `compute_all` rather than hand-written.
+
+    `events` is thin. The four per-event checks need columns only the
+    backtest writes (`entry_price`, `exit_date`, `gross_ret`, ...), and
+    fabricating a realistic priced population belongs in an integration
+    test. What is asserted here is that whatever those checks conclude,
+    they conclude it identically under both paths.
+    """
+    import numpy as np
+    import pandas as pd
+
+    from capitalscan.core.config import Config, IndicatorParams
+    from capitalscan.core.indicators import compute_all
+
+    rng = np.random.default_rng(7)
+    bars_by_ticker: dict[str, pd.DataFrame] = {}
+    for i, ticker in enumerate(("AAA", "BBB", "CCC", "DDD")):
+        n = 400
+        idx = pd.date_range("2023-01-01", periods=n, freq="D")
+        close = 100 + np.cumsum(rng.normal(0, 1.5, n)) + i
+        frame = pd.DataFrame(
+            {
+                "open": close + 0.05,
+                "high": close + 1.2,
+                "low": close - 1.2,
+                "close": close,
+                "adj_close": close,
+                "volume": rng.integers(1_000_000, 5_000_000, n),
+            },
+            index=idx,
+        )
+        out = compute_all(frame, IndicatorParams())
+        out = out.reset_index(names="ts")
+        out["ticker"] = ticker
+        bars_by_ticker[ticker] = out
+
+    events = pd.DataFrame(
+        {
+            "ticker": pd.Series(dtype="object"),
+            "signal_date": pd.Series(dtype="object"),
+            "side": pd.Series(dtype="object"),
+            "entry_kind": pd.Series(dtype="object"),
+            "entry_date": pd.Series(dtype="object"),
+            "entry_price": pd.Series(dtype="float64"),
+            "exit_date": pd.Series(dtype="object"),
+            "exit_price": pd.Series(dtype="float64"),
+            "exit_reason": pd.Series(dtype="object"),
+            "gross_ret": pd.Series(dtype="float64"),
+            "touch_level": pd.Series(dtype="float64"),
+            "is_cluster_head": pd.Series(dtype="bool"),
+        }
+    )
+    return events, bars_by_ticker, Config()

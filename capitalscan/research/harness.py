@@ -36,6 +36,8 @@ for the shift ladder.
 
 from __future__ import annotations
 
+import math
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
 from typing import cast
@@ -692,6 +694,137 @@ def _shuffled_control(frame: pd.DataFrame, indicator_cols: list[str], seed: int)
     return out
 
 
+@dataclass(frozen=True)
+class LookaheadCounts:
+    """Set-overlap counts for one slice of tickers, before any ratio.
+
+    **Workers return counts, never Jaccards.** Tickers are disjoint, so the
+    whole-universe value is
+
+        J = sum |Ai n Bi| / sum |Ai u Bi|
+
+    which is reconstructable from these and *not* from per-chunk ratios.
+    Averaging ratios is a different number that still lands in [0, 1] and
+    still moves in the right direction, so it survives every test that does
+    not compare it against the single-process answer.
+
+    The empty chunk is the sharp case and it fails toward a pass:
+    `_jaccard` of two empty sets is 1.0 by design ("vacuously identical"),
+    so a chunk whose tickers produced no events would contribute a perfect
+    agreement score it never measured. `j[1] < 0.80` and `j[5] < 0.50` are
+    ceilings, so inflating the Jaccard is exactly what a look-ahead-broken
+    engine would do. Counted, such a chunk adds (0, 0) and changes nothing.
+    """
+
+    base_n: int
+    intersect: dict[int, int]
+    union: dict[int, int]
+    control_intersect: int
+    control_union: int
+
+
+def _lookahead_counts(
+    bars_and_indicators: pd.DataFrame,
+    shuffled: pd.DataFrame,
+    indicator_cols: list[str],
+    config: Config,
+) -> LookaheadCounts:
+    """The six detection passes over one slice, reduced to overlap counts.
+
+    `shuffled` is supplied rather than computed here: `_shuffled_control`
+    mixes indicator values *across* tickers on purpose, so it must be built
+    once over the whole universe and only then sliced. Shuffling inside a
+    slice mixes fewer tickers, leaves more of the bar-to-indicator
+    relationship intact, and pushes `jc` toward its 0.15 floor for reasons
+    unrelated to look-ahead.
+    """
+    base = _event_set(bars_and_indicators, config)
+    intersect: dict[int, int] = {}
+    union: dict[int, int] = {}
+    for k in _SHIFT_LEVELS:
+        shifted = _event_set(
+            _shift_indicator_columns(bars_and_indicators, k, indicator_cols), config
+        )
+        intersect[k] = len(base & shifted)
+        union[k] = len(base | shifted)
+    control = _event_set(shuffled, config)
+    return LookaheadCounts(
+        base_n=len(base),
+        intersect=intersect,
+        union=union,
+        control_intersect=len(base & control),
+        control_union=len(base | control),
+    )
+
+
+def _lookahead_verdict(counts: LookaheadCounts) -> CheckResult:
+    """The five threshold rules, applied once over summed counts."""
+
+    def ratio(inter: int, uni: int) -> float:
+        # Mirrors `_jaccard`'s empty convention so a config that produced no
+        # events anywhere still reads "vacuously identical" rather than 0.
+        return 1.0 if uni == 0 else inter / uni
+
+    jaccard_by_shift = {k: ratio(counts.intersect[k], counts.union[k]) for k in _SHIFT_LEVELS}
+    jc = ratio(counts.control_intersect, counts.control_union)
+
+    if counts.base_n == 0:
+        return CheckResult(
+            "no_lookahead", False, [{"reason": "no_base_events_to_test_against"}], {"base_n": 0}
+        )
+
+    violations: list[dict] = []
+    j1, j2, j5, j20 = (jaccard_by_shift[k] for k in (1, 2, 5, 20))
+
+    if not (jc < _JACCARD_CONTROL_FLOOR):
+        violations.append(
+            {"bound": "control_floor", "rule": f"jc < {_JACCARD_CONTROL_FLOOR}", "jc": jc}
+        )
+    if not (j1 < _JACCARD_SHIFT1_CEILING):
+        violations.append(
+            {
+                "bound": "shift1_material_change",
+                "rule": f"j[1] < {_JACCARD_SHIFT1_CEILING}",
+                "j1": j1,
+            }
+        )
+    if not (j1 > j2 > j5 > j20):
+        violations.append(
+            {
+                "bound": "monotonic_decay",
+                "rule": "j[1] > j[2] > j[5] > j[20]",
+                "j1": j1,
+                "j2": j2,
+                "j5": j5,
+                "j20": j20,
+            }
+        )
+    if not (j5 < _JACCARD_SHIFT5_CEILING):
+        violations.append(
+            {"bound": "shift5_ceiling", "rule": f"j[5] < {_JACCARD_SHIFT5_CEILING}", "j5": j5}
+        )
+    if not (j20 < _JACCARD_CONTROL_CONVERGENCE_MULT * jc):
+        violations.append(
+            {
+                "bound": "shift20_converges_to_control",
+                "rule": f"j[20] < {_JACCARD_CONTROL_CONVERGENCE_MULT} * jc",
+                "j20": j20,
+                "jc": jc,
+            }
+        )
+
+    return CheckResult(
+        "no_lookahead",
+        len(violations) == 0,
+        violations,
+        {
+            "jaccard_by_shift": jaccard_by_shift,
+            "jaccard_control": jc,
+            "base_n": counts.base_n,
+        },
+    )
+
+
 def _check_no_lookahead(
     events: pd.DataFrame, bars_by_ticker: dict[str, pd.DataFrame], config: Config
 ) -> CheckResult:
@@ -783,6 +916,7 @@ def run_harness(
     bars_by_ticker: dict[str, pd.DataFrame],
     config: Config,
     hourly_by_ticker: dict[str, pd.DataFrame] | None = None,
+    max_workers: int = 1,
 ) -> HarnessReport:
     """DESIGN §5.10. Runs all five checks and returns a `HarnessReport`
     regardless of whether any individual check failed — this is the Phase 3
@@ -805,6 +939,9 @@ def run_harness(
     since a check that cannot fail is worse than one reporting it lacks
     the data it needs (task brief).
     """
+    if max_workers > 1 and bars_by_ticker:
+        return _run_harness_parallel(events, bars_by_ticker, config, hourly_by_ticker, max_workers)
+
     indexed_bars = _indexed_bars(bars_by_ticker)
     return HarnessReport(
         no_lookahead=_check_no_lookahead(events, bars_by_ticker, config),
@@ -812,6 +949,131 @@ def run_harness(
         exit_sanity=_check_exit_sanity(events, indexed_bars, config),
         return_identity=_check_return_identity(events),
         non_overlap=_check_non_overlap(events, indexed_bars, config),
+    )
+
+
+def _chunk_slice(
+    tickers: list[str],
+    events: pd.DataFrame,
+    bars_by_ticker: dict[str, pd.DataFrame],
+    hourly_by_ticker: dict[str, pd.DataFrame] | None,
+    shuffled: pd.DataFrame,
+) -> tuple:
+    """Everything one worker needs, and nothing else.
+
+    Slicing rather than sharing is what keeps peak memory proportional to
+    `1 / max_workers` instead of holding all 543 tickers per process --
+    which is what makes a 4 GB machine viable at all.
+    """
+    want = set(tickers)
+    return (
+        events[events["ticker"].isin(want)],
+        {t: bars_by_ticker[t] for t in tickers},
+        None
+        if hourly_by_ticker is None
+        else {t: hourly_by_ticker[t] for t in tickers if t in hourly_by_ticker},
+        shuffled[shuffled["ticker"].isin(want)],
+    )
+
+
+def _harness_chunk(args: tuple) -> tuple:
+    """One slice of tickers: lookahead counts plus the four per-event checks.
+
+    Returns counts and violation lists, never ratios or verdicts. The parent
+    sums and decides once (see `LookaheadCounts`).
+    """
+    events, bars_by_ticker, hourly_by_ticker, shuffled, config = args
+    combined = pd.concat(bars_by_ticker.values(), ignore_index=True)
+    indicator_cols = [c for c in combined.columns if c not in _BAR_COLUMNS]
+    counts = _lookahead_counts(combined, shuffled, indicator_cols, config)
+
+    indexed = _indexed_bars(bars_by_ticker)
+    # Whole `CheckResult`s, not just violations: `detail` carries counts
+    # (`n_priced`, `n_checked`, `n_heads`, ...) that a reader compares against
+    # the population, and dropping them made the parallel report differ from
+    # the serial one on a field nothing asserted on until now.
+    return (
+        counts,
+        _check_entry_sanity(events, indexed, config, hourly_by_ticker),
+        _check_exit_sanity(events, indexed, config),
+        _check_return_identity(events),
+        _check_non_overlap(events, indexed, config),
+    )
+
+
+def _run_harness_parallel(
+    events: pd.DataFrame,
+    bars_by_ticker: dict[str, pd.DataFrame],
+    config: Config,
+    hourly_by_ticker: dict[str, pd.DataFrame] | None,
+    max_workers: int,
+) -> HarnessReport:
+    """Ticker-chunked equivalent of the serial path.
+
+    Every check is per-ticker or per-event, and `scan_candidates` is called
+    unmodified in each worker -- invariant 2 holds, there is no second
+    detection path.
+    """
+    tickers = sorted(bars_by_ticker)
+    combined = pd.concat(bars_by_ticker.values(), ignore_index=True)
+    indicator_cols = [c for c in combined.columns if c not in _BAR_COLUMNS]
+    if not indicator_cols:
+        return HarnessReport(
+            no_lookahead=CheckResult(
+                "no_lookahead", False, [{"reason": "no_indicator_columns_in_bars_by_ticker"}]
+            ),
+            entry_sanity=_check_entry_sanity(
+                events, _indexed_bars(bars_by_ticker), config, hourly_by_ticker
+            ),
+            exit_sanity=_check_exit_sanity(events, _indexed_bars(bars_by_ticker), config),
+            return_identity=_check_return_identity(events),
+            non_overlap=_check_non_overlap(events, _indexed_bars(bars_by_ticker), config),
+        )
+
+    # Shuffled once, over the whole universe, *before* chunking. See
+    # `_lookahead_counts` for why doing this per worker weakens the control.
+    shuffled = _shuffled_control(combined, indicator_cols, _SHUFFLE_SEED)
+
+    size = math.ceil(len(tickers) / max_workers)
+    chunks = [tickers[i : i + size] for i in range(0, len(tickers), size)]
+    args = [
+        _chunk_slice(c, events, bars_by_ticker, hourly_by_ticker, shuffled) + (config,)
+        for c in chunks
+    ]
+
+    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        results = list(pool.map(_harness_chunk, args))
+
+    total = LookaheadCounts(
+        base_n=sum(r[0].base_n for r in results),
+        intersect={k: sum(r[0].intersect[k] for r in results) for k in _SHIFT_LEVELS},
+        union={k: sum(r[0].union[k] for r in results) for k in _SHIFT_LEVELS},
+        control_intersect=sum(r[0].control_intersect for r in results),
+        control_union=sum(r[0].control_union for r in results),
+    )
+
+    def merged(idx: int, name: str) -> CheckResult:
+        parts = [r[idx] for r in results]
+        violations = [v for part in parts for v in part.violations]
+        # Every `detail` these four produce is an integer count over the
+        # events the chunk saw, so the universe-wide value is their sum. A
+        # non-numeric field would be a new kind and is left to the first
+        # chunk rather than silently combined.
+        detail: dict = {}
+        for part in parts:
+            for key, value in part.detail.items():
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    detail.setdefault(key, value)
+                else:
+                    detail[key] = detail.get(key, 0) + value
+        return CheckResult(name, not violations, violations, detail)
+
+    return HarnessReport(
+        no_lookahead=_lookahead_verdict(total),
+        entry_sanity=merged(1, "entry_sanity"),
+        exit_sanity=merged(2, "exit_sanity"),
+        return_identity=merged(3, "return_identity"),
+        non_overlap=merged(4, "non_overlap"),
     )
 
 

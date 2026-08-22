@@ -539,7 +539,9 @@ def test_partial_failure_reports_failed_tickers_and_exits_nonzero(monkeypatch, c
     monkeypatch.setattr(
         harness_mod,
         "run_harness",
-        lambda events, bars_by_ticker, config, hourly_by_ticker=None: _passing_harness_report(),
+        lambda events, bars_by_ticker, config, hourly_by_ticker=None, max_workers=1: (
+            _passing_harness_report()
+        ),
     )
 
     with pytest.raises(typer.Exit) as exc_info:
@@ -563,7 +565,9 @@ def test_full_success_no_failed_tickers_exits_zero_when_harness_passes(monkeypat
     monkeypatch.setattr(
         harness_mod,
         "run_harness",
-        lambda events, bars_by_ticker, config, hourly_by_ticker=None: _passing_harness_report(),
+        lambda events, bars_by_ticker, config, hourly_by_ticker=None, max_workers=1: (
+            _passing_harness_report()
+        ),
     )
 
     # Should not raise.
@@ -606,7 +610,7 @@ def test_harness_runs_automatically_and_gates_exit_code(monkeypatch, capsys):
 
     captured = {}
 
-    def _fake_run_harness(events, bars_by_ticker, config, hourly_by_ticker=None):
+    def _fake_run_harness(events, bars_by_ticker, config, hourly_by_ticker=None, max_workers=1):
         captured["events"] = events
         captured["bars_by_ticker"] = bars_by_ticker
         return _failing_harness_report()

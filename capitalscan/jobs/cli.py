@@ -829,7 +829,11 @@ def backtest(
             engine, "backtest_harness", {"config_hash": chash, "phase": "harness"}
         ) as report:
             harness_report = run_harness(
-                events_for_harness, bars_by_ticker, config, hourly_by_ticker=hourly_by_ticker
+                events_for_harness,
+                bars_by_ticker,
+                config,
+                hourly_by_ticker=hourly_by_ticker,
+                max_workers=workers,
             )
             # `rows_written` stays 0 and that is the honest number. This
             # phase reads.
@@ -977,7 +981,11 @@ def backtest(
                 hourly_by_ticker = _load_hourly_by_ticker(engine, bt_report.tickers, config)
                 events_for_harness = _load_events_for_run(engine, bt_report.run_id)
                 harness_report = run_harness(
-                    events_for_harness, bars_by_ticker, config, hourly_by_ticker=hourly_by_ticker
+                    events_for_harness,
+                    bars_by_ticker,
+                    config,
+                    hourly_by_ticker=hourly_by_ticker,
+                    max_workers=workers,
                 )
                 _print_harness_report(harness_report)
                 notes.append("harness passed" if harness_report.all_passed else "harness FAILED")
