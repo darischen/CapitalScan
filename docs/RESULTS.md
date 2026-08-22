@@ -3659,6 +3659,42 @@ That restores the stated reason behind the four-module allowlist in
 `test_events_in_trade_filter.py` — `entry_price IS NOT NULL` means "the
 backtest priced this" — rather than leaving it true only by accident.
 
+### The benchmark arms
+
+Pooled era, latest run per split. `benchmarks` accumulates generations under
+one `config_hash` — three train runs sit there now — so every figure below is
+scoped to a single `run_id`. The serving layer does the same, correctly, via
+`LATEST_RUN` in `web/lib/research.ts`, ordering on `computed_at` rather than
+on the timestamp embedded in the id.
+
+| arm, pooled | train | validate |
+|---|---|---|
+| dca_hybrid | 4.6041 | 0.0800 |
+| buy_hold | 4.4159 | -0.0309 |
+| dca_lump | 4.4159 | -0.0309 |
+| dca_fixed | 4.3840 | 0.1043 |
+| **signal** | **2.5301** | **0.1385** |
+| trim | 2.2891 | 0.0082 |
+| dca_signal | 1.7784 | 0.1244 |
+| random null, mean | 1.5051 | -0.1250 |
+| random null, 97.5th pct | 2.6597 | 0.0097 |
+
+**Train agrees with the cell grid.** The signal arm returns 2.5301 against a
+null 97.5th percentile of 2.6597 — below it, and 57% of buy-and-hold over the
+same window. That is the session 13 finding, unchanged across four rebuilds
+(2.7113 against 2.7489 last time).
+
+**Validate still disagrees, and it is still recorded rather than smoothed.**
+The signal arm is the best of all eight arms at 0.1385, above the null's
+97.5th percentile of 0.0097, while buy-and-hold is negative at -0.0309. The
+same shape as the previous rebuild (0.1318 against 0.0224).
+
+This does not overturn anything. The cell grid is where the claim lives, and
+zero cells survive FDR on validate with a minimum q of 0.7317. A single
+pooled arm beating a null on the smaller split, with no cell-level
+significance under it, is what an underpowered favourable draw looks like.
+The holdout remains unspent.
+
 ### Still outstanding after this rebuild
 
 Five universe rows remain above $5T, one of them `in_trade` (AAP
