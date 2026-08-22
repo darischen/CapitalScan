@@ -159,15 +159,26 @@ def test_the_large_tables_are_bounded_and_the_small_ones_are_not():
         assert ":cutoff" not in next(t for t in TABLES if t.name == whole).sql
 
 
-def test_measured_results_ship_whole():
+def test_measured_results_are_never_cut_by_date():
     """The cut is in dates, never in answers.
 
     `cell_stats` and `benchmarks` are computed locally against full history
-    and shipped entire, so a reader of the deployed site sees fewer
-    sessions on a chart and never a different hit rate.
+    and are never truncated by `:cutoff`, so a reader of the deployed site
+    sees fewer sessions on a chart and never a different hit rate.
+
+    **Scoped by `config_hash` since 2026-08-22, and that is not a cut in
+    answers.** It ships one generation of results rather than every hash the
+    research store has ever held. The site reads exactly one — `serving_config`
+    pins it and `web/lib/db.ts` sets it per connection (ADR 115) — so the
+    dropped rows were unreachable, and shipping them forever is what filled
+    the 512 MB free tier. This test previously asserted the literal
+    `SELECT * FROM ...`, which conflated "no date truncation" with "no
+    predicate at all".
     """
     for table in ("cell_stats", "benchmarks"):
-        assert next(t for t in TABLES if t.name == table).sql == f"SELECT * FROM {table}"
+        sql = next(t for t in TABLES if t.name == table).sql
+        assert ":cutoff" not in sql, f"{table} must not be truncated by date"
+        assert "config_hash = :config_hash" in sql, f"{table} must ship one generation"
 
 
 # ---------------------------------------------------------------------------

@@ -183,8 +183,26 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
             "SELECT * FROM signal_reports WHERE fired_at >= :cutoff",
             ("id",),
         ),
-        SyncTable("cell_stats", "SELECT * FROM cell_stats", ("cell_id", "config_hash")),
-        SyncTable("benchmarks", "SELECT * FROM benchmarks", ("id",)),
+        # Scoped to the config being served. Unfiltered, these shipped every
+        # hash the research store had ever held, and `run_sync` never
+        # deletes -- so each rebuild left another generation on serving
+        # forever. That is what filled the 512 MB free tier on 2026-08-21,
+        # where 90% of the events belonged to a hash nothing reads.
+        #
+        # Safe because the serving store reads exactly one hash:
+        # `serving_config` pins it and `web/lib/db.ts` sets it on every
+        # connection (ADR 115), so other generations are unreachable by any
+        # query the site makes.
+        SyncTable(
+            "cell_stats",
+            "SELECT * FROM cell_stats WHERE config_hash = :config_hash",
+            ("cell_id", "config_hash"),
+        ),
+        SyncTable(
+            "benchmarks",
+            "SELECT * FROM benchmarks WHERE config_hash = :config_hash",
+            ("id",),
+        ),
         SyncTable("predictions", "SELECT * FROM predictions", ("id",)),
         SyncTable("positions", "SELECT * FROM positions", ("id",)),
     )
