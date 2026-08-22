@@ -46,7 +46,6 @@ from capitalscan.core.config import (
     SplitParams,
     UniverseParams,
 )
-from capitalscan.core.returns import entry_price_for
 from capitalscan.core.signals import CLOSE_CONFIRMED_FIELDS, debounce_key
 from capitalscan.core.types import Bound, EntryKind
 from capitalscan.jobs import db_io
@@ -880,9 +879,7 @@ def _build_event_row(
 ) -> dict:
     bound = Bound.LOWER if hit.side.value == "long" else Bound.UPPER
     entry_gapped = None
-    entry_price = None
     if hit.touch_level is not None:
-        entry_price = entry_price_for(EntryKind.TOUCH, bar, None, hit.touch_level, hit.side)
         entry_gapped = core_signals._breach(float(bar["open"]), hit.touch_level, bound)
 
     return {
@@ -920,8 +917,30 @@ def _build_event_row(
         "spx_ret_1d": None if market_row is None else market_row.get("spx_ret_1d"),
         "dd_bucket": _dd_bucket(ind_row.get("dd_52w")),
         "entry_kind": EntryKind.TOUCH.value,
-        "entry_date": hit.ts if entry_price is not None else None,
-        "entry_price": entry_price,
+        # **Detection only. The backtest owns the fill.**
+        #
+        # ADR 049 had this write the same-bar touch price, from a v1 where
+        # no backtest existed. Session 9 gave `research.enrich.
+        # resolve_entries` the same column *with slippage baked in*, so one
+        # column carried two conventions and nothing recorded which.
+        #
+        # It surfaced twice. `_pre_slippage_price` divides 3bps back out to
+        # recover the price that traded inside the bar; on an unslipped row
+        # that lands below the bar's low, and `--phase harness` failed
+        # entry_sanity on 32 events for it. Worse, ADR 122 made this
+        # function record out-of-trade bars, so `entry_price IS NOT NULL`
+        # stopped meaning "the backtest priced this" -- the exact sentence
+        # four `path_*` modules are exempted from the `in_trade` predicate
+        # on. Measured 2026-08-22: 755 out-of-trade events with an
+        # entry_price and 1,324 `path` rows built from them.
+        #
+        # `None` rather than an omitted key: the column is in
+        # `_RUN_EVENTS_UPDATE_COLUMNS`, so leaving it out would raise at
+        # upsert. `touch_level` above still records the band the signal
+        # fired against, which is the honest thing to show for a detection
+        # nobody could have traded.
+        "entry_date": None,
+        "entry_price": None,
         "entry_gapped": entry_gapped,
         "split_key": _split_key(hit.ts, splits or SplitParams()),
     }
