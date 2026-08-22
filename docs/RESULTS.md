@@ -3610,3 +3610,61 @@ Three configs, three signal definitions, 630,592 events, 328 cells across two sp
 ADR 033 was written before any code existed, for this outcome specifically: *"Built for that outcome, a null result stops being a failure. A project reporting 'I tested this rigorously and found no edge, here is the infrastructure proving it' reads better than a suspiciously profitable backtest."*
 
 The measurement worked.
+---
+
+## ADR 112 re-measured on the corrected universe — 2026-08-22
+
+**ADR 112 holds a fifth time.** Zero cells survive FDR correction on either
+split, measured on the universe rebuilt after the ADR 145 share-basis fix,
+the ADR share-count corrections, and the `McapPlausibility` ceiling.
+
+| | train | | validate | |
+|---|---|---|---|---|
+| | scored | survive | scored | survive |
+| ADR 112 (`86e91448a65aa40b`) | 48 | **0** | 28 | **0** |
+| ADR 142 (`bbc99a02ebdc999f`) | 48 | **0** | 28 | **0** |
+| ADR 145 (`f66729c7eda212a4`) | 48 | **0** | 28 | **0** |
+| this rebuild (`f66729c7eda212a4`) | 48 | **0** | 28 | **0** |
+| min q | 0.6400 | | 0.7317 | |
+
+**The scored denominator is 48/28 in all four**, so this is like-for-like and
+not a shifting grid. The minimum q moved from 0.6030 to 0.6400 on train and
+0.7154 to 0.7317 on validate — further from significance, not closer.
+
+**Population.** 51,837 universe rows, **6,299 in_trade** quarters across 543
+tickers; 862,326 priced events. Against the ADR 145 measurement that is
+6,325 -> 6,299 in_trade (-26) and 865,984 -> 862,326 events, the loss being
+the seven tickers that lost membership when the ADR ratio and mcap ceiling
+corrections landed (NTES, ONC, HTHT, GRMN, PKG, AAP, SIMO).
+
+The best train cell is still `bb_lower_touch` in the 0-10% drawdown bucket:
+`n_events = 4866` collapsing to `n_eff = 599`, p_hit 0.1981 against a 0.1759
+baseline, q = 0.6400.
+
+### The harness, and what it cost this time
+
+All five checks passed in **48m21s** over 864,133 events and 858 tickers —
+against 3h58m35s for the same five checks on the previous rebuild. The
+difference is the parallel harness (ticker slices spooled to parquet), not a
+smaller job: this run scored 864,133 events against 865,984.
+
+### `entry_price` means one thing again
+
+The out-of-trade events in this config now number 1,807 across 634 tickers,
+**every one unpriced**, all written by a single `cscan events` run. Before
+the single-writer fix, 755 out-of-trade events carried an `entry_price` and
+1,324 `path` rows were built from them.
+
+That restores the stated reason behind the four-module allowlist in
+`test_events_in_trade_filter.py` — `entry_price IS NOT NULL` means "the
+backtest priced this" — rather than leaving it true only by accident.
+
+### Still outstanding after this rebuild
+
+Five universe rows remain above $5T, one of them `in_trade` (AAP
+2011-12-31, $5.04T). All five are the x1,000 share-scale class that
+`McapPlausibility`'s $6T ceiling cannot reach without threatening a real
+mega-cap: AAPL sits at $4.25T. ADR 146 removes the cause at ingest, and
+`scripts/adr146_clear_scale_errors.sql` clears the 33 rows already stored —
+deliberately deferred to the next rebuild, since propagating it here would
+mean redoing the compute and harness phases this run has already finished.
