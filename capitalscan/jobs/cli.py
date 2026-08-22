@@ -833,6 +833,7 @@ def backtest(
                 bars_by_ticker,
                 config,
                 hourly_by_ticker=hourly_by_ticker,
+                max_workers=workers,
             )
             # `rows_written` stays 0 and that is the honest number. This
             # phase reads.
@@ -984,6 +985,7 @@ def backtest(
                     bars_by_ticker,
                     config,
                     hourly_by_ticker=hourly_by_ticker,
+                    max_workers=workers,
                 )
                 _print_harness_report(harness_report)
                 notes.append("harness passed" if harness_report.all_passed else "harness FAILED")

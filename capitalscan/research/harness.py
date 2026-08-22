@@ -36,8 +36,13 @@ for the shift ladder.
 
 from __future__ import annotations
 
+import math
+import tempfile
+from collections.abc import Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 from typing import cast
 
 import pandas as pd
@@ -904,6 +909,161 @@ def _check_no_lookahead(
     )
 
 
+@dataclass(frozen=True)
+class ChunkResult:
+    """One slice: counts for the lookahead check, whole results for the rest.
+
+    Counts rather than ratios for the lookahead check -- see
+    `LookaheadCounts`. Whole `CheckResult`s for the other four because
+    `detail` carries integer counts (`n_priced`, `n_checked`, `n_heads`)
+    that must be summed; returning only `violations` made a parallel report
+    differ from a serial one on a field nothing asserted on.
+    """
+
+    counts: LookaheadCounts
+    entry_sanity: CheckResult
+    exit_sanity: CheckResult
+    return_identity: CheckResult
+    non_overlap: CheckResult
+
+
+def _harness_chunk_worker(args: tuple) -> ChunkResult:
+    """Read one slice off disk and run every check over it.
+
+    **Module level and reading from disk, both deliberately.** Windows uses
+    spawn, so the callable has to be importable by name. And the slices
+    arrive as parquet paths rather than as arguments because
+    `ProcessPoolExecutor` pickles arguments through an OS pipe: an earlier
+    version passed the frames themselves and deadlocked on roughly 2.7 GB
+    across 858 tickers -- no error, no worker ever started, CPU flat.
+    """
+    events_p, bars_p, hourly_p, shuffled_p, config = args
+    events = pd.read_parquet(events_p)
+    bars = pd.read_parquet(bars_p)
+    shuffled = pd.read_parquet(shuffled_p)
+    bars_by_ticker = {str(t): g for t, g in bars.groupby("ticker", sort=True)}
+    hourly_by_ticker = None
+    if hourly_p.exists():
+        hourly = pd.read_parquet(hourly_p)
+        hourly_by_ticker = {str(t): g for t, g in hourly.groupby("ticker", sort=True)}
+
+    indicator_cols = [c for c in bars.columns if c not in _BAR_COLUMNS]
+    counts = _lookahead_counts(bars, shuffled, indicator_cols, config)
+    indexed = _indexed_bars(bars_by_ticker)
+    return ChunkResult(
+        counts=counts,
+        entry_sanity=_check_entry_sanity(events, indexed, config, hourly_by_ticker),
+        exit_sanity=_check_exit_sanity(events, indexed, config),
+        return_identity=_check_return_identity(events),
+        non_overlap=_check_non_overlap(events, indexed, config),
+    )
+
+
+def merge_chunks(results: Sequence[ChunkResult]) -> HarnessReport:
+    """Sum the counts, concatenate the violations, decide once."""
+    total = LookaheadCounts(
+        base_n=sum(r.counts.base_n for r in results),
+        intersect={k: sum(r.counts.intersect[k] for r in results) for k in _SHIFT_LEVELS},
+        union={k: sum(r.counts.union[k] for r in results) for k in _SHIFT_LEVELS},
+        control_intersect=sum(r.counts.control_intersect for r in results),
+        control_union=sum(r.counts.control_union for r in results),
+    )
+
+    def merged(name: str) -> CheckResult:
+        parts = [getattr(r, name) for r in results]
+        violations = [v for part in parts for v in part.violations]
+        detail: dict = {}
+        for part in parts:
+            for key, value in part.detail.items():
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    detail.setdefault(key, value)
+                else:
+                    detail[key] = detail.get(key, 0) + value
+        return CheckResult(name, not violations, violations, detail)
+
+    return HarnessReport(
+        no_lookahead=_lookahead_verdict(total),
+        entry_sanity=merged("entry_sanity"),
+        exit_sanity=merged("exit_sanity"),
+        return_identity=merged("return_identity"),
+        non_overlap=merged("non_overlap"),
+    )
+
+
+def _run_harness_parallel(
+    events: pd.DataFrame,
+    bars_by_ticker: dict[str, pd.DataFrame],
+    config: Config,
+    hourly_by_ticker: dict[str, pd.DataFrame] | None,
+    max_workers: int,
+) -> HarnessReport:
+    """Ticker-chunked equivalent of the serial path.
+
+    **The one place this module touches the filesystem**, and only a
+    temporary directory removed before it returns -- no database, no socket,
+    no clock, so the module stays testable without infrastructure. The
+    alternative is pickling frames through a pipe, which deadlocks at real
+    scale.
+
+    **Peak memory in the parent is unchanged**, because a global shuffle
+    needs the whole frame in one place. Workers are bounded at roughly
+    `1 / max_workers`, so this makes a run faster without making it fit on a
+    smaller machine -- that needs the parent footprint addressed separately.
+
+    Invariant 2 holds: workers call `scan_candidates` unmodified through
+    `_lookahead_counts`, so there is no second detection path.
+    """
+    tickers = sorted(bars_by_ticker)
+    combined = pd.concat([bars_by_ticker[t] for t in tickers], ignore_index=True)
+    indicator_cols = [c for c in combined.columns if c not in _BAR_COLUMNS]
+    if not indicator_cols:
+        indexed = _indexed_bars(bars_by_ticker)
+        return HarnessReport(
+            no_lookahead=CheckResult(
+                "no_lookahead", False, [{"reason": "no_indicator_columns_in_bars_by_ticker"}]
+            ),
+            entry_sanity=_check_entry_sanity(events, indexed, config, hourly_by_ticker),
+            exit_sanity=_check_exit_sanity(events, indexed, config),
+            return_identity=_check_return_identity(events),
+            non_overlap=_check_non_overlap(events, indexed, config),
+        )
+
+    # Shuffled once, over the whole universe, *before* chunking.
+    # `_shuffled_control` mixes indicator values across tickers on purpose;
+    # shuffling inside a worker would mix only that worker's tickers, leave
+    # more of the bar-to-indicator relationship intact, and push `jc` toward
+    # its 0.15 floor for reasons unrelated to look-ahead.
+    shuffled = _shuffled_control(combined, indicator_cols, _SHUFFLE_SEED)
+
+    size = math.ceil(len(tickers) / max_workers)
+    chunks = [tickers[i : i + size] for i in range(0, len(tickers), size)]
+
+    with tempfile.TemporaryDirectory(prefix="cscan_harness_") as raw_tmp:
+        tmp = Path(raw_tmp)
+        args = []
+        for i, chunk in enumerate(chunks):
+            want = set(chunk)
+            events_p = tmp / f"events_{i}.parquet"
+            bars_p = tmp / f"bars_{i}.parquet"
+            hourly_p = tmp / f"hourly_{i}.parquet"
+            shuffled_p = tmp / f"shuffled_{i}.parquet"
+            events[events["ticker"].isin(want)].to_parquet(events_p, index=False)
+            combined[combined["ticker"].isin(want)].to_parquet(bars_p, index=False)
+            shuffled[shuffled["ticker"].isin(want)].to_parquet(shuffled_p, index=False)
+            if hourly_by_ticker:
+                present = [t for t in chunk if t in hourly_by_ticker]
+                if present:
+                    pd.concat([hourly_by_ticker[t] for t in present], ignore_index=True).to_parquet(
+                        hourly_p, index=False
+                    )
+            args.append((events_p, bars_p, hourly_p, shuffled_p, config))
+
+        with ProcessPoolExecutor(max_workers=max_workers) as pool:
+            results = list(pool.map(_harness_chunk_worker, args))
+
+    return merge_chunks(results)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -914,6 +1074,7 @@ def run_harness(
     bars_by_ticker: dict[str, pd.DataFrame],
     config: Config,
     hourly_by_ticker: dict[str, pd.DataFrame] | None = None,
+    max_workers: int = 1,
 ) -> HarnessReport:
     """DESIGN §5.10. Runs all five checks and returns a `HarnessReport`
     regardless of whether any individual check failed — this is the Phase 3
@@ -936,6 +1097,9 @@ def run_harness(
     since a check that cannot fail is worse than one reporting it lacks
     the data it needs (task brief).
     """
+    if max_workers > 1 and bars_by_ticker:
+        return _run_harness_parallel(events, bars_by_ticker, config, hourly_by_ticker, max_workers)
+
     indexed_bars = _indexed_bars(bars_by_ticker)
     return HarnessReport(
         no_lookahead=_check_no_lookahead(events, bars_by_ticker, config),
