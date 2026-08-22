@@ -79,6 +79,86 @@ of headroom against a daily increment measured in kilobytes is a long
 runway, and that all three fixes cost something real now to solve a problem
 that is months away. Revisit when the number moves, not on a schedule.
 
+**It moved on 2026-08-21, and the store filled.** ADR 145's rebuild took
+`events` from 783,762 to 865,984 rows locally, and that night's `cscan sync`
+died on the real limit rather than an estimate:
+
+```
+psycopg.errors.DiskFull: could not extend file because
+project size limit (512 MB) has been exceeded
+```
+
+*The increment is not "measured in kilobytes" when a config is rebuilt.* The
+entry above sized the daily nightly correctly and missed that a rebuild
+resyncs the whole window at once. Any future ADR that moves `config_hash`
+or widens the universe does the same.
+
+**What was done that night**, in order, with measurements:
+
+```
+490 MB  before
+308 MB  after deleting the superseded 86e91448a65aa40b (298,389 events,
+        1,636 benchmarks, 448 cell_stats) + VACUUM FULL events
+425 MB  after re-running sync with the current data
+362 MB  after VACUUM FULL on indicators (46,489 dead) and universe (4,521)
+```
+
+**`DELETE` alone frees nothing.** It leaves dead tuples, and the size is
+unchanged until `VACUUM FULL` rewrites the table. Plain `VACUUM` makes the
+space reusable — enough to stop "could not extend file" — but only
+`VACUUM FULL` returns it. `events` went 203 MB -> 21 MB that way.
+
+**Neon's dashboard and `pg_database_size` disagree, and Neon's is the one
+that enforces.** Postgres reported 425 MB while the dashboard showed
+0.37 GB; the gap was dead tuples. Size this against the dashboard.
+
+**Pruning superseded config hashes is the cheap recurring lever** and is not
+in the three options above. The serving store had two hashes and 90% of its
+events belonged to a hash nothing reads. That will be true again after every
+rebuild, and unlike the three options it costs nothing anyone can see.
+
+**Narrowing by `split_key` does not work, though it looks like it should.**
+The store is 91% `holdout` (122,098 of 133,542) against 11,444 `validate`,
+which suggests dropping holdout as an easy 90% cut. It is not: the serving
+window opens 2023-08-22 and `holdout` opens 2024-01-02, so *most of the
+window is holdout by construction*, and those are exactly the rows the
+ticker page renders — `v_chart` and `v_events` deliberately carry no split
+predicate (ADR 122). Dropping them would empty the charts. Statistics are
+unaffected either way, since every statistical consumer hardcodes
+`split_key = 'validate'`.
+
+**Still open**: `run_sync` never deletes, so rows that age past
+`ServingParams.history_years` remain forever. Pruning superseded hashes
+buys time; it does not change the direction.
+
+---
+
+### `cscan sync` always exits 1 against Neon
+
+The final step pins the config hash on the serving database:
+
+```
+ALTER DATABASE "neondb" SET capitalscan.default_config_hash = ...
+InsufficientPrivilege: permission denied to set parameter
+```
+
+Neon does not grant `ALTER DATABASE ... SET` to non-superuser roles. **The
+sync itself succeeds** — 2026-08-21 wrote events, cell_stats and benchmarks
+in full and then raised on this line, 15m43s in.
+
+**Nothing is broken by the failure.** ADR 115 made the serving views read
+the one-row `serving_config` *table* rather than the GUC, and `sync` writes
+that table before it reaches the pin. The site serves correctly.
+
+**Two things it does cost.** A working job reports `status = 'failed'`, so
+the `runs` history cannot be read for whether serving is current. And
+`report.rows_written` is assigned after the pin, so the row count is lost —
+the failed run recorded `rows_written = 0` having written ~100,000 rows.
+
+**Fix**: catch `InsufficientPrivilege` on the pin, warn, and continue. The
+GUC is a convenience for `psql` sessions; the table is the authority. Assign
+`rows_written` before the pin regardless.
+
 ---
 
 ---
