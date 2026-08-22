@@ -151,8 +151,16 @@ NYSE rule that could have been written in 2010.
 
 ### The validation harness is single-threaded and takes ~6 hours
 
-**Measured 2026-08-21**: 5h58m for 865,984 events / 543 tickers, at a
-sustained 99.5% of *one* core. CLAUDE.md's "more workers do not shorten it"
+**Measured 2026-08-21**: **3h58m35s** for 865,984 events / 543 tickers, at a
+sustained 99.5% of *one* core.
+
+**The cost is driven by tickers, not events.** A prediction of 5h58m was made
+that afternoon by scaling CLAUDE.md's 4h19m linearly on event count
+(627,380 -> 865,984, 1.38x). That was wrong by 47%. `_check_no_lookahead`
+dominates, and it walks **bars**, not events: six passes over
+`tickers x bars_per_ticker`. The universe went from 590 tickers to 543, so
+`4h19m x 543/590 = 3h58m` — which is what it took, to the minute. Estimate
+future runs from ticker count; event count is close to irrelevant. CLAUDE.md's "more workers do not shorten it"
 is accurate — there is no pool, no chunking and no `max_workers` anywhere in
 `research/harness.py`. It is structurally serial, not configurably serial.
 
