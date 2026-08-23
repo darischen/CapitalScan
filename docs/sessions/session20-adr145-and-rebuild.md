@@ -218,12 +218,35 @@ ADR-share + mcap fix 4,946 stale events, 22,744 path rows, 7 tickers
 The 7 were exactly the 7 that lost membership: NTES 2252, ONC 1152, HTHT
 740, GRMN 328, PKG 288, AAP 144, SIMO 42.
 
-**The sweep**, run after compute and finalize, before the harness:
+**The sweep**, run after compute and finalize, before the harness.
+
+**The form below is WRONG and cost a real run on 2026-08-22.** It is kept
+because the corrected version is only legible next to it:
 
 ```sql
+-- BROKEN: matches nothing if an earlier compute ran the same day.
 DELETE FROM events
  WHERE config_hash = :chash AND run_id < 'backtest_compute_<today>';
 ```
+
+`'backtest_compute_20260822T093630_09c468d1'` sorts **greater** than
+`'backtest_compute_20260822'`, so a same-day predecessor is never matched.
+The sweep printed `DELETE 0`, the verification query reused the same
+predicate and printed `0 stale`, and 644 events across AAP, ALK and ENSG
+went into the harness. Use the current compute's first `run_id`:
+
+```sql
+DELETE FROM events
+ WHERE config_hash = :chash
+   AND run_id LIKE 'backtest_compute_%'
+   AND run_id < :first_run_id_of_this_compute;
+```
+
+The `LIKE` guard is load-bearing: without it the delete also takes the
+`events_*` rows, which are a different population (ADR 122).
+
+**And verify with a different predicate than you deleted with.** Reusing it
+makes the check circular, which is what hid this for two steps.
 
 Correct because a full compute covers every ticker, so anything still
 carrying an older `run_id` is an event the current population does not
