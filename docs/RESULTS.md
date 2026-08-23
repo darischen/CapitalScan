@@ -3704,3 +3704,75 @@ mega-cap: AAPL sits at $4.25T. ADR 146 removes the cause at ingest, and
 `scripts/adr146_clear_scale_errors.sql` clears the 33 rows already stored —
 deliberately deferred to the next rebuild, since propagating it here would
 mean redoing the compute and harness phases this run has already finished.
+
+---
+
+## ADR 112 on the fully corrected universe — 2026-08-22 (stage 7)
+
+**ADR 112 holds a sixth time.** This is the first measurement with every
+known market-cap defect fixed: the split basis (ADR 145), the ADR share
+counts, the `McapPlausibility` ceiling, and the x1,000 scale class (ADR 146).
+
+| | train | | validate | |
+|---|---|---|---|---|
+| | scored | survive | scored | survive |
+| ADR 112 (`86e91448a65aa40b`) | 48 | **0** | 28 | **0** |
+| ADR 142 (`bbc99a02ebdc999f`) | 48 | **0** | 28 | **0** |
+| ADR 145 (`f66729c7eda212a4`) | 48 | **0** | 28 | **0** |
+| stage 6 rebuild | 48 | **0** | 28 | **0** |
+| stage 7, ADR 146 | 48 | **0** | 28 | **0** |
+| min q | 0.6729 | | 0.7317 | |
+
+The scored denominator is 48/28 in all five. Minimum q on train has moved
+0.6030 -> 0.6400 -> 0.6729 across the three corrections, each time further
+from significance rather than closer.
+
+**Population.** 51,837 universe rows, **6,295 in_trade** across 540 tickers;
+863,489 events across 857 tickers. Against stage 6 that is -4 in_trade
+quarters and -644 events, which is exactly the x1,000 correction: AAP, ALK
+and ENSG lose the quarters whose market caps were wrong by three orders of
+magnitude.
+
+**Market cap after the fix.** Zero universe rows above $5T, against five
+before (one `in_trade`). The maximum is now **$4.84T**, which is AAPL and is
+real. Every corrupt row fell by exactly 1000x — AAP 2011-12-31 $5,044B ->
+$5.3B, SWKS 2012-03-31 $5,210B -> $5.2B, MAA 2014-06-30 $5,479B -> $5.5B,
+WWD 2020-09-30 $5,001B -> $5.0B, ALK 2011 $2,453B -> $2.5B.
+
+**Harness:** all five checks PASS on 863,489 events / 857 tickers.
+
+### The benchmark arms
+
+| arm, pooled | train | validate |
+|---|---|---|
+| dca_hybrid | 4.5634 | 0.0800 |
+| buy_hold | 4.3767 | -0.0309 |
+| dca_lump | 4.3767 | -0.0309 |
+| dca_fixed | 4.3449 | 0.1043 |
+| **signal** | **2.4920** | **0.1385** |
+| trim | 2.2707 | 0.0082 |
+| dca_signal | 1.7717 | 0.1243 |
+| random null, mean | 1.5354 | -0.1250 |
+| random null, 97.5th pct | 2.6777 | 0.0097 |
+
+Train is unchanged in substance: the signal arm returns 2.4920 against a
+null 97.5th percentile of 2.6777, below it, and 57% of buy-and-hold.
+Validate still disagrees, still recorded: signal is best of eight arms at
+0.1385 while buy-and-hold is negative, with zero cells surviving FDR beneath
+it. The holdout remains unspent.
+
+### The stale-event sweep nearly corrupted this
+
+The sweep predicate `run_id < 'backtest_compute_<today>'`, which the session
+20 notes prescribe, **matched nothing** — an earlier compute had run the same
+day, and `'backtest_compute_20260822T093630_...'` sorts greater than
+`'backtest_compute_20260822'`. The sweep printed `DELETE 0` and the
+verification query reused the same predicate, so it printed `0 stale` and
+confirmed its own error.
+
+644 events across AAP, ALK and ENSG reached the harness, which **passed**:
+those three tickers were absent from the new run entirely, so there was no
+competing cluster head for `_check_non_overlap` to catch. Found by grouping
+`events` by `run_id` directly. Corrected form and the rule it produced —
+verify with a different predicate than you deleted with — are in the session
+20 notes and `scripts/adr146_clear_scale_errors.sql`.
