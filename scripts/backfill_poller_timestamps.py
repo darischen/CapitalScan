@@ -25,6 +25,26 @@ last restarted on the old code.
     uv run python scripts/backfill_poller_timestamps.py --before '...' --apply
 
 Without `--apply` it prints what it would change and touches nothing.
+
+**`--tables` is mandatory once any table has been corrected.** One cutoff is
+applied to every entry in `TABLES`, so a blanket second run re-shifts the
+tables the first run already fixed -- and a double shift is invisible
+afterwards, for exactly the reason the watermark exists. `signal_reports`
+and `quotes_live` were corrected on 2026-08-19; `poller_sessions` was not,
+because it was not in the list at the time. The remaining run is:
+
+    uv run python scripts/backfill_poller_timestamps.py
+        --before '2026-08-19 00:00:00+00'
+        --tables poller_sessions --apply
+
+That cutoff shifts the 11 rows from 2026-08-03 to 2026-08-18 and leaves
+08-19 onward alone. It was chosen by measuring `poller_sessions.started_at`
+against `runs.started_at` for the same day -- `runs` is written by SQL and
+was never affected -- which puts the pre-fix rows at exactly 4.000 hours and
+the post-fix rows at 0.000. Do not derive it from `min(signal_reports
+.fired_at)` instead: `poller_sessions` is keyed on `session_date` and holds
+one row per day, so on a day the poller was restarted the session row
+describes the last run while the fires span all of them.
 """
 
 from __future__ import annotations
@@ -47,6 +67,13 @@ _CORRECT = "({col} AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York'"
 TABLES = (
     ("signal_reports", "fired_at"),
     ("quotes_live", "ts"),
+    # Added 2026-08-24. `poller_sessions` was written by the same buggy
+    # `_now_et` and was missed by the original run, so its rows still hold
+    # naive ET. Measured against `runs.started_at`, which SQL wrote and is
+    # therefore correct: 11 session rows (2026-08-03..08-18) sit exactly
+    # 4.000 hours early, and 08-19 onward sit at 0.000.
+    ("poller_sessions", "started_at"),
+    ("poller_sessions", "ended_at"),
 )
 
 
@@ -63,7 +90,26 @@ def main() -> int:
         action="store_true",
         help="Actually write. Without it, prints the plan and exits.",
     )
+    parser.add_argument(
+        "--tables",
+        nargs="+",
+        metavar="TABLE",
+        help="Restrict to these tables. REQUIRED once any table has already "
+        "been corrected: one cutoff is applied to every entry in TABLES, so "
+        "a blanket run re-shifts the tables the previous run fixed. "
+        "signal_reports and quotes_live were corrected 2026-08-19; "
+        "poller_sessions was not.",
+    )
     args = parser.parse_args()
+
+    selected = TABLES
+    if args.tables:
+        wanted = set(args.tables)
+        unknown = wanted - {t for t, _ in TABLES}
+        if unknown:
+            print(f"unknown table(s): {sorted(unknown)}")
+            return 1
+        selected = tuple((t, c) for t, c in TABLES if t in wanted)
 
     cutoff = datetime.fromisoformat(args.before)
     engine = db_io.get_engine()
@@ -87,7 +133,7 @@ def main() -> int:
             return 1
 
         total = 0
-        for table, col in TABLES:
+        for table, col in selected:
             n = conn.execute(
                 text(f"SELECT count(*) FROM {table} WHERE {col} <= :cutoff"),  # noqa: S608
                 {"cutoff": cutoff},
@@ -99,7 +145,7 @@ def main() -> int:
             print(f"\ndry run: {total:,} rows would shift. Re-run with --apply.")
             return 0
 
-        for table, col in TABLES:
+        for table, col in selected:
             expr = _CORRECT.format(col=col)
             conn.execute(
                 text(f"UPDATE {table} SET {col} = {expr} WHERE {col} <= :cutoff"),  # noqa: S608

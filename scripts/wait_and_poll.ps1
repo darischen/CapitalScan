@@ -2,7 +2,17 @@
     [int]$PollIntervalSeconds = 300
 )
 
-$marketOpen = [TimeSpan]"06:30:00"  # 9:30 AM ET = 6:30 AM PT
+# Start 15 minutes after the bell (user's decision, 2026-08-24). The open
+# is still 06:30 PT; this is when we begin polling it.
+#
+# **This caps `coverage_pct` at ~96% permanently.** `poll.py` computes
+# `ticks_expected = SESSION_SECONDS / interval`, a fixed 78 ticks for a
+# 06:30-13:00 session, independent of when the poller actually starts. From
+# 06:45 the most that can complete is 75. That is honest -- there really is
+# a 15-minute gap -- but ADR 084 makes `poller_sessions.coverage_pct` the
+# record a Phase 6 analysis reads to tell "no coverage" from "no signals",
+# so a permanent 4% shortfall is a number that has to be read knowing this.
+$marketOpen = [TimeSpan]"06:45:00"  # 9:45 AM ET = 6:45 AM PT
 $marketClose = [TimeSpan]"13:00:00" # 4:00 PM ET = 1:00 PM PT
 
 function Get-TimeLocal {
@@ -34,7 +44,7 @@ while ($true) {
         $timeUntilOpen = $marketOpen.Add([TimeSpan]::FromSeconds(30)) - $currentTime
         $minutesUntilOpen = [math]::Floor($timeUntilOpen.TotalMinutes)
         $secondsUntilOpen = [math]::Floor($timeUntilOpen.TotalSeconds % 60)
-        Write-Host "[WAIT] $(Get-Date -Format 'HH:mm:ss') - Waiting for market open (6:30 AM PT). Opens in ~${minutesUntilOpen}m ${secondsUntilOpen}s"
+        Write-Host "[WAIT] $(Get-Date -Format 'HH:mm:ss') - Waiting for poll start (6:45 AM PT, 15m after the 6:30 open). Starts in ~${minutesUntilOpen}m ${secondsUntilOpen}s"
         Start-Sleep -Seconds 10
         continue
     }
@@ -63,6 +73,23 @@ while ($true) {
     Write-Host "[MONITOR] Poller started (PID: $($pollerProcess.Id)). Monitoring for confluence signals..."
 
     $env:PGPASSWORD = "capscan"
+    # **Reset to 0 on every start, and the query below filters on
+    # `signal_date = CURRENT_DATE` rather than on "since this script
+    # started". So launching at noon REPLAYS the whole day** -- every signal
+    # already stored for today scrolls past and is written to the CSV,
+    # ordered by `fired_at`.
+    #
+    # That looks like the poller inventing history and is not. This script
+    # is two things at once: it launches the real poller (`cscan poll`,
+    # above) AND polls the database every 3s to display and export. The
+    # replay is the *display* half reading rows an earlier run wrote.
+    # Nothing re-fires -- `cscan poll` debounces against today's fired set
+    # in Postgres (DESIGN 4.8), and `channels_sent` is read from the stored
+    # row, so no notification is re-sent.
+    #
+    # It is deliberate rather than tolerated: the CSV is the session record,
+    # and deleting it to restart must reproduce a COMPLETE day rather than
+    # only the part after the restart.
     $lastEventId = 0
     $confluenceCount = 0
 
