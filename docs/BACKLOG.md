@@ -376,7 +376,24 @@ the training population with a NULL sector and **31 are ordinary equities**
 500 table — so every removed constituent ADR 035 deliberately keeps arrives
 blank. QQQ is 1,910 of 11,826 affected events.
 
-**Still open: backfill `sector` for those 31.** `jobs/fetch/nasdaq.py`
+**RESOLVED 2026-08-24 by ADR 148.** 254 of 352 candidates resolved from
+Yahoo, crosswalked to GICS. The training population now carries exactly
+eleven sector levels and the ADR 147 partition over all 386,208 live rows
+returns 384,298 trainable, 1,910 ETF, **0 must-fix**. Session 22 is
+unblocked.
+
+Writing the backfill surfaced a second, larger defect: `tickers.sector`
+held **two vocabularies**, so `Information Technology` (53,031 events) and
+`Technology` (4,513) were two levels for one sector, as were
+`Financials`/`Finance` and `Communication Services`/`Telecommunications`.
+ADR 147's gate tested only for NULL and would have passed that frame. It
+now rejects `non_canonical_sector` too.
+
+The 98 that did not resolve are delisted or renamed — YHOO, FB, PCLN,
+TWTR, ATVI, CERN, FRC, SIVB — none of which reaches the training
+population. They stay blank, per invariant 4.
+
+**Superseded, kept for the reasoning:** backfill `sector` for those 31. `jobs/fetch/nasdaq.py`
 already returns a sector per listing and it is never written to
 `tickers.sector`. A `tickers` update only — no universe rebuild, no
 backtest re-run, no `config_hash` move. ADR 147 makes the training frame

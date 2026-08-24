@@ -573,3 +573,51 @@ def fetch_chain(ticker: str, expiration: str | None = None) -> pd.DataFrame:
     calls["ticker"] = ticker
     calls["expiration"] = exp
     return calls
+
+
+@rate_limited(per_sec=RATE_LIMIT_PER_SEC)
+@with_retry
+def _download_info(ticker: str) -> dict:
+    """Uncached, rate-limited `Ticker.info`. Split out so `fetch_sector`
+    keeps the same shape as every other cached fetcher in this module."""
+    return dict(yf.Ticker(ticker).info or {})
+
+
+def _sector_key(ticker: str) -> str:
+    return ticker
+
+
+@cached(source="yahoo_sector_v1", key_fn=_sector_key)
+def fetch_sector(ticker: str) -> pd.DataFrame:
+    """Yahoo's sector and industry for one ticker (ADR 148).
+
+    **`Ticker.info` is used here and was rejected for shares, and the two
+    are not in tension.** `fetch_shares_full`'s docstring rejects
+    `info["sharesOutstanding"]` because it is one number true only *today*,
+    so stamping it onto every historical `as_of` reproduces the
+    "current constant held backward" error DESIGN 2.4 names. Sector is not a
+    series: DESIGN 7.3 lists it under **Static**, and a company's GICS
+    sector is a classification rather than a measurement. There is no
+    as-of to get wrong.
+
+    Returns a one-row frame rather than a string because `@cached` writes
+    with `to_parquet` and the cache contract is a DataFrame. An empty frame
+    means Yahoo has nothing, which is a skip note and not a failure -- a
+    delisted symbol is expected to return nothing.
+
+    The raw Yahoo vocabulary is returned unmapped. `core.sectors.
+    normalize_yahoo_sector` does the GICS rename, so this stays a fetcher
+    and the taxonomy decision stays pure and testable.
+    """
+    raw = _download_info(ticker)
+    if not raw:
+        return pd.DataFrame(columns=["ticker", "sector", "industry"])
+    return pd.DataFrame(
+        [
+            {
+                "ticker": ticker,
+                "sector": raw.get("sector"),
+                "industry": raw.get("industry"),
+            }
+        ]
+    )

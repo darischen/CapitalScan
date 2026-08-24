@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from capitalscan.core.sectors import is_canonical
+
 # Exchange-traded products in the tracked universe. QQQ is the only one with
 # a `tickers` row today; VOO and IBIT appear in
 # `jobs.ingest.SEC_NON_FILER_TICKERS` but have never been ingested.
@@ -75,6 +77,14 @@ def training_exclusion_reason(ticker: str | None, sector: str | None) -> str | N
         return "etf"
     if sector is None or not str(sector).strip():
         return "missing_sector"
+    # ADR 148. A sector in some other vocabulary is as unusable as a blank
+    # one: `tickers.sector` held both GICS and Nasdaq names, so
+    # `Information Technology` (53,031 training events) and `Technology`
+    # (4,513) were two levels for one sector. ADR 147's first gate checked
+    # only for NULL and would have passed that frame while it carried a
+    # split category, which is the defect this module exists to prevent.
+    if not is_canonical(sector):
+        return "non_canonical_sector"
     return None
 
 
@@ -102,5 +112,8 @@ def partition_for_training(
         elif reason == "etf":
             etf.append(i)
         else:
+            # `missing_sector` and `non_canonical_sector` share a bucket:
+            # both are data defects the caller must raise on, and both are
+            # repaired by re-resolving from the source of record (ADR 148).
             missing.append(i)
     return trainable, etf, missing

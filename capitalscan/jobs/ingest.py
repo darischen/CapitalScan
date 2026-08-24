@@ -21,6 +21,8 @@ from rich.progress import Progress
 from rich.table import Table
 from sqlalchemy import Engine, text
 
+from capitalscan.core import sectors as core_sectors
+from capitalscan.core import training as core_training
 from capitalscan.core import universe as core_universe
 from capitalscan.core.config import (
     DEFAULT_HOURLY_SPLIT_DETECTION,
@@ -1253,6 +1255,92 @@ SEC_NON_FILER_TICKERS = frozenset({"QQQ", "VOO", "IBIT"})
 # NULL-sector cell rather than being excluded, and ADR 041's earnings-window
 # exclusion silently does nothing for it. Tradeable and uncellable is a
 # state nothing in the schema forbids. See `BACKLOG.md`.
+
+
+def run_sector_backfill(
+    tickers: list[str] | None = None,
+    engine: Engine | None = None,
+) -> IngestReport:
+    """Resolve every non-canonical `tickers.sector` to a GICS sector (ADR 148).
+
+    Covers both defects with one pass, because both make the column unusable
+    as a categorical level and both are repaired the same way:
+
+    - **NULL sector.** `run_tickers_refresh` writes this column solely from
+      Wikipedia's *current* S&P 500 table, so removed constituents (kept
+      deliberately by ADR 035) and the ADR 143 Nasdaq additions arrive blank.
+    - **A sector in another vocabulary.** 620 rows carried Nasdaq's names, so
+      `Information Technology` and `Technology` were two levels for one
+      sector -- 53,031 against 4,513 training events.
+
+    **Re-resolved from Yahoo, never crosswalked from what is stored.** Nasdaq
+    and Yahoo both emit the string `"Technology"` and disagree about who is
+    in it: Nasdaq files NTES and BILI under it, while GICS and Yahoo both
+    call those Communication Services. Mapping the stored label would
+    reclassify a gaming company as Information Technology on the strength of
+    a matching string, which is precisely the fabricated value invariant 4
+    forbids. So the stored value is treated as *unknown* and the ticker is
+    looked up again.
+
+    **Anything Yahoo does not resolve stays blank.** No default, no
+    `Miscellaneous`, no inference from industry text. ADR 147's training
+    frame keeps raising on those rows until a real source resolves them,
+    which is the intended outcome rather than a gap.
+
+    Writes `tickers.sector` and nothing else. Sector is not in `config_hash`,
+    is not read by any `UniverseParams.required_criteria`, and is not a
+    component of `cell_id` (`cell_key` takes nine arguments and sector is not
+    among them), so **no universe rebuild and no backtest re-run**.
+    """
+    engine = engine or db_io.get_engine()
+    with run_job(engine, "sector_backfill", {"tickers": tickers}) as report:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT ticker, sector FROM tickers ORDER BY ticker")
+            ).fetchall()
+
+        wanted = {t.strip().upper() for t in tickers} if tickers else None
+        candidates = [
+            r.ticker
+            for r in rows
+            if core_sectors.needs_resolution(r.sector)
+            and (wanted is None or r.ticker in wanted)
+            # An ETF has no sector to resolve (ADR 147). Looking one up
+            # would invent the attribute rather than populate it.
+            and not core_training.is_etf(r.ticker)
+        ]
+
+        updates: list[dict] = []
+        unresolved: list[str] = []
+        for ticker in candidates:
+            try:
+                frame = yahoo.fetch_sector(ticker)
+            except Exception as exc:  # noqa: BLE001 - one bad symbol is a skip
+                unresolved.append(f"{ticker}({type(exc).__name__})")
+                continue
+            raw = None if frame.empty else frame.iloc[0].get("sector")
+            gics = core_sectors.normalize_yahoo_sector(raw)
+            if gics is None:
+                unresolved.append(ticker)
+                continue
+            updates.append({"ticker": ticker, "sector": gics})
+
+        if updates:
+            with engine.begin() as conn:
+                for row in updates:
+                    conn.execute(
+                        text("UPDATE tickers SET sector = :sector WHERE ticker = :ticker"),
+                        row,
+                    )
+
+        report.rows_written = len(updates)
+        report.rows_rejected = len(unresolved)
+        report.tickers = [u["ticker"] for u in updates]
+        report.notes = (
+            f"resolved {len(updates)} of {len(candidates)}; "
+            f"unresolved (left blank): {', '.join(sorted(unresolved)) or 'none'}"
+        )
+    return report
 
 
 def run_shares(

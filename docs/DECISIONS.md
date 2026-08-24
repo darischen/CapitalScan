@@ -189,6 +189,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 145 | Market cap prices split-adjusted closes against split-adjusted shares | Pinned. Extends ADR 014's filter; same defect class as `adr_adjusted_shares` |
 | 146 | The x1,000 share-scale class is caught by local shape, not by bounds | Pinned. Closes the gap `SharesPlausibility` documented and left open; extends ADR 145's rebuild |
 | 147 | ETFs do not train; a missing sector stops the build | Pinned. Implements ADR 068 for Phase 6; blocks Session 22; no `config_hash` move |
+| 148 | `tickers.sector` speaks one vocabulary, and it is GICS | Pinned. Completes 147 and tightens its gate; unblocks Session 22; no `config_hash` move |
 
 ---
 
@@ -5239,3 +5240,148 @@ in code from the ETF decision, so the two could never be varied separately.
 
 *Accept NULL because LightGBM handles missing values natively.* It does, by
 learning the missing branch. That is the defect, not a mitigation.
+
+---
+
+## 148. `tickers.sector` speaks one vocabulary, and it is GICS
+
+**Date:** 2026-08-24. **Status:** Pinned. Completes ADR 147 and tightens its gate. Unblocks Session 22. No `config_hash` move.
+
+**Context.**
+
+ADR 147 decided that ETFs do not train and that a NULL sector stops the
+build, and left one prerequisite: backfill `sector` for the 31 equities that
+reach the training population without one.
+
+Writing that backfill surfaced a second defect, larger than the one it was
+meant to fix. **`tickers.sector` held two vocabularies at once.** Measured
+over the training population under `f66729c7eda212a4`:
+
+| GICS | events | duplicate | events |
+|---|---|---|---|
+| Information Technology | 53,031 | `Technology` | 4,513 |
+| Financials | 61,846 | `Finance` | 1,429 |
+| Communication Services | 15,468 | `Telecommunications` | 791 |
+
+That is not three pairs of related sectors. It is three sectors written down
+twice, so the categorical feature carried fourteen levels where there are
+eleven, with the smaller half of each pair holding four to eighteen tickers.
+ADR 068 makes `sector` the granularity that replaces ticker identity, and a
+level of four tickers is most of the way back to identity — the same defect
+ADR 147 addresses, arriving from the other direction.
+
+The Nasdaq-vocabulary rows are the ADR 143 additions, all with `cik IS NULL`.
+No job writes them: `run_tickers_refresh` writes only Wikipedia's
+`gics_sector`, so they were populated by a one-off path during that
+expansion.
+
+**ADR 147's gate did not catch this**, and would not have. It tested for a
+NULL sector only, so a frame carrying both `Technology` and `Information
+Technology` passed it while holding a split category.
+
+**Decision.**
+
+**1. GICS is canonical.** `tickers.sector` may hold only the eleven GICS
+sector names, spelled as Wikipedia's constituent table spells them. That is
+what `run_tickers_refresh` has always written and what the majority of the
+population already carried, so canon follows the incumbent rather than
+introducing a third vocabulary.
+
+**2. Yahoo is the source of record for anything Wikipedia does not cover**,
+crosswalked to GICS by `core.sectors.normalize_yahoo_sector`. Yahoo's scheme
+has the same eleven top-level sectors and assigns membership the way GICS
+does, so the crosswalk is a rename.
+
+**3. A non-canonical stored value is re-resolved, never crosswalked.** This
+is the load-bearing rule and the reason the function is named for its source.
+
+**4. Anything that does not resolve stays blank**, and ADR 147's training
+frame keeps raising on it.
+
+**5. ADR 147's gate is tightened.** `training_exclusion_reason` returns a new
+`non_canonical_sector` alongside `missing_sector`.
+
+**Rationale.**
+
+*Why stored values are re-resolved rather than mapped.* Nasdaq and Yahoo both
+emit the string `"Technology"`, and **they do not mean the same set of
+companies.** Nasdaq files NTES (Electronic Gaming & Multimedia) and BILI
+(Internet Content & Information) under it; GICS and Yahoo both call those
+Communication Services.
+
+So a general `normalize(stored_value)` cannot exist. Given `"Technology"` it
+cannot know whether the row came from Nasdaq, where NTES belongs in
+Communication Services, or from Yahoo, where it belongs in Information
+Technology. Mapping the stored label would move 473 NTES events and 89 BILI
+events into the wrong sector on the strength of a matching string — a
+fabricated classification, which invariant 4 forbids and which
+`is_depositary_listing` already records as the way inference from the data's
+own shape produces "a plausible-looking wrong number".
+
+Treating the stored value as *unknown* and looking the ticker up again costs
+one request per row and cannot make that error.
+
+*Why Yahoo, given `fetch_shares_full` rejected `Ticker.info`.* That rejection
+is specific and does not generalise. `info["sharesOutstanding"]` is one
+number true only today, so stamping it onto every historical `as_of`
+reproduces the "current constant held backward" error DESIGN §2.4 names.
+Sector is not a series: DESIGN §7.3 lists it under **Static**, and a GICS
+sector is a classification rather than a measurement. There is no as-of to
+get wrong. `fetch_sector` records this next to the rejection so the two are
+not read as contradictory.
+
+*Why unresolved rows stay blank.* 98 of 352 candidates did not resolve, and
+essentially all are delisted or renamed — YHOO, FB (now META), PCLN (now
+BKNG), TWTR, ATVI, CERN, FRC, SIVB. Yahoo 404s on them. None reaches the
+training population, so the correct outcome is a blank column and a build
+that keeps refusing, not a plausible label.
+
+**Measurement.**
+
+`cscan`-invoked `run_sector_backfill`, 2026-08-24: **254 resolved of 352
+candidates** (211 NULL, 142 non-canonical, less QQQ). Training population
+after:
+
+- Exactly **eleven** sector levels, all GICS.
+- `Technology`, `Finance` and `Telecommunications` are gone; their events
+  merged into the correct GICS levels (Information Technology 53,031 →
+  61,757; Financials 61,846 → 63,318; Communication Services 15,468 →
+  17,319).
+- The ADR 147 partition over all 386,208 live training rows: **384,298
+  trainable, 1,910 filtered as ETF, 0 must-fix.** The only remaining NULL is
+  QQQ, which ADR 147 excludes by decision.
+
+**Consequences.**
+
+- `core/sectors.py` is new: pure, no IO. `GICS_SECTORS`, `is_canonical`,
+  `normalize_yahoo_sector`, `needs_resolution`.
+- `jobs/fetch/yahoo.py::fetch_sector`, cached under `yahoo_sector_v1`.
+- `jobs/ingest.py::run_sector_backfill`. Writes `tickers.sector` and nothing
+  else. Sector is not in `config_hash`, is not read by any
+  `UniverseParams.required_criteria`, and is not a component of `cell_id`,
+  so **no universe rebuild and no backtest re-run**. Verified: `config_hash`
+  unchanged at `f66729c7eda212a4`.
+- **Session 22 is unblocked.** ADR 147's prerequisite is met.
+- `run_tickers_refresh` still writes Wikipedia's `gics_sector` directly,
+  which is already canonical. A future re-run cannot reintroduce the Nasdaq
+  vocabulary, because no job ever wrote it.
+- **Known gap, deliberate.** The backfill is a single transaction at the end
+  of a ~20-minute network job rather than checkpointed, against CLAUDE.md's
+  "checkpoint anything over 10 minutes". It is atomic, so a failure writes
+  nothing rather than half a taxonomy, and the job is re-runnable because
+  `needs_resolution` re-selects exactly the rows still unfixed. Checkpoint it
+  before running it over a materially larger candidate set.
+
+**Alternatives rejected.**
+
+*Crosswalk the stored Nasdaq labels.* Cheaper, no network, and wrong: it
+misclassifies NTES and BILI, and it cannot be made right because the two
+vocabularies disagree on membership rather than spelling.
+
+*Adopt Nasdaq's vocabulary as canonical.* It has no `Communication Services`,
+carries a `Miscellaneous` bucket with no GICS equivalent, and would require
+relabelling the 198 GICS rows Wikipedia maintains on every refresh.
+
+*Leave the collision and fix only the NULLs.* What ADR 147 asked for, and it
+fails on its own terms: the frame would satisfy the NULL gate while feeding
+the model a category split in half.
