@@ -171,6 +171,24 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 127 | The poller clock is timezone-aware | Pinned. Every stored poller timestamp was four hours early |
 | 128 | Today's session is a candle in its own table | Pinned. `bars_live`; a partial row in `bars` would be silent look-ahead |
 | 129 | `in_trade` fails closed | Accepted, not executed. 11.9% of train was admitted by a missing snapshot |
+| 130 | The chat route holds the tool loop, and holds nothing else | Pinned. Implements ADR 118 for `/chat`; no Python runs in the request path |
+| 131 | What moves during a session is polled by the client, not re-rendered by the server | Pinned. Completes ADR 128 |
+| 132 | The caller names the grain; the default is the compatible one | Pinned. Closes backlog item 2; `GRID_ENTRY_KIND` unchanged |
+| 133 | The ticker history reads a grain that is defined for every signal type | Pinned. Adds `v_ticker_events` |
+| 134 | A live price exists only during the session | Pinned. Adds `market_is_open()`; completes ADR 131 |
+| 135 | A universe evaluation must rest on data from inside the period it describes | Pinned. First consumer for `UniverseParams.rebalance_freq`; no `config_hash` move |
+| 136 | No edge interval is stored, and the rate interval answers the question | Pinned. Rejects DESIGN 11.2's edge bar as specified |
+| 137 | The served subset is three years, and ADR 053's sizing predates the chart | Pinned. Amends ADR 053's estimate, not its decision; implements `cscan sync` |
+| 138 | The deployment authenticates itself, and opening it is an explicit act | Pinned. Currently disabled by request — `SITE_AUTH_DISABLED=1`, open in `BACKLOG.md` |
+| 139 | The screener links out to a stored chart, and the indicators live on someone else's server | Pinned |
+| 140 | The nightly is authoritative for every grain, and the poller's observation is not an entry price | Pinned |
+| 141 | The screener sorts in SQL over the whole day, and shows all of it | Pinned |
+| 142 | Agreement means agreeing about the state, not being close | Pinned. Supersedes ADR 044's rule as the sole test; forces a `config_hash` move and a full rebuild |
+| 143 | The universe is seeded from two sources, and the floor drops to $20B | Pinned. Moves `config_hash` to `f66729c7eda212a4` |
+| 144 | The long side gets its own close-confirmed type, defined dormant | Pinned, **not enabled**. Mirrors ADR 108/109 onto the long side |
+| 145 | Market cap prices split-adjusted closes against split-adjusted shares | Pinned. Extends ADR 014's filter; same defect class as `adr_adjusted_shares` |
+| 146 | The x1,000 share-scale class is caught by local shape, not by bounds | Pinned. Closes the gap `SharesPlausibility` documented and left open; extends ADR 145's rebuild |
+| 147 | ETFs do not train; a missing sector stops the build | Pinned. Implements ADR 068 for Phase 6; blocks Session 22; no `config_hash` move |
 
 ---
 
@@ -4660,6 +4678,182 @@ The revert, if this is judged wrong: remove the field from `PERMITTED_ON_BAR` in
 **A migration exists and was not applied.** `c3f91a70b8d4` adds `indicators.bull_close_below_lower`, nullable, no server default -- a default would populate every existing row with False, asserting a negative that was never measured. It was written while a backtest held the table and `cscan db migrate` takes an ACCESS EXCLUSIVE lock.
 
 
+---
+
+
+## 145. Market cap prices split-adjusted closes against split-adjusted shares
+
+**Date:** 2026-08-21. **Status:** Pinned. Extends ADR 014's filter; same defect class as `adr_adjusted_shares`.
+
+**Context.**
+
+`jobs/compute.py` priced every quarter's market cap as:
+
+```python
+mcap = shares * float(ind_row["close"])
+```
+
+`close` comes from `bars` and is **split-adjusted**. Yahoo re-adjusts the
+entire price history whenever a new split lands, so every close is expressed
+in today's share basis. `shares` comes from `shares_outstanding` and is the
+count **as filed** that quarter. The two agree only while no split has
+occurred between the filing and today.
+
+Found while explaining why CHRW carried only two months of events. It does,
+and correctly — CHRW is in-trade for one of 66 quarters — but checking the
+criterion that decides that surfaced this.
+
+**Measurement.** AAPL, whose splits bracket the study window:
+
+| `as_of` | Priced | Actual | Ratio | Splits after the filing |
+|---|---|---|---|---|
+| 2011-06-30 | $11.1B | ~$310B | 28x | 7:1 (2014-06-09), 4:1 (2020-08-31) |
+| 2016-06-30 | $130.9B | ~$523B | 4x | 4:1 (2020-08-31) |
+| 2021-06-30 | $2,285B | ~$2,285B | 1x | none |
+
+The ratio is exactly the cumulative split factor and vanishes once the filed
+count has absorbed those splits. KLAC shows the same signature at 10x (split
+2026-06-12, latest filing 2026-04-30): $9.4B priced against ~$95B.
+**446 of ~929 tickers carry at least one split.**
+
+**Decision.**
+
+`core.universe.split_adjusted_shares(shares, ratios)` restates the filed
+count onto the price series' basis before pricing, alongside the existing ADR
+correction. `jobs/compute.py::_latest_shares` now returns `(shares,
+filed_on)`, and `_split_ratios_since` reads every split with `ex_date >
+filed_on`.
+
+**`ratios` includes splits dated after `as_of`, and that is not look-ahead.**
+Market cap is split-invariant: adjust price and shares by the same factor and
+the product does not move. The price side has *already* absorbed those later
+splits, so the only requirement is that both sides share one basis. Filtering
+to `ex_date <= as_of` would leave price adjusted further than shares, which
+is the bug. `test_split_adjusted_shares.py` states this as a property rather
+than as prose.
+
+**Consequences.**
+
+- **The historical trade universe was undersized and biased.** `crit_mcap`
+  decides `in_trade`, `in_trade` gates `apply_eligibility` (DESIGN §5.2 step
+  4), and eligibility decides which events the backtest writes at all. The
+  bias favoured names that never split, and grew with distance into the past.
+  AAPL's first in-trade quarter was 2012-09-30; it should be in-trade from
+  the start.
+- **Every published result predates the fix**, ADR 112 included. This does
+  not by itself overturn ADR 112 — a larger, less biased universe can move a
+  negative result either way — but ADR 112's third confirmation was measured
+  on a distorted membership and must be re-measured before it is quoted
+  again.
+- **`mcap_usd` and `mcap_rank` are stored on every event as context tags**,
+  so anything conditioning on company size inherited the error. Same
+  consequence ADR 014's TSM defect had, at far greater scope.
+- The fix changes no config field, so `config_hash` does not move. The
+  universe must be rebuilt and the backtest re-run for the corrected
+  membership to reach `events`.
+
+**What this does not fix.** `bars.close` remains the split-adjusted series
+and should: indicators depend on it (CLAUDE.md, Price series). The correction
+belongs on the share count, which is the side that was stale.
+
+---
+
+## 146. The x1,000 share-scale class is caught by local shape, not by bounds
+
+**Date:** 2026-08-22. **Status:** Pinned. Closes the gap `SharesPlausibility` documented and left open; extends ADR 145's rebuild.
+
+**Context.**
+
+`SharesPlausibility` tests one filing against an absolute band and states its
+own blind spot precisely: *"a x1,000 error on a company with real shares in
+the tens of millions (tens of billions after corruption) now lands inside
+`[min_shares, max_shares]` and is accepted undetected."* It enumerates the
+casualties by ticker — 26 filings across 12 tickers — and the widening from
+32B to 320B that created the gap was itself deliberate and correct, because a
+real 10:1 split on Citigroup would otherwise freeze that ticker forever.
+
+`BACKLOG.md` deferred the fix to "the next rebuild, where it costs nothing
+extra". This is that rebuild.
+
+**The obvious fix is already refuted, in the code.** `SharesPlausibility`
+argues against a test relative to the ticker's own history and gives the
+counterexample: PSKY's median **is** the corruption (two of its three filings
+are a placeholder-shaped `1,000`), so a median test flags its one genuine
+filing. That argument stands and is not overturned here.
+
+**Decision.**
+
+`core.universe.scale_error_indices(shares, bounds)` compares each filing to
+the median of its four nearest neighbours *per side* and flags it only when
+both hold:
+
+1. it exceeds that local median by more than 50x, and
+2. dividing by **exactly 1,000** puts it back within 5x of its neighbours.
+
+Tickers with fewer than 8 filings are not judged at all. `jobs.ingest`
+applies it per ticker after the `(ticker, filed_on)` dedup and **rejects**
+the rows to `bar_rejects` under rule `shares_scale_error_x1000`. Nothing is
+divided or corrected: condition 2 is a precondition for rejection, not a
+repair.
+
+**Why a local window survives PSKY and a global one does not.**
+
+- **PSKY has three filings.** The minimum-filings gate declines to rule
+  rather than out-voting it. Silence is the correct answer from two data
+  points.
+- **WULF is the case a global test gets backwards.** TeraWulf diluted from a
+  tiny base, so 16 consecutive **genuine** filings sit up to 247x its global
+  median and a global rule would reject every one. Locally each is 1.0-1.3x
+  its neighbours and no window looks at it twice.
+- **A real split persists; a tagging error returns.** NVDA's 10:1 is the
+  largest real step in the tracked universe and holds at ~1.8x a straddling
+  window. The errors spike ~1,000x and drop back three to four filings later.
+
+**Naming the factor is what keeps this inside invariant 4.**
+`_implausible_shares_reason` refuses to infer a scale factor from the data's
+own shape, because "a wrong guess turns into a plausible-looking wrong
+number". Condition 2 tests one hard-coded factor and rejects the row when it
+fits. An anomaly a x1,000 scale does not explain is left alone — a ~100x
+spike is not touched, because removing it would require inferring some other
+factor. The guard only removes rows whose corruption it can name.
+
+**Measurement.** Swept over all 142,278 rows of `shares_outstanding`:
+**33 filings across 17 tickers**, every one ending in exactly `000` and every
+one recovering to a plausible count.
+
+It reproduces the docstring's hand-curated list exactly — AAP (4), GRMN (5),
+PKG (3), ALK (3), FTNT (2), SWKS (2), MAA (2), and one each for AIZ, CNX,
+EOG, PNR, REG — and adds 7 across 5 tickers ingested after that note was
+written: BNTX (2), ENSG (2), CRNX, SANM, WWD. BNTX and WWD had already been
+confirmed by hand in `BACKLOG.md` as "the same class ... not in the note's
+list", so the detector found them independently.
+
+Zero false positives. WULF, PSKY, BRK-B and EXE are all absent.
+
+**Consequences.**
+
+- The four new fields live on `SharesPlausibility`, which is deliberately
+  **not** a `Config` field, so `config_hash` does not move (same rationale as
+  `SweepParams`). Propagating the fix still needs a `universe` rebuild and a
+  backtest re-run, which is why it is done inside this one.
+- **Ingest is fixed from now; the 33 rows already stored are not.** A future
+  `run_shares` never re-offers a rejected accession, so the existing rows
+  need a one-off delete before the universe rebuild that follows.
+- This closes the `crit_mcap` half of the defect. Six `in_trade` quarters
+  passed the market-cap criterion on a number wrong by three orders of
+  magnitude.
+- **The ADR-ratio class is untouched** and remains the more damaging of the
+  two, being systematic rather than a rare filer error. It stays open in
+  `BACKLOG.md`.
+
+**Relationship to the `McapPlausibility` ceiling.** The $6T ceiling stays.
+It is a last-resort catch on the *output* and covers corruption classes this
+does not (the x10^5/x10^6 rows above 320B). This guard removes the cause;
+that one logs whatever still gets through.
+
+
+---
+
 ## Open items
 
 | Item | Options | Current lean |
@@ -4907,172 +5101,141 @@ Holdout evaluation runs once, at the end, and gets published whatever it says.
 
 ---
 
-## 145. Market cap prices split-adjusted closes against split-adjusted shares
+## 147. ETFs do not train; a missing sector stops the build
 
-**Date:** 2026-08-21. **Status:** Pinned. Extends ADR 014's filter; same defect class as `adr_adjusted_shares`.
-
-**Context.**
-
-`jobs/compute.py` priced every quarter's market cap as:
-
-```python
-mcap = shares * float(ind_row["close"])
-```
-
-`close` comes from `bars` and is **split-adjusted**. Yahoo re-adjusts the
-entire price history whenever a new split lands, so every close is expressed
-in today's share basis. `shares` comes from `shares_outstanding` and is the
-count **as filed** that quarter. The two agree only while no split has
-occurred between the filing and today.
-
-Found while explaining why CHRW carried only two months of events. It does,
-and correctly — CHRW is in-trade for one of 66 quarters — but checking the
-criterion that decides that surfaced this.
-
-**Measurement.** AAPL, whose splits bracket the study window:
-
-| `as_of` | Priced | Actual | Ratio | Splits after the filing |
-|---|---|---|---|---|
-| 2011-06-30 | $11.1B | ~$310B | 28x | 7:1 (2014-06-09), 4:1 (2020-08-31) |
-| 2016-06-30 | $130.9B | ~$523B | 4x | 4:1 (2020-08-31) |
-| 2021-06-30 | $2,285B | ~$2,285B | 1x | none |
-
-The ratio is exactly the cumulative split factor and vanishes once the filed
-count has absorbed those splits. KLAC shows the same signature at 10x (split
-2026-06-12, latest filing 2026-04-30): $9.4B priced against ~$95B.
-**446 of ~929 tickers carry at least one split.**
-
-**Decision.**
-
-`core.universe.split_adjusted_shares(shares, ratios)` restates the filed
-count onto the price series' basis before pricing, alongside the existing ADR
-correction. `jobs/compute.py::_latest_shares` now returns `(shares,
-filed_on)`, and `_split_ratios_since` reads every split with `ex_date >
-filed_on`.
-
-**`ratios` includes splits dated after `as_of`, and that is not look-ahead.**
-Market cap is split-invariant: adjust price and shares by the same factor and
-the product does not move. The price side has *already* absorbed those later
-splits, so the only requirement is that both sides share one basis. Filtering
-to `ex_date <= as_of` would leave price adjusted further than shares, which
-is the bug. `test_split_adjusted_shares.py` states this as a property rather
-than as prose.
-
-**Consequences.**
-
-- **The historical trade universe was undersized and biased.** `crit_mcap`
-  decides `in_trade`, `in_trade` gates `apply_eligibility` (DESIGN §5.2 step
-  4), and eligibility decides which events the backtest writes at all. The
-  bias favoured names that never split, and grew with distance into the past.
-  AAPL's first in-trade quarter was 2012-09-30; it should be in-trade from
-  the start.
-- **Every published result predates the fix**, ADR 112 included. This does
-  not by itself overturn ADR 112 — a larger, less biased universe can move a
-  negative result either way — but ADR 112's third confirmation was measured
-  on a distorted membership and must be re-measured before it is quoted
-  again.
-- **`mcap_usd` and `mcap_rank` are stored on every event as context tags**,
-  so anything conditioning on company size inherited the error. Same
-  consequence ADR 014's TSM defect had, at far greater scope.
-- The fix changes no config field, so `config_hash` does not move. The
-  universe must be rebuilt and the backtest re-run for the corrected
-  membership to reach `events`.
-
-**What this does not fix.** `bars.close` remains the split-adjusted series
-and should: indicators depend on it (CLAUDE.md, Price series). The correction
-belongs on the share count, which is the side that was stale.
-
----
-
-## 146. The x1,000 share-scale class is caught by local shape, not by bounds
-
-**Date:** 2026-08-22. **Status:** Pinned. Closes the gap `SharesPlausibility` documented and left open; extends ADR 145's rebuild.
+**Date:** 2026-08-23. **Status:** Pinned. Implements ADR 068's granularity rule for Phase 6's training population. Blocks Session 22. No `config_hash` move.
 
 **Context.**
 
-`SharesPlausibility` tests one filing against an absolute band and states its
-own blind spot precisely: *"a x1,000 error on a company with real shares in
-the tens of millions (tens of billions after corruption) now lands inside
-`[min_shares, max_shares]` and is accepted undetected."* It enumerates the
-casualties by ticker — 26 filings across 12 tickers — and the widening from
-32B to 320B that created the gap was itself deliberate and correct, because a
-real 10:1 split on Citigroup would otherwise freeze that ticker forever.
+DESIGN §7.3 lists `sector` among the twenty-two features, categorical. ADR
+068 pins why: "One model per head, with `sector` as a categorical feature. No
+per-sector models." The same section excludes `ticker` identity outright —
+"60 names over 40k events permits memorizing individual histories. Sector is
+the right granularity."
 
-`BACKLOG.md` deferred the fix to "the next rebuild, where it costs nothing
-extra". This is that rebuild.
+LightGBM gives a NULL its own categorical level. A level with one member is
+ticker identity restored through a feature the design includes, which is
+exactly what excluding `ticker` was meant to prevent. Treating NULL as
+acceptable because the library handles missing natively gets this backwards:
+it handles it by *learning the missing branch*.
 
-**The obvious fix is already refuted, in the code.** `SharesPlausibility`
-argues against a test relative to the ticker's own history and gives the
-counterexample: PSKY's median **is** the corruption (two of its three filings
-are a placeholder-shaped `1,000`), so a median test flags its one genuine
-filing. That argument stands and is not overturned here.
+**The framing this ADR was given was too narrow, and the measurement is why.**
+
+The question posed was what to do about ETFs, on the premise that `sector` is
+NULL for the three in `SEC_NON_FILER_TICKERS` (`QQQ`, `VOO`, `IBIT`). Two
+facts measured 2026-08-22 against the live database:
+
+- **Only QQQ exists.** `VOO` and `IBIT` have no `tickers` row and have never
+  been ingested. The set names three; one is real.
+- **32 tickers reach the training population with a NULL sector, and 31 are
+  ordinary equities.** 11,826 priced in-trade events under
+  `f66729c7eda212a4`, of which QQQ is 1,910. The rest are ASML, TSM, NVO,
+  SAP, ILMN, VFC, MTCH, ENPH, M, EPAM, BBWI, ETSY, DXC, AAL, KMX, PAYC, CAG,
+  NOV, FTI, CZR, MOH, BIO, QRVO, ATI, CPB, MHK, PRGO, POOL, NWL, MKTX, LUMN.
+
+So an ETF decision alone cannot deliver a training frame free of NULL
+sectors. Either option, implemented by itself, leaves 3.1% of training events
+carrying the level this ADR exists to eliminate.
+
+**Root cause of the 31.** `jobs/ingest.py::run_tickers_refresh` populates
+`tickers.sector` solely from `wikipedia.fetch_current_constituents()` — the
+**current** S&P 500 table. Constituents that have since been removed (kept
+deliberately by ADR 035, because the historical union is what removes
+survivorship bias) and the Nasdaq additions (ADR 143) therefore arrive blank.
+`jobs/fetch/nasdaq.py` already returns a sector per listing and it is not
+written to the column.
 
 **Decision.**
 
-`core.universe.scale_error_indices(shares, bounds)` compares each filing to
-the median of its four nearest neighbours *per side* and flags it only when
-both hold:
+Two rules, and they are deliberately not the same rule.
 
-1. it exceeds that local median by more than 50x, and
-2. dividing by **exactly 1,000** puts it back within 5x of its neighbours.
+**1. ETFs are excluded from training and remain fully tradeable.** Option B.
+The filter is an explicit ticker set in `core/training.py::ETF_TICKERS`,
+never `sector IS NULL`. ETFs keep firing signals, keep appearing on the
+screener, and keep carrying cell statistics. They do not train the model, and
+`predict()` returns not-available for them.
 
-Tickers with fewer than 8 filings are not judged at all. `jobs.ingest`
-applies it per ticker after the `(ticker, filed_on)` dedup and **rejects**
-the rows to `bar_rejects` under rule `shares_scale_error_x1000`. Nothing is
-divided or corrected: condition 2 is a precondition for rejection, not a
-repair.
+**2. A NULL sector on an equity stops the build.** It is not filtered. The
+training-frame builder raises, naming the tickers, and the sector is
+backfilled from a real source before Session 22 proceeds.
 
-**Why a local window survives PSKY and a global one does not.**
+`core.training.training_exclusion_reason` returns `'etf'` and
+`'missing_sector'` as distinct values precisely so a caller cannot collapse
+them.
 
-- **PSKY has three filings.** The minimum-filings gate declines to rule
-  rather than out-voting it. Silence is the correct answer from two data
-  points.
-- **WULF is the case a global test gets backwards.** TeraWulf diluted from a
-  tiny base, so 16 consecutive **genuine** filings sit up to 247x its global
-  median and a global rule would reject every one. Locally each is 1.0-1.3x
-  its neighbours and no window looks at it twice.
-- **A real split persists; a tagging error returns.** NVDA's 10:1 is the
-  largest real step in the tracked universe and holds at ~1.8x a straddling
-  window. The errors spike ~1,000x and drop back three to four filings later.
+**Rationale.**
 
-**Naming the factor is what keeps this inside invariant 4.**
-`_implausible_shares_reason` refuses to infer a scale factor from the data's
-own shape, because "a wrong guess turns into a plausible-looking wrong
-number". Condition 2 tests one hard-coded factor and rejects the row when it
-fits. An anomaly a x1,000 scale does not explain is left alone — a ~100x
-spike is not touched, because removing it would require inferring some other
-factor. The guard only removes rows whose corruption it can name.
+*Why ETFs are excluded rather than given a sector value.* Option A — writing
+`'ETF'` or `'Index Fund'` into the column — was rejected because naming a
+level does not make it a category. It would hold one member today. Even at
+its intended three, QQQ tracks the Nasdaq-100, VOO the S&P 500, and IBIT
+holds spot Bitcoin; they share a legal wrapper and nothing about how they
+move. A one-member level is ticker identity with a label on it, and ADR 068's
+rule is about granularity, not about the column being populated.
 
-**Measurement.** Swept over all 142,278 rows of `shares_outstanding`:
-**33 filings across 17 tickers**, every one ending in exactly `000` and every
-one recovering to a plausible count.
+The deeper point is that an ETF has **no** sector, while a blank equity has an
+*unpopulated* one. The attribute does not apply to a fund. Both render as
+NULL and only an explicit list can distinguish them.
 
-It reproduces the docstring's hand-curated list exactly — AAP (4), GRMN (5),
-PKG (3), ALK (3), FTNT (2), SWKS (2), MAA (2), and one each for AIZ, CNX,
-EOG, PNR, REG — and adds 7 across 5 tickers ingested after that note was
-written: BNTX (2), ENSG (2), CRNX, SANM, WWD. BNTX and WWD had already been
-confirmed by hand in `BACKLOG.md` as "the same class ... not in the note's
-list", so the detector found them independently.
+Exclusion costs nothing at serve time. QQQ is `in_trade` at $289B across 66
+universe evaluations and keeps every one of them; it simply does not
+contribute training rows. Returning not-available for a fund is honest, where
+returning a number learned from a one-member category would not be.
 
-Zero false positives. WULF, PSKY, BRK-B and EXE are all absent.
+*Why the 31 equities are not excluded with them.* This is the load-bearing
+half. A single `sector IS NULL` filter is the obvious implementation and it
+is wrong: it would silently drop 9,916 events — **84% of the affected
+population** — off names that are overwhelmingly *removed* S&P constituents.
+The model would then train only on companies still in the index when the
+table was last scraped, which is precisely the survivorship bias ADR 035
+exists to prevent and ADR 015 depends on being absent. Trading one
+identity-leak for a survivorship bias is not a fix.
+
+It would also be a decision taken by accident. Any future ticker whose sector
+lookup fails would leave the training population with no record that it had,
+which is the same silent-narrowing failure as stage 7's stale-event sweep.
+
+*Why raising rather than filtering.* A missing sector is a data defect with a
+known source and an available fix. Filtering hides it; raising forces it to
+be repaired. Nothing imputes a sector — under invariant 4 a guessed sector is
+a fabricated one, and `is_depositary_listing` already records why inferring a
+value from the data's own shape produces "a plausible-looking wrong number".
 
 **Consequences.**
 
-- The four new fields live on `SharesPlausibility`, which is deliberately
-  **not** a `Config` field, so `config_hash` does not move (same rationale as
-  `SweepParams`). Propagating the fix still needs a `universe` rebuild and a
-  backtest re-run, which is why it is done inside this one.
-- **Ingest is fixed from now; the 33 rows already stored are not.** A future
-  `run_shares` never re-offers a rejected accession, so the existing rows
-  need a one-off delete before the universe rebuild that follows.
-- This closes the `crit_mcap` half of the defect. Six `in_trade` quarters
-  passed the market-cap criterion on a number wrong by three orders of
-  magnitude.
-- **The ADR-ratio class is untouched** and remains the more damaging of the
-  two, being systematic rather than a rare filer error. It stays open in
-  `BACKLOG.md`.
+- `core/training.py` is new: pure, no IO, holding `ETF_TICKERS`, `is_etf`,
+  `training_exclusion_reason`, `may_train`, `partition_for_training`.
+- Session 22 task 22.4 must call it and must raise on `missing_sector`.
+  Session 22's gate gains: the built frame carries no NULL `sector`.
+- **A prerequisite Session 22 did not have: backfill `tickers.sector` for the
+  31.** `jobs/fetch/nasdaq.py` already returns sector, so this is a lookup
+  against a real source rather than an imputation. It is a `tickers` update
+  only — sector is not in `config_hash`, is not read by any
+  `UniverseParams.required_criteria`, and is not a component of `cell_id`
+  (see below). **No universe rebuild and no backtest re-run.**
+- `ETF_TICKERS` duplicates `SEC_NON_FILER_TICKERS` today and is kept
+  separate. That set answers "does SEC serve companyfacts for this?"; this
+  one answers "is this an instrument rather than a company?". They agree now
+  and need not: a foreign private issuer can file nothing useful and still be
+  a company.
+- Phase 4 statistics are **unaffected and need no re-measurement.**
+  `core/cells.py::cell_key` takes nine arguments — `signal_type`, `side`,
+  `dd_bucket`, `strength`, `entry_kind`, `split`, `era`, `horizon`, `target`
+  — and sector is not among them. `BACKLOG.md` claimed an ETF lands in a
+  NULL-sector cell; that claim was wrong and is corrected there.
+- `crit_rel_return` is untouched. `jobs/compute.py::_sector_median_return`
+  already folds `sector is None` into its "too few members" fallback
+  deliberately.
 
-**Relationship to the `McapPlausibility` ceiling.** The $6T ceiling stays.
-It is a last-resort catch on the *output* and covers corruption classes this
-does not (the x10^5/x10^6 rows above 320B). This guard removes the cause;
-that one logs whatever still gets through.
+**Alternatives rejected.**
+
+*Give ETFs a sector value (Option A).* A one-member category is ticker
+identity renamed, and it does not address the 31 equities, so it fails the
+training-frame gate on its own.
+
+*Filter on `sector IS NULL`.* Drops 84% of the affected events off removed
+index members and reintroduces survivorship bias. It is also indistinguishable
+in code from the ETF decision, so the two could never be varied separately.
+
+*Accept NULL because LightGBM handles missing values natively.* It does, by
+learning the missing branch. That is the defect, not a mitigation.

@@ -349,28 +349,57 @@ compares against the S&P series in `market_days`. For a Nasdaq name that is
 defensible; for a foreign listing or a sector ETF it quietly changes what
 the criterion tests.
 
-**ETFs are not companies.** `sector` and `industry` are NULL on QQQ, and
-`cell_id` is built from component columns -- so an ETF either lands in a
-NULL-sector cell or needs its own dimension. `days_to_earnings` has no
-meaning for one either, and ADR 041's earnings-window exclusion silently
-does nothing.
+**ETFs are not companies.** `sector` and `industry` are NULL on QQQ.
+`days_to_earnings` has no meaning for one either, and ADR 041's
+earnings-window exclusion silently does nothing.
 
-**Still open, and the sharper half.** ETFs are not companies: `sector` and
-`industry` are NULL on QQQ, and `cell_id` is built from exactly those
-columns, so an ETF lands in a NULL-sector cell rather than being excluded.
-`days_to_earnings` is meaningless for one too, so ADR 041's earnings-window
-exclusion silently does nothing. **IBIT makes this concrete rather than
-hypothetical** -- a spot Bitcoin trust with no sector, no industry and no
-earnings date, now on the non-filer list and one `cscan bars` away from
-being tradeable and uncellable at once.
+**The `cell_id` half of this was wrong and is removed.** It claimed
+`cell_id` is built from sector-bearing columns, so an ETF lands in a
+NULL-sector cell. `core/cells.py::cell_key` takes nine arguments —
+`signal_type`, `side`, `dd_bucket`, `strength`, `entry_kind`, `split`,
+`era`, `horizon`, `target` — and sector is not among them. Phase 4
+statistics were never affected and need no re-measurement.
+
+**RESOLVED for training by ADR 147, 2026-08-23.** ETFs are excluded from the
+Phase 6 training frame by an explicit ticker set and stay fully tradeable.
+
+**The "uncellable" claim was wrong.** `cell_key` carries no sector (nine
+arguments, listed above), so an ETF has always celled normally. What is
+real is `sector` as a *model feature*: a NULL is its own LightGBM level, and
+a one-member level is ticker identity, which DESIGN §7.3 excludes `ticker`
+to prevent.
+
+**And the ETF was the small half.** Measured 2026-08-22: 32 tickers reach
+the training population with a NULL sector and **31 are ordinary equities**
+(ASML, TSM, ILMN, VFC, M, ETSY, AAL and 24 more), because
+`run_tickers_refresh` writes `sector` only from Wikipedia's *current* S&P
+500 table — so every removed constituent ADR 035 deliberately keeps arrives
+blank. QQQ is 1,910 of 11,826 affected events.
+
+**Still open: backfill `sector` for those 31.** `jobs/fetch/nasdaq.py`
+already returns a sector per listing and it is never written to
+`tickers.sector`. A `tickers` update only — no universe rebuild, no
+backtest re-run, no `config_hash` move. ADR 147 makes the training frame
+raise until this is done, deliberately, because filtering on `sector IS
+NULL` instead would drop 84% of the affected events off removed index
+members and reintroduce the survivorship bias ADR 035 exists to prevent.
+
+**`days_to_earnings` remains open for ETFs.** It is meaningless for a fund,
+so ADR 041's earnings-window exclusion silently does nothing. ADR 147 makes
+this moot for the model, since no ETF row trains, but it still affects
+`events`. **IBIT would make it concrete** — a spot Bitcoin trust with no
+sector, industry or earnings date — except that IBIT and VOO have no
+`tickers` row at all and have never been ingested. QQQ is the only ETF that
+exists today.
 
 **Also still open**: NYSE. The current seeds are the S&P union and Nasdaq,
 so a $50B NYSE-listed name outside the index is still unreachable, exactly
 as NBIS was.
 
-**What would settle it**: decide whether ETFs get their own cell dimension
-or are excluded from cells while remaining tradeable, and pick a mechanical
-NYSE rule that could have been written in 2010.
+**What would settle it**: the ETF half is settled by ADR 147 — excluded from
+training, fully tradeable, and never excluded from cells, which was never
+the problem. What remains is the `sector` backfill for the 31 equities, and
+a mechanical NYSE rule that could have been written in 2010.
 
 ---
 
