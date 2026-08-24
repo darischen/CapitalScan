@@ -190,6 +190,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 146 | The x1,000 share-scale class is caught by local shape, not by bounds | Pinned. Closes the gap `SharesPlausibility` documented and left open; extends ADR 145's rebuild |
 | 147 | ETFs do not train; a missing sector stops the build | Pinned. Implements ADR 068 for Phase 6; blocks Session 22; no `config_hash` move |
 | 148 | `tickers.sector` speaks one vocabulary, and it is GICS | Pinned. Completes 147 and tightens its gate; unblocks Session 22; no `config_hash` move |
+| 149 | The watch universe is a sibling of the trade universe, not a relaxation of it | Pinned. Extends ADR 001 to three universes; `in_trade` and ADR 112's population untouched; no `config_hash` move |
 
 ---
 
@@ -5385,3 +5386,160 @@ relabelling the 198 GICS rows Wikipedia maintains on every refresh.
 *Leave the collision and fix only the NULLs.* What ADR 147 asked for, and it
 fails on its own terms: the frame would satisfy the NULL gate while feeding
 the model a category split in half.
+
+---
+
+## 149. The watch universe is a sibling of the trade universe, not a relaxation of it
+
+**Date:** 2026-08-24. **Status:** Pinned. Extends ADR 001's two universes to three. Does not move `config_hash`; does not alter `in_trade` for any row.
+
+**Context.**
+
+`in_trade` requires all four of `UniverseParams.required_criteria`, and
+`is_tradeable` treats `None` as failing — deliberately, with the comment
+*"None must fail, not raise or pass"*. That rule is right in isolation:
+admitting a name judged on three criteria would silently put weaker-filtered
+rows in the same population.
+
+Its consequence was never written down. `crit_rel_return` needs 757 daily
+bars, so every large new listing is excluded for roughly three years
+regardless of how it trades. Measured 2026-06-30: **$1.18T across five
+names** — ARM $377.3B (IPO 2023-09), SNDK $336.7B (spun from WDC 2025-02),
+GEV $315.7B (spun from GE 2024-04), ALAB $82.8B, NBIS $69.9B — each passing
+every criterion that *can* be evaluated.
+
+**This is the mirror of the bias ADR 035 exists to prevent.** That ADR keeps
+delisted and removed names on purpose, because dropping them is survivorship
+bias and ADR 015 depends on their presence. Careful work at one end of the
+population. The other end — entrants — was silently truncated for three
+years, and nothing recorded it.
+
+**Decision.**
+
+A third membership column, `universe.in_watch`, alongside `in_train` and
+`in_trade`, with `universe.watch_reason` recording *why*.
+
+`in_watch` is a **sibling** of `in_trade`, not a relaxation. The two are
+disjoint by construction, so a name graduates from watch to trade and never
+holds both, and "which population is this row in" always has one answer.
+
+```
+in_watch = NOT in_trade
+       AND crit_mcap AND crit_sma200_slope       -- never waived
+       AND evaluation is not stale               -- ADR 135
+       AND ( (crit_above_sma200 AND crit_rel_return IS NULL AND bars < 757)
+           OR (crit_above_sma200 IS FALSE AND crit_rel_return IS TRUE) )
+```
+
+Two reasons, stored not derived:
+
+- **`history`** — every judgeable criterion passes and `crit_rel_return` is
+  `None` because the ticker is too new. GEV has 603 bars; its trailing
+  three-year return is *undefined*, not bad.
+- **`pullback`** — `crit_sma200_slope` holds while `crit_above_sma200` does
+  not, so price sits below a **rising** 200-day average. 22 names, $2.75T:
+  WMT, COST, WFC, TJX, GILD.
+
+**Everything is computed for these rows** — events, indicators, entries,
+exits, paths — because the backtest processes `in_trade ∪ in_watch`. A name
+that graduates therefore arrives with measured history rather than starting
+from zero.
+
+**Nothing statistical or model-facing reads them.** Every statistical read
+hardcodes `in_trade` and `test_events_in_trade_filter.py` fails any read
+that does not. Phase 6 training filters `in_trade` as well. ADR 112's
+population is untouched and stays homogeneous — which is the property that
+makes this affordable.
+
+**Rationale.**
+
+*Why not "any three of four".* Measured 2026-08-24 at the latest evaluation:
+three passing with one `None` is **6 tickers, $1.18T**; three passing with
+one `False` is **247 tickers, $14.85T**. The second is not a wider
+watchlist, it is the universe with the filter switched off, and it admits
+names *because* they failed the test that would have excluded them. `None`
+is the absence of evidence; `False` is evidence.
+
+*Why the pullback carve-out survives that objection.* It is not "any
+failure". It is one specific failure conditioned on the trend gate still
+passing, and the two are mechanically distinguishable. TSLA shows the
+discrimination in both directions on the same ticker:
+
+| `as_of` | `above_sma200` | `slope` | reading |
+|---|---|---|---|
+| 2024-06-30 | false | **false** | real downtrend, stays out |
+| 2026-03-31 | false | **true** | $1.4T dip in an intact uptrend, admitted |
+
+A rising 200-day average with price beneath it is a pullback inside an
+uptrend, which for a Bollinger mean-reversion study is the canonical setup
+rather than a risk.
+
+*Why `crit_mcap` is never waived.* It is a designed floor, not a signal, and
+it is already what excludes the genuinely dangerous names. CHGG has no
+`universe` row **at all** — $20B filters it before any criterion runs — so
+the "penny stock after a collapse" case never reaches this decision.
+
+*Why `crit_sma200_slope` is never waived.* It is the gate that separates a
+pullback from a collapse. Waiving it collapses the two cases the pullback
+reason exists to distinguish.
+
+*Why staleness is never waived.* A sibling universe inherits every
+safeguard. ADR 135 exists because Aetna, acquired 2018-11-29, passed all
+four criteria at 2026-06-30 on an indicator row frozen in November 2018 —
+**31 consecutive quarters `in_trade` with no bars behind any of them**.
+Without this clause the watchlist fills with delisted companies that look
+like discoveries.
+
+*Why the reason is stored rather than derived.* The two populations are
+admitted by different arguments and will behave differently. One flag would
+make it impossible to measure whether one works and the other does not, and
+it would make the notification dishonest — "too new to judge" and "pullback
+in an uptrend" are different things to read at 07:00.
+
+*Why two shortfalls is not admitted.* A new name **also** below its average
+has `crit_rel_return` unknowable and `crit_above_sma200` false: two of four,
+not three. Either reason returned would be a claim the row does not support
+— `history` implies the trend test passed, `pullback` implies the
+relative-strength test did.
+
+**Consequences.**
+
+- `core.universe.watch_reason` is new: pure, no IO, with `WATCH_HISTORY` and
+  `WATCH_PULLBACK`.
+- Migration adds `universe.in_watch` (boolean) and `universe.watch_reason`
+  (text). `cscan universe` must be re-run over all 66 quarters to populate
+  them — ~15 minutes, and **not** a backtest rebuild.
+- **`config_hash` does not move.** The predicate is derived from criteria
+  that already exist; nothing enters `Config`.
+- **`jobs/poll.py`'s allowlist entry becomes false and must be rewritten in
+  the same change.** It currently reads *"the poller only ever polls
+  `_load_in_trade_tickers`, so every row it can reach is in trade by
+  construction"*. That stops being true the moment the poller polls watched
+  names — the identical failure mode as the `path_backfill` allowlist going
+  stale when ADR 122 changed `run_events`.
+- **One invariant changes and is restated deliberately.** Today "priced ⇒
+  `in_trade`" holds and is measured at zero violations. It becomes "priced ⇒
+  `in_trade` OR `in_watch`". The backtest really does price these rows; what
+  changes is the population the proxy names. `test_entry_price_single_writer
+  .py` and the four allowlist reasons are updated with the new sentence
+  rather than left to drift.
+- Notifications for watched names must say which reason admitted them. A
+  watch alert that looks identical to a tradeable one is how the distinction
+  is forgotten.
+- **This does not reopen ADR 112.** No measured row changes population, and
+  no statistic reads `in_watch`.
+
+**Alternatives rejected.**
+
+*Relax `required_criteria` so these names become `in_trade`.* Moves
+`config_hash`, forces a full rebuild, and makes the study population
+heterogeneous: "zero cells survive FDR" would then be measured over rows
+admitted by two different standards.
+
+*Poll them and price them while leaving them out of `universe` entirely.*
+Produces rows that look tradeable and are labelled ineligible — the same
+"two meanings in one column" defect ADR 140 diagnosed for `entry_price`.
+
+*Derive the watchlist at read time instead of storing it.* Cheaper, and it
+loses the reason. It also puts the definition in whichever view happens to
+need it, which is how two definitions eventually disagree.

@@ -286,6 +286,81 @@ def evaluate_criteria(
 _REBALANCE_DAYS: dict[str, int] = {"D": 1, "W": 7, "M": 31, "Q": 92, "A": 366, "Y": 366}
 
 
+# `universe.watch_reason` values. Stored on the row rather than derived at
+# read time, because the two populations are admitted by different arguments
+# and will behave differently -- collapsing them into one undifferentiated
+# flag would make it impossible to measure whether one works and the other
+# does not.
+WATCH_HISTORY = "history"
+WATCH_PULLBACK = "pullback"
+
+
+def watch_reason(
+    criteria: dict[str, bool | None],
+    bars: int,
+    stale: bool,
+    min_bars_for_rel_return: int = 757,
+) -> str | None:
+    """Why this row belongs to the watch universe, or `None`.
+
+    `in_watch` is a **sibling** of `in_trade`, not a relaxation of it. The
+    two are disjoint by construction: this returns `None` for anything that
+    already qualifies to trade, so a name graduates from watch to trade and
+    never holds both.
+
+    Two admission reasons, and the distinction between them is the whole
+    argument:
+
+    - `history` -- every judgeable criterion passes and `crit_rel_return` is
+      `None` **because the ticker is too new to have 757 daily bars**. GE
+      Vernova was spun out of GE in April 2024 with 603 bars: its trailing
+      three-year return is undefined, not bad.
+    - `pullback` -- `crit_sma200_slope` holds while `crit_above_sma200` does
+      not, so price sits below a **rising** 200-day average. That is a dip
+      inside an intact uptrend, which for a mean-reversion study is the
+      canonical setup rather than a risk.
+
+    **Why not "any three of four".** Measured 2026-08-24: three passing with
+    one `None` is 6 tickers and $1.18T; three passing with one `False` is
+    247 tickers and $14.85T. The second admits names *because* they failed
+    the test that would have excluded them. The pullback carve-out is not
+    that: it is one specific failure conditioned on the trend gate still
+    passing, and TSLA demonstrates the discrimination in both directions --
+    `above_sma F, slope F` in 2024 is a real downtrend and stays out, while
+    `above_sma F, slope T` in 2026 is a $1.4T dip and is admitted.
+
+    **`crit_mcap` and `crit_sma200_slope` are never waived.** The first is a
+    designed floor and is what already excludes the genuinely dangerous
+    names -- CHGG has no `universe` row at all, because $20B filters it
+    before any criterion runs. The second is the trend gate that separates a
+    pullback from a collapse.
+
+    **`stale` is never waived either.** A sibling universe inherits every
+    safeguard, and ADR 135 exists because Aetna passed all four criteria at
+    2026-06-30 on an indicator row frozen in November 2018 -- 31 consecutive
+    quarters `in_trade` with no bars behind any of them. Without this the
+    watchlist fills with delisted companies that look like discoveries.
+
+    `bars` is the ticker's daily bar count: one row in `bars` at
+    `interval='1d'`, i.e. one session's candle.
+    """
+    if stale:
+        return None
+    if criteria.get("crit_mcap") is not True:
+        return None
+    if criteria.get("crit_sma200_slope") is not True:
+        return None
+
+    rel = criteria.get("crit_rel_return")
+    above = criteria.get("crit_above_sma200")
+
+    if above is True and rel is None and bars < min_bars_for_rel_return:
+        return WATCH_HISTORY
+    if above is False and rel is True:
+        return WATCH_PULLBACK
+    return None
+
+
 def evaluation_max_age_days(rebalance_freq: str) -> int:
     """How stale an indicator row may be and still evaluate a quarter.
 

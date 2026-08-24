@@ -537,6 +537,7 @@ def _evaluate_universe_row(
     rev_growth: bool | None,
     adv_20d: float | None,
     up: UniverseParams,
+    daily_bars: int = 0,
 ) -> dict:
     """Pure(ish) assembly of one `universe` row from already-fetched inputs.
 
@@ -554,9 +555,23 @@ def _evaluate_universe_row(
     # stub with no ingested revenue data behind it.
     in_trade = core_universe.is_tradeable(criteria, required=set(up.required_criteria))
 
+    # ADR 149. **After `in_trade`, and the order is load-bearing**: the two
+    # are disjoint and the migration enforces it with a CHECK, so a row that
+    # already qualifies to trade must be excluded here rather than corrected
+    # later. `watch_reason` returns `None` for anything `in_trade` accepts.
+    #
+    # `stale` is False by construction at this point: `_latest_indicator_row`
+    # returns `None` for a stale ticker and `run_universe` skips it, so an
+    # unevaluable name gets no row at all. Passed explicitly anyway, because
+    # the core function's contract should not depend on a caller's control
+    # flow to stay correct.
+    reason = None if in_trade else core_universe.watch_reason(criteria, daily_bars, stale=False)
+
     return {
         "ticker": ticker,
         "as_of": as_of,
+        "in_watch": reason is not None,
+        "watch_reason": reason,
         # v1 simplification: any ticker on file counts as in the
         # wide training universe. Point-in-time reconstruction
         # from `data/universe_union.csv`'s add/remove dates is
@@ -620,6 +635,33 @@ def run_universe(
         # One rebalance period, derived rather than declared: an evaluation
         # must rest on data from inside the period it describes.
         max_age_days = core_universe.evaluation_max_age_days(up.rebalance_freq)
+
+        # ADR 149 needs each ticker's daily bar count at `as_of`, to tell a
+        # `crit_rel_return` that is NULL because the ticker is too new from
+        # one that is NULL because the sector median was unavailable. Both
+        # render identically on the row, and calling the second "insufficient
+        # history" would be a false statement about the data.
+        #
+        # One grouped query per quarter rather than one per ticker: ~930
+        # round trips become one, and `run_universe` is called 66 times in a
+        # rebuild. Scoped to this call like `rel_return_cache` above, so a
+        # different `as_of` cannot be served a stale count.
+        # Guarded on a non-empty list: with nothing to evaluate there is
+        # nothing to count, and an unconditional query would make the job
+        # touch the database on a call that has no work to do.
+        daily_bar_counts: dict[str, int] = {}
+        if tickers:
+            with engine.connect() as conn:
+                daily_bar_counts = {
+                    str(r[0]): int(r[1])
+                    for r in conn.execute(
+                        text(
+                            "SELECT ticker, count(*) FROM bars "
+                            "WHERE interval = '1d' AND ts <= :as_of GROUP BY ticker"
+                        ),
+                        {"as_of": as_of},
+                    )
+                }
 
         rows = []
         for ticker in tickers:
@@ -687,7 +729,16 @@ def run_universe(
 
             rows.append(
                 _evaluate_universe_row(
-                    ticker, as_of, ind_row, mcap, rel_return, sector_median, rev_growth, adv_20d, up
+                    ticker,
+                    as_of,
+                    ind_row,
+                    mcap,
+                    rel_return,
+                    sector_median,
+                    rev_growth,
+                    adv_20d,
+                    up,
+                    daily_bars=daily_bar_counts.get(ticker, 0),
                 )
             )
 

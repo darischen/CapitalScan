@@ -415,6 +415,7 @@ class TestRunUniverseQueryCountIsLinear:
             "rel_return": 0,
             "adv_20d": 0,
             "active_list": 0,
+            "bar_counts": 0,
         }
         bar_history = [(as_of - timedelta(days=i), 100.0 + i) for i in range(lookback_days + 5)]
 
@@ -441,6 +442,14 @@ class TestRunUniverseQueryCountIsLinear:
                 if "WHERE is_active" in sql:
                     counts["active_list"] += 1
                     return _Result(_Row(t) for t in tickers)
+                # ADR 149: one grouped bar count per quarter, feeding
+                # `watch_reason`'s "is this NULL because the ticker is too
+                # new" test. Counted so the linearity assertion below still
+                # sees every query the job makes -- a query the fake answers
+                # silently is a query the count test stops policing.
+                if "count(*) FROM bars" in sql:
+                    counts["bar_counts"] += 1
+                    return _Result(iter([("AAA", len(bar_history))]))
                 raise AssertionError(f"unexpected query: {sql}")
 
         class _Engine:
@@ -493,6 +502,13 @@ class TestRunUniverseQueryCountIsLinear:
         # The tell: quadrupling N (10 -> 40) must not quadruple (16x) the
         # rel-return query count. It must stay linear (4x, i.e. <= 40).
         assert counts_40["rel_return"] <= 4 * counts_10["rel_return"] + 4
+
+        # ADR 149's bar-count query is grouped, so it is one per quarter
+        # regardless of N. Asserted rather than assumed: written per-ticker
+        # it would be the same quadratic shape this test exists to catch,
+        # and it would look identical from outside.
+        assert counts_10["bar_counts"] == 1
+        assert counts_40["bar_counts"] == 1
 
 
 class _OneRow:
