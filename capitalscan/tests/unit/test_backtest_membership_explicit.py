@@ -79,3 +79,51 @@ class TestEligibilityAdmitsBothPopulations:
         code = ast.unparse(tree)
         assert "row['in_trade'] = traded" in code
         assert "row['in_watch'] = watched" in code
+
+
+class TestWatchAlertsAreDistinguishable:
+    """ADR 149: a watched name says so, and says which reason admitted it.
+
+    The poller's alert is the surface where the reader decides whether to
+    act. A watched name is **not** tradeable under the four criteria, and an
+    alert that renders identically to a tradeable one hides that at the one
+    moment it matters.
+
+    The reason is carried, not just the fact: `history` and `pullback` were
+    admitted by different arguments, and ADR 149 stores them separately
+    precisely so they can be told apart.
+    """
+
+    def test_a_watched_name_is_tagged(self):
+        from capitalscan.jobs.poll import _watch_tag
+
+        assert _watch_tag("history") == " [WATCH: history]"
+        assert _watch_tag("pullback") == " [WATCH: pullback]"
+
+    def test_a_tradeable_name_is_not(self):
+        from capitalscan.jobs.poll import _watch_tag
+
+        assert _watch_tag("trade") == ""
+
+    def test_an_unknown_population_is_not_tagged_as_watched(self):
+        """Fails toward 'tradeable' only for the label, never for the row.
+
+        A ticker missing from the map is treated as `trade` for the tag, but
+        the event row's `in_trade`/`in_watch` come from the same map with the
+        same default -- so a name that somehow escaped the universe read is
+        recorded the way it has always been recorded, not silently marked
+        watched on the strength of a lookup miss.
+        """
+        from capitalscan.jobs.poll import _watch_tag
+
+        assert _watch_tag("") == ""
+        assert _watch_tag("something_else") == ""
+
+    def test_the_subject_carries_the_tag(self):
+        import inspect
+
+        from capitalscan.jobs import poll
+
+        src = inspect.getsource(poll._process_tick)
+        assert "_watch_tag(" in src
+        assert "{tag}{watch}" in src

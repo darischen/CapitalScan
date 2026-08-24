@@ -106,18 +106,23 @@ def _json_safe(value):
 def _load_pollable_tickers(engine: Engine) -> dict[str, str]:
     """Every ticker the poller watches, mapped to its population.
 
-    `'trade'` or `'watch'` (ADR 149). Both are polled: a watched name is one
-    the universe would admit but for a criterion it cannot yet judge, and the
-    whole point of watching it is to see it fire.
+    `'trade'`, or the `watch_reason` -- `'history'` or `'pullback'` (ADR
+    149). Both populations are polled: a watched name is one the universe
+    would admit but for a criterion it cannot yet judge, and the whole point
+    of watching it is to see it fire.
 
-    Returns the population rather than a bare list because the caller must
-    label the notification. A watch alert that looks identical to a tradeable
-    one is how the distinction is forgotten at 06:45.
+    **The reason, not merely the fact.** The caller labels the notification
+    with it, and the two reasons are different things to read at 06:45 --
+    "too new to judge" and "pullback inside an uptrend" were admitted by
+    different arguments and ADR 149 stores them separately so they can be
+    told apart. A watch alert identical to a tradeable one is how the
+    distinction is forgotten.
     """
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                "SELECT DISTINCT ON (ticker) ticker, in_trade, in_watch FROM universe "
+                "SELECT DISTINCT ON (ticker) ticker, in_trade, in_watch, watch_reason "
+                "FROM universe "
                 "ORDER BY ticker, as_of DESC"
             )
         ).fetchall()
@@ -126,13 +131,21 @@ def _load_pollable_tickers(engine: Engine) -> dict[str, str]:
         if r.in_trade:
             out[r.ticker] = "trade"
         elif r.in_watch:
-            out[r.ticker] = "watch"
+            out[r.ticker] = str(r.watch_reason or "watch")
     return out
 
 
 def _load_in_trade_tickers(engine: Engine) -> list[str]:
     """Trade-universe tickers only. Kept for callers that mean exactly that."""
     return [t for t, pop in _load_pollable_tickers(engine).items() if pop == "trade"]
+
+
+WATCH_REASONS = ("history", "pullback")
+
+
+def _watch_tag(population: str) -> str:
+    """Notification suffix for a watched name, empty for a tradeable one."""
+    return f" [WATCH: {population}]" if population in WATCH_REASONS else ""
 
 
 def _load_indicator_rows(engine: Engine, tickers: list[str]) -> dict[str, pd.Series]:
@@ -335,7 +348,7 @@ def _build_live_event_row(
         # true, so a watched name omitted here would be written as tradeable
         # and land in ADR 112's population (ADR 149).
         "in_trade": population == "trade",
-        "in_watch": population == "watch",
+        "in_watch": population in WATCH_REASONS,
         # No "open" concept for an intraday live quote — left null rather
         # than fabricated (DESIGN §3.11).
         "entry_gapped": None,
@@ -724,11 +737,23 @@ def _process_tick(
             is_short_confluence = SignalType.CONFLUENCE_HIGH in side_types
             tag = _reversal_tag(rev) if is_short_confluence else ""
 
-            subject = f"{ticker} {signal_type}{tag}"
+            # ADR 149: a watched name says so, and says which reason
+            # admitted it. It is not tradeable under the four criteria, and
+            # an alert that hides that is the distinction being forgotten at
+            # the exact moment it matters.
+            watch = _watch_tag(population.get(ticker, "trade"))
+            subject = f"{ticker} {signal_type}{tag}{watch}"
             body = (
                 f"{ticker} fired {signal_type} at {price:.2f} "
                 f"(touch level {event_row['touch_level']}, k_full {ind_row.get('k_full')})."
             )
+            if watch:
+                body += (
+                    f" NOT in the trade universe: watched for {population[ticker]}"
+                    " (ADR 149). It passes market cap and the SMA200 slope; the"
+                    " remaining criterion is unjudgeable or a pullback, so this"
+                    " name trains nothing and carries no cell statistics."
+                )
             if is_short_confluence:
                 body += " " + _reversal_body(rev, price, day_open, band)
             channels_sent = notify.notify_all(notifiers, subject, body)
