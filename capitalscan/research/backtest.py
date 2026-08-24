@@ -196,6 +196,13 @@ _EVENT_COLUMNS = [
 # `vix_close`, and `spx_ret_1d`.
 _RUN_BACKTEST_UPDATE_COLUMNS = [
     "run_id",
+    # ADR 149. Owned jointly with `run_events`, which is permitted because
+    # both read the same `universe` rows and so cannot disagree (Ruling C4).
+    # Updatable, not insert-only: a row `run_events` wrote when a ticker was
+    # in-trade must be corrected when a later evaluation moves it to watch,
+    # or the population would be whichever writer happened to go first.
+    "in_trade",
+    "in_watch",
     "signal_types_all",
     "signal_strength",
     "side",
@@ -371,7 +378,7 @@ def _read_market_days(engine: Engine) -> pd.DataFrame:
 def _read_universe_flags(engine: Engine, ticker: str) -> pd.DataFrame:
     with engine.connect() as conn:
         return pd.read_sql(
-            text("SELECT ticker, as_of, in_trade FROM universe WHERE ticker = :ticker"),
+            text("SELECT ticker, as_of, in_trade, in_watch FROM universe WHERE ticker = :ticker"),
             conn,
             params={"ticker": ticker},
         )
@@ -657,6 +664,22 @@ def _backtest_one_ticker(
                 "config_hash": chash,
                 "ticker": ticker,
                 "signal_date": signal_date,
+                # **Written explicitly, and that is the point.** `events.
+                # in_trade` is NOT NULL DEFAULT true, and this row dict never
+                # set it -- so every backtest row took the default. That was
+                # correct only by coincidence: `apply_eligibility` admitted
+                # nothing else. ADR 149 makes it admit watched names too, and
+                # the default would then mark them in-trade and put them in
+                # ADR 112's population, which is the one thing ADR 149
+                # promises not to do.
+                #
+                # `apply_eligibility` puts both flags on the candidate row
+                # from the same `universe` frame, so the two writers of this
+                # column cannot disagree -- the condition Ruling C4 requires
+                # for shared ownership, and the same one ADR 140 applies to
+                # `run_events` against `run_backtest`.
+                "in_trade": bool(cand.get("in_trade", True)),
+                "in_watch": bool(cand.get("in_watch", False)),
                 "signal_type": cand["signal_type"],
                 "signal_types_all": cand["signal_types_all"],
                 "signal_strength": cand["signal_strength"],

@@ -434,6 +434,36 @@ def in_trade(universe_flags: pd.DataFrame, ticker: str, signal_date: date) -> bo
     return bool(rows.sort_values("as_of").iloc[-1]["in_trade"])
 
 
+def in_watch(universe_flags: pd.DataFrame, ticker: str, signal_date: date) -> bool:
+    """Whether `ticker` is in the **watch** universe as of `signal_date`.
+
+    Same shape and the same fail-closed contract as `in_trade` above, for
+    the same reason: absent evidence is not a claim of membership, and ADR
+    129 records what defaulting to True cost when `in_trade` failed open --
+    18,805 training events on 566 tickers admitted without ever being
+    evaluated.
+
+    The two are disjoint by construction (ADR 149, and the
+    `universe_watch_consistent` CHECK enforces it), so at most one of
+    `in_trade` and `in_watch` is ever true for one ticker-date. That is what
+    lets a caller ask "which population is this row in" and get one answer.
+
+    Reads a column that is NULL on any row written before ADR 149's
+    migration, and `bool(None)` is False -- which is the correct reading:
+    a quarter that was never evaluated for watch membership is not watched.
+    """
+    rows = universe_flags.loc[
+        (universe_flags["ticker"] == ticker) & (universe_flags["as_of"] <= signal_date)
+    ]
+    if rows.empty:
+        return False
+    latest = rows.sort_values("as_of").iloc[-1]
+    if "in_watch" not in latest.index:
+        return False
+    value = latest["in_watch"]
+    return bool(value) if value is not None and value == value else False
+
+
 def is_tradeable(
     criteria: dict[str, bool | None],
     required: set[str] | None = None,

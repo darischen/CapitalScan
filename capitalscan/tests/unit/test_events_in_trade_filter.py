@@ -87,9 +87,16 @@ KNOWN_UNFILTERED: dict[str, str] = {
         "run wrote."
     ),
     "jobs/poll.py": (
-        "Existence and id lookups scoped to one ticker, and the poller "
-        "only ever polls `_load_in_trade_tickers`, so every row it can "
-        "reach is in trade by construction."
+        "Existence and id lookups scoped to one ticker. The second half of "
+        "this reason -- that the poller only polls `_load_in_trade_tickers`, "
+        "so every row it reaches is in trade by construction -- stopped "
+        "being true under ADR 149, which added the watch universe to "
+        "`_load_pollable_tickers`. The exemption stands on the first half "
+        "alone: these reads are keyed on `(config_hash, ticker, "
+        "signal_date, signal_type)`, which is narrower than any population "
+        "predicate. The poller now writes `in_trade`/`in_watch` explicitly "
+        "rather than inheriting the NOT NULL DEFAULT true, which is what "
+        "keeps watched names out of ADR 112's population."
     ),
     "research/path_backfill.py": (
         "Path capture is keyed on `entry_price IS NOT NULL`, which only "

@@ -205,7 +205,15 @@ def apply_eligibility(
                 }
             )
             continue
-        if not core_universe.in_trade(universe_flags, row["ticker"], signal_date):
+        # ADR 149: the backtest measures `in_trade` **and** `in_watch`, so a
+        # name that graduates arrives with measured history instead of
+        # starting from zero. Membership is carried on the row rather than
+        # decided here (ADR 122), and nothing statistical reads the watch
+        # half -- every statistical query hardcodes `in_trade`, enforced by
+        # `test_events_in_trade_filter.py`.
+        traded = core_universe.in_trade(universe_flags, row["ticker"], signal_date)
+        watched = core_universe.in_watch(universe_flags, row["ticker"], signal_date)
+        if not traded and not watched:
             rejects.append(
                 {
                     "ticker": row["ticker"],
@@ -214,12 +222,18 @@ def apply_eligibility(
                 }
             )
             continue
+        row = row.copy()
+        row["in_trade"] = traded
+        row["in_watch"] = watched
         kept_rows.append(row)
 
+    # Columns from the rows, not from `candidates`: `apply_eligibility` now
+    # adds `in_trade`/`in_watch`, and pinning to the input's columns would
+    # silently drop them.
     kept = (
-        pd.DataFrame(kept_rows, columns=candidates.columns)
+        pd.DataFrame(kept_rows)
         if kept_rows
-        else candidates.iloc[0:0].copy()
+        else candidates.iloc[0:0].assign(in_trade=False, in_watch=False)
     )
     return kept.reset_index(drop=True), rejects
 

@@ -5358,9 +5358,28 @@ after:
   `normalize_yahoo_sector`, `needs_resolution`.
 - `jobs/fetch/yahoo.py::fetch_sector`, cached under `yahoo_sector_v1`.
 - `jobs/ingest.py::run_sector_backfill`. Writes `tickers.sector` and nothing
-  else. Sector is not in `config_hash`, is not read by any
-  `UniverseParams.required_criteria`, and is not a component of `cell_id`,
-  so **no universe rebuild and no backtest re-run**. Verified: `config_hash`
+  else. Sector is not in `config_hash` and is not a component of `cell_id`.
+
+  **CORRECTION, 2026-08-24.** This entry also claimed sector "is not read by
+  any `UniverseParams.required_criteria`, so no universe rebuild and no
+  backtest re-run". **That was wrong.** `crit_rel_return` is
+  `_cmp(rel_return_756d, sector_median_return)`, and
+  `_sector_median_return` compares a ticker against **its own sector's**
+  median, falling back to the universe-wide median only when the sector has
+  fewer than five members. Populating 254 sectors therefore changed which
+  median those tickers are measured against, and `crit_rel_return` *is* in
+  `required_criteria`.
+
+  Measured after re-running all 66 quarters: `in_trade` moved **6,295 ->
+  6,641** (+346), spread across every year rather than concentrated in
+  recent data. Every GICS sector now holds 34-163 members, all above the
+  five-member threshold, so the fallback that previously applied to most
+  tickers no longer does.
+
+  `config_hash` still does not move and `events` rows stay correctly keyed,
+  so nothing is corrupted -- the criterion now measures what it was always
+  meant to measure. What is stale is the **measurement**: ADR 112's stage 7
+  result was computed on the pre-backfill population and must be re-run. Verified: `config_hash`
   unchanged at `f66729c7eda212a4`.
 - **Session 22 is unblocked.** ADR 147's prerequisite is met.
 - `run_tickers_refresh` still writes Wikipedia's `gics_sector` directly,

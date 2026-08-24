@@ -103,15 +103,36 @@ def _json_safe(value):
     return value
 
 
-def _load_in_trade_tickers(engine: Engine) -> list[str]:
+def _load_pollable_tickers(engine: Engine) -> dict[str, str]:
+    """Every ticker the poller watches, mapped to its population.
+
+    `'trade'` or `'watch'` (ADR 149). Both are polled: a watched name is one
+    the universe would admit but for a criterion it cannot yet judge, and the
+    whole point of watching it is to see it fire.
+
+    Returns the population rather than a bare list because the caller must
+    label the notification. A watch alert that looks identical to a tradeable
+    one is how the distinction is forgotten at 06:45.
+    """
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                "SELECT DISTINCT ON (ticker) ticker, in_trade FROM universe "
+                "SELECT DISTINCT ON (ticker) ticker, in_trade, in_watch FROM universe "
                 "ORDER BY ticker, as_of DESC"
             )
         ).fetchall()
-    return [r.ticker for r in rows if r.in_trade]
+    out: dict[str, str] = {}
+    for r in rows:
+        if r.in_trade:
+            out[r.ticker] = "trade"
+        elif r.in_watch:
+            out[r.ticker] = "watch"
+    return out
+
+
+def _load_in_trade_tickers(engine: Engine) -> list[str]:
+    """Trade-universe tickers only. Kept for callers that mean exactly that."""
+    return [t for t, pop in _load_pollable_tickers(engine).items() if pop == "trade"]
 
 
 def _load_indicator_rows(engine: Engine, tickers: list[str]) -> dict[str, pd.Series]:
@@ -258,7 +279,12 @@ def _build_live_event_row(
     market_row: pd.Series | None,
     chash: str,
     run_id: str,
+    population: str = "trade",
 ) -> dict:
+    """`population` is `'trade'` or `'watch'` (ADR 149), and is **required
+    to be stated** rather than defaulted: `events.in_trade` is NOT NULL
+    DEFAULT true, so a watched name omitted here is written as tradeable and
+    joins ADR 112's study population without anything looking wrong."""
     from capitalscan.jobs.compute import _dd_bucket
 
     touched_band = (side is Side.LONG and SignalType.BB_LOWER_TOUCH in types) or (
@@ -305,6 +331,11 @@ def _build_live_event_row(
         "entry_kind": "touch",
         "entry_date": signal_date,
         "entry_price": price,
+        # Stated, never defaulted. `events.in_trade` is NOT NULL DEFAULT
+        # true, so a watched name omitted here would be written as tradeable
+        # and land in ADR 112's population (ADR 149).
+        "in_trade": population == "trade",
+        "in_watch": population == "watch",
         # No "open" concept for an intraday live quote — left null rather
         # than fabricated (DESIGN §3.11).
         "entry_gapped": None,
@@ -567,10 +598,18 @@ def _process_tick(
     notifiers: list[Notifier],
     now: datetime,
     run_id: str,
+    population: dict[str, str] | None = None,
 ) -> int:
     """One tick: quote every ticker, record and notify any new breach.
     Returns the count of new events fired this tick.
+
+    `population` maps ticker to `'trade'` or `'watch'` (ADR 149). Defaulted
+    to empty rather than required so existing callers keep working, and a
+    missing entry reads as `'trade'` -- which is the pre-ADR-149 behaviour
+    and the only safe default, since every ticker the poller saw before this
+    was in-trade by construction.
     """
+    population = population or {}
     quotes = yahoo.fetch_quotes(tickers)
     if quotes.empty:
         return 0
@@ -609,7 +648,16 @@ def _process_tick(
                 continue
 
             event_row = _build_live_event_row(
-                side, side_types, ticker, price, today, ind_row, market_row, chash, run_id
+                side,
+                side_types,
+                ticker,
+                price,
+                today,
+                ind_row,
+                market_row,
+                chash,
+                run_id,
+                population.get(ticker, "trade"),
             )
             db_io.upsert(
                 engine,
@@ -753,7 +801,11 @@ def run_poll(
     with run_job(engine, "poll", {"interval": interval}) as report:
         scheduled_runs.record(engine, "poll", run_id=report.run_id, now=now_fn())
 
-        resolved_tickers = tickers or _load_in_trade_tickers(engine)
+        # ADR 149: trade **and** watch. `population` labels the
+        # notification and is written to the event row, so a watched name
+        # never reaches the study population by omission.
+        population = _load_pollable_tickers(engine)
+        resolved_tickers = tickers or sorted(population)
         if not resolved_tickers:
             report.notes = "no in_trade tickers on file"
             return report
@@ -787,6 +839,7 @@ def run_poll(
                     notifiers,
                     now,
                     report.run_id,
+                    population,
                 )
                 report.rows_written += fired
                 ticks_completed += 1
