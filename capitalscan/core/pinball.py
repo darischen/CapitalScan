@@ -32,15 +32,20 @@ the fitted value out to the upper tail.
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Sequence, Union
 
 import numpy as np
 
+#: Anything `np.asarray` accepts as a 1-D float vector. The functions below
+#: convert immediately, so a narrower hint would force casts at every call
+#: site while changing nothing about what actually runs.
+Floats = Union[Sequence[float], np.ndarray]
+
 
 def _clean(
-    predictions: Sequence[float],
-    targets: Sequence[float],
-    weights: Sequence[float] | None,
+    predictions: Floats,
+    targets: Floats,
+    weights: Floats | None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Align, drop unresolved labels, and refuse an empty comparison.
 
@@ -69,10 +74,10 @@ def _clean(
 
 
 def pinball_loss(
-    predictions: Sequence[float],
-    targets: Sequence[float],
+    predictions: Floats,
+    targets: Floats,
     tau: float,
-    weights: Sequence[float] | None = None,
+    weights: Floats | None = None,
 ) -> float:
     """Weighted mean pinball loss at `tau`.
 
@@ -103,7 +108,7 @@ def pinball_loss(
     return float((losses * wts).sum() / total)
 
 
-def unconditional_quantile(labels: Sequence[float], tau: float) -> float:
+def unconditional_quantile(labels: Floats, tau: float) -> float:
     """The empirical `tau`-quantile of `labels`. The no-feature baseline.
 
     This is the loss-minimising constant, which is what makes it the right
