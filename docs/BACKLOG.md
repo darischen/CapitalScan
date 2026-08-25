@@ -86,7 +86,53 @@ the criterion tests.
 
 ---
 
-### NYSE, the same treatment Nasdaq got
+### SPY, VOO and IBIT are not in the database — **highest priority**
+
+Raised 2026-08-25. `SEC_NON_FILER_TICKERS` names `QQQ`, `VOO` and `IBIT`,
+which reads like three ETFs are tracked. **Only QQQ exists.** VOO and IBIT
+have no `tickers` row, no bars, no universe evaluation and no events.
+
+That list is a *skip-list*, not a seed: it says "if you see these, do not
+ask SEC for companyfacts". Nothing inserts them. QQQ is present because it
+was added by hand.
+
+Measured 2026-08-25:
+
+    QQQ    5,282 daily bars   66 universe rows   34,687 events
+    VOO    absent
+    IBIT   absent
+
+`SPY` is not on the list at all and should be — it is the S&P 500 tracker
+and the most obvious ETF in a study seeded from S&P membership.
+
+**The work**, per the path QQQ took:
+
+1. insert the `tickers` rows (no CIK, no sector — an ETF has neither)
+2. `cscan bars --tickers SPY,VOO,IBIT --backfill`
+3. `cscan indicators --tickers SPY,VOO,IBIT --lookback 8000`
+4. re-run `cscan universe` per quarter so they are evaluated
+5. add `SPY` to `SEC_NON_FILER_TICKERS` and to `core.training.ETF_TICKERS`
+
+**Step 5 is the one that will be forgotten.** `ETF_TICKERS` is what ADR 147
+excludes from training, and it is deliberately a separate list from
+`SEC_NON_FILER_TICKERS` — the first answers "is this an instrument rather
+than a company", the second "does SEC serve companyfacts". A new ETF added
+to one and not the other trains the model on a fund.
+
+**No `config_hash` move** — adding tickers is not a config change. But it
+does change the traded population, so ADR 112 wants re-measuring afterwards
+for the same reason ADR 148's sector backfill did.
+
+**IBIT is the odd one and is worth a deliberate decision.** A spot Bitcoin
+trust has no sector, no industry and no earnings date. ADR 041's
+earnings-window exclusion silently does nothing for it, and ADR 147 keeps it
+out of training regardless — so it would be tradeable and watchable while
+contributing nothing to the model. That is probably the right outcome; it
+should be chosen rather than inherited.
+
+---
+
+### NYSE, the same treatment Nasdaq got — **second priority**
 
 Raised 2026-08-25. The seeds are the S&P 500 union and Nasdaq (ADR 143), so
 a large NYSE-listed name outside the index is unreachable — not filtered
