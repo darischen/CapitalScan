@@ -4019,3 +4019,145 @@ Check 5 on the validate split, per head, against the bar recorded above.
 Then coverage — DESIGN §7.6 checks quantile heads by whether the realised
 fraction below $\hat{Q}_{0.25}$ is 25%, which a head can fail while
 posting a good pinball loss.
+
+
+## 2026-08-25 — ADR 113 check 5, on the validate split
+
+**The holdout was not read.** Rounds come from the median `best_iteration`
+across the seven CV folds inside train; validate is touched once per head,
+for scoring. Using validate for early stopping and then scoring on it is
+the leak this structure exists to prevent.
+
+train 125,714 → validate 26,788. 20 heads, 308 seconds.
+
+| head | rounds | model | baseline | impr% | |
+|---|---|---|---|---|---|
+| `terminal_h5_q05` | 86 | 0.00546 | 0.00573 | 4.72 | PASS |
+| `terminal_h5_q25` | 63 | 0.01439 | 0.01457 | 1.23 | PASS |
+| **`terminal_h5_q50`** | 53 | 0.01694 | 0.01693 | **−0.09** | **FAIL** |
+| `terminal_h5_q75` | 104 | 0.01340 | 0.01376 | 2.66 | PASS |
+| `terminal_h5_q95` | 146 | 0.00477 | 0.00541 | 11.81 | PASS |
+| `terminal_h10_q05` | 83 | 0.00779 | 0.00806 | 3.32 | PASS |
+| `terminal_h10_q25` | 41 | 0.02097 | 0.02110 | 0.62 | PASS |
+| **`terminal_h10_q50`** | 22 | 0.02449 | 0.02437 | **−0.49** | **FAIL** |
+| `terminal_h10_q75` | 84 | 0.01908 | 0.01945 | 1.87 | PASS |
+| `terminal_h10_q95` | 115 | 0.00664 | 0.00736 | 9.77 | PASS |
+| `peak_h5_q05` | 66 | 0.00301 | 0.00301 | 0.01 | PASS |
+| `peak_h5_q25` | 94 | 0.00987 | 0.01033 | 4.43 | PASS |
+| `peak_h5_q50` | 205 | 0.01361 | 0.01529 | 11.01 | PASS |
+| `peak_h5_q75` | 220 | 0.01238 | 0.01488 | 16.82 | PASS |
+| `peak_h5_q95` | 176 | 0.00512 | 0.00648 | 21.10 | PASS |
+| `peak_h10_q05` | 41 | 0.00357 | 0.00358 | 0.26 | PASS |
+| `peak_h10_q25` | 110 | 0.01242 | 0.01314 | 5.49 | PASS |
+| `peak_h10_q50` | 179 | 0.01754 | 0.01985 | 11.62 | PASS |
+| `peak_h10_q75` | 171 | 0.01596 | 0.01922 | 16.94 | PASS |
+| `peak_h10_q95` | 235 | 0.00672 | 0.00811 | 17.07 | PASS |
+
+**18/20 pass. The two failures are the two directional heads.**
+
+### The pattern is the result
+
+Every peak head passes. Every terminal *tail* head passes. The only
+failures are `terminal_h5_q50` and `terminal_h10_q50` — the two heads that
+carry the "which way does it go" question and nothing else.
+
+$M_h$ is a maximum, so it is driven by dispersion. The terminal tails are
+also dispersion: $\hat{Q}_{0.05}$ and $\hat{Q}_{0.95}$ of $R_h$ describe
+how wide the distribution is, not where it is centred. The median is the
+only head in the fan that is a statement about *location*.
+
+So the model has learned to forecast **spread** and has learned nothing
+about **direction**. `rv_pct_252d`, `bb_width_pct`, `vix_close` and
+`atr`-derived features are in the feature set and volatility is genuinely
+autocorrelated, so this is the expected thing to be learnable. DESIGN §7.2
+named it in advance as the model's addition over the cell grid.
+
+### What this does and does not decide
+
+**ADR 113's kill criterion does not fire.** Its wording is "no better than
+the unconditional baseline in pinball loss **at any horizon**", and 18
+heads beat it. By the letter of the pre-registered rule, Phase 6 continues.
+
+**It is not a directional edge, and should not be reported as one.** The
+two-indicator hypothesis ADR 112 tested was about direction, and both heads
+expressing it failed out-of-sample. Nothing here contradicts ADR 112; the
+model found a different thing than the one the project set out to find.
+
+**Two passes are ties.** `peak_h5_q05` at +0.01% and `peak_h10_q05` at
++0.26% are not distinguishable from the baseline in any practical sense.
+Counting them as passes is following the rule as written, and the rule has
+no tolerance band. Worth adding one before this number is quoted anywhere.
+
+### Before this is load-bearing
+
+Coverage (DESIGN §7.6): the realised fraction below $\hat{Q}_{0.25}$ should
+be 25%. **A head can post a winning pinball loss and still be badly
+calibrated**, and the product is the probability, so coverage decides
+whether any of this is servable. Not yet measured.
+
+
+## 2026-08-25 — coverage (DESIGN §7.6), and it fails
+
+Same protocol as check 5: rounds from CV inside train, validate scored
+once, holdout untouched. DESIGN §7.4's post-fit sort applied, so crossing
+quantiles are not being mistaken for miscalibration.
+
+Realised fraction of validate labels at or below $\hat{Q}_	au$:
+
+| | τ=0.05 | τ=0.25 | τ=0.50 | τ=0.75 | τ=0.95 |
+|---|---|---|---|---|---|
+| **target** | 0.05 | 0.25 | 0.50 | 0.75 | 0.95 |
+| `terminal_h5` | 0.087 | 0.328 | 0.553 | 0.760 | 0.935 |
+| `terminal_h10` | 0.090 | 0.335 | 0.544 | 0.761 | 0.937 |
+| `peak_h5` | 0.077 | 0.297 | 0.527 | 0.738 | 0.934 |
+| `peak_h10` | 0.073 | 0.285 | 0.503 | 0.724 | 0.925 |
+
+### The fan is too narrow, at both ends at once
+
+8.7% of outcomes fall below $\hat{Q}_{0.05}$ where 5% should, and only
+93.5% fall below $\hat{Q}_{0.95}$ where 95% should. Both errors point the
+same way: **more mass lands outside the interval than the interval
+claims**. A 90% band built from these two heads covers about 85%.
+
+The lower half is worse than the upper. Every head over-covers at τ=0.05
+and τ=0.25 by 45–75% in relative terms, while τ=0.75 and τ=0.95 are within
+a few points. The fitted fan sits too high and is too tight below.
+
+### Why this matters more than check 5
+
+DESIGN §7.6 is explicit: *"The product **is** the probability, so
+calibration is the metric."* Pinball loss rewards being close on average;
+coverage asks whether the number means what it says. **A head can win the
+first and fail the second**, and eighteen of these did exactly that.
+
+Nothing here is servable as a probability. A user told "5% chance of a move
+below X" who sees it 8.7% of the time has been given a wrong number, and
+invariant 8 requires every probability to travel with `n_eff` and a
+confidence interval precisely because that claim has to hold.
+
+### What it does not overturn
+
+Check 5's pattern still stands and is unaffected by calibration: the two
+directional heads fail and the dispersion heads pass. Coverage says the
+dispersion the model found is systematically **understated**, not that it
+is absent.
+
+### The open question this creates
+
+DESIGN §7.6 says quantile heads are *"checked by coverage rather than
+recalibrated"*, and isotonic regression is specified for binary heads only
+— which ADR 113 retired. So the design has no repair path for exactly the
+failure that occurred, because the heads it wrote the repair for no longer
+exist.
+
+Three options, none taken here:
+
+1. **Conformal calibration on validate.** Widen each fan by the empirical
+   residual quantile. Standard, distribution-free, and honest about being
+   a post-hoc correction.
+2. **Extend isotonic to quantile heads**, contradicting §7.6 as written.
+3. **Ship nothing until coverage is met by the fit itself.** Strictest, and
+   the one most in keeping with §7.6's reasoning.
+
+This belongs to whoever set the design, not to the session that measured
+the miss.
