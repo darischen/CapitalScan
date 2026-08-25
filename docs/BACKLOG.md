@@ -6,599 +6,151 @@ being forgotten.
 
 Ordered by when it blocks something, not by size.
 
+**Audited 2026-08-24.** Three entries were deleted because they were
+finished: the serving store's growth ceiling (closed by moving serving to a
+Raspberry Pi and widening `history_years` to 30), `mcap_usd`'s two bad
+inputs (ADR 146 for the x1,000 scale class; source-switching for the
+ADR-ratio class), and the single-threaded harness (parallelised, 3h58m35s ->
+48m21s). The reasoning behind each lives in the ADR that closed it, so
+deleting the entry loses nothing.
+
 ## Open
 
-### The deployed site is open — `SITE_AUTH_DISABLED=1` (ADR 138)
-
-**Turned off deliberately 2026-08-20**, at the user's request and with
-their reasoning recorded: a Vercel deployment URL is hard to discover, and
-the content is public market data plus one operator's own analysis. No
-PII, no credentials, no user accounts — there is no user model at all.
-
-**Reaffirmed the same day when the item was reviewed.** The user's argument
-is that there is no edge to protect: Bollinger Bands and the stochastic
-oscillator have been studied exhaustively by people paid to do it, and
-ADR 112 is the house result that no cell here survives correction. The thing
-an observer would learn from this site is already public, and the part that
-is not public — that the measured edge is absent — is published deliberately.
-
-Implemented as an explicit variable rather than by weakening the default.
-`SITE_PASSWORD` unset still returns 503; only `SITE_AUTH_DISABLED=1`
-opens the site, and only that exact string — `0`, `true` and `yes` are all
-refused, because a loose truthiness check would make `=0` mean "open",
-which is the opposite of what someone typing it intends.
-
-**What to check before deciding this is permanent.** `/api/chat` spends
-Anthropic tokens per request. It is currently harmless because the route
-connects to MCP on `127.0.0.1` and fails *before* any model call — an open
-page, not an open wallet. That stops being true the moment MCP is
-reachable remotely. If ADR 118's boundary ever moves, restore auth or
-carve `/api/chat` out of the opt-out **in the same change**.
-
-**To restore**: delete `SITE_AUTH_DISABLED` in Vercel and redeploy. The
-middleware and its 38 tests are unchanged and still enforce everything.
-
----
-
-### The serving store grows without bound and is at 80% of the free tier
-
-Measured 2026-08-20: **410MB against Neon's 512MB free tier.** A "5 GB"
-reading was misread earlier and briefly recorded in ADR 137 as a
-correction; that has been withdrawn. 512MB is the limit.
-
-**The real problem is not the current number, it is the direction.**
-`run_sync` deliberately never deletes — the docstring says why: a bug in
-the cutoff arithmetic would otherwise silently empty the served history.
-But that means `ServingParams.history_years` bounds what is *sent*, not
-what is *stored*. Rows that age past three years stay on serving forever,
-and every nightly adds a day.
-
-So the store only grows, from 80%, on a 512MB ceiling.
-
-**Rough rate**: a session adds roughly 620 bars and 620 indicator rows
-across the trade universe plus its events — small daily, and monotonic.
-The question is months rather than days, but it has no natural stopping
-point.
-
-**What would settle it**, in increasing order of what they claim:
-
-- **Prune on serving**: delete rows older than the cutoff after each sync.
-  Straightforward, and it makes the deleted-by-mistake failure mode real
-  again — which is exactly what `run_sync` avoided. Would need the delete
-  scoped by the same cutoff expression the insert uses, and a test that
-  the two cannot drift.
-- **Narrow the window**: two years is 266MB, one year 139MB. Buys time and
-  costs screener history.
-- **Pay**: Neon Launch is 10GB, and full history is 2,149MB.
-
-Not acted on: all three change what the deployed site is or how the sync
-behaves, and the store is not full today.
-
-**Reviewed 2026-08-20 and deliberately left.** The user's read is that 100MB
-of headroom against a daily increment measured in kilobytes is a long
-runway, and that all three fixes cost something real now to solve a problem
-that is months away. Revisit when the number moves, not on a schedule.
-
-**It moved on 2026-08-21, and the store filled.** ADR 145's rebuild took
-`events` from 783,762 to 865,984 rows locally, and that night's `cscan sync`
-died on the real limit rather than an estimate:
-
-```
-psycopg.errors.DiskFull: could not extend file because
-project size limit (512 MB) has been exceeded
-```
-
-*The increment is not "measured in kilobytes" when a config is rebuilt.* The
-entry above sized the daily nightly correctly and missed that a rebuild
-resyncs the whole window at once. Any future ADR that moves `config_hash`
-or widens the universe does the same.
-
-**What was done that night**, in order, with measurements:
-
-```
-490 MB  before
-308 MB  after deleting the superseded 86e91448a65aa40b (298,389 events,
-        1,636 benchmarks, 448 cell_stats) + VACUUM FULL events
-425 MB  after re-running sync with the current data
-362 MB  after VACUUM FULL on indicators (46,489 dead) and universe (4,521)
-```
-
-**`DELETE` alone frees nothing.** It leaves dead tuples, and the size is
-unchanged until `VACUUM FULL` rewrites the table. Plain `VACUUM` makes the
-space reusable — enough to stop "could not extend file" — but only
-`VACUUM FULL` returns it. `events` went 203 MB -> 21 MB that way.
-
-**Neon's dashboard and `pg_database_size` disagree, and Neon's is the one
-that enforces.** Postgres reported 425 MB while the dashboard showed
-0.37 GB; the gap was dead tuples. Size this against the dashboard.
-
-**Pruning superseded config hashes is the cheap recurring lever** and is not
-in the three options above. The serving store had two hashes and 90% of its
-events belonged to a hash nothing reads. That will be true again after every
-rebuild, and unlike the three options it costs nothing anyone can see.
-
-**Narrowing by `split_key` does not work, though it looks like it should.**
-The store is 91% `holdout` (122,098 of 133,542) against 11,444 `validate`,
-which suggests dropping holdout as an easy 90% cut. It is not: the serving
-window opens 2023-08-22 and `holdout` opens 2024-01-02, so *most of the
-window is holdout by construction*, and those are exactly the rows the
-ticker page renders — `v_chart` and `v_events` deliberately carry no split
-predicate (ADR 122). Dropping them would empty the charts. Statistics are
-unaffected either way, since every statistical consumer hardcodes
-`split_key = 'validate'`.
-
-**Still open**: `run_sync` never deletes, so rows that age past
-`ServingParams.history_years` remain forever. Pruning superseded hashes
-buys time; it does not change the direction.
-
----
-
-### `mcap_usd` has two bad inputs, and neither is ADR 145
-
-**RESOLVED. Both closed, on different dates and by different mechanisms.**
-
-**The x1,000 share-scale class: ADR 146, 2026-08-22.**
-`core.universe.scale_error_indices` rejects a filing that exceeds the median
-of its four nearest neighbours per side by >50x *and* recovers to within 5x
-when divided by exactly 1,000. Swept over all 142,278 rows of
-`shares_outstanding`: **33 filings across 17 tickers**, every one ending in
-`000`, zero false positives -- reproducing this file's hand-curated list of
-26 exactly and finding 7 more. The 33 stored rows were deleted in the
-2026-08-22 rebuild.
-
-Measured after: **universe rows above $5T went 5 -> 0**, maximum market cap
-is now $4.84T (AAPL, real), and every corrupt row fell by exactly 1000x --
-AAP 2011-12-31 $5,044B -> $5.3B, SWKS 2012-03-31 $5,210B -> $5.2B, MAA
-2014-06-30 $5,479B -> $5.5B, ALK 2011 $2,453B -> $2.5B.
-
-**The ADR-ratio class: closed by source switching, not by a ratio map.**
-`is_depositary_listing` switches the share *source* to Yahoo for depositary
-listings rather than scaling an ordinary-share count. Across all 970
-depositary universe rows: **zero above $1T**, largest is ARM at $377.3B,
-NTES down from a $1,666.9B peak to $82.1B.
-
-**What remains is a loss of history, not a wrong number**: 360 of those 970
-rows are NULL because Yahoo's `shares_full` series starts around 2018, so
-depositary listings are absent from the trade universe before then rather
-than entering it at a fabricated size. Correct under invariant 4, and
-survivorship-relevant when quoting ADR coverage. Deriving the ratio from
-`dei:EntityCommonStockSharesOutstanding` would recover it; that, not
-correctness, is now the reason to do it.
-
-The original diagnosis follows, kept because both fixes were built from it.
-
-
-Found 2026-08-22 while listing the Nasdaq additions. **Both predate ADR 145
-and are unrelated to it** — verified against `universe_pre_adr145`, where
-every affected row has a before/after factor of exactly 1.0.
-
-**1. Share counts 1000x too large, from `sec_xbrl`.**
-
-```
-PKG    89,213,394,000 shares   real ~89.2 million    -> $18,933B
-GRMN  198,077,418,000          real ~190 million     -> $13,875B
-AAP    72,924,659,000          real ~73 million      ->  $6,459B
-ALK    35,828,450,000          real ~35.8 million    ->  $2,453B
-```
-
-Exactly three orders of magnitude on every one. The raw cached facts show
-why: GRMN's clean range is 190,687,357..208,077,418 and its bad values are
-**208,077,418,000** — the same digits with `000` appended. A filer tagging
-error in SEC's companyfacts feed, on 3 of PKG's 64 rows and 5 of GRMN's 70.
-`jobs/fetch/sec.py` stores `val` verbatim, which is correct.
-
-**This is a documented, deliberate gap — not a new finding.** The first
-version of this entry claimed otherwise and was wrong.
-`core.config.SharesPlausibility` predicts it precisely: *"a x1,000 error on
-a company with real shares in the tens of millions (tens of billions after
-corruption) now lands inside `[min_shares, max_shares]` and is accepted
-undetected"*. It even enumerates the tickers — "AAP (4), GRMN (5), PKG (3),
-ALK (3), FTNT (2), SWKS (2), MAA (2), and one each for AIZ, CNX, EOG, PNR,
-REG" — 26 filings across 12 tickers.
-
-The ceiling was widened 32B -> 320B knowingly, and the reasoning holds:
-**rejecting good data is worse than admitting bad data here.** A rejected
-genuine filing is invisible and freezes that ticker's share count forever;
-a bad one surfaces as an absurd market cap. That mechanism worked — this
-was found by looking at the largest market caps in the universe.
-
-**What is new**: `BNTX` (241,521,065,000 shares, real ~240M) and `WWD`
-(62,383,699,000, real ~60M) are the same class and are not in the note's
-list, presumably added with the universe expansion after it was written.
-BNTX produces the single worst value in the database, **$65.9T over 7
-in-trade quarters**. Also confirmed: **zero** rows exceed 320B, so the
-ceiling itself is doing its job.
-
-**Impact is small but not zero**: 22 of 51,828 `universe` rows carry a
-market cap above $5T, which is impossible (the largest company on earth is
-about $4.8T). Six of those are `in_trade`, so they passed `crit_mcap` on a
-number that is wrong by 1000x. Across 8 tickers: BNTX (7 quarters, peak
-$65.9T), GRMN (5), PKG (3), AAP (3), MAA, SWKS, WWD, CNX.
-
-**$5T is a conservative floor, not the real count.** ALK at $2.4T and NTES
-at $1.7T are equally wrong and sit under it. A proper sweep needs a
-plausibility bound per era rather than one constant.
-
-**2. The ADR ratio map has one entry.**
-
-`UniverseParams.adr_ordinary_per_adr` contains `TSM: 5.0` and nothing else.
-ADR 014 records why it exists: a Form 20-F reports the issuer's **ordinary**
-shares while the bar price is per **ADR**, and TSM priced at $10.5T against
-an actual ~$2.1T before the correction.
-
-The universe expansion added many depositary listings that are not in the
-map and are therefore treated 1:1. NTES peaks at **$1,666.9B** against a real
-NetEase peak near $100B — roughly the 1:16 ordinary-per-ADS ratio. Others
-ingested and unmapped include BILI, JD, PDD, SNY, VOD, ERIC, TCOM, GRAB, LI,
-FUTU, RYAAY, HTHT, ARGX, CCEP.
-
-**Why this one is worse than it looks.** TSM cleared its threshold at either
-figure, so ADR 014 could record the defect as harmless to `crit_mcap`. That
-is no longer true: with the floor at $20B, an ADR genuinely worth $5B and
-overstated 5x lands at $25B and enters the trade universe on a number that
-was never real.
-
-**MEASURED 2026-08-22: this no longer produces a wrong number, and the claim
-below that it does is stale.** The fix that landed was not the ratio map but
-`is_depositary_listing`, which switches the *source* to Yahoo rather than
-scaling a number. `_latest_shares` therefore never sees the ordinary-share
-count for these tickers.
-
-Across all 970 depositary universe rows: **zero above $1T**, and the largest
-is ARM at $377.3B, with PDD between $184B and $218B. Both are real. NTES,
-which peaked at $1,666.9B, now reads $58.9B in 2020 and $82.1B in 2026.
-
-**The remaining cost is different, and is a loss of history rather than a
-wrong value.** 360 of those 970 rows are NULL, because Yahoo's `shares_full`
-series starts around 2018 (NTES: 2018-11-13) and nothing else is trusted for
-these tickers. A NULL fails `crit_mcap`, so depositary listings are simply
-absent from the trade universe before roughly 2018 instead of entering it at
-a fabricated size. That is the correct behaviour under invariant 4, and it is
-a suppression, not a corruption — but it is survivorship-relevant and should
-be stated when quoting ADR coverage.
-
-Deriving the ratio from `dei:EntityCommonStockSharesOutstanding` against the
-ADS count would recover that pre-2018 history. That, not correctness, is now
-the reason to do it.
-
-**What would settle it**
-
-- **Guard `mcap_usd`, not `shares`** — the layer `SharesPlausibility`'s
-  reasoning does not cover. Tightening the share ceiling is rejected for
-  good reason (it freezes real tickers silently). But a market cap above
-  any plausible bound can be set NULL at `universe` write time and logged,
-  which rejects nothing at ingest, cannot freeze a ticker, and keeps the
-  absurd value out of `crit_mcap` and out of `events.mcap_usd`. A NULL
-  mcap already fails `crit_mcap`, so the effect is to exclude a name whose
-  size cannot be measured rather than to admit it at a fabricated size.
-  **This changes `in_trade` for 6 rows and needs a universe rebuild to
-  take effect.**
-- A relative check *inside* the band is the other option and is not as
-  naive as `SharesPlausibility` rejects: the PSKY counterexample fails
-  because that ticker has three filings, two of them bad. Requiring a
-  minimum count of clean filings before trusting a ticker's own median
-  would fire on GRMN (70 rows, 5 bad) and stay silent on PSKY.
-  **This is what ADR 146 implemented**, with the median taken over a local
-  window rather than the whole series — the global form is defeated by WULF,
-  whose 16 genuine filings sit up to 247x its own global median.
-- Populate the ADR map, or better, derive the ratio rather than hard-code
-  it — `dei:EntityCommonStockSharesOutstanding` against the ADS count is
-  available for most filers.
-
-**RESOLVED 2026-08-22 by ADR 146** — inside the rebuild, as decided below.
-
-`core.universe.scale_error_indices` catches the class by *local* shape: a
-filing is rejected when it exceeds the median of its four nearest neighbours
-per side by >50x **and** dividing by exactly 1,000 puts it back within 5x of
-them. Tickers with fewer than 8 filings are not judged, which is what makes
-it survive the PSKY counterexample that sinks a global-median test. WULF is
-the other way round: 16 genuine filings up to 247x its *global* median, and
-1.0-1.3x locally, so a global rule would have rejected all 16.
-
-Swept over all 142,278 rows: **33 filings across 17 tickers**, every one
-ending in `000`, zero false positives. Reproduces the hand-curated list of 26
-exactly and adds 7 — including BNTX and WWD, which this file had already
-identified by hand.
-
-**Still owed: the 33 stored rows.** Ingest is fixed going forward, but
-`run_shares` never re-offers a rejected accession, so they must be deleted
-before the `universe` rebuild that propagates the fix.
-
-The original decision, kept because its reasoning is what scheduled the work:
-
-**Decided 2026-08-22, on the x1000 class: fix it when the universe is next
-rebuilt anyway, not before.**
-
-The user's challenge was the right one — if the note argues that keeping bad
-data beats removing good data, why add a guard at all? The answer separates
-two layers, and concedes most of the point:
-
-*The documented asymmetry is about ingest.* Rejecting a filing is permanent
-and silent, because `run_shares` never retries a rejected accession, so the
-ticker freezes at its last accepted count forever. Nulling one quarter's
-`mcap_usd` has neither property: the next quarter recomputes from scratch.
-
-*But the absurd market cap is the detection mechanism.* The note says so, and
-it is how both this and the original 32B-ceiling defect were found. A guard
-that silently nulls $65.9T trades a loud wrong number for a quiet missing
-one — the same error the note warns against, moved one layer up. **Any such
-guard must log to `bar_rejects`, not merely null**, which makes it strictly
-more detectable than today rather than less.
-
-*And the economics do not justify it standing alone.* 22 rows in 51,828 is
-0.04%, six of them `in_trade`. Propagating a fix means rebuilding `universe`
-and re-running the backtest to push corrected membership into `events` —
-hours of compute to move six rows. Do it inside the next rebuild, where it
-costs nothing extra.
-
-**The ADR ratio was the one worth fixing on its own schedule**, and it was
-fixed first, by source switching rather than by ratio. Superseded by the
-measurement above: it no longer produces a wrong number on any nightly. What
-it still costs is ~360 unpriced pre-2018 quarters.
-
-**Before Phase 6 either way**: a model taking `mcap_usd` as a feature would
-train on a column containing 1000x outliers, which gradient boosting will
-happily learn. That is also solvable at feature-engineering time with a
-plausibility filter on the training query, so it does not force the rebuild.
+### Site auth is off, and the Pi migration is when that has to change
+
+`SITE_AUTH_DISABLED=1`, turned off deliberately 2026-08-20 with the reason
+recorded: a Vercel deployment URL is hard to discover, the content is public
+market data plus one operator's analysis, and there is no user model at all —
+no PII, no credentials, no accounts.
+
+The argument was that there is no edge to protect. Bollinger Bands and the
+stochastic oscillator have been studied exhaustively by people paid to do
+it, and ADR 112 is the house result that no cell survives correction. What
+an observer would learn is already public, and the part that is not — that
+the measured edge is absent — is published on purpose.
+
+**Moving to a Raspberry Pi changes the premise, and the flag should go with
+it.** That reasoning rests on the URL being obscure; a LAN service is not
+obscure to anything on the LAN. And `/api/chat` spends Anthropic tokens per
+request — harmless today only because the route reaches MCP on `127.0.0.1`
+and dies before any model call. On the Pi, with MCP local, an open page
+becomes an open wallet.
+
+`docs/PI_MIGRATION.md` makes deleting the flag part of the migration rather
+than a follow-up. **Delete the key; do not set it to `0`.** The middleware
+opens only on the exact string `"1"`, so `=0` is already refused, but a key
+left lying about is a decision waiting to be flipped by accident. With
+`SITE_PASSWORD` unset the site returns 503 rather than falling open, which
+is the correct direction to fail.
 
 ---
 
 ### Expanding the universe beyond the S&P 500 seed
 
 **Largely done 2026-08-21 — see ADR 143.** Nasdaq listings at or above $5B
-are ingested, `min_mcap_usd` is $20B, and 541 tickers are ever `in_trade`
-against 378 before. What remains open is below.
+are ingested, `min_mcap_usd` is $20B, and 543 tickers are ever `in_trade`
+against 378 before.
 
-Raised 2026-08-21: the user intends to add other markets and more ETFs,
-prompted by NBIS not resolving. NBIS is not excluded by a criterion -- it is
-Netherlands-domiciled, so it is not an S&P 500 constituent, so it never
-enters `tickers` and is never evaluated at all.
+**NBIS is resolved, and this entry used to blame the wrong cause.** It said
+NBIS "never enters `tickers` and is never evaluated at all". Untrue since
+ADR 143: it has a `tickers` row, 7 universe evaluations, 460 daily bars and
+2 events. It is not `in_trade` because `crit_rel_return` needs 757 daily
+bars and Nebius relisted in October 2024 — the criterion cannot be *judged*,
+and `is_tradeable` treats that as failing.
 
-**Most of the machinery already works.** QQQ was added by hand and
-participates fully: 5,280 daily bars, 66 universe evaluations, `in_trade`
-true at $289B, 29,343 events. Market cap resolved without a CIK because
-`shares_outstanding` already has a Yahoo fallback -- 68 of 653 tickers use
-it today. The four criteria in `required_criteria` read price, SMA200,
-slope and relative return, none of which mention an index.
+**The entrant blackout is now visible rather than silent.** ADR 149 added
+the watch universe: a name passing market cap and the SMA200 slope, short
+only on a criterion unjudgeable for want of history, is `in_watch` with
+`watch_reason = 'history'`. ARM, GEV, SNDK, ALAB and NBIS — $1.18T — sit
+there fully computed, so each arrives with measured history the day it
+graduates. `crit_rel_return` itself stays at 756 bars (user's decision,
+2026-08-24).
 
-So the work is not "support non-index names". It is deciding what the
-universe *is*, and paying for the change.
+**What remains open.**
 
-**Four things bite, in increasing order of awkwardness.**
+**A mechanical rule for further expansion.** ADR 035's survivorship argument
+does not survive hand-picking: the S&P union is *complete*, failures
+included, while a ticker added because it looks interesting today is
+selected on the outcome the study measures. Any expansion needs a rule that
+could have been written in 2010 and applied mechanically — "the Nasdaq-100
+union" qualifies, "NBIS and a few others" does not.
 
-**The `config_hash` and the rebuild.** Universe definition is config (ADR
-060). Broadening it moves the hash and invalidates every measured row --
-another full `cscan backtest`, ~3h31m at the current population.
+**`config_hash` and the rebuild.** Universe definition is config (ADR 060),
+so broadening it invalidates every measured row. Measured 2026-08-24, that
+is ~1h18m compute plus a 45m harness plus statistics.
 
-**ADR 035's survivorship argument does not survive hand-picking.** The S&P
-union is *complete*: every historical member is present, including the ones
-that failed. A ticker added because it looks interesting today is selected
-on an outcome the study is trying to measure. Any expansion needs a rule
-that could have been written in 2010 and applied mechanically -- "the
-Nasdaq-100 union" is such a rule; "NBIS and a few others" is not.
-
-**Relative return needs a benchmark that means something.** `crit_rel_return`
-compares against the S&P series in `market_days`. For a Nasdaq name that is
-defensible; for a foreign listing or a sector ETF it quietly changes what
+**Relative return needs a benchmark that means something.**
+`crit_rel_return` compares against the S&P series in `market_days`.
+Defensible for a Nasdaq name; for a foreign listing it quietly changes what
 the criterion tests.
 
-**ETFs are not companies.** `sector` and `industry` are NULL on QQQ.
-`days_to_earnings` has no meaning for one either, and ADR 041's
-earnings-window exclusion silently does nothing.
-
-**The `cell_id` half of this was wrong and is removed.** It claimed
-`cell_id` is built from sector-bearing columns, so an ETF lands in a
-NULL-sector cell. `core/cells.py::cell_key` takes nine arguments —
-`signal_type`, `side`, `dd_bucket`, `strength`, `entry_kind`, `split`,
-`era`, `horizon`, `target` — and sector is not among them. Phase 4
-statistics were never affected and need no re-measurement.
-
-**RESOLVED for training by ADR 147, 2026-08-23.** ETFs are excluded from the
-Phase 6 training frame by an explicit ticker set and stay fully tradeable.
-
-**The "uncellable" claim was wrong.** `cell_key` carries no sector (nine
-arguments, listed above), so an ETF has always celled normally. What is
-real is `sector` as a *model feature*: a NULL is its own LightGBM level, and
-a one-member level is ticker identity, which DESIGN §7.3 excludes `ticker`
-to prevent.
-
-**And the ETF was the small half.** Measured 2026-08-22: 32 tickers reach
-the training population with a NULL sector and **31 are ordinary equities**
-(ASML, TSM, ILMN, VFC, M, ETSY, AAL and 24 more), because
-`run_tickers_refresh` writes `sector` only from Wikipedia's *current* S&P
-500 table — so every removed constituent ADR 035 deliberately keeps arrives
-blank. QQQ is 1,910 of 11,826 affected events.
-
-**RESOLVED 2026-08-24 by ADR 148.** 254 of 352 candidates resolved from
-Yahoo, crosswalked to GICS. The training population now carries exactly
-eleven sector levels and the ADR 147 partition over all 386,208 live rows
-returns 384,298 trainable, 1,910 ETF, **0 must-fix**. Session 22 is
-unblocked.
-
-Writing the backfill surfaced a second, larger defect: `tickers.sector`
-held **two vocabularies**, so `Information Technology` (53,031 events) and
-`Technology` (4,513) were two levels for one sector, as were
-`Financials`/`Finance` and `Communication Services`/`Telecommunications`.
-ADR 147's gate tested only for NULL and would have passed that frame. It
-now rejects `non_canonical_sector` too.
-
-The 98 that did not resolve are delisted or renamed — YHOO, FB, PCLN,
-TWTR, ATVI, CERN, FRC, SIVB — none of which reaches the training
-population. They stay blank, per invariant 4.
-
-**Superseded, kept for the reasoning:** backfill `sector` for those 31. `jobs/fetch/nasdaq.py`
-already returns a sector per listing and it is never written to
-`tickers.sector`. A `tickers` update only — no universe rebuild, no
-backtest re-run, no `config_hash` move. ADR 147 makes the training frame
-raise until this is done, deliberately, because filtering on `sector IS
-NULL` instead would drop 84% of the affected events off removed index
-members and reintroduce the survivorship bias ADR 035 exists to prevent.
-
-**`days_to_earnings` remains open for ETFs.** It is meaningless for a fund,
-so ADR 041's earnings-window exclusion silently does nothing. ADR 147 makes
-this moot for the model, since no ETF row trains, but it still affects
-`events`. **IBIT would make it concrete** — a spot Bitcoin trust with no
-sector, industry or earnings date — except that IBIT and VOO have no
-`tickers` row at all and have never been ingested. QQQ is the only ETF that
-exists today.
-
-**Also still open**: NYSE. The current seeds are the S&P union and Nasdaq,
-so a $50B NYSE-listed name outside the index is still unreachable, exactly
-as NBIS was.
-
-**What would settle it**: the ETF half is settled by ADR 147 — excluded from
-training, fully tradeable, and never excluded from cells, which was never
-the problem. What remains is the `sector` backfill for the 31 equities, and
-a mechanical NYSE rule that could have been written in 2010.
+**NYSE.** The seeds are the S&P union and Nasdaq, so a $50B NYSE-listed name
+outside the index is still unreachable.
 
 ---
 
+### Depositary listings have no pre-2018 history
+
+Not a wrong number — a missing one, and the distinction matters when
+coverage is quoted.
+
+`is_depositary_listing` switches the share *source* to Yahoo rather than
+scaling an ordinary-share count, which is what closed the ADR-ratio class
+(NTES from a $1,666.9B peak to $82.1B; zero depositary rows above $1T). But
+Yahoo's `shares_full` series starts around 2018, so **360 of 970 depositary
+universe rows are NULL**, and those names are absent from the trade universe
+before then rather than present at a fabricated size.
+
+Correct under invariant 4, and survivorship-relevant, so it should be said
+aloud when ADR coverage is quoted. Deriving the ratio from
+`dei:EntityCommonStockSharesOutstanding` against the ADS count would recover
+the history — that, not correctness, is now the reason to do it.
+
 ---
 
-### The validation harness is single-threaded and takes ~6 hours
+### 98 tickers still have no sector
 
-**RESOLVED 2026-08-22.** Parallelised by spooling ticker slices to parquet
-and fanning out with `ProcessPoolExecutor`; `run_harness` takes
-`max_workers` and `cscan backtest --phase harness --workers 8` uses it.
+ADR 148's backfill resolved 254 of 352. The rest are delisted or renamed —
+YHOO, FB (now META), PCLN (now BKNG), TWTR, ATVI, CERN, FRC, SIVB — and
+Yahoo 404s on them.
 
-Measured on jobs of comparable size: **3h58m35s -> 48m21s**, and 1h6m2s on a
-later run that shared the machine with an orphaned second harness. The
-title's "~6 hours" and everything below it describe the serial
-implementation and are kept because the *diagnosis* is what made the fix
-possible -- the cost is driven by tickers rather than events, which is why
-chunking by ticker works and chunking by event would not.
+**None reaches the training population**, so this blocks nothing. It stays
+recorded because the training frame raises on a missing sector by design
+(ADR 147), so a future ticker that fails to resolve will stop a build, and
+whoever hits it should find this rather than rediscover it.
 
-**Frames are passed as parquet paths, not as arguments.** An earlier version
-pickled the frames through the pool and deadlocked on ~2.7 GB across 858
-tickers: no error, no worker ever starting, flat CPU. That version was
-reverted once on false evidence -- a PowerShell filter searching for
-`cscan` in the command line cannot see spawn workers, which run
-`spawn_main`, so eight busy workers looked like zero.
+---
 
-**The shuffle happens once, before chunking.** `_shuffled_control` mixes
-indicator values across tickers deliberately; shuffling inside a worker
-would mix only that worker's slice and push `jc` toward its floor for
-reasons unrelated to look-ahead.
+### Every fire as its own observation, measured both ways
 
-The original diagnosis follows.
+Raised 2026-08-24. The original intent for `events` was that each fire is a
+separate observation — averaging down is real, bleeding out of a long is
+real, and different entries against a shared exit produce genuinely
+different returns. `cell_stats` filters `is_cluster_head`, which quietly
+encodes the opposite.
 
+Kept as-is by ADR 151, because dropping the filter is not free.
+`n_eff = n / (1 + rho(c_bar - 1))` already corrects **cross-sectional**
+dependence, when many tickers fire on one market move. Cluster-head
+filtering corrects **serial** dependence, one ticker firing repeatedly
+inside a holding window. Removing it without building the serial equivalent
+raises `n` and narrows every interval — the direction that manufactures
+significance, with no way afterwards to separate a real edge from one move
+counted four times.
 
-**Measured 2026-08-21**: **3h58m35s** for 865,984 events / 543 tickers, at a
-sustained 99.5% of *one* core.
+**What would settle it:** measure both arms and publish the gap. That number
+*is* what the overlap is worth, and it is the only honest way to find out
+whether the filter costs anything.
 
-**The cost is driven by tickers, not events.** A prediction of 5h58m was made
-that afternoon by scaling CLAUDE.md's 4h19m linearly on event count
-(627,380 -> 865,984, 1.38x). That was wrong by 47%. `_check_no_lookahead`
-dominates, and it walks **bars**, not events: six passes over
-`tickers x bars_per_ticker`. The universe went from 590 tickers to 543, so
-`4h19m x 543/590 = 3h58m` — which is what it took, to the minute. Estimate
-future runs from ticker count; event count is close to irrelevant. CLAUDE.md's "more workers do not shorten it"
-is accurate — there is no pool, no chunking and no `max_workers` anywhere in
-`research/harness.py`. It is structurally serial, not configurably serial.
+---
 
-**Where the time goes.** `_check_no_lookahead` does not inspect `events`; it
-re-runs detection from scratch **six times** — a base pass, one per
-`_SHIFT_LEVELS` entry `(1, 2, 5, 20)`, and a shuffled control. Each pass calls
-`scan_candidates` over every ticker's bars concatenated, ~2.85M rows. The
-other four checks walk the events once and are not the driver.
+### Operational, small
 
-**The `iterrows` hypothesis above was wrong.** Profiled 2026-08-22 on AAPL,
-5,248 bars, one pass, 11.3s:
+**Reserve DHCP leases** for the workstation (192.168.1.14) and the Pi
+(192.168.1.30). Both addresses are now written into configuration — the
+Pi's into its `pg_hba.conf`, and connection strings on both ends — so a DHCP
+reshuffle breaks the sync with an error that reads like an auth failure.
 
-```
-.loc -> xs -> fast_xs      6.0s / 53%   two per-row Series extractions
-comp_method_OBJECT_ARRAY   1.5s / 13%   object-dtype index scan, per row
-datetimelike.__getitem__   2.5s         31,429 datetime index operations
-```
-
-`iterrows` itself barely registers. The cost was an **O(n²) scan**:
-`scan_candidates` indexed the indicator frame by `datetime.date` *objects*
-and evaluated `ind_group.index[ind_group.index < bar_date]` for every bar —
-27.5M object comparisons per ticker per pass. **Fixed 2026-08-22** with
-`searchsorted` (125x on that step); detection went ~7.5s -> 2.77s per
-ticker-pass, and the projected harness **3h58m -> ~2.5h with no parallelism**.
-
-Event sets before and after are byte-identical across AAPL, KLAC, CHRW and
-NVDA — 11,686 events, zero difference either way.
-
-**The remaining 53% is row extraction**, and it is not an indexing problem:
-`.iloc[pos]` measured only 1.1x faster than `.loc[label]`. Pulling a row out
-of a 39-column mixed-dtype frame as a Series costs what it costs. The lever
-is issuing *one* extraction per bar instead of two — `own_ind` is looked up
-only for `CLOSE_CONFIRMED_FIELDS` and could be precomputed into arrays
-before the loop — not changing how either is indexed.
-
-**Why it re-walks instead of computing all six variants in one pass.** Fusing
-would remove five-sixths of the iteration overhead while keeping all 17.1M
-`detect` calls, so the win depends entirely on how that 1.27 ms splits — which
-has never been profiled. More importantly it would cost invariant 2: the
-harness routes through `scan_candidates` precisely because that is the
-production detection path, and the shift ladder's guarantee is "run the
-*production* detector on shifted data and watch the event set change." A
-hand-rolled fused walker validates the walker. Fusing is the last optimisation
-to reach for, not the first.
-
-**Plan, agreed 2026-08-21.** Implement only after a `cscan nightly` run has
-completed; nothing edits `harness.py` while it is producing a verdict.
-
-```
-0  profile one ticker x 6 passes (cProfile) -- decides whether step 3 matters
-1  split _check_no_lookahead into counts + verdict (tests first)
-2  add max_workers, ticker chunking, merge; --workers on `backtest --phase harness`
-3  only if the profile justifies it: itertuples / hoisted null checks in scan_candidates
-```
-
-**Two correctness details that would fail silently if missed.**
-
-*Jaccard must aggregate counts, not average ratios.* Tickers are disjoint, so
-workers return `(|A∩B|, |A∪B|)` per shift level and the parent computes
-`J = Σ|∩| / Σ|∪|` once. Averaging per-chunk Jaccards yields a different number
-that still looks plausible.
-
-*The control shuffle stays global.* `_shuffled_control` mixes indicator values
-**across** tickers on purpose. The parent must shuffle the whole frame and then
-cut chunks from the shuffled result; shuffling inside a worker only mixes that
-worker's tickers, which is a weaker control and would push `jc` toward the 0.15
-floor for reasons unrelated to the engine.
-
-**Invariant 2 is untouched** — workers call `scan_candidates` unmodified.
-
-**Attempted 2026-08-22 and reverted — it deadlocks at production scale.**
-
-The implementation chunked tickers and passed the sliced frames through
-`ProcessPoolExecutor.map`. Correct on the fixture (four tickers, 400 bars)
-and all nine equivalence tests passed. Against the real population it hung:
-858 tickers, 46 minutes, **CPU frozen at 197.2s across repeated samples**,
-no worker processes, no active database queries. Not slow — stopped.
-
-**Cause: the frames are the payload.** `pool.map` pickles every argument
-through a pipe. Bars for 858 tickers plus the equally large shuffled control
-is roughly **2.7 GB** of DataFrames pushed through Windows pipes, which
-deadlocks rather than erroring. The unit fixture is ~1 MB, so nothing about
-the test suite could have surfaced this — the bug is purely a function of
-size.
-
-**The fix is to move the orchestration, not to tune the chunking.** Workers
-must load their own tickers from Postgres rather than receive frames, the
-way `compute._compute_one_ticker` already takes a `database_url` and opens
-its own connection. `harness.py` is pure by design and must stay that way,
-so the chunking belongs in `jobs/cli.py`, which owns IO: chunk tickers,
-have each worker call `_load_bars_by_ticker` for its slice and then
-`run_harness` serially on it, and merge with the counts machinery below.
-
-**What was kept.** `_lookahead_counts` / `_lookahead_verdict` remain split,
-with `LookaheadCounts` and its tests. That refactor is what makes any
-parallel merge correct and is worth having on its own. `max_workers` was
-removed from `run_harness` rather than left accepting-and-ignoring, so the
-equivalence tests skip again on their signature guard until a working
-implementation lands.
-
-**Expected once fixed**: ~50 min at 8 workers, ~1h40m at 4. Note this makes the machine
-*hotter*, not cooler: eight cores at full load for 50 minutes rather than one
-for six hours. A `--workers` flag lets the operator trade speed for a usable
-machine.
-
-**Not an option: pruning the input.** The harness validates the population that
-was actually produced. Shrinking its input to save time means the Phase 3 gate
-passes on a subset while `events` ships whole — a weaker gate, not a speedup.
-
+**`cscan nightly` is still manual.** No Task Scheduler entry exists for
+`nightly`, `weekly` or the poller; every row in `runs` was hand-typed.
+Definitions sit unimported at `scripts/tasks/*.xml`.
