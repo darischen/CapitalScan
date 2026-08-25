@@ -87,6 +87,15 @@ _EVENT_COLUMNS = [
     "config_hash",
     "ticker",
     "signal_date",
+    # ADR 149. **A missing slot here is silent**: the frame is built with
+    # `pd.DataFrame(rows, columns=_EVENT_COLUMNS)`, which drops any key the
+    # list has no place for and leaves the column NaN with no error -- the
+    # failure the `unknown_path_keys` guard below raises on for
+    # `path_metrics`. It happened to these two on 2026-08-24: the row dict
+    # set them, the frame dropped them, and 245k watched events were written
+    # with `in_trade` from the NOT NULL DEFAULT true.
+    "in_trade",
+    "in_watch",
     "signal_type",
     "signal_types_all",
     "signal_strength",
@@ -728,7 +737,21 @@ def _backtest_one_ticker(
             }
             rows.append(row)
 
-    return pd.DataFrame(rows, columns=_EVENT_COLUMNS) if rows else _empty_events_frame()
+    if not rows:
+        return _empty_events_frame()
+    # The general form of the `unknown_path_keys` check above. That one
+    # guards `path_metrics` only, and this frame is assembled from several
+    # sources -- the row dict, `enrich_context`, `path_metrics`. Any key
+    # without a slot is dropped here in silence, so assert the whole dict is
+    # representable rather than one contributor to it.
+    unknown = set(rows[0]) - set(_EVENT_COLUMNS)
+    if unknown:
+        raise ValueError(
+            f"event row carries column(s) {sorted(unknown)} with no slot in "
+            "_EVENT_COLUMNS; pd.DataFrame(columns=...) would drop them "
+            "silently and the column would stay NULL with no error"
+        )
+    return pd.DataFrame(rows, columns=_EVENT_COLUMNS)
 
 
 def add_cofire_count(events: pd.DataFrame) -> pd.DataFrame:

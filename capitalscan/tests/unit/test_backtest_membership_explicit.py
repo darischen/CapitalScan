@@ -127,3 +127,48 @@ class TestWatchAlertsAreDistinguishable:
         src = inspect.getsource(poll._process_tick)
         assert "_watch_tag(" in src
         assert "{tag}{watch}" in src
+
+
+class TestTheFrameCannotSilentlyDropAColumn:
+    """`pd.DataFrame(rows, columns=_EVENT_COLUMNS)` drops unknown keys.
+
+    This is how the first ADR 149 attempt failed on 2026-08-24. The row dict
+    set `in_trade` and `in_watch`, every test asserting that passed, and the
+    frame dropped both because `_EVENT_COLUMNS` had no slot — so 245k
+    watched events were written with `in_trade` from the column's NOT NULL
+    DEFAULT true, straight into ADR 112's population.
+
+    Nothing raised. The code even documents the hazard three lines above the
+    construction, for `path_metrics` specifically, and guards only that one
+    contributor. The guard is now general.
+    """
+
+    def test_membership_has_a_slot(self):
+        assert "in_trade" in backtest._EVENT_COLUMNS
+        assert "in_watch" in backtest._EVENT_COLUMNS
+
+    def test_an_unrepresentable_key_raises_rather_than_vanishing(self):
+        import inspect
+
+        src = inspect.getsource(backtest)
+        assert "unknown = set(rows[0]) - set(_EVENT_COLUMNS)" in src, (
+            "the general drop-guard is gone; a row-dict key with no slot in "
+            "_EVENT_COLUMNS would again be dropped in silence"
+        )
+
+    # Added to the frame *after* construction by `add_cofire_count`, so it
+    # never passes through the row dict and needs no slot. The only one --
+    # writing this down is the point, because any other name appearing here
+    # is a column the job may update but can never actually write.
+    _POST_PASS_COLUMNS = {"cofire_count"}
+
+    def test_every_backtest_owned_column_is_representable(self):
+        """A column the job may update but cannot put in the frame is one it
+        can never actually write. `in_trade` and `in_watch` were exactly
+        that for one run: listed as updatable, dropped at construction."""
+        missing = (
+            set(backtest._RUN_BACKTEST_UPDATE_COLUMNS)
+            - set(backtest._EVENT_COLUMNS)
+            - self._POST_PASS_COLUMNS
+        )
+        assert not missing, f"updatable but unrepresentable: {sorted(missing)}"
