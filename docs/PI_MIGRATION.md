@@ -175,6 +175,36 @@ host    capitalscan_serving    capscan    192.168.1.0/24    scram-sha-256
 sudo systemctl restart postgresql
 ```
 
+**That address does not exist yet at boot, and Postgres starts anyway.**
+It warns on the address it cannot bind, binds the rest, and comes up on
+loopback only -- so `systemctl` says `Started`, `pg_lsclusters` says
+`online`, and every LAN client gets connection refused. The stock unit
+orders on `network.target`, which means "networking is configured", not
+"an address is assigned". ADR 152 has the full account; the fix is a
+drop-in on the *cluster* unit, not on `postgresql.service`:
+
+```bash
+sudo systemctl edit postgresql@17-main
+```
+
+```ini
+[Unit]
+After=network-online.target
+Wants=network-online.target
+```
+
+**Verify by rebooting, not by restarting.** A restart with the network
+already up succeeds either way and proves nothing. The check is the
+cluster's own log, since neither systemd nor `pg_lsclusters` records a
+degraded start:
+
+```bash
+grep -c 'could not bind' /var/log/postgresql/postgresql-17-main.log
+```
+
+The count must not increase across a reboot. **The Pi reaches serving in
+~39 seconds**; anything tested inside that window reads as an outage.
+
 **Do not use `0.0.0.0` or `0.0.0.0/0` here.** The whole reason this design
 is safe is that Postgres is reachable from the LAN and nowhere else. A
 `/0` in `pg_hba.conf` plus any future router change is the failure this
