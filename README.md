@@ -63,7 +63,7 @@ capitalscan/
   handlers/    the query layer the chat and MCP tools share
   mcp/         read-only MCP server
 web/           Next.js screener, ticker pages, research page
-docs/          DECISIONS.md (146 ADRs), DESIGN, BUILD, TESTS, RESULTS, BACKLOG
+docs/          DECISIONS.md (150 ADRs), DESIGN, BUILD, TESTS, RESULTS, BACKLOG
 ```
 
 ## Invariants
