@@ -1,3 +1,5 @@
+import type { Metadata } from "next";
+
 import { ErrorState } from "@/components/Screener";
 import {
   BandGauge,
@@ -32,6 +34,30 @@ import { chart, countEvents, events, liveQuote, parseRange, state } from "@/lib/
  */
 
 export const dynamic = "force-dynamic";
+
+/**
+ * Tab title: the ticker, which the root layout's template renders as
+ * `TSLA | CapitalScan`.
+ *
+ * Normalised through `normalizeSymbol` exactly as the page body does, so a
+ * lowercase or padded URL cannot put an unnormalised string in the tab
+ * while the page shows the clean one. It also bounds what reaches the
+ * title: the same regex strips anything outside `[A-Z0-9.-]` and caps the
+ * length at 12, so a crafted URL cannot inject markup here.
+ *
+ * A blank symbol falls back to the bare site name rather than rendering a
+ * dangling separator — `/ticker/` with no symbol shows `NoTicker`, and the
+ * tab should match.
+ */
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ sym: string }>;
+}): Promise<Metadata> {
+  const { sym: raw } = await params;
+  const sym = normalizeSymbol(decodeURIComponent(raw));
+  return sym ? { title: sym } : { title: { absolute: "CapitalScan" } };
+}
 
 export default async function TickerPage({
   params,

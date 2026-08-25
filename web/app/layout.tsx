@@ -46,7 +46,14 @@ const display = IBM_Plex_Sans_Condensed({
 });
 
 export const metadata: Metadata = {
-  title: "CapitalScan",
+  // `default` for routes that set no title of their own — the home page
+  // stays plain "CapitalScan". `template` is applied to any route that
+  // exports one, so `/ticker/TSLA` renders "TSLA | CapitalScan" without
+  // each page having to repeat the suffix.
+  title: {
+    default: "CapitalScan",
+    template: "%s | CapitalScan",
+  },
   description: "Bollinger Band and Stochastic Oscillator event study. Advisory only.",
 };
 
