@@ -137,7 +137,29 @@ detail; three things are worth carrying forward:
   which is the trap that stays standing until those columns are populated
   or dropped.
 
-Session 23 is the fit: purged walk-forward CV, cluster weights, twenty heads.
+**Session 23 fitted them** (`docs/sessions/session23-model-fit.md`).
+`core/folds.py`, `core/pinball.py` and `research/train.py`; all twenty heads
+across seven folds in **281 seconds**, which is far cheaper than assumed and
+makes a full refit a routine act rather than an overnight one.
+
+**15 of 20 heads beat the unconditional baseline on every fold — and that
+is not yet evidence of an edge.** It is CV inside train; ADR 113's check 5
+is the validate split, untouched. Relative improvement flatters the tails
+(at τ=0.95 a 12% gain is ~0.0006 absolute). And the peak family, which
+improves most, may be forecasting dispersion rather than direction —
+$M_h$ is a maximum, and `rv_pct_252d`, `bb_width_pct` and `vix_close` are
+all in the feature set. The directional heads (`*_q50` terminal) improve
+0.55–1.00% and each lose a fold, which is consistent with ADR 112.
+
+**ADR 113's check 5 names a baseline that cannot be built.** Its
+"per-ticker-year" phrase is inherited from the cell grid, which measured
+within sample; ADR 019's split is temporal and the ticker-year overlap
+between train and validate is **zero**. Open item in `DECISIONS.md` — the
+global unconditional quantile is used for now, and the measured bar for
+all twenty heads is in `RESULTS.md`.
+
+Next: check 5 proper on validate, then coverage (DESIGN §7.6), which a head
+can fail while posting a good pinball loss.
 
 One migration, `d7f4b91c26ea`: `serving_config` plus a rebuilt `v_positions`. Applied
 to research on 2026-08-18 and `db/schema.sql` regenerated. Run `cscan db sync-config`

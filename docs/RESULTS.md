@@ -3947,3 +3947,75 @@ wider distribution and not a difficulty ranking.
 Train covers 2010–2021 and validate 2022–2023 with **zero** ticker-year
 overlap, so every lookup falls back to the global value and the two agree
 to five decimals. Recorded as an open item against ADR 113's wording.
+
+
+## 2026-08-25 — first fit: twenty heads, purged walk-forward CV
+
+**This is not ADR 113's check 5.** It is cross-validation *inside* train
+(2010–2021, seven folds). The validate split (2022–2023) has not been
+touched and the holdout has not been looked at. Check 5 is a separate
+measurement against held-out data and is not reported here.
+
+125,714 rows, 4,527 sessions, 20 heads, **281 seconds** total.
+
+| head | folds won | mean impr% | worst% | best% |
+|---|---|---|---|---|
+| `terminal_h5_q05` | 7/7 | 4.86 | 1.26 | 11.18 |
+| `terminal_h5_q25` | 7/7 | 0.93 | 0.19 | 2.16 |
+| `terminal_h5_q50` | 6/7 | 1.00 | −0.12 | 1.93 |
+| `terminal_h5_q75` | 7/7 | 4.00 | 1.47 | 5.38 |
+| `terminal_h5_q95` | 7/7 | 12.61 | 8.20 | 21.89 |
+| `terminal_h10_q05` | 7/7 | 4.65 | 1.19 | 11.43 |
+| `terminal_h10_q25` | 6/7 | 0.73 | −0.01 | 2.89 |
+| `terminal_h10_q50` | 6/7 | 0.55 | −0.23 | 1.41 |
+| `terminal_h10_q75` | 7/7 | 3.38 | 0.14 | 7.08 |
+| `terminal_h10_q95` | 7/7 | 11.85 | 6.69 | 24.58 |
+| `peak_h5_q05` | 6/7 | 1.03 | −1.05 | 2.13 |
+| `peak_h5_q25` | 7/7 | 3.36 | 0.01 | 5.01 |
+| `peak_h5_q50` | 7/7 | 7.91 | 4.28 | 13.50 |
+| `peak_h5_q75` | 7/7 | 12.22 | 6.82 | 22.56 |
+| `peak_h5_q95` | 7/7 | 16.83 | 9.36 | 31.95 |
+| `peak_h10_q05` | 6/7 | 1.13 | −0.59 | 3.03 |
+| `peak_h10_q25` | 7/7 | 4.07 | 1.51 | 6.10 |
+| `peak_h10_q50` | 7/7 | 7.95 | 4.75 | 14.34 |
+| `peak_h10_q75` | 7/7 | 11.48 | 6.05 | 21.54 |
+| `peak_h10_q95` | 7/7 | 15.33 | 6.52 | 29.10 |
+
+**15 of 20 heads beat the baseline on every fold.**
+
+### Three reasons not to read that as an edge yet
+
+**Relative improvement flatters the tails structurally.** At τ=0.95 the
+baseline loss is ~0.005, so 12% of it is ~0.0006. The heads with the
+largest percentages are the ones where the absolute number is smallest.
+Ranking heads by this column ranks them mostly by τ.
+
+**The peak family improves far more than the terminal family, and that has
+a mundane explanation.** $M_h$ is a maximum: bounded below, and driven by
+dispersion rather than direction. Dispersion is genuinely predictable from
+`rv_pct_252d`, `bb_width_pct` and `vix_close`, all of which are in the
+feature set. A model that forecasts volatility well will score well on
+every peak head without knowing anything about which way price goes.
+
+DESIGN §7.2 anticipated exactly this as the model's addition over the cell
+grid — *"a signal that does not change P(R_5 ≥ 3%) can still narrow or
+widen the spread of R_5, and the grid is blind to that by construction"* —
+so finding it is the design working, not a surprise. It is also not a
+directional claim.
+
+**The directional heads are the weakest ones.** `terminal_h5_q50` and
+`terminal_h10_q50` carry the "which way does it go" question and improve
+0.55–1.00%, losing a fold each. `terminal_h10_q50`'s worst fold is −0.23%.
+That is consistent with ADR 112 rather than against it.
+
+**One diagnostic worth keeping:** `terminal_h5_q50` fold 2017 stopped at
+`best_iteration = 1`. Early stopping fired immediately, meaning no tree
+after the first improved the fold loss. That is the model saying it found
+nothing, legibly.
+
+### What has to happen before any of this counts
+
+Check 5 on the validate split, per head, against the bar recorded above.
+Then coverage — DESIGN §7.6 checks quantile heads by whether the realised
+fraction below $\hat{Q}_{0.25}$ is 25%, which a head can fail while
+posting a good pinball loss.
