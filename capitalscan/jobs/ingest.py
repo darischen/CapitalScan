@@ -1243,7 +1243,10 @@ def _implausible_shares_reason(shares: int, bounds: SharesPlausibility) -> str |
 # instead of being silently swallowed alongside this. Kept here, not in
 # `jobs/fetch/sec.py`, because which tickers to skip is ingest policy, not
 # a fact about how to talk to SEC.
-SEC_NON_FILER_TICKERS = frozenset({"QQQ", "VOO", "IBIT"})
+SEC_NON_FILER_TICKERS = frozenset({"QQQ", "SPY", "VOO", "IBIT"})
+# `SPY` added 2026-08-25. It was missing from a list that named the other
+# three, which is the least defensible gap of the four: the universe is
+# seeded from S&P 500 membership and SPY is that index's tracker.
 # `VOO` and `IBIT` added 2026-08-21 with the ETF expansion (ADR 143). Same
 # reason as QQQ: an ETF files no 10-K/10-Q/8-K, so the XBRL endpoints 404 by
 # design and `run_shares` falls through to the Yahoo source that already

@@ -86,7 +86,56 @@ the criterion tests.
 
 ---
 
-### SPY, VOO and IBIT are not in the database — **highest priority**
+### VOO and IBIT have no share count, so no market cap — **highest priority**
+
+**Superseded 2026-08-25.** SPY, VOO and IBIT now have `tickers` rows, bars
+and indicators. `SPY` was added to both `SEC_NON_FILER_TICKERS` and
+`core.training.ETF_TICKERS`, which was the step this entry predicted would
+be forgotten.
+
+    SPY    5,510 daily bars   2004-09-29 →   in_trade, mcap $685B
+    VOO    4,013 daily bars   2010-09-09 →   no shares, no mcap
+    IBIT     656 daily bars   2024-01-11 →   no shares, no mcap
+
+**`cscan shares` resolves neither VOO nor IBIT.** The Yahoo fallback that
+serves 68 tickers returns nothing for them, and SEC serves no companyfacts
+for an ETF by design. So `mcap_usd` is NULL, `crit_mcap` fails, and both
+sit outside trade *and* watch — `watch_reason` requires `crit_mcap` to be
+true, deliberately (ADR 149).
+
+VOO fails on **nothing else**: SMA200, its slope and relative return all
+pass. One missing input keeps out a $600B S&P 500 tracker. IBIT
+additionally sits below its SMA200 with a negative slope and has 656 bars
+against the 757 `crit_rel_return` needs, so shares alone would not admit
+it.
+
+Not resolved by assigning a plausible number. Invariant 4 and the ADR 148
+precedent both say an unresolved value stays blank. A third source for ETF
+units outstanding is the real fix, and it is a decision, not a lookup.
+
+**Related, and cheaper to fix:** QQQ and SPY shares both stop at
+2021-03-17, so their market caps are computed from five-year-old share
+counts. That understates nothing dramatically today but is a silent staleness.
+
+---
+
+### SPY has one quarter of universe history, not sixty-six
+
+Raised 2026-08-25. Only 2026Q2 was evaluated, so SPY participates in live
+screening but contributes no historical events to the study population.
+
+Backfilling means `cscan universe --quarter` for each of the other 65
+quarters. **Measured at 2m23s per quarter for a four-ticker subset**, so
+~2.6 hours — not the ~10s CLAUDE.md quotes, which is a different shape of
+run. It belongs in an overnight slot next to the NYSE rebuild rather than
+in a working session.
+
+Statistics are unaffected until then: `cell_stats` reads priced backtest
+rows, and SPY has none.
+
+---
+
+### Historical: SPY, VOO and IBIT were not in the database
 
 Raised 2026-08-25. `SEC_NON_FILER_TICKERS` names `QQQ`, `VOO` and `IBIT`,
 which reads like three ETFs are tracked. **Only QQQ exists.** VOO and IBIT

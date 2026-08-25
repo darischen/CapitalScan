@@ -240,7 +240,7 @@ class TestETFsSkipTheSecEndpoints:
         # A ticker added here stops being checked against SEC forever. That
         # is right for a fund and wrong for a company, so the list stays
         # short and its growth is a decision someone makes here.
-        assert ingest.SEC_NON_FILER_TICKERS == frozenset({"QQQ", "VOO", "IBIT"})
+        assert ingest.SEC_NON_FILER_TICKERS == frozenset({"QQQ", "SPY", "VOO", "IBIT"})
 
 
 # ---------------------------------------------------------------------------
