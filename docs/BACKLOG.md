@@ -150,6 +150,47 @@ quarterly and the lateral is bounded by `as_of <= signal_date`.
 
 ---
 
+### A long `cscan sync` is not atomic, and the source can move under it
+
+Raised 2026-08-25, observed rather than reasoned about. A sync that ran
+**1h45m** copied its fourteen tables in foreign-key order while the research
+database changed underneath, and the copy captured different moments for
+different tables.
+
+Measured on the Pi immediately afterwards:
+
+    QQQ    5,282 bars   5,282 indicators   30 in_trade universe rows
+    SPY    5,510 bars   5,510 indicators    1
+    VOO        0 bars   4,013 indicators    0
+    IBIT       0 bars     656 indicators    0
+
+VOO and IBIT have indicators, no bars, and no `in_trade` universe row. The
+sequence explains all three:
+
+| copied | table | state of the source then |
+|---|---|---|
+| ~03:05 | `universe` (4th) | before ADR 154; VOO/IBIT not `in_trade` |
+| ~03:30 | `bars` (6th) | filter is `EXISTS (... u.in_trade)` on the **source** — skipped them |
+| ~04:12 | `indicators` (7th) | after ADR 154 — included them |
+
+**Nothing is corrupt and a reader sees nothing wrong**: the Pi's own
+`universe` copy also says those two are not `in_trade`, so no surface
+selects them. It repairs itself at the next sync. It is recorded because
+the *shape* is a real hazard — a table whose predicate reads another table
+gets that predicate evaluated at its own copy time, not at a snapshot.
+
+The clean fix is a **repeatable-read transaction on the source** for the
+whole run, so every table is copied from one consistent snapshot. That is a
+few lines and it costs a long-lived read transaction, which on a database
+also being written by the poller means bloat. Worth measuring before
+adopting.
+
+The cheaper mitigation is simply not to change the universe while a sync
+runs — which nobody would think to write down, and which is exactly why
+this entry exists.
+
+---
+
 ### A full `cscan sync` costs 1.5+ hours and 3 GB, mostly to rewrite rows
 
 Measured 2026-08-25: a re-sync to an already-populated Pi ran **1h33m and
