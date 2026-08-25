@@ -90,7 +90,52 @@ sudo apt install -y nodejs
 
 ---
 
-## 2. Postgres — role, database, LAN listener
+## 1b. The workstation side, and a trap worth reading first
+
+The Pi runs `nightly` and the poller **against the workstation's research
+database**, so that database has to be reachable on the LAN. Three things
+about this machine were not what the plan first assumed:
+
+**It is PostgreSQL 16 in Docker**, not the native PG 18 on 15432. Config
+files live inside the container, not under `C:\Program Files\PostgreSQL`.
+Editing the native install's `pg_hba.conf` changes nothing — that was the
+first wrong turn.
+
+**`pg_hba.conf` cannot enforce LAN-only here, at all.** Docker NATs every
+inbound connection through the bridge gateway, so a request from this host,
+from the Pi, or from the internet all arrive as `172.18.0.1`. Postgres
+cannot tell them apart by source address. Scoping the catch-all to
+`192.168.1.0/24` locked out `localhost` and restricted nothing:
+
+```
+FATAL: no pg_hba.conf entry for host "172.18.0.1", user "capscan"
+```
+
+**The control belongs in the port publishing.** `ports: "5432:5432"`
+publishes on `0.0.0.0` *and* `[::]`, and these machines hold globally
+routable IPv6 addresses (`2600:6c50:...`). IPv6 has no NAT, so the only
+barrier was the router's inbound firewall. `docker-compose.yml` now names
+both interfaces:
+
+```yaml
+ports:
+  - "127.0.0.1:5432:5432"
+  - "192.168.1.14:5432:5432"
+```
+
+`netstat` afterwards shows two IPv4 listeners and no IPv6 entry. Loopback is
+listed because every connection string in the project uses `localhost`.
+
+**Recreating the container is safe** — the volume is named
+`capitalscan-data`, so `docker compose up -d` preserves all 19 GB. Verified:
+1,109,962 events before and after.
+
+**The LAN address is DHCP.** Reserve a lease for `192.168.1.14`, or the
+container fails to start the day it changes.
+
+---
+
+## 2. Postgres on the Pi — role, database, LAN listener
 
 ```bash
 sudo -u postgres psql -c "CREATE ROLE capscan LOGIN PASSWORD 'CHOOSE_ONE';"
@@ -154,8 +199,16 @@ Then, **from the workstation**, point `DATABASE_URL_SERVING` at the Pi and
 sync:
 
 ```
-DATABASE_URL_SERVING=postgresql+psycopg://capscan:PW@capitalscan.local:5432/capitalscan_serving
+DATABASE_URL_SERVING=postgresql+psycopg://capscan:capscan@192.168.1.30:5432/capitalscan_serving
 ```
+
+```
+
+**IPv4, never `capitalscan.local`.** mDNS resolves that name to the Pi's
+global **IPv6** address, and the Pi's `pg_hba.conf` line covers
+`192.168.1.0/24` — IPv4 only. Using the hostname fails with `no pg_hba.conf
+entry for host`, which reads as an auth problem rather than an
+address-family mismatch.
 
 ```
 uv run cscan sync --dry-run     # prints the cutoff and the 14 tables

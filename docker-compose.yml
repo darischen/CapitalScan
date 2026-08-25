@@ -15,8 +15,26 @@ services:
         -c effective_cache_size=4GB
         -c max_parallel_workers=8
         -c max_connections=200
+    # Bound to explicit addresses, not the default "5432:5432".
+    #
+    # The bare form publishes on 0.0.0.0 **and** [::], and these machines
+    # have globally routable IPv6 addresses -- IPv6 has no NAT, so the only
+    # thing between that listener and the internet is the router's inbound
+    # firewall. Naming the interfaces removes the IPv6 listener entirely
+    # rather than relying on a default to filter it.
+    #
+    # **`pg_hba.conf` cannot do this job.** Docker NATs every inbound
+    # connection through the bridge gateway, so a request from this host,
+    # from the Pi, or from outside all arrive as 172.18.0.1. Postgres cannot
+    # tell them apart by source address; scoping pg_hba to 192.168.1.0/24
+    # locked out localhost and restricted nothing (2026-08-24).
+    #
+    # Loopback is listed too because every connection string in the project
+    # uses `localhost`; binding only to the LAN address would break all of
+    # them.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
+      - "192.168.1.14:5432:5432"
     volumes:
       - capitalscan-data:/var/lib/postgresql/data
     healthcheck:
