@@ -5790,3 +5790,100 @@ afterwards to tell a real edge from one move counted four times.
 
 Measuring both arms is the honest way to answer it, and is left for when the
 answer is wanted rather than folded in here.
+
+---
+
+## 152. Postgres on the Pi waits for the network rather than binding a wildcard
+
+**Date:** 2026-08-25. **Status:** Pinned. Enforces PI_MIGRATION §2, which already forbade a wildcard listener. Does not move `config_hash`.
+
+**Context.**
+
+PI_MIGRATION §2 sets `listen_addresses = 'localhost,192.168.1.30'` so the
+serving database is reachable from the LAN and nowhere else, and says
+plainly: *"Do not use `0.0.0.0` or `0.0.0.0/0` here."*
+
+The first unattended reboot broke that. `postgresql@17-main` starts before
+wlan0 has its address, so the named address does not exist yet:
+
+```
+01:23:35 LOG:      could not bind IPv4 address "192.168.1.30": Cannot assign requested address
+01:23:35 WARNING:  could not create listen socket for "192.168.1.30"
+01:23:35 LOG:      listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+```
+
+**Postgres does not abort when one of several listen addresses fails.** It
+warns, binds what it can, and starts. `systemd` therefore reports the unit
+`Started`, `pg_lsclusters` reports `online`, and the cluster is up on
+loopback only. Every LAN client fails with connection refused while every
+local check says the database is healthy.
+
+The immediate fix was `listen_addresses = '*'`, which works and gives up the
+property §2 exists to protect. `*` binds `0.0.0.0` **and** `::`, and the Pi
+holds a globally routable `2600:6c50:...` address with no NAT in front of
+it. `pg_hba.conf` covers `192.168.1.0/24`, so an IPv6 connection fails
+closed on authentication -- but that leaves one layer where the design
+called for two, and the surviving layer is the router's inbound firewall.
+
+**Decision.**
+
+`listen_addresses` stays narrow. A systemd drop-in makes the unit wait for
+the network instead:
+
+```ini
+# /etc/systemd/system/postgresql@17-main.service.d/override.conf
+[Unit]
+After=network-online.target
+Wants=network-online.target
+```
+
+The stock template orders on `network.target`, which means "networking is
+configured", not "an address is assigned". `network-online.target` is the
+one that waits for the second.
+
+**Rationale.**
+
+*Why not keep `'*'` and rely on `pg_hba`.* It is one line and it works. It
+also converts a two-layer control into a one-layer one, on the one interface
+family that has no NAT. The failure mode is not "someone guesses the
+password" but "a router firmware update changes an inbound default", and
+that is exactly the class of event §2 was written against.
+
+*Why not `ExecStartPre` polling for the address.* More robust, since it
+tests the actual precondition rather than a target that approximates it. Held
+in reserve: it is a retry loop in a boot path, and `network-online.target`
+turned out to be sufficient here. Reach for it if this recurs on wifi.
+
+*Why the diagnosis took four wrong turns, which is the durable lesson.* The
+outage presented as "the site is down", and the site was never down -- the
+web unit reached `Ready in 6.8s` at boot and the browser was holding stale
+chunk hashes. Avahi was restarted by hand at the same time as the Postgres
+fix and got the credit for it; its log later showed it registering
+`192.168.1.30` eight seconds into boot, unprompted, on the failing run. The
+proposed Avahi drop-in and an IPv6 disable were both fixes for problems that
+did not exist.
+
+What settled it was reading the writer's own log rather than the
+supervisor's. `journalctl -u postgresql` shows `Finished` because Debian's
+`postgresql.service` is an empty oneshot wrapper; `journalctl -u
+postgresql@17-main` shows `Started` because Postgres genuinely did start.
+Only `/var/log/postgresql/postgresql-17-main.log` records that it started
+degraded. This repeats the pattern CLAUDE.md already records for `psql`
+exiting 0 on a shared-memory failure: **a success status from the process
+supervisor is not evidence about what the process accomplished.**
+
+**Consequences.**
+
+- Verified by reboot on 2026-08-25, not by inspection. Booted 01:57:05;
+  `grep -c 'could not bind'` stayed at **1** (the pre-fix occurrence), and
+  the workstation reached `192.168.1.30:5432` 29s after the machine dropped.
+  Web over IP and over `capitalscan.local` both answered 200 at 39s with
+  nothing restarted by hand.
+- The Pi's full boot to serving is **~39 seconds**. Anything checked inside
+  that window reads as an outage. Two dead ends in this session came from
+  exactly that.
+- `192.168.1.30` is still a DHCP address, so this breaks the day the lease
+  moves -- now with a clean `could not bind` line naming the cause. The
+  reservation is still open in PI_MIGRATION's closing section.
+- The verification is `grep -c 'could not bind'` on the cluster log after a
+  reboot. Not `systemctl is-active`, which was true throughout the failure.
