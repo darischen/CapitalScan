@@ -4161,3 +4161,66 @@ Three options, none taken here:
 
 This belongs to whoever set the design, not to the session that measured
 the miss.
+
+
+## 2026-08-25 — the coverage miss is a regime shift, not a model defect
+
+Two measurements, in order.
+
+**ADR 155 option A: relax regularisation.** Ruled out.
+
+| variant | mean abs coverage error | sum loss |
+|---|---|---|
+| baseline (§7.5) | 0.0386 | 0.05497 |
+| `lambda_l2=1.0` | 0.0384 | 0.05497 |
+| `lambda_l2=0`, 31 leaves, depth 6 | 0.0394 | 0.05501 |
+| `lambda_l2=0`, 63 leaves, depth 8 | 0.0399 | 0.05513 |
+
+Coverage does not improve. Both it and loss degrade slightly, and `peak_h5`
+degrades monotonically (0.0258 → 0.0285).
+
+**The featureless control.** A train-fitted unconditional quantile — a
+constant — reproduces the miss:
+
+| τ | fitted model | constant |
+|---|---|---|
+| 0.05 | 0.087 | 0.087 |
+| 0.25 | 0.328 | 0.333 |
+| 0.50 | 0.553 | 0.536 |
+| 0.75 | 0.760 | 0.730 |
+| 0.95 | 0.935 | 0.926 |
+
+**The labels moved.**
+
+    fwd_ret_5d      train      validate      shift
+      q05         -0.05790    -0.07603     -0.01812
+      q25         -0.01491    -0.02448     -0.00957
+      q50          0.00388     0.00078     -0.00310
+      q75          0.02200     0.02420     +0.00220
+      q95          0.05915     0.07049     +0.01133
+      mean         0.00282    -0.00044     -0.00325
+      sd           0.04156     0.04713     +13%
+
+    peak_ret_5d     train      validate      shift
+      q95          0.08772     0.10675     +0.01903
+      mean         0.02724     0.03401     +0.00678
+
+Train 2010–2021, validate 2022–2023. Validate is 13% more volatile with
+both tails pushed outward, and the median return crosses from positive to
+approximately zero.
+
+**Reading.** A fan fitted on the calmer era is too narrow in the more
+violent one by construction. `vix_close`, `rv_pct_252d` and `bb_width_pct`
+are all features, so the model sees contemporaneous volatility and still
+under-disperses: it learned the map from those to future dispersion during
+a low-volatility decade and the map did not transfer.
+
+This does not weaken the check 5 result. The baseline suffers the identical
+shift, so the comparison between them is unaffected. It does mean the
+**absolute** calibration of every head belongs to the training era rather
+than to the market.
+
+**Nothing was persisted.** `capitalscan/models/` is empty and `predictions`
+holds 0 rows. Roughly 640 boosters were fitted across these runs and all
+were discarded; `fit_head` returns fold results and no model by design
+(ADR 067).
