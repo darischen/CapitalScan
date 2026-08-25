@@ -84,8 +84,47 @@ is ~1h18m compute plus a 45m harness plus statistics.
 Defensible for a Nasdaq name; for a foreign listing it quietly changes what
 the criterion tests.
 
-**NYSE.** The seeds are the S&P union and Nasdaq, so a $50B NYSE-listed name
-outside the index is still unreachable.
+---
+
+### NYSE, the same treatment Nasdaq got
+
+Raised 2026-08-25. The seeds are the S&P 500 union and Nasdaq (ADR 143), so
+a large NYSE-listed name outside the index is unreachable — not filtered
+out, never evaluated.
+
+**The machinery already exists.** ADR 143's path was: fetch the exchange's
+listings with market caps, keep common stock above a floor, upsert into
+`tickers`, ingest bars, evaluate. `jobs/fetch/nasdaq.py` does exactly that
+and hardcodes `"exchange": "NASDAQ"` in one request parameter. The same
+endpoint serves NYSE.
+
+**Four things to get right, and three are already solved.**
+
+- **`_is_common` must hold.** The screener gives preferred series, warrants
+  and units the *issuer's* market cap, so they clear any floor on their
+  parent's size while their bars are a different instrument. That filter
+  exists and is tested.
+- **Do not reuse `fetch_listed`'s cache key.** It is `@cached(source=
+  "nasdaq_screener_v1", key_fn=lambda: "listed_with_mcap")` — a constant. A
+  second exchange through the same function returns the Nasdaq snapshot and
+  looks like NYSE has no listings. Either a new source string or a
+  key that includes the exchange.
+- **Sector comes free.** The screener returns one per listing, and ADR 148
+  established the crosswalk. Unlike the Nasdaq round, these names need not
+  arrive with NULL sectors.
+- **`config_hash` moves and a rebuild follows.** Universe definition is
+  config (ADR 060). Measured 2026-08-24: ~1h18m compute, 45m harness, plus
+  statistics.
+
+**The rule has to be mechanical**, per ADR 035: "every NYSE listing at or
+above the floor" qualifies, and could have been written in 2010. Picking
+names because they look interesting selects on the outcome the study
+measures.
+
+**Expect it to be larger than the Nasdaq round.** NYSE carries most of the
+large-cap universe that is not already in the S&P 500 — REITs, foreign
+issuers, and the industrial and financial names an index-seeded universe
+misses.
 
 ---
 
