@@ -175,7 +175,15 @@ sequence explains all three:
 
 **Nothing is corrupt and a reader sees nothing wrong**: the Pi's own
 `universe` copy also says those two are not `in_trade`, so no surface
-selects them. It repairs itself at the next sync. It is recorded because
+selects them.
+
+**It does not repair itself.** Nothing is scheduled -- `Get-ScheduledTask`
+has no entry for `nightly`, and every row in `runs` got there from a
+hand-run command -- so the Pi keeps this state until someone runs `cscan
+nightly` or `cscan sync`. "It repairs at the next sync" is true and
+misleading in a system where the next sync is a person remembering.
+
+It is recorded because
 the *shape* is a real hazard — a table whose predicate reads another table
 gets that predicate evaluated at its own copy time, not at a snapshot.
 
