@@ -3861,3 +3861,64 @@ first ADR 149 run wrote 245k watched events as `in_trade=true`:
 its `NOT NULL DEFAULT true`. Nothing raised, and the harness would have
 passed a population containing the watch universe mislabelled as tradeable.
 The guard is now general rather than covering `path_metrics` alone.
+
+
+---
+
+## 2026-08-25 — Phase 6 opens: the training matrix
+
+No model fitted. What was measured, all against `f66729c7eda212a4`:
+
+**The frame** (`research/features.py`, ADR 147 partition applied):
+
+| split | rows | tickers | dropped ETF | dropped no-label | sector levels |
+|---|---|---|---|---|---|
+| train | 125,714 | 401 | 741 | 8,893 | 11 |
+| validate | 26,788 | 305 | 67 | 1,330 | 11 |
+
+**Labels already existed.** ADR 113's four are columns on `events`, written
+by `peak_labels.py` and the backtest:
+
+| split | R₅ | R₁₀ | M₅ | M₁₀ | total |
+|---|---|---|---|---|---|
+| train | 135,348 | 135,348 | 126,455 | 126,455 | 135,348 |
+| validate | 28,185 | 28,185 | 26,855 | 26,855 | 28,185 |
+| holdout | 63,426 | 62,952 | 59,279 | 58,823 | 64,010 |
+
+Label means, as a sanity check that the two families differ as they must
+($M_h \ge R_h$ by construction):
+
+    train      fwd_ret_5d  0.0028   peak_ret_5d  0.0272
+               fwd_ret_10d 0.0053   peak_ret_10d 0.0393
+    validate   fwd_ret_5d -0.0004   peak_ret_5d  0.0340
+               fwd_ret_10d -0.0007  peak_ret_10d 0.0497
+
+**Two columns are empty and were nearly shipped as features:**
+
+    events.sector      0 of 227,543 populated
+    events.mcap_usd    0 of 227,543 populated
+
+Values live in `tickers.sector` (11 GICS levels) and `universe.mcap_usd`
+(47,181 values, quarterly from 2010-03-31). Both now read from those, the
+market cap through a lateral bounded by `as_of <= signal_date`.
+
+## 2026-08-25 — ETFs enter the trade universe (ADR 154)
+
+Ingested SPY, VOO and IBIT; QQQ was already present.
+
+| | daily bars | from | mcap | in_trade |
+|---|---|---|---|---|
+| SPY | 5,510 | 2004-09-29 | $685B | yes |
+| QQQ | 5,282 | 2005-08-24 | $289B | yes |
+| VOO | 4,013 | 2010-09-09 | NULL | yes, by exemption |
+| IBIT | 656 | 2024-01-11 | NULL | yes, by exemption |
+
+Each start date matches the fund's own inception. `cscan shares` resolves
+SPY (99 rows) and neither VOO nor IBIT, which is what ADR 154 exists to
+stop mattering: before it, VOO failed `crit_mcap` alone while passing
+SMA200, its slope and relative return.
+
+Pollable population afterwards: **184 trade, 28 watch**.
+
+Only 2026Q2 is evaluated for the three new tickers. The other 65 quarters
+are ~2.6 hours at 2m23s each and are in `BACKLOG.md`.

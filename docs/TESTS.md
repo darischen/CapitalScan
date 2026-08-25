@@ -1640,6 +1640,47 @@ The last one guards the degenerate win described in ADR 067.
 
 ---
 
+**Built as of Session 22 (2026-08-25).** The sketches above are the plan;
+these exist and run in the fast tier.
+
+`test_model_features.py` — 21 tests on the training matrix. The one
+carrying the load is `test_no_feature_is_an_outcome_column`. `events`
+holds each signal's outcome in the same row as its state (`gross_ret`,
+`mfe`, `touched_5pct`, `entry_price`), so a feature list built by
+"take the numeric columns" trains a model to predict a number it was
+handed. It scores beautifully and means nothing. That is invariant 3's
+failure mode one layer up, and it fails the same way — silently, looking
+like success.
+
+`FORBIDDEN_COLS` is enumerated rather than prefix-matched: `bb_pctb` and
+`bb_width_pct` share no prefix with anything, so a prefix rule grows until
+it admits one of them.
+
+Two tests pin where off-row features come from, because
+`events.sector` and `events.mcap_usd` both exist and are **NULL on all
+227,543 rows**. An unqualified column name resolves to the empty copy, so
+both features were one unprefixed name from shipping as all-NULL with
+nothing objecting.
+
+`test_folds.py` — 17 tests on purged walk-forward CV, written before the
+implementation per the `core/` rule. The two asymmetric halves are checked
+separately: purge looks backwards from the boundary into train, embargo
+forwards into validate. `test_purge_uses_the_longest_horizon` is the one
+worth keeping — ADR 113 fits h=5 and h=10 off one frame, so purging at 5
+leaks every 10-day label into exactly half the heads while the rest look
+clean. `test_embargo_counts_trading_days_not_calendar_days` covers the
+other silent one: 1 January is a holiday in every year the ladder covers.
+
+`test_the_holdout_cannot_be_built` — `build_training_frame` raises on
+`split="holdout"`. Evaluated once, at the end, published whatever it says.
+
+Still unbuilt from the sketches above: `test_quantiles_monotone`,
+`test_calibration_beats_cell_lookup`, and
+`test_promotion_gate_rejects_flattened_model`. All three need a fitted
+model, which Session 23 produces.
+
+---
+
 ## 8. Tool and chat tests (Phase 5)
 
 ```python
