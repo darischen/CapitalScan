@@ -857,7 +857,10 @@ def _read_market_days(engine: Engine, start: date, end: date) -> pd.DataFrame:
 def _read_universe_flags(engine: Engine, tickers: list[str]) -> pd.DataFrame:
     with engine.connect() as conn:
         return pd.read_sql(
-            text("SELECT ticker, as_of, in_trade FROM universe WHERE ticker = ANY(:tickers)"),
+            text(
+                "SELECT ticker, as_of, in_trade, in_watch FROM universe "
+                "WHERE ticker = ANY(:tickers)"
+            ),
             conn,
             params={"tickers": tickers},  # type: ignore[arg-type]
         )
@@ -885,6 +888,10 @@ _CLUSTER_COLUMNS = ["cluster_id", "seq_in_cluster", "is_cluster_head", "days_sin
 # both jobs, since each row should record whichever run last touched it.
 _RUN_EVENTS_UPDATE_COLUMNS = [
     "run_id",
+    # ADR 149. Updatable for the same reason `in_trade` is: a later
+    # evaluation moves a ticker between populations, and a value that never
+    # updated would make membership depend on which job wrote the row first.
+    "in_watch",
     "signal_types_all",
     "signal_strength",
     "side",
@@ -927,6 +934,7 @@ def _build_event_row(
     run_id: str,
     splits: SplitParams | None = None,
     in_trade: bool = True,
+    in_watch: bool = False,
 ) -> dict:
     bound = Bound.LOWER if hit.side.value == "long" else Bound.UPPER
     entry_gapped = None
@@ -947,6 +955,13 @@ def _build_event_row(
         # events and false on its 2021 ones, which is the only reading that
         # lets a statistics population be reconstructed from the table.
         "in_trade": in_trade,
+        # ADR 149, read point-in-time exactly like `in_trade` above.
+        # Recorded by every writer of `events`, not only the backtest: a
+        # watched name firing on a nightly must say which population it was
+        # in, or its row is indistinguishable from the out-of-trade
+        # detections ADR 122 writes in quantity -- and those mean something
+        # different.
+        "in_watch": in_watch,
         "touch_level": hit.touch_level,
         "bb_pctb": hit.pctb,
         "bb_width_pct": ind_row.get("bb_width_pct"),
@@ -1109,6 +1124,7 @@ def run_events(
                 # on it. `test_events_in_trade_filter.py` fails if a
                 # production read of `events` stops carrying the predicate.
                 bar_in_trade = core_universe.in_trade(universe_flags, ticker, bar_date)
+                bar_in_watch = core_universe.in_watch(universe_flags, ticker, bar_date)
 
                 # ADR 108: attach bar t's close-confirmed flags. Mirrors
                 # `research.candidates.scan_candidates` exactly, and shares
@@ -1136,6 +1152,7 @@ def run_events(
                             report.run_id,
                             resolved_config.splits,
                             in_trade=bar_in_trade,
+                            in_watch=bar_in_watch,
                         )
                     )
 

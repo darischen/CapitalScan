@@ -172,3 +172,41 @@ class TestTheFrameCannotSilentlyDropAColumn:
             - self._POST_PASS_COLUMNS
         )
         assert not missing, f"updatable but unrepresentable: {sorted(missing)}"
+
+
+class TestEveryWriterRecordsBothFlags:
+    """ADR 122 makes membership a column on the detection. All three writers
+    of `events` must therefore write both flags, not just the backtest.
+
+    `run_events` was missed in the first pass: it wrote `in_trade` and left
+    `in_watch` NULL on 2,102 rows. Not corrupting — NULL reads as False —
+    but a watched name firing on a nightly would have been recorded
+    identically to an out-of-trade detection, and ADR 122 writes those in
+    quantity. Two different things, one representation.
+    """
+
+    def test_run_events_writes_both(self):
+        import inspect
+
+        from capitalscan.jobs import compute
+
+        src = inspect.getsource(compute._build_event_row)
+        assert '"in_trade": in_trade,' in src
+        assert '"in_watch": in_watch,' in src
+
+    def test_run_events_can_update_watch_membership(self):
+        from capitalscan.jobs import compute
+
+        assert "in_watch" in compute._RUN_EVENTS_UPDATE_COLUMNS
+
+    def test_run_events_reads_the_watch_column(self):
+        """The silent one. `core.universe.in_watch` returns False for a
+        missing column rather than raising, so a universe SELECT that omits
+        it does not fail — it just reports every ticker as unwatched, and
+        the watch universe quietly disappears from this writer."""
+        import inspect
+
+        from capitalscan.jobs import compute
+
+        src = inspect.getsource(compute._read_universe_flags)
+        assert "in_trade, in_watch FROM universe" in src
