@@ -207,6 +207,8 @@ CREATE TABLE universe (
   as_of date NOT NULL,
   in_train boolean NOT NULL,
   in_trade boolean NOT NULL,
+  in_watch boolean,                 -- ADR 149, nullable: NULL = not yet evaluated
+  watch_reason text,                -- 'history' | 'pullback'
   mcap_usd numeric,
   mcap_rank int,
   adv_20d_usd numeric,
@@ -215,8 +217,35 @@ CREATE TABLE universe (
   crit_sma200_slope boolean,
   crit_rel_return boolean,
   crit_rev_growth boolean,
-  PRIMARY KEY (ticker, as_of)
+  PRIMARY KEY (ticker, as_of),
+  CONSTRAINT universe_watch_consistent CHECK (
+    ((in_watch IS NOT TRUE AND watch_reason IS NULL)
+      OR (in_watch IS TRUE AND watch_reason IN ('history','pullback')))
+    AND NOT (in_trade AND in_watch IS TRUE)
+  )
 );
+
+**Three universes, not two** (ADR 149). `in_train` is wide, `in_trade` is
+narrow, and `in_watch` is a **sibling** of `in_trade` rather than a
+relaxation of it — the CHECK above makes them disjoint, so a name graduates
+from watch to trade and never holds both, and "which population is this row
+in" always has exactly one answer.
+
+A watched name passes `crit_mcap` and `crit_sma200_slope` and is not stale,
+and falls short on exactly one of:
+
+| `watch_reason` | meaning |
+|---|---|
+| `history` | `crit_rel_return` is NULL **because the ticker has fewer than 757 daily bars**. GEV was spun out of GE in 2024-04 with 603; its trailing three-year return is undefined, not bad. |
+| `pullback` | `crit_above_sma200` is false while `crit_sma200_slope` holds — price below a **rising** 200-day average, a dip inside an intact uptrend. |
+
+**Everything is computed for watched rows** — events, indicators, entries,
+exits, paths — so a name that graduates arrives with measured history rather
+than starting from zero. **Nothing statistical or model-facing reads them**:
+every statistical query hardcodes `in_trade`, enforced by
+`test_events_in_trade_filter.py`, and Phase 6 training filters `in_trade`
+too. That is what keeps ADR 112's population homogeneous while the watch
+universe exists alongside it.
 
 -- ============ Market data ============
 
