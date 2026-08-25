@@ -86,6 +86,70 @@ the criterion tests.
 
 ---
 
+### `events.sector` and `events.mcap_usd` are NULL on every row
+
+Raised 2026-08-25 while building the model's training matrix. Both columns
+exist on `events` and both are empty:
+
+    events.sector      0 of 227,543 populated
+    events.mcap_usd    0 of 227,543 populated
+
+The real values live elsewhere — `tickers.sector` carries 11 GICS levels
+after ADR 148, and `universe.mcap_usd` carries 47,181 values with quarterly
+history from 2010-03-31. `research/features.py` reads both from those
+sources and the frame is correct.
+
+**The hazard is the shape, not the outcome.** An unqualified `sector` in a
+query over `events JOIN tickers` resolves to the `events` copy: a column
+that exists, is spelled correctly, and is empty. Both features were one
+unprefixed name away from shipping as all-NULL and no test would have
+objected, because "the column is there" and "the column has values" are
+different claims. `test_model_features.py` pins the qualified sources.
+
+Either populate the two columns at event creation or drop them from the
+schema. Leaving an empty column beside a populated one of the same name is
+the trap standing.
+
+---
+
+### Three of DESIGN §7.3's twenty-two features are not built
+
+Raised 2026-08-25. §7.3 says all twenty-two are "already on the event row".
+Three are not, measured against `information_schema`:
+
+| Feature | Blocked by |
+|---|---|
+| distance to mid in ATR units | `bb_mid` absent from `events` |
+| `atr_14 / close` | `atr_14` present, `close` absent |
+| `vix_pct_252d` | absent from `events` |
+
+Each exists in `indicators` at t−1, so the fix is a join or three new event
+columns. Both are decisions rather than lookups: a join at frame-build time
+reintroduces the sourcing question the module's look-ahead argument rests
+on closing, and `entry_price` cannot serve as the `close` denominator
+because it is priced at *t*.
+
+The nineteen built features are clean. Adding these three is a measurable
+increment against a fitted baseline, which is the right way to add them —
+the same sequencing ADR 069 uses for breach depth.
+
+---
+
+### Sector is a current snapshot applied to historical events
+
+Raised 2026-08-25. `tickers.sector` has no history, so a company GICS
+reclassified in 2018 carries its post-2018 sector on its 2010 events. Mild
+look-ahead of the kind ADR 135 names.
+
+Accepted for now and recorded rather than inherited silently:
+reclassifications are rare, the alternative is dropping the only
+categorical DESIGN §7.3 asks for, and point-in-time GICS history is a data
+source this project does not have. `universe.mcap_usd` has the same shape
+of problem and does **not** suffer it, because that table is evaluated
+quarterly and the lateral is bounded by `as_of <= signal_date`.
+
+---
+
 ### VOO and IBIT have no share count, so no market cap — **highest priority**
 
 **Superseded 2026-08-25.** SPY, VOO and IBIT now have `tickers` rows, bars

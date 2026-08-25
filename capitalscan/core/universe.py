@@ -24,6 +24,7 @@ from statistics import median
 
 import pandas as pd
 
+from capitalscan.core import training as core_training
 from capitalscan.core.config import (
     McapPlausibility,
     SharesPlausibility,
@@ -462,6 +463,40 @@ def in_watch(universe_flags: pd.DataFrame, ticker: str, signal_date: date) -> bo
         return False
     value = latest["in_watch"]
     return bool(value) if value is not None and value == value else False
+
+
+def is_tradeable_instrument(
+    ticker: str | None,
+    criteria: dict[str, bool | None],
+    required: set[str] | None = None,
+) -> bool:
+    """Trade-universe membership, with ETFs exempt from the criteria (ADR 154).
+
+    The four criteria in `UniverseParams.required_criteria` ask a
+    company-shaped question. `crit_mcap` is shares times price, which for a
+    fund is net assets rather than capitalisation; `crit_rel_return` needs
+    757 sessions, which a fund launched last year cannot have and will not
+    acquire by being correct about anything.
+
+    Applying them to funds produced an outcome decided by data availability
+    rather than by the funds: QQQ and SPY qualify because Yahoo happens to
+    serve their share counts, while VOO -- passing SMA200, its slope *and*
+    relative return -- was excluded on a missing number alone.
+
+    So an ETF is in the trade universe unconditionally. It is polled, it
+    carries full history, and it generates events. It is **excluded from
+    training** by ADR 147, which is a separate list and a separate question:
+    `ETF_TICKERS` answers "is this an instrument rather than a company",
+    and that is exactly the distinction that makes the exemption safe.
+
+    The `crit_*` columns are still written as measured. The row records both
+    that the fund was admitted and that it did not pass -- a row claiming
+    `crit_mcap` where none was computed would be the kind of quiet lie
+    invariant 4 exists to refuse.
+    """
+    if core_training.is_etf(ticker):
+        return True
+    return is_tradeable(criteria, required)
 
 
 def is_tradeable(

@@ -3861,3 +3861,89 @@ first ADR 149 run wrote 245k watched events as `in_trade=true`:
 its `NOT NULL DEFAULT true`. Nothing raised, and the harness would have
 passed a population containing the watch universe mislabelled as tradeable.
 The guard is now general rather than covering `path_metrics` alone.
+
+
+---
+
+## 2026-08-25 — Phase 6 opens: the training matrix
+
+No model fitted. What was measured, all against `f66729c7eda212a4`:
+
+**The frame** (`research/features.py`, ADR 147 partition applied):
+
+| split | rows | tickers | dropped ETF | dropped no-label | sector levels |
+|---|---|---|---|---|---|
+| train | 125,714 | 401 | 741 | 8,893 | 11 |
+| validate | 26,788 | 305 | 67 | 1,330 | 11 |
+
+**Labels already existed.** ADR 113's four are columns on `events`, written
+by `peak_labels.py` and the backtest:
+
+| split | R₅ | R₁₀ | M₅ | M₁₀ | total |
+|---|---|---|---|---|---|
+| train | 135,348 | 135,348 | 126,455 | 126,455 | 135,348 |
+| validate | 28,185 | 28,185 | 26,855 | 26,855 | 28,185 |
+| holdout | 63,426 | 62,952 | 59,279 | 58,823 | 64,010 |
+
+Label means, as a sanity check that the two families differ as they must
+($M_h \ge R_h$ by construction):
+
+    train      fwd_ret_5d  0.0028   peak_ret_5d  0.0272
+               fwd_ret_10d 0.0053   peak_ret_10d 0.0393
+    validate   fwd_ret_5d -0.0004   peak_ret_5d  0.0340
+               fwd_ret_10d -0.0007  peak_ret_10d 0.0497
+
+**Two columns are empty and were nearly shipped as features:**
+
+    events.sector      0 of 227,543 populated
+    events.mcap_usd    0 of 227,543 populated
+
+Values live in `tickers.sector` (11 GICS levels) and `universe.mcap_usd`
+(47,181 values, quarterly from 2010-03-31). Both now read from those, the
+market cap through a lateral bounded by `as_of <= signal_date`.
+
+## 2026-08-25 — ETFs enter the trade universe (ADR 154)
+
+Ingested SPY, VOO and IBIT; QQQ was already present.
+
+| | daily bars | from | mcap | in_trade |
+|---|---|---|---|---|
+| SPY | 5,510 | 2004-09-29 | $685B | yes |
+| QQQ | 5,282 | 2005-08-24 | $289B | yes |
+| VOO | 4,013 | 2010-09-09 | NULL | yes, by exemption |
+| IBIT | 656 | 2024-01-11 | NULL | yes, by exemption |
+
+Each start date matches the fund's own inception. `cscan shares` resolves
+SPY (99 rows) and neither VOO nor IBIT, which is what ADR 154 exists to
+stop mattering: before it, VOO failed `crit_mcap` alone while passing
+SMA200, its slope and relative return.
+
+Pollable population afterwards: **184 trade, 28 watch**.
+
+Only 2026Q2 is evaluated for the three new tickers. The other 65 quarters
+are ~2.6 hours at 2m23s each and are in `BACKLOG.md`.
+
+
+## 2026-08-25 — the bar for ADR 113 check 5
+
+The unconditional baseline's **validation** pinball loss, fitted on train
+labels only, weighted `1/|cluster|`. 125,714 train / 26,788 validate rows.
+A model must come in **below** these to be worth promoting.
+
+| head | τ=0.05 | τ=0.25 | τ=0.50 | τ=0.75 | τ=0.95 |
+|---|---|---|---|---|---|
+| `fwd_ret_5d` | 0.00573 | 0.01457 | 0.01693 | 0.01376 | 0.00541 |
+| `fwd_ret_10d` | 0.00806 | 0.02110 | 0.02437 | 0.01945 | 0.00736 |
+| `peak_ret_5d` | 0.00301 | 0.01033 | 0.01529 | 0.01488 | 0.00648 |
+| `peak_ret_10d` | 0.00358 | 0.01314 | 0.01985 | 0.01922 | 0.00811 |
+
+Shape worth noting before any model exists: loss peaks at the median and
+falls toward both tails, which is what pinball does when the label
+distribution is tight — there is simply less to be wrong about at τ=0.05.
+The 10-day heads cost more than the 5-day ones throughout, which is the
+wider distribution and not a difficulty ranking.
+
+**A per-ticker-year baseline was also measured and is not constructible.**
+Train covers 2010–2021 and validate 2022–2023 with **zero** ticker-year
+overlap, so every lookup falls back to the global value and the two agree
+to five decimals. Recorded as an open item against ADR 113's wording.

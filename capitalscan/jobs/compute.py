@@ -36,6 +36,7 @@ from sqlalchemy import Engine, text
 
 from capitalscan.core import indicators as core_indicators
 from capitalscan.core import signals as core_signals
+from capitalscan.core import training as core_training
 from capitalscan.core import universe as core_universe
 from capitalscan.core.config import (
     Config,
@@ -552,7 +553,12 @@ def _evaluate_universe_row(
     # `None` here (i.e. "require all five") is what silently zeroed
     # `in_trade` for every ticker, since `crit_rev_growth` is a permanent
     # stub with no ingested revenue data behind it.
-    in_trade = core_universe.is_tradeable(criteria, required=set(up.required_criteria))
+    # ADR 154: an ETF is admitted unconditionally. The criteria ask a
+    # company-shaped question and their answer for a fund was decided by
+    # whether Yahoo served a share count, not by the fund.
+    in_trade = core_universe.is_tradeable_instrument(
+        ticker, criteria, required=set(up.required_criteria)
+    )
 
     # ADR 149. **After `in_trade`, and the order is load-bearing**: the two
     # are disjoint and the migration enforces it with a CHECK, so a row that
@@ -575,7 +581,11 @@ def _evaluate_universe_row(
         # wide training universe. Point-in-time reconstruction
         # from `data/universe_union.csv`'s add/remove dates is
         # deferred — see the module docstring's scope note.
-        "in_train": True,
+        # ADR 154: False for a fund. ADR 147 already excludes ETFs from
+        # training via `ETF_TICKERS`, so this column agreeing with that is
+        # the row telling one story rather than two. Every other ticker
+        # keeps the v1 simplification described above.
+        "in_train": not core_training.is_etf(ticker),
         "in_trade": in_trade,
         "mcap_usd": mcap,
         "adv_20d_usd": adv_20d,

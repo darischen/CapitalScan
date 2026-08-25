@@ -1670,17 +1670,31 @@ Before any real result is trusted (ADR 087):
 
 ### 7.1 Scope
 
-Answers one question per live event: given this state, what does the 5-day path distribution look like?
+Answers one question per live event: given this state, what do the 5- and 10-day path distributions look like?
 
 ```
-Terminal:     Q̂_τ(R_5),  τ ∈ {0.05, 0.25, 0.50, 0.75, 0.95}
-Reachability: P̂( max_{t≤5} R_t ≥ X ),  X ∈ {2,3,5,10}%
-Adverse:      P̂( min_{t≤5} R_t ≤ −Y ), Y ∈ {3,5}%
+Terminal quantiles:  Q̂_τ(R_h),  τ ∈ {0.05, 0.25, 0.50, 0.75, 0.95},  h ∈ {5, 10}
+Peak quantiles:      Q̂_τ(M_h),  M_h = max_{t≤h} R_t,  same τ and h
 ```
 
-**Eleven independent heads** on a shared feature set (ADR 064). Not a mixture of experts: no gate, no routing. Eleven different questions from identical features. Separation is required because quantile regression and binary classification need different loss functions, and the binary targets are genuinely distinct events rather than one event at shifted thresholds.
+**Twenty independent heads** on a shared feature set (ADR 113). Not a
+mixture of experts: no gate, no routing. Twenty questions from identical
+features, separated because each τ needs its own pinball loss.
 
-The adverse heads are the stop-loss warning: how likely a stop triggers before the target.
+**Superseded, and this is the live count.** ADR 064 specified eleven heads,
+ADR 093 expanded to ~56, and **ADR 113 settled on twenty** — five τ by two
+horizons, for each of the terminal and peak families.
+
+Reachability and adverse heads are **retired**, not merely unbuilt.
+$P(\max_t R_t \ge X)$ is the survival function of $M_h$, so the peak fan
+already expresses it; keeping both would report one distribution twice.
+After ADR 112 that is the last thing this project needs. The lower
+quantiles of the terminal fan carry what the adverse heads carried.
+
+Horizons 1, 2 and 3 are dropped rather than 5 and 10: the shortest windows
+hold the least movement relative to noise, and ADR 093's own argument for
+reaching to day 10 was that peak *timing* is the information the label set
+discards. Two horizons keep that contrast at a fifth of the surface.
 
 Not in scope: position sizing, portfolio allocation, instrument selection, or any expected-value ranking implying a recommendation. The model emits probabilities; the UI displays them next to the empirical cell rate.
 
@@ -1721,15 +1735,34 @@ Twenty-two, all available at t−1, all already on the event row.
 
 ### 7.4 Targets
 
-| Head | Target | Objective |
-|---|---|---|
-| Terminal quantiles (5) | `R_5` timeout return | Quantile, one per τ |
-| Reachability (4) | `touched_Xpct` | Binary logloss |
-| Adverse (2) | `touched_−Ypct` | Binary logloss |
+Rewritten 2026-08-25 per ADR 113, which ADR 093 explicitly authorised. The
+table below is the built shape; the eleven-head version it replaced is in
+ADR 064 and the ~56-head version in ADR 093.
 
-**Timeout return, not exit-rule return.** The model describes the underlying path; exit policy is a separate layer on top. Training on exit returns would couple the model to config, forcing a retrain on every stop or target change.
+| Family | Heads | Target | Objective |
+|---|---|---|---|
+| Terminal quantiles | 10 | $R_h$, the return at day $h$ | Pinball, one per $\tau$ |
+| Peak quantiles | 10 | $M_h = \max_{t \le h} R_t$ | Pinball, one per $\tau$ |
 
-Quantile crossing is fixed post-fit by sorting.
+$\tau \in \{0.05, 0.25, 0.50, 0.75, 0.95\}$ and $h \in \{5, 10\}$ throughout.
+
+**Labels come from `path`, not from `events`.** `path` carries
+`terminal`, `favorable` and `adverse` per `day_offset`, so $R_h$ is
+`terminal` at `day_offset = h` and $M_h$ is the maximum `favorable` over
+`day_offset <= h`. ADR 093 is why the table reaches day 10 at all: a path
+window sized to `ExitParams.max_hold_days` would have made every day-10
+label permanently underivable, and Session 10 built to ten days before the
+model that needed it existed.
+
+**Timeout return, not exit-rule return.** The model describes the
+underlying path; exit policy is a separate layer on top. Training on exit
+returns would couple the model to config, forcing a retrain on every stop
+or target change.
+
+**Quantile crossing is fixed post-fit by sorting.** Independent heads have
+no monotonicity constraint across $\tau$, so a fitted $\hat{Q}_{0.25}$ can
+exceed $\hat{Q}_{0.50}$ on some feature vectors. Sorting is the standard
+repair and it is applied at prediction time, never to the training labels.
 
 ### 7.5 Training protocol
 

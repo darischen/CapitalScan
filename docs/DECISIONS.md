@@ -195,6 +195,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 151 | `run_events` does not tag clusters | Pinned. Enforces Ruling C5; cluster-head filtering in `cell_stats` is unchanged and still load-bearing for ADR 112 |
 | 152 | Postgres on the Pi waits for the network rather than binding a wildcard | Pinned. Enforces PI_MIGRATION §2; boot-order drop-in on the cluster unit; no `config_hash` move |
 | 153 | The poller pushes to serving every tick | Pinned. Extends ADR 053 with a second sync path; gives ADR 150's sweep a serving target; no `config_hash` move |
+| 154 | An ETF is in the trade universe unconditionally | Pinned. Amends 149's `crit_mcap` requirement for funds; completes 147; ADR 112 wants re-measuring |
 
 ---
 
@@ -6014,3 +6015,165 @@ pass.
   nightly's full sync corrects it.
 - Volume: 9 to 85 `touch` rows a session, measured over six sessions, plus
   ~450 `bars_live` rows a tick.
+
+
+---
+
+## 154. An ETF is in the trade universe unconditionally
+
+**Date:** 2026-08-25. **Status:** Pinned. Amends ADR 149's hard `crit_mcap` requirement for funds only. Completes ADR 147 by giving the same list a membership meaning. Does not move `config_hash`.
+
+**Context.**
+
+ADR 001's four criteria ask a **company-shaped** question. `crit_mcap` is
+shares times price, which for a fund is net assets rather than
+capitalisation. `crit_rel_return` needs 757 sessions, which a fund launched
+last year cannot have and cannot acquire by being right about anything.
+
+Applied to funds, they produced an outcome decided by **data availability
+rather than by the funds**. Measured 2026-08-25 after ingesting all four:
+
+    QQQ    5,282 bars   mcap $289B   in_trade
+    SPY    5,510 bars   mcap $685B   in_trade
+    VOO    4,013 bars   mcap NULL    excluded
+    IBIT     656 bars   mcap NULL    excluded
+
+QQQ and SPY qualify because Yahoo happens to serve their share counts.
+`cscan shares` resolves neither VOO nor IBIT, and SEC serves no
+companyfacts for an ETF by design.
+
+**VOO failed on nothing else.** `crit_above_sma200`, `crit_sma200_slope`
+and `crit_rel_return` all passed. A ~$600B S&P 500 tracker was excluded
+from a study *seeded from S&P 500 membership* by one missing number.
+
+ADR 149 makes this worse rather than better: `watch_reason` requires
+`crit_mcap` to be true, so a fund with no share count falls out of the
+watch universe as well. Neither population, on a data gap.
+
+**Decision.**
+
+An ETF is in the trade universe unconditionally. `ETF_TICKERS` membership
+alone admits it: polled, full history of bars and indicators, events
+generated, no criteria applied.
+
+`core.universe.is_tradeable_instrument(ticker, criteria, required)` is the
+new entry point. `is_tradeable` is unchanged and stays ticker-blind.
+
+`in_train` is now False for a fund, agreeing with ADR 147 rather than
+leaving the row telling two stories.
+
+**The `crit_*` columns are still written as measured.** VOO's row says
+`in_trade = true` and `crit_mcap = NULL` together. The row records both
+that the fund was admitted and that it did not pass, which is the honest
+shape; a row claiming `crit_mcap` where none was computed is the quiet lie
+invariant 4 exists to refuse.
+
+**Rationale.**
+
+*Why not find a third source for ETF units outstanding.* It fixes the
+cause and was the preferred option until the criteria themselves were
+examined. Net assets is not market capitalisation, and 757 sessions is not
+a thing a 2024 fund can have. A better share count would admit VOO and
+leave IBIT excluded for a reason that is about the calendar rather than
+about IBIT. The criteria are the wrong instrument here, not the data.
+
+*Why not exempt only `crit_mcap`.* It admits VOO and not IBIT, which is
+the same availability-driven split one criterion further down. If the
+criteria do not apply to funds, they do not apply.
+
+*Why this is safe, and it rests entirely on one distinction.*
+`ETF_TICKERS` and `SEC_NON_FILER_TICKERS` were deliberately separated in
+ADR 147: the first answers "is this an instrument rather than a company",
+the second "does SEC serve companyfacts". That first question is exactly
+the one this exemption turns on, and it is answered by explicit membership
+rather than inferred from a missing field -- which ADR 147 already insists
+on, because an ETF has *no* sector while an equity with a blank sector has
+an unpopulated one, and both render as NULL.
+
+*Why the exemption lives in `core/` and not at the call site.* Invariant 2.
+`jobs/compute.py` and `research/candidates.py` both decide membership, and
+ADR 129 records what two copies of `_in_trade` cost when they drifted.
+
+*What this does not do.* It does not admit an equity on a missing input.
+`test_etf_universe_exemption.py::test_an_equity_still_has_to_pass` is the
+guard, and ADR 129 is why it matters: `in_trade` failing open admitted
+18,805 events on 566 tickers that had never been evaluated.
+
+**Consequences.**
+
+- All four ETFs are `in_trade` as of 2026Q2 and will be polled from the
+  next session.
+- **The study population grows, so ADR 112 wants re-measuring**, for the
+  same reason ADR 148's sector backfill did. QQQ's 34,687 events were
+  always in it; SPY, VOO and IBIT now join as their events are generated.
+  A fund's events entering `cell_stats` is a real change to what the cell
+  grid measures, and it should be measured rather than assumed neutral.
+- **Only 2026Q2 is evaluated.** The other 65 quarters are unevaluated for
+  all three new tickers, so they contribute no history yet. Measured at
+  2m23s per quarter for a four-ticker subset, that backfill is ~2.6 hours
+  and belongs in an overnight slot. Recorded in `BACKLOG.md`.
+- IBIT is admitted while sitting below its SMA200 with a negative slope.
+  That is the intended reading of the decision -- membership is not a view
+  -- and DESIGN's entry rules still govern whether anything fires.
+- `universe_watch_consistent` is satisfied without change: `watch_reason`
+  returns `None` for anything `in_trade` accepts, so an admitted fund is
+  never also watched.
+
+
+---
+
+## Open item (2026-08-25): ADR 113's check 5 names a baseline that cannot be built
+
+**Not a decision made here.** Recorded with its cost so it can be made.
+
+ADR 113's fifth promotion check reads:
+
+> the model's out-of-sample pinball loss must beat **the unconditional
+> baseline** -- the same **per-ticker-year** empirical distribution the cell
+> grid measured against, fit with no features.
+
+Those two phrases describe different objects, and the second one cannot be
+constructed across ADR 019's split. Measured 2026-08-25:
+
+    train years      2010-2021        1,649 ticker-year keys
+    validate years   2022-2023          430 ticker-year keys
+    overlap                              0
+
+The split is **temporal**, so no ticker-year appears on both sides. A
+per-ticker-year quantile fitted on train has nothing to look up for any
+validation event; every row falls back to a global value. Measured both
+ways, the twenty head losses agree to five decimal places -- which is the
+symptom, not a coincidence.
+
+The phrase is inherited from the cell grid, where per-ticker-year baselines
+were computed **within** sample (`research/baselines.py`, ADR 062). That is
+a coherent thing to do for a hit rate measured in the same period. It does
+not transfer to an out-of-sample check.
+
+**The reading taken for now** is the global unconditional quantile of the
+training labels: strictly no features, fitted on train, scored on validate.
+It is the loss-minimising constant, so a model that cannot beat it has
+extracted nothing from twenty-one features that one number does not carry.
+`core/pinball.py::unconditional_quantile` implements it.
+
+**The bar it sets**, weighted by `1/|cluster|`, on 125,714 train and 26,788
+validate rows:
+
+| head | τ=0.05 | τ=0.25 | τ=0.50 | τ=0.75 | τ=0.95 |
+|---|---|---|---|---|---|
+| `fwd_ret_5d` | 0.00573 | 0.01457 | 0.01693 | 0.01376 | 0.00541 |
+| `fwd_ret_10d` | 0.00806 | 0.02110 | 0.02437 | 0.01945 | 0.00736 |
+| `peak_ret_5d` | 0.00301 | 0.01033 | 0.01529 | 0.01488 | 0.00648 |
+| `peak_ret_10d` | 0.00358 | 0.01314 | 0.01985 | 0.01922 | 0.00811 |
+
+**The alternative, and why it is not obviously wrong.** A per-ticker
+baseline *without* the year -- fitted on each ticker's training history and
+applied to its validation events -- is constructible, since tickers do
+overlap across the split. It is a harder bar, and arguably the fairer one:
+a model that only learns "AAPL moves more than KO" has learned something a
+per-ticker constant already knows.
+
+Choosing it would make check 5 stricter and make the ADR 113 kill criterion
+more likely to fire. That is a reason to consider it, not a reason to avoid
+it -- but it is a change to a pre-registered criterion and so belongs to
+whoever set the criterion, not to the session that noticed the wording.
