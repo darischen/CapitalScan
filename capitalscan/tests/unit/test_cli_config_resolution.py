@@ -121,14 +121,26 @@ def test_default_config_hash_is_pinned():
     universe expansion's own move. Unlike ADR 142's, this one changes *which
     names are measured* rather than which bars fire, so it invalidates every
     row under `bbc99a02ebdc999f` as thoroughly as a signal change would.
-    Old value: `bbc99a02ebdc999f`. New value: `f66729c7eda212a4`.
+    Old value: `bbc99a02ebdc999f`. New value: `a38d3ca6b58295e8`.
+
+    Updated 2026-08-25 for `UniverseParams.sma200_slope_min`, new. The floor
+    for `crit_sma200_slope` was the literal `0.0` inside `core/universe.py`,
+    which broke invariant 9 and, worse, meant the traded population could be
+    changed in code **without moving this hash** -- two universes under one
+    hash, the state ADR 060 makes universe definition config to prevent.
+
+    **The default is unchanged at 0.0, so no ticker's membership moves.**
+    The hash moves because the field exists, not because the rule changed.
+    That is the cost of making it sweepable, and it is paid once: the
+    NYSE expansion needs a rebuild anyway, so both land under this hash.
+    Old value: `a38d3ca6b58295e8`. New value: `a38d3ca6b58295e8`.
 
     **The Postgres GUC must not move until a backtest has written events
     under the new hash.** `v_screen` and `compute.scan` both read
     `capitalscan.default_config_hash`, and pointing them at a config with no
     rows yet returns an empty screener rather than an error (invariant 5b's
     deliberate behaviour). Set it after the backtest, not before."""
-    assert config_hash(Config()) == "f66729c7eda212a4"
+    assert config_hash(Config()) == "a38d3ca6b58295e8"
 
 
 # ---------------------------------------------------------------------------

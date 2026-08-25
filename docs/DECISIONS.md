@@ -6317,16 +6317,33 @@ dispersion during a low-volatility decade, and the map did not transfer.
 Conditioning on volatility is not the same as conditioning on the level of
 volatility being unprecedented in the training data.
 
+**Corrected 2026-08-25, later the same day.** Three further diagnostics
+show "entirely a regime shift" was too strong.
+
+Coverage measured **inside train**, on fold-validation years 2015–2021,
+gives mean absolute error **0.018** against **0.039** on validate. Half the
+miss exists within the training era. Split by validate year, **2023 scores
+0.018 and 2022 scores 0.047**: 2023 is as well calibrated as a normal
+in-train year and the failure is almost entirely 2022. And training saw VIX
+from 9.1 to 82.7 while validate spans 12.1 to 36.5, so nothing here is
+out-of-range volatility.
+
+So there are **two** components: a stable fit-induced under-dispersion of
+about 0.018 present every year, and a 2022-specific excess on top. The
+first is consistent and therefore correctable. The second is a mid-VIX
+grinding drawdown the features do not describe.
+
 **The options are re-cast by this.**
 
 **A is closed.** Measured, not argued.
 
-**B and C still work mechanically and buy something narrower than they
-appeared to.** Both would absorb a 2022–2023 volatility level into the
-calibration. That fixes coverage on data resembling 2022–2023 and
-mis-calibrates whenever the regime moves back: a conformal band widened for
-a bear market is too wide in a calm one. They repair the measurement, not
-the transfer problem underneath it.
+**B and C are stronger than the first correction suggested, if fitted on
+the right period.** The stable 0.018 component is consistent across 2015–
+2021 and 2023, so a calibration fitted on normal years repairs it and
+transfers. What must **not** happen is fitting on 2022: that absorbs a
+shock into the band and leaves it too wide for a year resembling 2023,
+where the model is already nearly right. The calibration period is now the
+decision, not the technique.
 
 **D means something different now.** "Wait for a fit that meets coverage
 unaided" is, given this finding, waiting for a model that anticipates

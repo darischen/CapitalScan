@@ -20,7 +20,7 @@ import pytest
 
 from capitalscan.jobs import sync
 
-CHASH = "f66729c7eda212a4"
+CHASH = "a38d3ca6b58295e8"
 D = date(2026, 8, 25)
 RUN_ID = "poll_20260825T063000_abc123"
 ROOT = Path(__file__).resolve().parents[3] / "capitalscan"

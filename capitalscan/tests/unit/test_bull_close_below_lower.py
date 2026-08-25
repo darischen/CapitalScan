@@ -165,7 +165,7 @@ class TestItIsDefinedButDisabled:
         this land while a backtest was running under this exact hash.
         Enabling it is the deliberate act that moves it.
         """
-        assert config_hash(Config()) == "f66729c7eda212a4"
+        assert config_hash(Config()) == "a38d3ca6b58295e8"
 
 
 def _ind_row(**kw) -> pd.Series:

@@ -305,3 +305,76 @@ def test_the_floor_admits_aets_final_quarter_and_rejects_the_next():
 
     assert last_bar > date(2018, 12, 31) - timedelta(days=max_age)
     assert last_bar <= date(2019, 3, 31) - timedelta(days=max_age)
+
+
+# ---------------------------------------------------------------------------
+# sma200_slope_min — the floor moved from a literal to config (2026-08-25)
+# ---------------------------------------------------------------------------
+
+
+def test_the_slope_floor_is_config_not_a_literal():
+    """Invariant 9, and worse than untidiness if left as a literal.
+
+    Universe definition is config (ADR 060). A floor hardcoded in
+    `core/universe.py` could be changed in code, altering the traded
+    population **without moving `config_hash`** — two different universes
+    sharing one hash, which is exactly the state ADR 060 prevents.
+    """
+    from capitalscan.core.config import UniverseParams
+
+    assert UniverseParams().sma200_slope_min == 0.0
+    text = (uni.__file__ and open(uni.__file__, encoding="utf-8").read()) or ""
+    assert '_cmp(ind_row.get("sma200_slope_60"), 0.0)' not in text, (
+        "the slope floor is a literal again; it must read up.sma200_slope_min"
+    )
+
+
+def test_the_slope_comparison_stays_strict():
+    """`>` not `>=`, and the distinction costs nothing.
+
+    Measured 2026-08-25 over 909 tickers with a computable slope: **not one**
+    sits at exactly 0.0, because it is a float ratio
+    `(sma_200 - sma_prior) / sma_prior`. So `>=` would admit no additional
+    name. Admitting a flat base needs a negative floor, which is a sweep.
+    """
+    up = UniverseParams()
+    assert uni._cmp(0.0, up.sma200_slope_min) is False
+    assert uni._cmp(1e-9, up.sma200_slope_min) is True
+    assert uni._cmp(-1e-9, up.sma200_slope_min) is False
+
+
+def test_a_negative_floor_admits_a_flat_base():
+    """The sweep arm. Setting the floor negative is what "flat counts" means,
+    and it is a config change rather than a code change."""
+    up = UniverseParams(sma200_slope_min=-0.02)
+    row = {"close": 100.0, "sma_200": 90.0, "sma200_slope_60": -0.015}
+    got = uni.evaluate_criteria(row, 5e10, 0.0, None, up)
+    assert got["crit_sma200_slope"] is True
+
+
+def test_a_flat_base_still_fails_the_default():
+    """Same row, default floor. The two arms must disagree or the sweep
+    measures nothing."""
+    row = {"close": 100.0, "sma_200": 90.0, "sma200_slope_60": -0.015}
+    got = uni.evaluate_criteria(row, 5e10, 0.0, None, UniverseParams())
+    assert got["crit_sma200_slope"] is False
+
+
+def test_a_real_downtrend_fails_even_a_loose_floor():
+    """-8% over sixty sessions is not a base. A floor loose enough to admit
+    it would be admitting the thing the criterion exists to exclude."""
+    up = UniverseParams(sma200_slope_min=-0.02)
+    row = {"close": 100.0, "sma_200": 90.0, "sma200_slope_60": -0.08}
+    got = uni.evaluate_criteria(row, 5e10, 0.0, None, up)
+    assert got["crit_sma200_slope"] is False
+
+
+def test_the_floor_moves_the_config_hash():
+    """The property that makes this worth doing. Two universes must not
+    share a hash."""
+    from capitalscan.core.config import Config
+    from capitalscan.jobs.config import config_hash
+
+    base = config_hash(Config())
+    loose = config_hash(Config(universe=UniverseParams(sma200_slope_min=-0.02)))
+    assert base != loose

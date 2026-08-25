@@ -4224,3 +4224,70 @@ than to the market.
 holds 0 rows. Roughly 640 boosters were fitted across these runs and all
 were discarded; `fit_head` returns fold results and no model by design
 (ADR 067).
+
+
+## 2026-08-25 — three coverage diagnostics, and a correction
+
+The previous entry concluded the coverage miss was *entirely* a regime
+shift. **That was too strong.** Measured on `terminal_h5`:
+
+### 1. Coverage inside train (fold-validation years 2015–2021)
+
+| fold | q05 | q25 | q50 | q75 | q95 | n |
+|---|---|---|---|---|---|---|
+| 2015 | 0.067 | 0.276 | 0.536 | 0.781 | 0.945 | 7,920 |
+| 2016 | 0.058 | 0.244 | 0.492 | 0.738 | 0.940 | 8,872 |
+| 2017 | 0.033 | 0.181 | 0.386 | 0.656 | 0.939 | 12,643 |
+| 2018 | 0.101 | 0.310 | 0.535 | 0.745 | 0.943 | 12,694 |
+| 2019 | 0.038 | 0.195 | 0.422 | 0.703 | 0.937 | 12,629 |
+| 2020 | 0.146 | 0.333 | 0.514 | 0.694 | 0.881 | 14,400 |
+| 2021 | 0.051 | 0.247 | 0.485 | 0.735 | 0.946 | 22,881 |
+| **mean** | 0.070 | 0.255 | 0.481 | 0.722 | 0.933 | |
+
+**Mean absolute error 0.018 in-fold against 0.039 on validate.** Roughly
+half the miss is present *inside the training era*, with the same outward
+signature. There is a real fit-induced under-dispersion floor and the era
+doubles it.
+
+Per-fold spread is wide: q05 runs 0.033 (2017) to 0.146 (2020). Coverage is
+regime-dependent within train as well.
+
+### 2. Per validate year
+
+| | q05 | q25 | q50 | q75 | q95 | mean abs err |
+|---|---|---|---|---|---|---|
+| 2022 | 0.119 | 0.381 | 0.598 | 0.788 | 0.949 | 0.047 |
+| **2023** | 0.056 | 0.277 | 0.511 | 0.734 | 0.921 | **0.018** |
+
+**2023 is as well calibrated as a normal in-train year.** The failure is
+almost entirely 2022. A shock, not a permanent shift.
+
+### 3. Coverage by VIX quartile (validate)
+
+| bucket | VIX | q05 | q25 | q50 | q75 | q95 |
+|---|---|---|---|---|---|---|
+| Q1 low | 12.1–16.0 | 0.048 | 0.268 | 0.493 | 0.697 | 0.901 |
+| Q2 | 16.1–19.8 | 0.109 | 0.366 | 0.588 | 0.794 | 0.948 |
+| Q3 | 19.8–25.7 | 0.110 | 0.383 | 0.613 | 0.803 | 0.956 |
+| Q4 high | 25.8–36.5 | 0.080 | 0.294 | 0.518 | 0.747 | 0.935 |
+
+Train VIX range is **9.1–82.7**, so validate's 12.1–36.5 is entirely inside
+the model's experience. **"Unprecedented volatility" is not the
+explanation.** Coverage is best at low VIX and worst in the middle, not
+monotone in it.
+
+### Revised reading
+
+Three separate things, not one:
+
+1. **A stable ~0.018 miscalibration intrinsic to the fit**, present in every
+   year including 2023. Consistent, therefore correctable.
+2. **A 2022-specific excess** roughly doubling it, in a mid-VIX grinding
+   drawdown the feature set does not describe.
+3. **No out-of-range volatility anywhere.** The earlier +13% standard
+   deviation shift is real but is not the model meeting conditions it had
+   never seen.
+
+This changes the repair. Calibration fitted on a *normal* period would fix
+(1) and leave (2) as honest error. Fitting it on 2022 would overcorrect and
+produce bands too wide for a year resembling 2023.

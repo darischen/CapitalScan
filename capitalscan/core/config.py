@@ -292,6 +292,33 @@ class UniverseParams:
         "crit_sma200_slope",
         "crit_rel_return",
     )
+    # Floor for `sma200_slope_60`, the fractional change in the 200-day SMA
+    # over `sma_slope_window` sessions. `crit_sma200_slope` is
+    # `slope > sma200_slope_min`.
+    #
+    # **It lived as a literal `0.0` in `core/universe.py` until 2026-08-25**,
+    # which was an invariant 9 violation and a worse problem than an untidy
+    # one: universe definition is config (ADR 060), so changing the
+    # comparison in code would have altered the traded population **without
+    # moving `config_hash`**, leaving two different universes sharing one
+    # hash. Here it moves the hash, as it should.
+    #
+    # Zero is deliberately strict, and the strictness is real rather than
+    # cosmetic. Measured 2026-08-25 at 2026-06-30 over 909 tickers with a
+    # computable slope: **not one sits at exactly 0.0**, so `>=` instead of
+    # `>` would change nothing. Admitting a flat base means a negative
+    # floor, and the cost is steep:
+    #
+    #     -0.01   +37 tickers    (+6.7%)
+    #     -0.02   +74            (+13.4%)
+    #     -0.05   +167           (+30.3%)
+    #
+    # A base that has been flat for a quarter and a name that has quietly
+    # bled 5% over sixty sessions are different things, and this one number
+    # cannot tell them apart. Sweep it rather than argue it: ADR 112 found
+    # nothing surviving FDR on the current population, so a 30% widening on
+    # an untested thesis is the wrong direction to move first.
+    sma200_slope_min: float = 0.0
     # Ordinary shares backing one ADR. An ADR's Form 20-F reports the
     # issuer's *ordinary* share count while the bar price is per *ADR*, so
     # market cap needs the ordinary count divided by this ratio first.
