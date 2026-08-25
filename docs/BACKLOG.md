@@ -135,6 +135,39 @@ buys time; it does not change the direction.
 
 ### `mcap_usd` has two bad inputs, and neither is ADR 145
 
+**RESOLVED. Both closed, on different dates and by different mechanisms.**
+
+**The x1,000 share-scale class: ADR 146, 2026-08-22.**
+`core.universe.scale_error_indices` rejects a filing that exceeds the median
+of its four nearest neighbours per side by >50x *and* recovers to within 5x
+when divided by exactly 1,000. Swept over all 142,278 rows of
+`shares_outstanding`: **33 filings across 17 tickers**, every one ending in
+`000`, zero false positives -- reproducing this file's hand-curated list of
+26 exactly and finding 7 more. The 33 stored rows were deleted in the
+2026-08-22 rebuild.
+
+Measured after: **universe rows above $5T went 5 -> 0**, maximum market cap
+is now $4.84T (AAPL, real), and every corrupt row fell by exactly 1000x --
+AAP 2011-12-31 $5,044B -> $5.3B, SWKS 2012-03-31 $5,210B -> $5.2B, MAA
+2014-06-30 $5,479B -> $5.5B, ALK 2011 $2,453B -> $2.5B.
+
+**The ADR-ratio class: closed by source switching, not by a ratio map.**
+`is_depositary_listing` switches the share *source* to Yahoo for depositary
+listings rather than scaling an ordinary-share count. Across all 970
+depositary universe rows: **zero above $1T**, largest is ARM at $377.3B,
+NTES down from a $1,666.9B peak to $82.1B.
+
+**What remains is a loss of history, not a wrong number**: 360 of those 970
+rows are NULL because Yahoo's `shares_full` series starts around 2018, so
+depositary listings are absent from the trade universe before then rather
+than entering it at a fabricated size. Correct under invariant 4, and
+survivorship-relevant when quoting ADR coverage. Deriving the ratio from
+`dei:EntityCommonStockSharesOutstanding` would recover it; that, not
+correctness, is now the reason to do it.
+
+The original diagnosis follows, kept because both fixes were built from it.
+
+
 Found 2026-08-22 while listing the Nasdaq additions. **Both predate ADR 145
 and are unrelated to it** — verified against `universe_pre_adr145`, where
 every affected row has a before/after factor of exactly 1.0.
@@ -423,6 +456,32 @@ a mechanical NYSE rule that could have been written in 2010.
 ---
 
 ### The validation harness is single-threaded and takes ~6 hours
+
+**RESOLVED 2026-08-22.** Parallelised by spooling ticker slices to parquet
+and fanning out with `ProcessPoolExecutor`; `run_harness` takes
+`max_workers` and `cscan backtest --phase harness --workers 8` uses it.
+
+Measured on jobs of comparable size: **3h58m35s -> 48m21s**, and 1h6m2s on a
+later run that shared the machine with an orphaned second harness. The
+title's "~6 hours" and everything below it describe the serial
+implementation and are kept because the *diagnosis* is what made the fix
+possible -- the cost is driven by tickers rather than events, which is why
+chunking by ticker works and chunking by event would not.
+
+**Frames are passed as parquet paths, not as arguments.** An earlier version
+pickled the frames through the pool and deadlocked on ~2.7 GB across 858
+tickers: no error, no worker ever starting, flat CPU. That version was
+reverted once on false evidence -- a PowerShell filter searching for
+`cscan` in the command line cannot see spawn workers, which run
+`spawn_main`, so eight busy workers looked like zero.
+
+**The shuffle happens once, before chunking.** `_shuffled_control` mixes
+indicator values across tickers deliberately; shuffling inside a worker
+would mix only that worker's slice and push `jc` toward its floor for
+reasons unrelated to look-ahead.
+
+The original diagnosis follows.
+
 
 **Measured 2026-08-21**: **3h58m35s** for 865,984 events / 543 tickers, at a
 sustained 99.5% of *one* core.

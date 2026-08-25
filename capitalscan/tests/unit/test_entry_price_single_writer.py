@@ -60,16 +60,39 @@ class TestRunEventsDoesNotPrice:
             "run_events is pricing entries again; the backtest owns entry_price"
         )
 
-    def test_entry_price_is_written_as_none(self):
-        """Explicitly `None`, not omitted.
+    def test_entry_price_is_neither_written_nor_owned(self):
+        """Omitted entirely, and **this reverses an earlier decision here.**
 
-        The column is in `_RUN_EVENTS_UPDATE_COLUMNS`, so omitting the key
-        would raise at upsert rather than leave the value alone. Writing
-        `None` keeps the row shape intact and says "not priced" rather than
-        "priced at zero".
+        The first version of this test required `"entry_price": None`,
+        reasoning that the column sits in `_RUN_EVENTS_UPDATE_COLUMNS` so an
+        omitted key would raise at upsert. Both halves were true and the
+        conclusion was wrong: owning the column meant every nightly *erased*
+        a price the backtest had computed, while `gross_ret` -- which this
+        job does not own -- survived. The row became a return with no entry,
+        which `_check_return_identity` fails on, correctly. SNA 2026-08-19
+        and 2026-08-20 reached that state before it was caught.
+
+        Ruling C4 settles it: a writer names only the columns it computes.
+        `run_events` computes no fill, so it neither writes nor owns one.
+        Dropping the key *and* the ownership together is what makes an
+        insert still land NULL (the column's default) while an existing
+        backtest price is left alone.
         """
         src = _event_row_source()
-        assert '"entry_price": None' in src
+        assert '"entry_price"' not in src, (
+            "run_events writes entry_price again; owning this column makes "
+            "the nightly null the backtest's fill and strand gross_ret"
+        )
+        assert "entry_price" not in compute._RUN_EVENTS_UPDATE_COLUMNS
+        assert "entry_date" not in compute._RUN_EVENTS_UPDATE_COLUMNS
+
+    def test_the_column_is_still_reachable_by_its_real_writer(self):
+        """Dropping ownership must not orphan the column: the backtest
+        still writes and updates it."""
+        from capitalscan.research import backtest
+
+        assert "entry_price" in backtest._RUN_BACKTEST_UPDATE_COLUMNS
+        assert "entry_price" in backtest._EVENT_COLUMNS
 
     def test_touch_level_is_still_recorded(self):
         """The detection fact survives.

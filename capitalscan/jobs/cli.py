@@ -557,6 +557,45 @@ def _load_events_for_run(engine, run_id: str):
         )
 
 
+def _sweep_provisional_poll_rows(engine, chash: str, session_date) -> int:
+    """Delete this session's unreconciled poller rows (ADR 150).
+
+    Scoped to one date and to `split_part(run_id, '_', 1) = 'poll'` -- an
+    exact first-segment match rather than a `LIKE` pattern, because `_` is
+    itself a wildcard in `LIKE` and escaping it through a Python string is
+    one backslash away from also matching `pollute_...`. **Same-day only**: an
+    older poller row is a different question, and a job that says it
+    processes today should not silently reach into last month.
+
+    `signal_reports.event_id` is cleared first. There is **no foreign key**
+    on that column -- only `prediction_id` has one -- so a delete neither
+    cascades nor raises; it would just leave the id pointing at nothing, and
+    106 rows are already in that state from the ADR 145/146 sweeps. The
+    report itself is self-contained (`ticker`, `fired_at` and `state_json`
+    are all NOT NULL), so nulling the link preserves the observation and
+    says plainly that no event survived it.
+    """
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE signal_reports SET event_id = NULL WHERE event_id IN ("
+                "  SELECT id FROM events WHERE config_hash = :chash"
+                "   AND signal_date = :d AND split_part(run_id, '_', 1) = 'poll')"
+            ),
+            {"chash": chash, "d": session_date},
+        )
+        result = conn.execute(
+            text(
+                "DELETE FROM events WHERE config_hash = :chash "
+                "AND signal_date = :d AND split_part(run_id, '_', 1) = 'poll'"
+            ),
+            {"chash": chash, "d": session_date},
+        )
+    return int(result.rowcount or 0)
+
+
 def _load_events_for_config(engine, chash: str):
     """Every `events` row for a config -- the harness phase's `events`
     argument.
@@ -2303,6 +2342,27 @@ def nightly() -> None:
         tickers, start, end, params=config.indicators, max_workers=1, engine=engine
     )
     compute.run_events(tickers, start, end, config=config, engine=engine)
+    # ADR 150. The authoritative pass has now run, so any row still carrying
+    # a `poll_` run_id for this session is one the nightly did not reproduce
+    # under the same key -- and ADR 140 already says that row was never the
+    # authority.
+    #
+    # It yields only when the keys match. `events` conflicts on
+    # `(config_hash, ticker, signal_date, signal_type, entry_kind)`, and the
+    # two writers routinely pick a different *primary* type from the same
+    # fired set: AEE fires `bb_lower_touch` and `stoch_oversold`, the
+    # backtest writes one row carrying both in `signal_types_all`, and the
+    # poller writes a second under `stoch_oversold`. Nothing overwrites, and
+    # the survivor keeps an observed `entry_price` with no exit and no
+    # cluster tagging -- which the harness then judges as engine output.
+    #
+    # Nothing is lost: the observation lives in `signal_reports.state_json`
+    # and the session CSV, neither of which this touches.
+    from capitalscan.jobs.config import config_hash as _config_hash
+
+    swept = _sweep_provisional_poll_rows(engine, _config_hash(config), end)
+    if swept:
+        console.print(f"nightly: swept {swept} unreconciled poller row(s) (ADR 150)")
     # Task 10.6: must run after run_events — a signal fired tonight needs
     # its events row to exist before it can be selected as an
     # incomplete-window event to capture path rows for.

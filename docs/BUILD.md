@@ -1207,6 +1207,8 @@ Session plans get written once the preceding gate produces data.
 
 **Phase 7 — Options.** Synthetic Black-Scholes layer labeled synthetic, then one month of Polygon chains to measure and publish the pricing error.
 
+**Phase 8 — Execution (preliminary).** Broker integration, one share, live. Measures execution correctness rather than strategy performance: fill price against assumed entry price, observation-to-fill latency, position reconciliation, and the gap between discretionary and mechanical execution. Opens with an ADR superseding ADR 043, whose "no execution path" safety property this phase removes. Scoped in `docs/sessions/phase8-preliminary.md`; **nothing decided.** Follows Phase 7 because that phase's pricing-error measurement decides which instruments Phase 8 may touch.
+
 ---
 
 ## Kill criteria

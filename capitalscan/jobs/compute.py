@@ -913,8 +913,9 @@ _RUN_EVENTS_UPDATE_COLUMNS = [
     "vix_close",
     "spx_ret_1d",
     "dd_bucket",
-    "entry_date",
-    "entry_price",
+    # `entry_date` and `entry_price` are deliberately absent: this job does
+    # not compute a fill, so under Ruling C4 it may not own the columns.
+    # Owning them meant each nightly nulled the backtest's price.
     "entry_gapped",
     "split_key",
     # ADR 122. Updatable because `cscan universe` re-evaluates membership
@@ -1000,13 +1001,23 @@ def _build_event_row(
         # on. Measured 2026-08-22: 755 out-of-trade events with an
         # entry_price and 1,324 `path` rows built from them.
         #
-        # `None` rather than an omitted key: the column is in
-        # `_RUN_EVENTS_UPDATE_COLUMNS`, so leaving it out would raise at
-        # upsert. `touch_level` above still records the band the signal
-        # fired against, which is the honest thing to show for a detection
-        # nobody could have traded.
-        "entry_date": None,
-        "entry_price": None,
+        # **Omitted, not written as `None` (ADR 150 follow-up).** Writing
+        # `None` while owning the column in `_RUN_EVENTS_UPDATE_COLUMNS`
+        # made every nightly *erase* a price the backtest had computed --
+        # and `gross_ret`, which this job does not own, survived. The row
+        # was then a return with no entry, which `_check_return_identity`
+        # correctly fails on: the recomputation says NaN and the stored
+        # value is a number. Two rows reached that state (SNA 2026-08-19
+        # and 2026-08-20) before it was caught.
+        #
+        # Ruling C4 is the rule that settles it: a writer names only the
+        # columns it computes. This job does not compute an entry price, so
+        # it must neither write one nor own one. Both keys are gone from
+        # the dict and from the update list, which leaves a backtest price
+        # untouched and still writes NULL on an insert (the column's
+        # default). `touch_level` above records the band the signal fired
+        # against, which is the honest thing to show for a detection nobody
+        # could have traded.
         "entry_gapped": entry_gapped,
         "split_key": _split_key(hit.ts, splits or SplitParams()),
     }

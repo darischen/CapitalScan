@@ -431,6 +431,10 @@ def test_nightly_command_threads_resolved_config(monkeypatch, tmp_path):
     monkeypatch.setattr(compute, "run_indicators", _fake_run_indicators)
     monkeypatch.setattr(compute, "run_events", _fake_run_events)
 
+    monkeypatch.setattr(
+        cli, "_sweep_provisional_poll_rows", lambda *a, **k: 0
+    )  # ADR 150; sentinel engine has no .begin()
+
     cli.nightly()
 
     assert captured["params"].bb_window == 25

@@ -85,6 +85,10 @@ def test_nightly_calls_run_bars_hourly_with_daily_window(monkeypatch):
     for name in ["run_indicators", "run_events"]:
         monkeypatch.setattr(compute, name, _record_call(calls, name))
 
+    monkeypatch.setattr(
+        cli, "_sweep_provisional_poll_rows", lambda *a, **k: 0
+    )  # ADR 150; sentinel engine has no .begin()
+
     cli.nightly()
 
     names = [c["name"] for c in calls]
@@ -132,9 +136,21 @@ def test_nightly_calls_run_path_capture_after_run_events(monkeypatch):
         "run_path_capture",
         _record_call(calls, "run_path_capture", result=PathBackfillReport()),
     )
+    # ADR 150: the nightly sweeps unreconciled poller rows after
+    # `run_events`. Stubbed here like every other real call in the chain --
+    # these tests hand `nightly()` a sentinel engine, so a genuine
+    # `engine.begin()` is an AttributeError rather than a query.
+    monkeypatch.setattr(
+        cli, "_sweep_provisional_poll_rows", _record_call(calls, "sweep_poll", result=0)
+    )
 
     cli.nightly()
 
     names = [c["name"] for c in calls]
     assert "run_path_capture" in names, "nightly() never called run_path_capture"
     assert names.index("run_path_capture") > names.index("run_events")
+    # ADR 150's ordering is the decision, not an implementation detail: the
+    # sweep deletes rows the authoritative pass declined to reproduce, so it
+    # is only correct *after* that pass has run.
+    assert "sweep_poll" in names, "nightly() never swept provisional poller rows"
+    assert names.index("sweep_poll") > names.index("run_events")

@@ -191,6 +191,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 147 | ETFs do not train; a missing sector stops the build | Pinned. Implements ADR 068 for Phase 6; blocks Session 22; no `config_hash` move |
 | 148 | `tickers.sector` speaks one vocabulary, and it is GICS | Pinned. Completes 147 and tightens its gate; unblocks Session 22; no `config_hash` move |
 | 149 | The watch universe is a sibling of the trade universe, not a relaxation of it | Pinned. Extends ADR 001 to three universes; `in_trade` and ADR 112's population untouched; no `config_hash` move |
+| 150 | A provisional poller row is superseded at the nightly, not indefinitely | Pinned. Completes ADR 140; the nightly sweeps unreconciled `poll_` rows; no `config_hash` move |
 
 ---
 
@@ -5562,3 +5563,121 @@ Produces rows that look tradeable and are labelled ineligible — the same
 *Derive the watchlist at read time instead of storing it.* Cheaper, and it
 loses the reason. It also puts the definition in whichever view happens to
 need it, which is how two definitions eventually disagree.
+
+---
+
+## 150. A provisional poller row is superseded at the nightly, not indefinitely
+
+**Date:** 2026-08-24. **Status:** Pinned. Completes ADR 140, which declared the poller's row provisional without saying when the provisionality ends. Does not move `config_hash`.
+
+**Context.**
+
+ADR 140 decided the nightly is authoritative for every grain and the
+poller's row "is provisional -- written mid-session against a partial bar,
+by a process that samples every five minutes -- and it yields to the version
+computed from the completed session."
+
+**It yields only when the two rows share a key.** `events` conflicts on
+`(config_hash, ticker, signal_date, signal_type, entry_kind)`. When the
+nightly writes a row under a *different* `signal_type`, nothing is
+overwritten: both rows survive, and the poller's keeps its observed
+`entry_price`, no exit, and no cluster tagging.
+
+**The harness then judges it as engine output**, because
+`_load_events_for_config` scopes on `config_hash` alone. Found 2026-08-24,
+when the harness failed three of five checks on 1,109,993 events:
+
+```
+FAIL (8)  entry_sanity      `_pre_slippage_price` divides 3bps out of a
+                            price that never had slippage added
+PASS      exit_sanity
+FAIL (2)  return_identity
+FAIL (4)  non_overlap       32 rows with NULL cluster columns
+```
+
+Every violation came from **31 poller rows written that day**, none from the
+ADR 149 watch universe the same run introduced. It had never surfaced
+because the previous harness run was on a Saturday, with no poller session
+behind it.
+
+**Three causes, and only the third is the one that looks obvious.**
+
+| | rows | cause |
+|---|---|---|
+| Different primary type from the same fired set | 23 | AEE fired `bb_lower_touch` and `stoch_oversold`. The backtest wrote one row, `signal_type = bb_lower_touch`, `signal_types_all = {both}`. The poller wrote a second under `stoch_oversold`. |
+| A close-confirmed type the poller cannot emit | part of the 23 | DE: the backtest resolved to `bear_close_above_upper` (strength 3); the poller emitted `bb_upper_touch`. DESIGN 4.8 forbids the poller writing close-confirmed types, since it cannot see the close. |
+| No bar at all | 8 | DLR's 2026-08-24 bar was **rejected** by `open_outside_range` -- 35 were that day, invariant 4 working. No bar, so no detection to reconcile against. |
+
+The first two are not price disagreements. The live quote is inside the
+day's range in every case; the writers simply choose a different *primary*
+from the set of types that fired.
+
+**Decision.**
+
+`cscan nightly` deletes rows still carrying a `poll_` `run_id` for the
+session it just processed, immediately after `run_events`.
+
+By that point the authoritative pass has had its say. A poller row that
+survives it is one the nightly did not reproduce under the same key, and
+under ADR 140 that row was never the authority.
+
+**Nothing is lost, and ADR 140 already says so**: *"The observation is not
+lost and is not an entry price. It lives in `signal_reports.state_json ->
+'live_price'`, alongside the bands and the open that produced the call, and
+in that session's `reports/poller/*.csv`, which is written before the
+nightly runs and never rewritten."* All 31 rows on 2026-08-24 had a
+`signal_reports` row; the CSV is committed.
+
+**Rationale.**
+
+*Why not change the primary key.* Dropping `signal_type` from the conflict
+key would make the two rows collide and supersede naturally. It also
+destroys the cell grid: `core.cells.cell_key` conditions on `signal_type`,
+so `bb_lower_touch` and `stoch_oversold` are measured separately by
+construction, and merging them in the key merges two genuinely different
+signals into one row.
+
+*Why not make both writers agree on the primary type.* Attractive --
+invariant 2 already insists on one signal implementation, and one shared
+"pick the primary from the fired set" function would fix the 23. **It cannot
+fix DE.** The poller's fired set is genuinely smaller, because
+`bear_close_above_upper` requires a close it does not have. Different
+inputs, not different logic, so a shared rule still selects a different
+primary. A fix that cannot cover its own second case is not the fix.
+
+*Why not narrow the harness instead.* Scoping
+`_load_events_for_config` to backtest-written rows would make the symptom
+go away in one line. Rejected: the harness would then stop looking at rows
+that really are in the study population, and the same failure returns
+whenever it runs mid-session. Fix the data, not the instrument.
+
+*Why the sweep is unconditional rather than "delete only rows a backtest
+row covers".* The conditional version leaves the 8 no-bar rows behind, and
+those are the least defensible of the three: a signal with no bar has no
+validated event at all. The uniform rule is also the one that can be stated
+in a sentence, which is what makes it checkable a year from now.
+
+**Consequences.**
+
+- The sweep runs inside the nightly, after `run_events`, scoped to that
+  session's date and to `run_id LIKE 'poll_%'`. Same-day only: an older
+  poller row is a different question and is not silently swept by a job
+  that says it processes today.
+- **`signal_reports.event_id` is cleared by the sweep, not left dangling.**
+  Measured rather than assumed: there is **no foreign key** from
+  `signal_reports.event_id` to `events.id` -- only `prediction_id` has one
+  -- so a delete neither cascades nor raises. It would simply leave the
+  column pointing at an id that no longer exists, and **106 rows are already
+  in that state** from the ADR 145/146 stale-event sweeps.
+
+  The observation survives regardless: `ticker`, `fired_at` and `state_json`
+  are all NOT NULL, so the report is self-contained. `event_id` is nullable,
+  so the sweep sets it to NULL first. A report saying "no surviving event"
+  is honest; one pointing at a deleted id is a reference that reads as
+  meaningful and is not.
+- A poller row for a name whose bar was rejected disappears at the nightly.
+  That is correct and is the same reading invariant 4 already applies to
+  the bar itself.
+- The harness's population is unchanged in scope. It still validates every
+  row for the config, which is the property that made this defect visible
+  rather than silent.
