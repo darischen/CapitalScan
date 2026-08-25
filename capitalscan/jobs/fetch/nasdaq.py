@@ -158,7 +158,7 @@ def fetch_listed(exchange: str = NASDAQ) -> pd.DataFrame:
     change the universe silently between two runs of one command. Bump
     `nasdaq_screener_v1` to take a fresh snapshot deliberately.
     """
-    return pd.DataFrame(_fetch_rows())
+    return pd.DataFrame(_fetch_rows(exchange))
 
 
 def tickers_above(

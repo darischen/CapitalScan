@@ -399,3 +399,36 @@ class TestTheFilterIsExchangeAgnostic:
         monkeypatch.setattr(nasdaq, "fetch_listed", lambda *_a, **_k: pd.DataFrame(rows))
         got = nasdaq.tickers_above(10e9, nasdaq.NYSE)
         assert got == ["BAC"]
+
+
+class TestTheExchangeSurvivesTheWholeCallChain:
+    """The integration test whose absence let a real bug through.
+
+    `test_the_exchange_parameter_is_sent` checks `_fetch_rows` in isolation
+    and passed while `fetch_listed` was dropping its argument on the floor:
+    it took `exchange`, used it for the cache key, then called
+    `_fetch_rows()` with no arguments. Every NYSE request fetched Nasdaq and
+    filed it under the NYSE key.
+
+    Nothing raised. The cache file appeared with a plausible size, the frame
+    had 4,145 rows, and the tell was that AAPL was in it and JPM was not.
+
+    Two unit tests, both green, either side of the one call that mattered.
+    """
+
+    def test_fetch_listed_forwards_the_exchange(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(nasdaq, "_fetch_rows", lambda ex=nasdaq.NASDAQ: seen.append(ex) or [])
+        nasdaq.fetch_listed.__wrapped__(nasdaq.NYSE)
+        assert seen == [nasdaq.NYSE]
+
+    def test_tickers_above_forwards_the_exchange(self, monkeypatch):
+        seen = []
+
+        def _listed(ex=nasdaq.NASDAQ):
+            seen.append(ex)
+            return pd.DataFrame([_row("JPM", "700000000000.00")])
+
+        monkeypatch.setattr(nasdaq, "fetch_listed", _listed)
+        nasdaq.tickers_above(10e9, nasdaq.NYSE)
+        assert seen == [nasdaq.NYSE]
