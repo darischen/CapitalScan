@@ -3776,3 +3776,88 @@ competing cluster head for `_check_non_overlap` to catch. Found by grouping
 `events` by `run_id` directly. Corrected form and the rule it produced —
 verify with a different predicate than you deleted with — are in the session
 20 notes and `scripts/adr146_clear_scale_errors.sql`.
+
+---
+
+## ADR 112 on the watch-universe rebuild — 2026-08-24 (stage 9)
+
+**ADR 112 holds a seventh time.** Zero cells survive FDR correction on
+either split. This is the first measurement taken after ADR 148's sector
+backfill, which is what made it necessary: populating 254 sectors changed
+which median `crit_rel_return` compares against, and `in_trade` moved
+6,295 -> 6,641.
+
+| | train | | validate | |
+|---|---|---|---|---|
+| | scored | survive | scored | survive |
+| ADR 112 (`86e91448a65aa40b`) | 48 | **0** | 28 | **0** |
+| ADR 142 (`bbc99a02ebdc999f`) | 48 | **0** | 28 | **0** |
+| ADR 145 (`f66729c7eda212a4`) | 48 | **0** | 28 | **0** |
+| stage 6 | 48 | **0** | 28 | **0** |
+| stage 7 (ADR 146) | 48 | **0** | 28 | **0** |
+| stage 9 (ADR 148/149) | 48 | **0** | 28 | **0** |
+| min q | 0.6964 | | 0.7350 | |
+
+**The interesting number is not the zero.** Minimum q on train has walked
+**0.6030 -> 0.6400 -> 0.6729 -> 0.6964** across four successive data
+corrections -- the split basis, the ADR share counts, the x1,000 scale
+class, and the sector taxonomy. Every one of those fixes was in the
+direction that would plausibly *reveal* an edge if one were there, and the
+measurement moved further from significance each time.
+
+The scored denominator is 48/28 in all six, so the comparison is
+like-for-like rather than a shifting grid.
+
+**Population.** 910,178 in-trade events across 544 tickers, plus 197,688
+watch events across 447 (ADR 149), fully computed and read by no statistic.
+6,641 `in_trade` and 1,436 `in_watch` universe quarters.
+
+### The benchmark arms
+
+| arm, pooled | train | validate |
+|---|---|---|
+| dca_hybrid | 4.4034 | 0.0816 |
+| buy_hold | 4.2450 | -0.0273 |
+| dca_fixed | 4.1649 | 0.1027 |
+| **signal** | **2.5264** | **0.1263** |
+| trim | 2.2325 | 0.0101 |
+| dca_signal | 1.6962 | 0.1233 |
+| random null, mean | 1.4877 | -0.1266 |
+| random null, 97.5th pct | 2.8338 | 0.0154 |
+
+Train is unchanged in substance: the signal arm returns 2.5264 against a
+null 97.5th percentile of 2.8338 -- below it, and 60% of buy-and-hold.
+Validate still disagrees and is still recorded rather than smoothed: signal
+is best of eight arms at 0.1263 while buy-and-hold is negative, with zero
+cells surviving FDR beneath it.
+
+### Three defects the harness caught, none of them the obvious one
+
+The harness failed twice before passing, and every failure was real.
+
+**Provisional poller rows were never superseded (ADR 150).** ADR 140 made
+the poller's row yield to the nightly, but that only happens when the two
+share a key -- and the writers routinely pick a different *primary*
+`signal_type` from the same fired set. 31 rows survived with an observed
+`entry_price`, no exit and no cluster tagging. Only 8 were the "settled bar
+disagrees" case the first diagnosis assumed; 23 were already carried inside
+a backtest row's `signal_types_all`.
+
+**`run_events` erased the backtest's `entry_price`.** It wrote
+`entry_price=None` *and* owned the column, so every nightly nulled a price
+the backtest computed while `gross_ret` -- which it does not own -- survived.
+Two rows became a return with no entry. Ruling C4 settles it: a writer names
+only what it computes.
+
+**`run_events` tagged clusters from a five-day window (ADR 151).** Ruling C5
+assigns those columns to the backtest exclusively. DKNG, EXR, NTNX and STZ
+each carried heads on 08-17 and 08-24, exactly 5 trading bars apart, because
+the nightly could not see the earlier head.
+
+**And one the harness could not catch, found by querying the result.** The
+first ADR 149 run wrote 245k watched events as `in_trade=true`:
+`_EVENT_COLUMNS` had no slot for the flags, so
+`pd.DataFrame(rows, columns=...)` dropped them and the column fell back to
+its `NOT NULL DEFAULT true`. Nothing raised, and the harness would have
+passed a population containing the watch universe mislabelled as tradeable.
+The guard is now general rather than covering `path_metrics` alone.
