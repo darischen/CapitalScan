@@ -240,6 +240,48 @@ def serving_engine() -> Engine:
     return db_io.get_engine(url)
 
 
+def _refuse_self_sync(source: Engine, target: Engine) -> None:
+    """Raise if the serving URL resolves to the research database.
+
+    `serving_engine()` already refuses to *fall back* to research. It cannot
+    tell that an explicitly-set `DATABASE_URL_SERVING` happens to point
+    there — and on a workstation that also hosts research, the natural typo
+    is `localhost`, which is a valid URL to the wrong database.
+
+    The failure is silent in the worst way. Every row upserts onto itself,
+    every tick reports success, and the deployed site simply never changes.
+    ADR 153 makes this a per-tick operation, so a wrong URL would look
+    healthy 78 times a session.
+
+    **Host and database together.** Either alone gives a false positive:
+    research and serving legitimately share a database *name* on different
+    hosts, and a single host legitimately carries both under different
+    names.
+
+    Loopback spellings are normalised because `localhost` and `127.0.0.1`
+    are the same server and a guard that can be defeated by spelling is
+    not a guard. Beyond that this stays deliberately literal — resolving
+    DNS to compare addresses would put a network call in a boot path to
+    catch a case that has never occurred.
+    """
+    loopback = {"localhost", "127.0.0.1", "::1", None}
+
+    def _key(engine: Engine) -> tuple[str, str]:
+        url = engine.url
+        host = "localhost" if url.host in loopback else str(url.host)
+        return host, str(url.database)
+
+    if _key(source) == _key(target):
+        host, database = _key(target)
+        raise RuntimeError(
+            f"DATABASE_URL_SERVING resolves to the research database "
+            f"({host}/{database}). A sync writes the serving subset onto its "
+            "own source: every row upserts onto itself, every run reports "
+            "success, and the deployed site never changes. Point it at the "
+            "serving host (ADR 153)."
+        )
+
+
 def cutoff_date(sp: ServingParams | None = None, today: date | None = None) -> date:
     """The oldest date the serving store carries.
 
@@ -282,6 +324,7 @@ def run_sync(
     """
     source = source or db_io.get_engine()
     target = target or serving_engine()
+    _refuse_self_sync(source, target)
     cutoff = cutoff_date(sp, today)
 
     with run_job(source, "sync", {"cutoff": str(cutoff)}) as report:
@@ -486,6 +529,7 @@ def run_live_sync(
     since = since or LiveWatermark()
     source = source or db_io.get_engine()
     target = target or serving_engine()
+    _refuse_self_sync(source, target)
 
     params: dict[str, Any] = {
         "chash": chash,
