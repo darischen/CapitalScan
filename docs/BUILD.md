@@ -121,6 +121,24 @@ Phase 6 (the model) remains **conditional on ADR 112** and does not proceed
 by default. That condition was met on 2026-08-16 and re-confirmed on
 2026-08-20 against a corrected population.
 
+**Phase 6 opened 2026-08-25 with Session 22**, which builds the training
+matrix and fits nothing. `docs/sessions/session22-model-matrix.md` has the
+detail; three things are worth carrying forward:
+
+- ADR 113's four labels were **already materialised** on `events`
+  (`fwd_ret_{h}d`, `peak_ret_{h}d`), so the session reduced to feature
+  assembly. 125,714 train rows and 26,788 validate rows survive the ADR 147
+  partition.
+- **DESIGN §7.4 was stale** — still ADR 064's eleven heads against ADR 113's
+  twenty. Rewritten, as ADR 093 authorised.
+- **`events.sector` and `events.mcap_usd` are NULL on all 227,543 rows.**
+  Features read `tickers.sector` and a causal `universe.mcap_usd` lateral
+  instead. An unqualified column name resolves to the empty `events` copy,
+  which is the trap that stays standing until those columns are populated
+  or dropped.
+
+Session 23 is the fit: purged walk-forward CV, cluster weights, twenty heads.
+
 One migration, `d7f4b91c26ea`: `serving_config` plus a rebuilt `v_positions`. Applied
 to research on 2026-08-18 and `db/schema.sql` regenerated. Run `cscan db sync-config`
 after any change to `ExitParams`, and after migrating a database whose row predates a
