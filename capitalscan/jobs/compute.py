@@ -39,7 +39,6 @@ from capitalscan.core import signals as core_signals
 from capitalscan.core import universe as core_universe
 from capitalscan.core.config import (
     Config,
-    ExitParams,
     IndicatorParams,
     McapPlausibility,
     SignalParams,
@@ -1167,18 +1166,35 @@ def run_events(
                         )
                     )
 
-        clustered = _tag_clusters(deduped, ExitParams().max_hold_days)
-
-        if clustered:
+        # **`run_events` does not tag clusters (ADR 151).** Ruling C5 assigns
+        # the four cluster columns to the backtest exclusively, and this job
+        # was tagging them anyway -- over its own 5-day nightly window,
+        # which cannot see a head that fired earlier.
+        #
+        # That produced genuinely wrong tags. Measured 2026-08-24: DKNG,
+        # EXR, NTNX and STZ each carried a head on 08-17 and another on
+        # 08-24, exactly 5 trading bars apart, so `_check_non_overlap`
+        # failed on all four. The 08-24 head was inserted by this job, blind
+        # to the 08-17 one.
+        #
+        # The columns are absent from the row rather than written NULL: they
+        # are not in `_RUN_EVENTS_UPDATE_COLUMNS` either, so an existing
+        # backtest-tagged row is untouched and a fresh insert takes the
+        # column default. Nothing downstream loses anything -- `v_screen_live`
+        # (ADR 119), which is what the screener reads, filters
+        # `entry_kind = 'touch' AND in_trade` and never looked at
+        # `is_cluster_head`; `cell_stats` does filter it, and reads only
+        # priced backtest rows, which the backtest still tags.
+        if deduped:
             report.rows_written = db_io.upsert(
                 engine,
                 "events",
-                clustered,
+                deduped,
                 ["config_hash", "ticker", "signal_date", "signal_type", "entry_kind"],
                 update_columns=_RUN_EVENTS_UPDATE_COLUMNS,
             )
         report.rows_flagged = skipped_null
-        report.tickers = sorted({row["ticker"] for row in clustered})
+        report.tickers = sorted({row["ticker"] for row in deduped})
     return report
 
 

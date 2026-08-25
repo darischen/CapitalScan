@@ -192,6 +192,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 148 | `tickers.sector` speaks one vocabulary, and it is GICS | Pinned. Completes 147 and tightens its gate; unblocks Session 22; no `config_hash` move |
 | 149 | The watch universe is a sibling of the trade universe, not a relaxation of it | Pinned. Extends ADR 001 to three universes; `in_trade` and ADR 112's population untouched; no `config_hash` move |
 | 150 | A provisional poller row is superseded at the nightly, not indefinitely | Pinned. Completes ADR 140; the nightly sweeps unreconciled `poll_` rows; no `config_hash` move |
+| 151 | `run_events` does not tag clusters | Pinned. Enforces Ruling C5; cluster-head filtering in `cell_stats` is unchanged and still load-bearing for ADR 112 |
 
 ---
 
@@ -5681,3 +5682,111 @@ in a sentence, which is what makes it checkable a year from now.
 - The harness's population is unchanged in scope. It still validates every
   row for the config, which is the property that made this defect visible
   rather than silent.
+
+---
+
+## 151. `run_events` does not tag clusters
+
+**Date:** 2026-08-24. **Status:** Pinned. Enforces Ruling C5, which already assigned the cluster columns to the backtest exclusively. Does not move `config_hash`.
+
+**Context.**
+
+Ruling C5 gives `cluster_id`, `seq_in_cluster`, `is_cluster_head` and
+`days_since_head` to `run_backtest` **exclusively**. `run_events` was
+tagging them anyway, by calling `_tag_clusters` over its own detections
+before the upsert.
+
+The columns are correctly absent from `_RUN_EVENTS_UPDATE_COLUMNS`, so an
+existing backtest-tagged row was never overwritten. **Rows this job
+*inserts* were another matter**: their tags came from `_tag_clusters` run
+over the nightly's five-day window, which cannot see a head that fired
+before it.
+
+Found 2026-08-24 by `_check_non_overlap`, the last failing check in a
+harness run where the other four passed:
+
+```
+DKNG  short  2026-08-17 -> 2026-08-24   5 trading bars
+EXR   long   2026-08-17 -> 2026-08-24   5 trading bars
+NTNX  short  2026-08-17 -> 2026-08-24   5 trading bars
+STZ   short  2026-08-17 -> 2026-08-24   5 trading bars
+```
+
+Each pair sits exactly at `ExitParams.max_hold_days`, the boundary the check
+fails on. In every case the 08-24 head was inserted by `run_events`, blind
+to the 08-17 head the backtest had already tagged.
+
+All eight rows are `in_trade = false`, unpriced ADR 122 detections. That is
+why only one check caught it: `entry_sanity` and `exit_sanity` skip unpriced
+rows and `return_identity` skips rows with no `gross_ret`, so
+`_check_non_overlap` -- which keys only on `is_cluster_head` -- was the sole
+check reaching this population.
+
+**Decision.**
+
+`run_events` does not tag clusters. `_tag_clusters` is no longer called from
+it, and the four columns are absent from the rows it writes rather than
+written NULL.
+
+An insert therefore takes the column default (NULL), and the backtest tags
+the row when it next runs. `_tag_clusters` itself stays -- the backtest is
+its real caller.
+
+**Rationale.**
+
+*Why not widen the window instead.* `run_events` could load each ticker's
+prior heads and tag correctly. It is the most faithful fix and it was
+rejected as work in the nightly's hot path to maintain a column the job does
+not own. Ruling C5 already says who owns it; the defect is that the ruling
+was not enforced.
+
+*Why not scope the harness check instead.* Narrowing `_check_non_overlap` to
+`in_trade` would have passed the run and left the mis-tagging in place.
+Rejected for the reason ADR 150 gives: fix the data, not the instrument. It
+would also have been the second check narrowed in one day.
+
+*What this does not cost.* The screener reads `v_screen_live` (ADR 119),
+which filters `entry_kind = 'touch' AND in_trade` and has never looked at
+`is_cluster_head` -- its own documentation notes the column is "null while
+the poller has written the row and clustering has not run", so NULL is
+already an expected state there. `v_screen` does filter it and is read by
+nothing; it survives only in comments.
+
+*What this does cost, and it is worth stating plainly.* `cell_stats` filters
+`AND is_cluster_head`, so the cluster columns **are** load-bearing for
+ADR 112 -- DESIGN 5.3's "non-overlapping, clean standard errors" depends on
+them, and without the filter one market move is counted many times and the
+standard errors shrink for no real reason. Nothing here weakens that: the
+statistics read priced backtest rows, and the backtest still tags them.
+
+**Consequences.**
+
+- 2,102 existing rows had their tags cleared, scoped by writer rather than
+  by the four that collided: every tag this job wrote came from the same
+  too-narrow window and is unreliable for the same reason. Overlapping
+  pairs afterwards: **0**.
+- A fresh nightly detection carries no cluster tag until a backtest runs.
+  That is honest -- the tag would have been a guess made from five days of
+  context -- and invisible to every consumer.
+- `_check_non_overlap` keeps its full scope, so it still reaches rows the
+  other four checks skip. That property is what surfaced this.
+
+**A related question, raised and deliberately left where it was.**
+
+The user's original intent for `events` was that every fire is a separate
+observation -- averaging down is real, bleeding out of a long is real, and
+different entries against a shared exit produce genuinely different returns.
+That intent was never recorded, and cluster-head filtering in `cell_stats`
+quietly encodes the opposite.
+
+Decided 2026-08-24 to keep the filter, on the grounds that it changes
+nothing today and the alternative is not free. `n_eff = n / (1 + rho(c_bar -
+1))` already corrects **cross-sectional** dependence, when many tickers fire
+on one market move. Cluster-head filtering corrects **serial** dependence,
+one ticker firing repeatedly inside a single holding window. Dropping it
+without building the serial equivalent would raise `n` and narrow every
+interval -- the direction that manufactures significance, and with no way
+afterwards to tell a real edge from one move counted four times.
+
+Measuring both arms is the honest way to answer it, and is left for when the
+answer is wanted rather than folded in here.
