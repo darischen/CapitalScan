@@ -29,12 +29,14 @@ services:
     # tell them apart by source address; scoping pg_hba to 192.168.1.0/24
     # locked out localhost and restricted nothing (2026-08-24).
     #
-    # Loopback is listed too because every connection string in the project
-    # uses `localhost`; binding only to the LAN address would break all of
-    # them.
+    # **Loopback only.** The Pi serves; it never reaches back here. `cscan
+    # sync` runs on this machine and connects *out* to the Pi, so nothing
+    # needs to reach this database from the LAN and the listener is bound
+    # as narrowly as it can be. A 192.168.1.14 binding was added and then
+    # removed once the architecture settled -- add it back only if some
+    # job genuinely moves off this machine.
     ports:
       - "127.0.0.1:5432:5432"
-      - "192.168.1.14:5432:5432"
     volumes:
       - capitalscan-data:/var/lib/postgresql/data
     healthcheck:

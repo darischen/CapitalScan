@@ -397,16 +397,28 @@ class ServingParams:
     reads. Invariant 9 is still satisfied — the number lives here and
     `jobs/sync.py` holds no literals.
 
-    `history_years` is how far back the served subset reaches. Three,
-    measured against Neon's 512MB free tier on 2026-08-20:
+    `history_years` is how far back the served subset reaches.
+
+    **Was three, and only because of Neon.** Measured against its 512MB free
+    tier on 2026-08-20:
 
         1 year   139 MB     3 years  393 MB     full   2,149 MB
         2 years  266 MB     5 years  638 MB
 
-    Three fits with 23% headroom, covers every chart range through 1y and
-    most of 2y, and spans the validate split (2022-2023) so `/research` is
-    fully backed. The 5y range degrades by stopping early, which the chart
-    already handles — it pages until the server returns nothing.
+    Three fit with 23% headroom and spanned the validate split, so
+    `/research` was fully backed and the chart degraded by stopping early at
+    5y — which it already handles, paging until the server returns nothing.
+
+    **Widened to 30 on 2026-08-24, when serving moved to a Raspberry Pi.**
+    The ceiling that set this number is gone: full history is 2,149 MB
+    against a 64 GB card. Thirty years is "everything there is" stated as a
+    number rather than a special case — `ingest_start` is 2009-01-01, so any
+    value past ~18 selects the whole table, and the cut stops being a cut.
+
+    That closes the serving-store growth item in `BACKLOG.md` from the other
+    end: the store was only ever *bounded* by a limit that no longer
+    applies, and `run_sync`'s refusal to delete stops mattering when nothing
+    ages out of the window.
 
     **This is a serving cut, never a statistical one.** No measured number
     is computed from the subset; the arms, the cells and the benchmarks are
@@ -415,7 +427,7 @@ class ServingParams:
     *answer*.
     """
 
-    history_years: int = 3
+    history_years: int = 30
 
 
 @dataclass(frozen=True)

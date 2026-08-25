@@ -19,7 +19,7 @@ from capitalscan.core.config import Config, ServingParams
 from capitalscan.jobs import sync
 from capitalscan.jobs.config import config_hash
 
-CUTOFF = date(2023, 8, 21)
+CUTOFF = date(1996, 8, 27)
 TABLES = sync._tables(CUTOFF, "86e91448a65aa40b")
 NAMES = [t.name for t in TABLES]
 
@@ -29,22 +29,45 @@ NAMES = [t.name for t in TABLES]
 # ---------------------------------------------------------------------------
 
 
-def test_the_default_window_is_three_years():
-    """393MB against Neon's 512MB free tier, measured 2026-08-20.
+def test_the_default_window_covers_all_history():
+    """Thirty, which is "everything" written as a number.
 
-    1y is 139MB, 2y 266MB, 5y 638MB and full history 2,149MB. Three is the
-    largest that fits with headroom.
+    **It was three, and only because of Neon.** Measured against its 512MB
+    free tier on 2026-08-20: 1y 139MB, 2y 266MB, 3y 393MB, 5y 638MB, full
+    history 2,149MB. Three was the largest that fit with headroom.
+
+    Serving moved to a Raspberry Pi on 2026-08-24 and the ceiling went with
+    it — 2,149MB against a 64GB card. `SplitParams.ingest_start` is
+    2009-01-01, so any value past ~18 selects the whole table and the cut
+    stops being a cut.
     """
-    assert ServingParams().history_years == 3
+    assert ServingParams().history_years == 30
 
 
 def test_the_cutoff_counts_back_from_today():
-    assert sync.cutoff_date(today=date(2026, 8, 20)) == date(2023, 8, 21)
+    assert sync.cutoff_date(today=date(2026, 8, 20)) == date(1996, 8, 27)
 
 
-def test_a_wider_window_reaches_further_back():
-    wide = sync.cutoff_date(ServingParams(history_years=5), today=date(2026, 8, 20))
-    assert wide < sync.cutoff_date(today=date(2026, 8, 20))
+def test_the_default_cutoff_predates_every_bar():
+    """The point of 30, asserted as the property rather than the number.
+
+    A cutoff earlier than `ingest_start` means no row is excluded by date,
+    which is what "full history" has to mean for the deployed chart. Pinning
+    only the arithmetic above would still pass if the window silently
+    narrowed to something that clipped 2010.
+    """
+    from capitalscan.core.config import SplitParams
+
+    cutoff = sync.cutoff_date(today=date(2026, 8, 20))
+    assert cutoff < date.fromisoformat(SplitParams().ingest_start)
+
+
+def test_a_narrower_window_reaches_less_far_back():
+    """Direction, not magnitude. Was phrased as "wider reaches further"
+    against a 3-year default; with the default at 30 the comparison has to
+    run the other way to still be testing anything."""
+    narrow = sync.cutoff_date(ServingParams(history_years=5), today=date(2026, 8, 20))
+    assert narrow > sync.cutoff_date(today=date(2026, 8, 20))
 
 
 def test_serving_params_is_not_part_of_config():
@@ -323,5 +346,5 @@ def test_no_sql_interpolates_a_value():
 
 def test_describe_reports_the_plan_without_connecting():
     plan = sync.describe(today=date(2026, 8, 20))
-    assert plan["cutoff"] == date(2023, 8, 21)
+    assert plan["cutoff"] == date(1996, 8, 27)
     assert plan["tables"] == NAMES

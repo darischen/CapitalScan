@@ -16,6 +16,21 @@ ever wanted — it keeps the LAN-only property and still opens no port.
 |---|---|---|
 | Research database (19 GB) | **Workstation, unchanged** | The jobs that write it run here. Moving it moves the compute. |
 | All jobs — `nightly`, `backtest`, `universe`, poller | **Workstation, unchanged** | A 4 GB Pi cannot run a 1h15m 8-worker backtest, and it does not need to. |
+
+**Settled 2026-08-24: the Pi serves and nothing else.** An earlier draft had
+it running `nightly` and the poller against the workstation's research
+database over the LAN. Dropped, because those jobs *write* to research — so
+they need the workstation awake anyway, and the whole point was that the
+site should survive the workstation being off.
+
+The direction that falls out of this is the useful part: **`cscan sync` runs
+on the workstation and connects out to the Pi**, so nothing ever needs to
+reach the workstation's Postgres. It is now bound to `127.0.0.1` alone and
+is unreachable from the network. One listener fewer, and the IPv6 exposure
+question does not arise on that end at all.
+
+The cost is the poller's coverage: it runs only while the workstation is up,
+which is the status quo and what ADR 084 already records as accepted gaps.
 | Serving database (~2 GB) | **Pi** | Derived, date-windowed, rebuilt by `sync` at will. |
 | Next.js app | **Pi** | So the database connection is `localhost` and nothing is exposed. |
 | Neon | **Retired** | Its 512 MB ceiling is the only reason `history_years` is 3. |
