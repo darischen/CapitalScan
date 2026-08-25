@@ -35,7 +35,7 @@ def rows(monkeypatch):
         _row("NOCAP", ""),  # listed, no cap reported
         _row("BADCAP", "n/a"),
     ]
-    monkeypatch.setattr(nasdaq, "fetch_listed", lambda: pd.DataFrame(data))
+    monkeypatch.setattr(nasdaq, "fetch_listed", lambda *_a, **_k: pd.DataFrame(data))
     return data
 
 
@@ -88,7 +88,7 @@ class TestOnlyCommonStockAndOrdinaryADRs:
         monkeypatch.setattr(
             nasdaq,
             "fetch_listed",
-            lambda: pd.DataFrame(
+            lambda *_a, **_k: pd.DataFrame(
                 [
                     dict(
                         symbol="AGNCP",
@@ -109,7 +109,7 @@ class TestOnlyCommonStockAndOrdinaryADRs:
         monkeypatch.setattr(
             nasdaq,
             "fetch_listed",
-            lambda: pd.DataFrame(
+            lambda *_a, **_k: pd.DataFrame(
                 [
                     dict(
                         symbol="BTSGU",
@@ -131,7 +131,7 @@ class TestOnlyCommonStockAndOrdinaryADRs:
         monkeypatch.setattr(
             nasdaq,
             "fetch_listed",
-            lambda: pd.DataFrame(
+            lambda *_a, **_k: pd.DataFrame(
                 [
                     dict(
                         symbol="ARM",
@@ -168,19 +168,23 @@ class TestSymbolNormalisation:
         # normalised differently here would create a second row for the same
         # company and never join to the first.
         monkeypatch.setattr(
-            nasdaq, "fetch_listed", lambda: pd.DataFrame([_row("BRK.B", "900000000000.00")])
+            nasdaq,
+            "fetch_listed",
+            lambda *_a, **_k: pd.DataFrame([_row("BRK.B", "900000000000.00")]),
         )
         assert nasdaq.tickers_above(1e9) == ["BRK-B"]
 
     def test_upper_cases_and_trims(self, monkeypatch):
         monkeypatch.setattr(
-            nasdaq, "fetch_listed", lambda: pd.DataFrame([_row(" nvda ", "4000000000000.00")])
+            nasdaq,
+            "fetch_listed",
+            lambda *_a, **_k: pd.DataFrame([_row(" nvda ", "4000000000000.00")]),
         )
         assert nasdaq.tickers_above(1e9) == ["NVDA"]
 
     def test_drops_a_blank_symbol(self, monkeypatch):
         monkeypatch.setattr(
-            nasdaq, "fetch_listed", lambda: pd.DataFrame([_row("", "50000000000.00")])
+            nasdaq, "fetch_listed", lambda *_a, **_k: pd.DataFrame([_row("", "50000000000.00")])
         )
         assert nasdaq.tickers_above(1e9) == []
 
@@ -188,7 +192,7 @@ class TestSymbolNormalisation:
         monkeypatch.setattr(
             nasdaq,
             "fetch_listed",
-            lambda: pd.DataFrame(
+            lambda *_a, **_k: pd.DataFrame(
                 [_row("AAPL", "3500000000000.00"), _row("AAPL", "3500000000000.00")]
             ),
         )
@@ -208,11 +212,11 @@ class TestTheSnapshotIsCached:
         real call fails and every stubbed test still passes -- which is
         exactly what happened while writing this file.
         """
-        monkeypatch.setattr(nasdaq, "_fetch_rows", lambda: [_row("AAPL", "1.0")])
+        monkeypatch.setattr(nasdaq, "_fetch_rows", lambda *_a, **_k: [_row("AAPL", "1.0")])
         assert isinstance(nasdaq.fetch_listed.__wrapped__(), pd.DataFrame)
 
     def test_an_empty_frame_yields_no_tickers(self, monkeypatch):
-        monkeypatch.setattr(nasdaq, "fetch_listed", lambda: pd.DataFrame())
+        monkeypatch.setattr(nasdaq, "fetch_listed", lambda *_a, **_k: pd.DataFrame())
         assert nasdaq.tickers_above(1e9) == []
 
     def test_the_source_string_is_versioned(self):
@@ -298,3 +302,100 @@ class TestBatchKeyIsBounded:
         a = _batch_key([f"T{i}" for i in range(50)], d0, d1)
         b = _batch_key([f"T{i}" for i in range(1, 51)], d0, d1)
         assert a != b
+
+
+# ---------------------------------------------------------------------------
+# Exchange parameterisation (2026-08-25, for the NYSE round)
+# ---------------------------------------------------------------------------
+
+
+class TestTheCacheKeyIsPerExchange:
+    """The trap BACKLOG named before this was written.
+
+    `fetch_listed` is `@cached` on a key that was the bare constant
+    `listed_with_mcap`. Calling it for a second exchange through the same
+    key returns the **Nasdaq** snapshot, and NYSE looks like it has no
+    listings at all: a wrong answer that raises nothing.
+    """
+
+    def test_nasdaq_keeps_its_original_key(self):
+        """Deliberately asymmetric.
+
+        Making the key `listed_with_mcap_{exchange}` for everything would
+        change Nasdaq's key too, turning its next call into a miss and
+        silently replacing the snapshot the current universe was built
+        from. CLAUDE.md records that exact failure: a cache key is a
+        promise, and changing what a key means is how a fix ships and never
+        runs.
+        """
+        assert nasdaq._listed_key(nasdaq.NASDAQ) == "listed_with_mcap"
+        assert nasdaq._listed_key() == "listed_with_mcap"
+
+    def test_another_exchange_gets_its_own_key(self):
+        assert nasdaq._listed_key(nasdaq.NYSE) == "listed_with_mcap_NYSE"
+
+    def test_two_exchanges_never_share_a_key(self):
+        """The property, rather than the two spellings above."""
+        keys = {nasdaq._listed_key(x) for x in (nasdaq.NASDAQ, nasdaq.NYSE, "AMEX")}
+        assert len(keys) == 3
+
+
+class TestTheExchangeReachesTheRequest:
+    def test_the_exchange_parameter_is_sent(self, monkeypatch):
+        """A parameterised function that ignores its parameter and returns
+        Nasdaq anyway is the same bug one layer down."""
+        seen = {}
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"data": {"rows": []}}
+
+        def _get(url, params=None, headers=None, timeout=None):
+            seen.update(params or {})
+            return _Resp()
+
+        monkeypatch.setattr(nasdaq.requests, "get", _get)
+        nasdaq._fetch_rows(nasdaq.NYSE)
+        assert seen["exchange"] == "NYSE"
+
+    def test_the_default_is_still_nasdaq(self, monkeypatch):
+        """Every existing caller passes nothing and must keep getting
+        Nasdaq."""
+        seen = {}
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"data": {"rows": []}}
+
+        monkeypatch.setattr(
+            nasdaq.requests,
+            "get",
+            lambda url, params=None, headers=None, timeout=None: (
+                seen.update(params or {}) or _Resp()
+            ),
+        )
+        nasdaq._fetch_rows()
+        assert seen["exchange"] == "NASDAQ"
+
+
+class TestTheFilterIsExchangeAgnostic:
+    def test_preferred_series_are_dropped_on_any_exchange(self, monkeypatch):
+        """NYSE carries far more preferred series than Nasdaq, and each one
+        gets the *issuer's* market cap from the screener, so it clears any
+        floor on its parent's size while its bars are a different
+        instrument. The filter is the same one; this pins that it still
+        runs when the exchange changes.
+        """
+        rows = [
+            _row("BAC", "300000000000.00", name="Bank of America Corporation Common Stock"),
+            _row("BAC-PL", "300000000000.00", name="Bank of America Corp 7.25% Preferred Series L"),
+        ]
+        monkeypatch.setattr(nasdaq, "fetch_listed", lambda *_a, **_k: pd.DataFrame(rows))
+        got = nasdaq.tickers_above(10e9, nasdaq.NYSE)
+        assert got == ["BAC"]

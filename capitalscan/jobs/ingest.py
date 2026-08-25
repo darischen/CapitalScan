@@ -1260,6 +1260,88 @@ SEC_NON_FILER_TICKERS = frozenset({"QQQ", "SPY", "VOO", "IBIT"})
 # state nothing in the schema forbids. See `BACKLOG.md`.
 
 
+def run_exchange_expansion(
+    exchange: str,
+    min_mcap_usd: float | None = None,
+    engine: Engine | None = None,
+) -> IngestReport:
+    """Seed `tickers` from an exchange screener (ADR 143's path, generalised).
+
+    ADR 143 added Nasdaq as a second seed source beside the S&P 500 union.
+    That round inserted its rows by hand; this is the same work written
+    down, so the NYSE round is reproducible rather than remembered.
+
+    **Inserts only.** `ON CONFLICT DO NOTHING`, so a ticker already on file
+    keeps its sector, its CIK and its `is_active` flag. An upsert here would
+    overwrite ADR 148's resolved sectors with the screener's own vocabulary,
+    which is neither GICS nor Yahoo's and would silently reintroduce the
+    two-levels-for-one-sector defect 148 exists to fix.
+
+    **`sector` is left NULL on new rows for the same reason.**
+    `run_sector_backfill` resolves it from the source of record afterwards.
+    The screener does return a sector, and using it would look like a free
+    win; it is the wrong vocabulary and 148 already paid for that lesson.
+
+    **CIK is resolved at insert**, because without it `run_shares` finds no
+    filings, `mcap_usd` stays NULL and every new name fails `crit_mcap`
+    while `cscan universe` reports success. ADR 143 records exactly that
+    happening: 296 rows with a NULL market cap, no error, no warning. The
+    order that works is bars, indicators, **shares**, then universe.
+
+    `min_mcap_usd` defaults to the ingest floor, deliberately below the
+    trade floor: a name at $6B today may have been above $20B earlier in
+    the window, and its bars are the only way those quarters can be
+    measured.
+    """
+    from capitalscan.jobs.fetch import nasdaq as screener
+
+    engine = engine or db_io.get_engine()
+    floor = screener.INGEST_MIN_MCAP_USD if min_mcap_usd is None else min_mcap_usd
+
+    with run_job(engine, "tickers", {"exchange": exchange, "min_mcap_usd": floor}) as report:
+        symbols = screener.tickers_above(floor, exchange)
+        if not symbols:
+            report.notes = f"screener returned no {exchange} listings at or above {floor:,.0f}"
+            return report
+
+        cik_lookup = sec.fetch_cik_lookup().set_index("ticker")["cik"]
+        rows = [
+            {
+                "ticker": t,
+                "cik": str(cik_lookup.get(t)) if t in cik_lookup.index else None,
+                "name": None,
+                "sector": None,
+                "industry": None,
+                "exchange": exchange,
+                "is_active": True,
+            }
+            for t in symbols
+        ]
+
+        with engine.begin() as conn:
+            existing = {
+                r[0]
+                for r in conn.execute(
+                    text("SELECT ticker FROM tickers WHERE ticker = ANY(:syms)"),
+                    {"syms": symbols},
+                )
+            }
+        new_rows = [r for r in rows if r["ticker"] not in existing]
+
+        if new_rows:
+            db_io.upsert(engine, "tickers", new_rows, ["ticker"], update_columns=[])
+
+        with_cik = sum(1 for r in new_rows if r["cik"])
+        report.rows_written = len(new_rows)
+        report.notes = (
+            f"{exchange}: {len(symbols)} listings at or above {floor:,.0f}, "
+            f"{len(existing)} already on file, {len(new_rows)} inserted, "
+            f"{with_cik} with a CIK. Sector is NULL by design -- run "
+            f"run_sector_backfill next, then bars, indicators, shares, universe."
+        )
+    return report
+
+
 def run_sector_backfill(
     tickers: list[str] | None = None,
     engine: Engine | None = None,
