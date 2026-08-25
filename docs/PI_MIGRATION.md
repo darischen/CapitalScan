@@ -1,8 +1,8 @@
 # Migrating the serving layer to a Raspberry Pi
 
 **Target:** Pi 4B, 4 GB RAM, 64 GB SD, LAN-only, reachable at
-`capitalscan.local`. VS Code and Claude Code already installed; assume
-nothing else is.
+`capitalscan.local` (192.168.1.30). VS Code and Claude Code already
+installed; assume nothing else is.
 
 **Decided 2026-08-24.** LAN-only with mDNS, no port forwarding, Next.js on
 the Pi so Postgres is never exposed. Tailscale later if remote access is
@@ -31,6 +31,37 @@ between two machines you own, not an exposed port.
 ---
 
 ## 1. On the Pi — base system
+
+**RDP first (done 2026-08-24).** `xrdp` needs only the network, so it goes
+in before anything else and makes every later step easier to run:
+
+```bash
+sudo apt install -y xrdp avahi-daemon
+sudo systemctl enable --now xrdp
+sudo adduser xrdp ssl-cert
+```
+
+Connect from Windows with `mstsc` to `192.168.1.30:3389` — 3389 is RDP's
+default, so the port is optional.
+
+**`sudo` will warn "unable to resolve host capitalscan"** after
+`hostnamectl set-hostname`, because `/etc/hosts` still maps the old name.
+It is a warning and the command underneath still runs. Fix it so it stops:
+
+```bash
+sudo sed -i "s/127.0.1.1.*/127.0.1.1	capitalscan/" /etc/hosts
+```
+
+**Bookworm defaults to Wayland and xrdp expects X11.** A black screen or an
+instant disconnect after login is that, not a credentials problem. Switch
+with `sudo raspi-config` (Advanced Options → Wayland → X11) and reboot, or
+log out of the physical console session — Pi OS will not give the same user
+a console and an RDP session at once.
+
+**Do not port-forward 3389.** Internet-exposed RDP is a far larger target
+than the Postgres port this design already declines to expose.
+
+
 
 ```bash
 sudo apt update && sudo apt full-upgrade -y
@@ -71,13 +102,13 @@ reach it to run `sync`, so open it to the LAN and nothing wider. In
 `/etc/postgresql/*/main/postgresql.conf`:
 
 ```
-listen_addresses = 'localhost,192.168.0.x'      # the Pi's own LAN address
+listen_addresses = 'localhost,192.168.1.30'     # the Pi's own LAN address
 ```
 
 In `pg_hba.conf`, add the workstation's subnet only:
 
 ```
-host    capitalscan_serving    capscan    192.168.0.0/24    scram-sha-256
+host    capitalscan_serving    capscan    192.168.1.0/24    scram-sha-256
 ```
 
 ```bash
