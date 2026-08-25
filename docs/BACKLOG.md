@@ -150,6 +150,38 @@ quarterly and the lateral is bounded by `as_of <= signal_date`.
 
 ---
 
+### A full `cscan sync` costs 1.5+ hours and 3 GB, mostly to rewrite rows
+
+Measured 2026-08-25: a re-sync to an already-populated Pi ran **1h33m and
+climbing**, 44 minutes of CPU, resident memory growing 1.26 GB → 3.0 GB.
+
+Almost all of that work changes nothing. `run_sync` upserts every row in
+the window regardless of whether it differs, so a second sync rewrites
+~5.7M bar and indicator rows to reach the handful that are new. On this run
+the only genuinely new rows were SPY's 5,510 bars and 10,179 ETF indicator
+rows.
+
+The memory is `pd.read_sql` materialising a whole table, then
+`to_dict("records")` per batch on top of it.
+
+**It is not urgent and it is not free.** ADR 153 now pushes the live tables
+every poll tick, so the nightly full sync is no longer the only path to the
+serving store — but it still runs nightly, and 1.5 hours inside a nightly
+chain is most of the chain.
+
+Two cheap options, neither taken:
+
+- **Bound the large tables by `ts >= last_synced`** rather than by the
+  30-year cutoff. The cutoff exists to bound the *window*, not to decide
+  what has changed.
+- **Chunk the read**, so peak memory is a batch rather than a table.
+
+Worth measuring before choosing: it is possible the cost is dominated by
+the network round-trips rather than the reads, in which case only the first
+option helps.
+
+---
+
 ### VOO and IBIT have no share count, so no market cap — **highest priority**
 
 **Superseded 2026-08-25.** SPY, VOO and IBIT now have `tickers` rows, bars
