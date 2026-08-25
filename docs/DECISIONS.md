@@ -6118,3 +6118,62 @@ guard, and ADR 129 is why it matters: `in_trade` failing open admitted
 - `universe_watch_consistent` is satisfied without change: `watch_reason`
   returns `None` for anything `in_trade` accepts, so an admitted fund is
   never also watched.
+
+
+---
+
+## Open item (2026-08-25): ADR 113's check 5 names a baseline that cannot be built
+
+**Not a decision made here.** Recorded with its cost so it can be made.
+
+ADR 113's fifth promotion check reads:
+
+> the model's out-of-sample pinball loss must beat **the unconditional
+> baseline** -- the same **per-ticker-year** empirical distribution the cell
+> grid measured against, fit with no features.
+
+Those two phrases describe different objects, and the second one cannot be
+constructed across ADR 019's split. Measured 2026-08-25:
+
+    train years      2010-2021        1,649 ticker-year keys
+    validate years   2022-2023          430 ticker-year keys
+    overlap                              0
+
+The split is **temporal**, so no ticker-year appears on both sides. A
+per-ticker-year quantile fitted on train has nothing to look up for any
+validation event; every row falls back to a global value. Measured both
+ways, the twenty head losses agree to five decimal places -- which is the
+symptom, not a coincidence.
+
+The phrase is inherited from the cell grid, where per-ticker-year baselines
+were computed **within** sample (`research/baselines.py`, ADR 062). That is
+a coherent thing to do for a hit rate measured in the same period. It does
+not transfer to an out-of-sample check.
+
+**The reading taken for now** is the global unconditional quantile of the
+training labels: strictly no features, fitted on train, scored on validate.
+It is the loss-minimising constant, so a model that cannot beat it has
+extracted nothing from twenty-one features that one number does not carry.
+`core/pinball.py::unconditional_quantile` implements it.
+
+**The bar it sets**, weighted by `1/|cluster|`, on 125,714 train and 26,788
+validate rows:
+
+| head | τ=0.05 | τ=0.25 | τ=0.50 | τ=0.75 | τ=0.95 |
+|---|---|---|---|---|---|
+| `fwd_ret_5d` | 0.00573 | 0.01457 | 0.01693 | 0.01376 | 0.00541 |
+| `fwd_ret_10d` | 0.00806 | 0.02110 | 0.02437 | 0.01945 | 0.00736 |
+| `peak_ret_5d` | 0.00301 | 0.01033 | 0.01529 | 0.01488 | 0.00648 |
+| `peak_ret_10d` | 0.00358 | 0.01314 | 0.01985 | 0.01922 | 0.00811 |
+
+**The alternative, and why it is not obviously wrong.** A per-ticker
+baseline *without* the year -- fitted on each ticker's training history and
+applied to its validation events -- is constructible, since tickers do
+overlap across the split. It is a harder bar, and arguably the fairer one:
+a model that only learns "AAPL moves more than KO" has learned something a
+per-ticker constant already knows.
+
+Choosing it would make check 5 stricter and make the ADR 113 kill criterion
+more likely to fire. That is a reason to consider it, not a reason to avoid
+it -- but it is a change to a pre-registered criterion and so belongs to
+whoever set the criterion, not to the session that noticed the wording.

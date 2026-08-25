@@ -3922,3 +3922,28 @@ Pollable population afterwards: **184 trade, 28 watch**.
 
 Only 2026Q2 is evaluated for the three new tickers. The other 65 quarters
 are ~2.6 hours at 2m23s each and are in `BACKLOG.md`.
+
+
+## 2026-08-25 — the bar for ADR 113 check 5
+
+The unconditional baseline's **validation** pinball loss, fitted on train
+labels only, weighted `1/|cluster|`. 125,714 train / 26,788 validate rows.
+A model must come in **below** these to be worth promoting.
+
+| head | τ=0.05 | τ=0.25 | τ=0.50 | τ=0.75 | τ=0.95 |
+|---|---|---|---|---|---|
+| `fwd_ret_5d` | 0.00573 | 0.01457 | 0.01693 | 0.01376 | 0.00541 |
+| `fwd_ret_10d` | 0.00806 | 0.02110 | 0.02437 | 0.01945 | 0.00736 |
+| `peak_ret_5d` | 0.00301 | 0.01033 | 0.01529 | 0.01488 | 0.00648 |
+| `peak_ret_10d` | 0.00358 | 0.01314 | 0.01985 | 0.01922 | 0.00811 |
+
+Shape worth noting before any model exists: loss peaks at the median and
+falls toward both tails, which is what pinball does when the label
+distribution is tight — there is simply less to be wrong about at τ=0.05.
+The 10-day heads cost more than the 5-day ones throughout, which is the
+wider distribution and not a difficulty ranking.
+
+**A per-ticker-year baseline was also measured and is not constructible.**
+Train covers 2010–2021 and validate 2022–2023 with **zero** ticker-year
+overlap, so every lookup falls back to the global value and the two agree
+to five decimals. Recorded as an open item against ADR 113's wording.
