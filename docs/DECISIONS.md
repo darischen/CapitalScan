@@ -193,6 +193,8 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 149 | The watch universe is a sibling of the trade universe, not a relaxation of it | Pinned. Extends ADR 001 to three universes; `in_trade` and ADR 112's population untouched; no `config_hash` move |
 | 150 | A provisional poller row is superseded at the nightly, not indefinitely | Pinned. Completes ADR 140; the nightly sweeps unreconciled `poll_` rows; no `config_hash` move |
 | 151 | `run_events` does not tag clusters | Pinned. Enforces Ruling C5; cluster-head filtering in `cell_stats` is unchanged and still load-bearing for ADR 112 |
+| 152 | Postgres on the Pi waits for the network rather than binding a wildcard | Pinned. Enforces PI_MIGRATION §2; boot-order drop-in on the cluster unit; no `config_hash` move |
+| 153 | The poller pushes to serving every tick | Pinned. Extends ADR 053 with a second sync path; gives ADR 150's sweep a serving target; no `config_hash` move |
 
 ---
 
@@ -5887,3 +5889,128 @@ supervisor is not evidence about what the process accomplished.**
   reservation is still open in PI_MIGRATION's closing section.
 - The verification is `grep -c 'could not bind'` on the cluster log after a
   reboot. Not `systemctl is-active`, which was true throughout the failure.
+
+
+---
+
+## 153. The poller pushes to serving every tick
+
+**Date:** 2026-08-25. **Status:** Pinned. Extends ADR 053 with a second sync path and gives ADR 150's sweep a second target. Does not move `config_hash`.
+
+**Context.**
+
+The serving store updated once a night. `cscan nightly` ends with
+`run_sync`, and nothing else wrote to it, so the deployed site showed the
+previous night's state all day while the workstation showed live signals.
+
+That was correct while serving was Neon and the site was a public copy. It
+stopped matching intent when serving moved to a Pi on the LAN (ADR 152):
+the user's stated reason for the migration was *"having live updates on a
+website not locally served here."*
+
+**Three things had to be true before this was safe, and two were already.**
+
+`sync.py` excluded `bars_live` and `quotes_live` deliberately, and said
+why: a nightly copy of a five-minute table is a price frozen at the last
+sync wearing a live label, *"and worse remotely because nobody there can
+see the poller is not running."* That is ADR 131 and ADR 134's failure.
+
+Re-reading both: their protections live in the **view and API layers**, not
+in sync. ADR 131 polls `GET /api/live` every 45 seconds client-side and
+prints when it last re-read, so a failed poll is legible -- the price holds
+and the clock beside it stops. ADR 134's `market_is_open()` NULLs
+`live_price` outside ET 09:30-16:00 and keeps `live_price_ts`. Both apply
+on the Pi unchanged, because the Pi runs the same Next.js app against the
+same views.
+
+So the objection was to the **frequency**, not the tables. At one copy per
+tick the serving store is in the position the workstation is already in.
+
+The third thing was missing: **nothing could distinguish a quiet session
+from a dead poller.** `stale_after_days = 2` is day-grained, built for a
+missed nightly, and cannot see a poller that died at 07:15. Without it, an
+empty screen and a stopped writer look identical -- which is the ADR 131
+failure arriving by another route.
+
+`poller_sessions` already had the shape and was written once at session
+end. Moving that upsert into the tick loop makes it a heartbeat at no
+schema cost.
+
+**Decision.**
+
+`run_live_sync` copies the poller's own footprint to serving after every
+tick: `poller_sessions`, the `runs` row `events.run_id` points at,
+today's `touch` events, their `signal_reports`, `bars_live` and
+`quotes_live`.
+
+`poller_sessions` ships first. `ended_at` now means "last tick", not
+"finished".
+
+**The nightly sweep gains a second target.** ADR 150 deletes this session's
+unreconciled poller rows from research; those rows are now already on
+serving, and `run_sync` never deletes. So `_sweep_provisional_poll_rows`
+runs against the serving engine too, before `run_sync`.
+
+**Rationale.**
+
+*Why a separate table list rather than widening `_tables()`.* The nightly
+exclusion is still right for the reason it documents. Widening it would
+ship the live tables at nightly frequency as well, which is the original
+bug. Two lists, two frequencies, one test holding the line.
+
+*Why an `id` watermark on `events` and `signal_reports` and not on the
+other four.* Neither has an `updated_at`, both `id` columns are bigint
+sequences, and the poller never rewrites a key it has already fired
+(`_already_fired`) -- so a high-water id is exact, and a tick ships what it
+produced rather than the session so far.
+
+`bars_live` takes no watermark: it is keyed `(ticker, session_date)`, so a
+tick overwrites each ticker's row and the table must ship whole. A
+watermark there would send each ticker once and never again, freezing the
+deployed candle at the day's first tick while everything else moved. That
+is worse than not shipping it, because it looks live.
+
+`quotes_live` is keyed `(ticker, ts)` and is therefore **append-only**, so
+it takes a clock watermark instead. The first version of this design
+assumed it behaved like `bars_live`; `pg_constraint` said otherwise. Left
+alone it would have re-shipped every quote written so far on every tick,
+growing quadratically across a 78-tick session. Checking the six conflict
+keys against the catalogue is what caught it, which is the habit `sync.py`'s
+own docstring already recommends after three keys were guessed wrong.
+
+*Why no `run_job` and no `_pin_config_hash` on the live path.* The poll's
+own run row already accounts for the work; ~78 ticks a session would
+otherwise write 78 `runs` rows describing a copy. The GUC does not change
+intraday.
+
+*Why a failed push never fails the poll.* Research is the source of truth
+and is written before the push runs. A sleeping Pi, a moved DHCP lease, or
+an unset `DATABASE_URL_SERVING` degrade to "the site is behind", not to
+"the session lost a tick". The watermark does not advance on failure, so
+the next tick re-ships what this one could not and no catch-up path is
+needed.
+
+*What was nearly built and was not.* A new one-row `live_heartbeat` table
+with its own migration, before noticing `poller_sessions` already existed
+and was merely written at the wrong moment. Recorded because the reflex to
+add schema ahead of reading what is there cost the better part of a design
+pass.
+
+**Consequences.**
+
+- The deployed site matches the workstation to within one sync round-trip.
+  The lag the reader actually sees is the poller's own five-minute write
+  interval, which is the same locally.
+- Serving now holds rows ADR 140 classifies as provisional, visible before
+  the nightly confirms them. That is the intended trade and the user's
+  stated reading: *"not authoritative also doesn't mean not useful."* The
+  sweep is what keeps it bounded to one session.
+- **The serving sweep is load-bearing and silent if dropped.** Without it
+  the serving store keeps every row the nightly rejected -- the no-bar
+  rows, the wrong-primary-type rows -- accumulating a few a day forever,
+  diverging in exactly the population research judged unreliable.
+  `test_sync_live.py` asserts both sweeps exist and their order.
+- A serving `runs` row carries status `'running'` mid-session; the
+  nightly's full sync corrects it.
+- Volume: 9 to 85 `touch` rows a session, measured over six sessions, plus
+  ~450 `bars_live` rows a tick.

@@ -2408,6 +2408,23 @@ def nightly() -> None:
     # ingest as failed. It is reported and the next run retries.
     from capitalscan.jobs import sync as sync_job
 
+    # **The sweep has a second target (ADR 153).** `_sweep_provisional_poll_rows`
+    # above deleted this session's poller rows from research. The live sync
+    # has already pushed those same rows to serving, and `run_sync` never
+    # deletes -- so without this the serving store keeps every row the sweep
+    # rejected, accumulating a few a day, forever, and diverging from the
+    # source of truth in exactly the rows research judged unreliable.
+    #
+    # Runs before `run_sync` so the authoritative rows land after the
+    # provisional ones are gone, never the reverse.
+    try:
+        swept_serving = _sweep_provisional_poll_rows(
+            sync_job.serving_engine(), _config_hash(config), end
+        )
+        console.print(f"nightly: swept {swept_serving} provisional row(s) from serving")
+    except Exception as exc:  # noqa: BLE001 - serving is derived; research is unaffected
+        console.print(f"[yellow]warn[/yellow] serving sweep skipped: {exc}")
+
     try:
         sync_report = sync_job.run_sync()
         console.print(f"nightly: synced {sync_report.total:,} rows to serving")

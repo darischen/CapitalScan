@@ -19,18 +19,24 @@ a table appearing in a view is not consent to publish it: `bar_rejects`,
 sync would ship whichever of them a future view happened to touch. Adding
 a table here is a deliberate act.
 
-**The live session is not synced, and that is a decision rather than an
-omission.** `bars_live` holds today's partial candle, rewritten every five
-minutes by a poller that runs on this workstation. A nightly copy would
-give the deployed site a price frozen at whenever the sync last ran and
-label it live — the exact failure ADR 131 and ADR 134 exist to prevent, and
-worse remotely because nobody there can see the poller is not running.
+**The live session is not in the nightly cut, and ADR 153 is why that is
+still right.** `bars_live` and `quotes_live` hold today's partial candle
+and last quote, rewritten every five minutes by the poller. A *nightly*
+copy would give the deployed site a price frozen at whenever the sync ran
+and label it live — the exact failure ADR 131 and ADR 134 fixed, and worse
+remotely because nobody there can see the poller is not running.
 
-So the deployed site has no live candle and no live price. `liveBar`
-returns `None` against an empty table, the chart stops at yesterday's
-close, and the header shows the close alone. That is honest: live data is
-local because the poller is local. `test_bars_live_isolation.py` caught the
-first version of this file shipping it.
+That reasoning is about the copy **frequency**, not about the tables. So
+they are absent from `_tables()` below and present in `_live_tables()`,
+which `run_live_sync` pushes after every poll tick. The serving store is
+then in the position the workstation is already in: ADR 131's 45-second
+client poll and ADR 134's session-hours guard both live in the view and
+API layers and apply unchanged, and `poller_sessions` ships as a heartbeat
+so a quiet session is distinguishable from a dead poller.
+
+Adding either table to `_tables()` would reintroduce the original bug.
+`test_sync_live.py::test_the_nightly_cut_still_excludes_the_live_session`
+is what holds that line.
 
 **Conflict keys are the tables' real constraints, checked against
 `pg_constraint` rather than guessed.** The first version of this file
@@ -372,6 +378,141 @@ def _pin_config_hash(target: Engine, config_hash: str) -> None:
                 )
             )
         )
+
+
+@dataclass(frozen=True)
+class LiveWatermark:
+    """How far the live sync has already pushed.
+
+    `events` and `signal_reports` have no `updated_at`, but both `id`
+    columns are bigint sequences and the poller never rewrites a key it has
+    already fired (`_already_fired`). So a high-water id is an exact
+    "everything below this is already on serving" marker, and each tick
+    ships only what that tick produced rather than re-uploading the session
+    so far.
+
+    `bars_live` is excluded: it is keyed `(ticker, session_date)`, so a tick
+    *overwrites* each ticker's row and the whole table has to ship each time
+    (~450 rows). A watermark there would send each ticker once and never
+    again, freezing the deployed candle at the day's first tick.
+
+    `quotes_live` is keyed `(ticker, ts)` and therefore append-only, so it
+    takes a clock watermark rather than an id one -- checked against
+    `pg_constraint`, not assumed from its neighbour.
+    """
+
+    event_id: int = 0
+    report_id: int = 0
+    quote_ts: str | None = None
+
+
+def _live_tables(chash: str, d: date, run_id: str, since: LiveWatermark) -> tuple[SyncTable, ...]:
+    """The poller's own footprint, for one session, in foreign-key order.
+
+    Deliberately not a subset of `_tables()`. That list is the *nightly*
+    cut and excludes the live session for a reason its own docstring gives:
+    a once-a-day copy of a five-minute table is a frozen price wearing a
+    live label. This list exists because that reasoning is about the copy
+    *frequency*, not about the table -- a per-tick copy puts the serving
+    store in the same position the workstation is already in, with ADR
+    131's 45-second client poll and ADR 134's session-hours guard applying
+    unchanged because both live in the view and API layers.
+
+    `poller_sessions` is the heartbeat and ships first, so a reader that
+    sees no signals can still tell a quiet session from a dead poller.
+    """
+    return (
+        SyncTable(
+            "poller_sessions",
+            "SELECT * FROM poller_sessions WHERE session_date = :d",
+            ("session_date",),
+        ),
+        # `events.run_id` is a foreign key; `run_job` inserts this row on
+        # entry with status 'running', so it resolves mid-session. The
+        # status is corrected by the nightly's full sync.
+        SyncTable("runs", "SELECT * FROM runs WHERE run_id = :run_id", ("run_id",)),
+        SyncTable(
+            "events",
+            "SELECT * FROM events WHERE config_hash = :chash AND signal_date = :d "
+            "AND entry_kind = 'touch' AND id > :since_event",
+            ("config_hash", "ticker", "signal_date", "signal_type", "entry_kind"),
+        ),
+        SyncTable(
+            "signal_reports",
+            "SELECT * FROM signal_reports WHERE fired_at >= :d AND id > :since_report",
+            ("id",),
+        ),
+        SyncTable(
+            "bars_live",
+            "SELECT * FROM bars_live WHERE session_date = :d",
+            ("ticker", "session_date"),
+        ),
+        SyncTable(
+            "quotes_live",
+            "SELECT * FROM quotes_live WHERE ts >= :d "
+            "AND (CAST(:since_quote AS timestamptz) IS NULL "
+            "OR ts > CAST(:since_quote AS timestamptz))",
+            ("ticker", "ts"),
+        ),
+    )
+
+
+def run_live_sync(
+    chash: str,
+    d: date,
+    run_id: str,
+    since: LiveWatermark | None = None,
+    source: Engine | None = None,
+    target: Engine | None = None,
+) -> tuple[SyncReport, LiveWatermark]:
+    """Push one poll tick's output to serving (ADR 153).
+
+    **No `run_job` wrapper.** The poll's own run row already accounts for
+    the work, and ~78 ticks a session would otherwise write 78 rows to
+    `runs` describing a copy rather than a computation.
+
+    **No `_pin_config_hash`.** The GUC does not change intraday and the pin
+    is an `ALTER DATABASE` per tick for nothing.
+
+    Idempotent: re-running a tick upserts the same rows to the same keys and
+    the watermark advances past them, so a repeat is a no-op and a missed
+    tick is repaired by the next one rather than needing a catch-up path.
+
+    Returns the report and the advanced watermark. The caller holds the
+    watermark across ticks; it deliberately does not live in this module,
+    because a module-level one would leak between sessions in a process
+    that polls two days in a row.
+    """
+    since = since or LiveWatermark()
+    source = source or db_io.get_engine()
+    target = target or serving_engine()
+
+    params: dict[str, Any] = {
+        "chash": chash,
+        "d": d,
+        "run_id": run_id,
+        "since_event": since.event_id,
+        "since_report": since.report_id,
+        "since_quote": since.quote_ts,
+    }
+
+    rows: dict[str, int] = {}
+    high = {"events": since.event_id, "signal_reports": since.report_id}
+    quote_ts = since.quote_ts
+    for table in _live_tables(chash, d, run_id, since):
+        frame = pd.read_sql(text(table.sql), source, params=params)
+        written = 0
+        per_batch = _rows_per_batch(len(frame.columns))
+        for start in range(0, len(frame), per_batch):
+            batch = frame.iloc[start : start + per_batch]
+            written += db_io.upsert(target, table.name, batch.to_dict("records"), list(table.key))
+        rows[table.name] = written
+        if table.name in high and not frame.empty:
+            high[table.name] = max(high[table.name], int(frame["id"].max()))
+        if table.name == "quotes_live" and not frame.empty:
+            quote_ts = str(frame["ts"].max())
+
+    return SyncReport(rows), LiveWatermark(high["events"], high["signal_reports"], quote_ts)
 
 
 def describe(sp: ServingParams | None = None, today: date | None = None) -> dict[str, Any]:

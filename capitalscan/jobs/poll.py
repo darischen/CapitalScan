@@ -33,7 +33,7 @@ from capitalscan.core import signals as core_signals
 from capitalscan.core.config import Config, ExitParams, SignalParams, StatsParams
 from capitalscan.core.signals import _breach, _isnan
 from capitalscan.core.types import Bands, Bound, Side, SignalType
-from capitalscan.jobs import call_overlay, db_io, notify, positions, scheduled_runs
+from capitalscan.jobs import call_overlay, db_io, notify, positions, scheduled_runs, sync
 from capitalscan.jobs.config import config_hash
 from capitalscan.jobs.fetch import yahoo
 from capitalscan.jobs.ingest import IngestReport, run_job
@@ -178,6 +178,69 @@ def _bands_from(ind_row: pd.Series) -> Bands:
         k_fast=float(ind_row["k_fast"]),
         atr_14=float(ind_row["atr_14"]),
     )
+
+
+def _write_session_row(
+    engine: Engine,
+    session_date: date,
+    started_at: datetime,
+    ended_at: datetime,
+    ticks_completed: int,
+    ticks_expected: int,
+    notes: str | None,
+) -> None:
+    """The session row, rewritten every tick rather than once at the end.
+
+    It was a single write on exit, which made it a *record* of a session.
+    Written per tick it is also a **heartbeat**, and that is what the
+    serving copy needs (ADR 153): a reader that sees no signals cannot
+    otherwise tell a quiet session from a poller that died at 07:15.
+    `ended_at` is therefore "last tick", not "finished" — the row is
+    complete at every moment and simply stops advancing when the poller
+    stops.
+
+    Same key, so this is the same one row all session; a tick costs one
+    upsert of one row.
+    """
+    coverage_pct = round(100 * ticks_completed / ticks_expected, 3) if ticks_expected else 0.0
+    db_io.upsert(
+        engine,
+        "poller_sessions",
+        [
+            {
+                "session_date": session_date,
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "ticks_completed": ticks_completed,
+                "ticks_expected": ticks_expected,
+                "coverage_pct": coverage_pct,
+                "notes": notes,
+            }
+        ],
+        ["session_date"],
+    )
+
+
+def _push_live(engine, chash, session_date, run_id, watermark, report):
+    """Copy this tick to the serving store, or carry on without it.
+
+    **Never fails the poll.** Serving is a derived copy; the research store
+    is the source of truth and has already been written by the time this
+    runs. A Pi that is asleep, a moved DHCP lease, or an unset
+    `DATABASE_URL_SERVING` must all degrade to "the site is behind", not to
+    "the session lost a tick".
+
+    Returns the watermark unchanged on failure, so the next tick re-ships
+    whatever this one could not.
+    """
+    from capitalscan.jobs import sync as sync_job
+
+    try:
+        _, advanced = sync_job.run_live_sync(chash, session_date, run_id, watermark, source=engine)
+    except Exception as exc:  # noqa: BLE001 - reported, the poll continues
+        report.notes = f"live sync skipped: {exc}"
+        return watermark
+    return advanced
 
 
 def _write_live_bars(engine: Engine, quotes: pd.DataFrame, today: date, run_id: str) -> None:
@@ -844,6 +907,8 @@ def run_poll(
         session_date = now_fn().date()
         started_at = now_fn()
 
+        watermark = sync.LiveWatermark()
+
         tick = 0
         while True:
             if max_ticks is not None and tick >= max_ticks:
@@ -869,6 +934,20 @@ def run_poll(
                 report.rows_written += fired
                 ticks_completed += 1
                 consecutive_failures = 0
+                # Heartbeat first, so a serving reader can date this tick
+                # even if the push below fails.
+                _write_session_row(
+                    engine,
+                    session_date,
+                    started_at,
+                    now,
+                    ticks_completed,
+                    ticks_expected,
+                    report.notes,
+                )
+                watermark = _push_live(
+                    engine, chash, session_date, report.run_id, watermark, report
+                )
             except Exception as exc:  # DESIGN §4.9: log, sleep, continue
                 consecutive_failures += 1
                 report.notes = f"tick failure: {exc}"
@@ -879,21 +958,13 @@ def run_poll(
                 break
             sleep_fn(interval)
 
-        coverage_pct = round(100 * ticks_completed / ticks_expected, 3) if ticks_expected else 0.0
-        db_io.upsert(
+        _write_session_row(
             engine,
-            "poller_sessions",
-            [
-                {
-                    "session_date": session_date,
-                    "started_at": started_at,
-                    "ended_at": now_fn(),
-                    "ticks_completed": ticks_completed,
-                    "ticks_expected": ticks_expected,
-                    "coverage_pct": coverage_pct,
-                    "notes": report.notes,
-                }
-            ],
-            ["session_date"],
+            session_date,
+            started_at,
+            now_fn(),
+            ticks_completed,
+            ticks_expected,
+            report.notes,
         )
     return report
