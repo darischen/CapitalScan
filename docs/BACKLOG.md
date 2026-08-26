@@ -381,6 +381,53 @@ never expire at all.
 
 ---
 
+### `cscan sync` has no incremental path, and it is half of nightly
+
+Measured 2026-08-26. A full sync ships **7,469,519 rows in 114.2 minutes**.
+The rows that actually changed since the previous night:
+
+    table         shipped      new
+    bars        3,346,546    1,457
+    indicators  3,346,546    1,415
+    events        684,734    1,003
+    total       7,469,519   ~3,875
+
+**A 1,900x amplification**, and roughly **114 of nightly's ~227 minutes**
+for 0.05% of the payload.
+
+Two causes compounding.
+
+`run_sync` selects by `cutoff_date`, never by "changed since the last
+sync". There is no watermark, no `updated_at` predicate, no window.
+
+And `ServingParams.history_years` is **30**. It was 3, sized against Neon's
+512MB free tier; when the Pi replaced Neon the constraint disappeared and
+the value was raised, which quietly turned `cutoff_date` into "the
+beginning of time". Neither change was wrong on its own. Together they mean
+every nightly re-reads the entire served history.
+
+**The pattern already exists here.** `run_live_sync` takes a
+`LiveWatermark`, ships only what is past it, and runs ~78 times a session
+at no noticeable cost. `run_sync` predates it.
+
+Proposed shape -- a bounded window rather than a strict watermark, because
+the sync is an upsert and re-shipping is free:
+
+    run_sync(since_days=7)   # nightly:  ~10k rows, seconds
+    run_sync()               # rebuild:  everything, 114 min
+
+Seven days rather than one so a failed night, or a restated bar, heals
+itself without anyone noticing. That is the same reasoning `run_indicators`
+and `run_events` already use for their 5-day nightly windows.
+
+**What it must not lose.** A full pass is still required when the target is
+empty, or when the `config_hash` being served changes -- otherwise the
+window ships one day of rows onto a database that has none of the history
+they belong to. The 2026-08-26 sync was exactly that case and was correct
+to be full.
+
+---
+
 ### Watch-universe fires are invisible on the site
 
 Raised 2026-08-26 from a real miss: CCJ fired `confluence_high` at 06:45:40,
