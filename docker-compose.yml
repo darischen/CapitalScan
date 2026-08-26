@@ -35,8 +35,24 @@ services:
     # as narrowly as it can be. A 192.168.1.14 binding was added and then
     # removed once the architecture settled -- add it back only if some
     # job genuinely moves off this machine.
+    # **Both loopback families, and the second one is not optional.**
+    # Publishing IPv4 loopback alone left `::1` with nothing listening,
+    # while every connection string in this project says `localhost`.
+    # `localhost` resolves to `::1` first, so each connect burned a **130
+    # second** TCP timeout before falling back to 127.0.0.1.
+    #
+    # Measured 2026-08-25: `connect` 130.15s, the query itself 0.00s, the
+    # fetch 0.04s. `_compute_one_ticker` opens a fresh connection per
+    # ticker (`use_null_pool=True`), so every ticker paid it -- turning a
+    # 36-second indicator run into hours and presenting as a hang, since
+    # eight workers sitting in a TCP timeout show 0% CPU and open no
+    # database connections.
+    #
+    # `[::1]` not `[::]`: loopback only, so the global-IPv6 exposure this
+    # block exists to prevent stays prevented.
     ports:
       - "127.0.0.1:5432:5432"
+      - "[::1]:5432:5432"
     volumes:
       - capitalscan-data:/var/lib/postgresql/data
     healthcheck:
