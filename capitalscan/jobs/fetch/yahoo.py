@@ -335,6 +335,163 @@ def _fetch_hourly_window(ticker: str, start: date, end: date) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
+@rate_limited(per_sec=RATE_LIMIT_PER_SEC)
+@with_retry
+def _download_hourly_batch(tickers: list[str], start: date, end: date) -> pd.DataFrame:
+    """One hourly request for many tickers.
+
+    Same call as `_download_hourly` with a list instead of a string, and the
+    same `end + 1 day` exclusive-bound correction. `group_by="ticker"` gives
+    the column MultiIndex `_extract_ticker_frame` already parses for daily.
+
+    **The 60-day cap is unaffected.** Yahoo limits hourly *history per
+    request*, not tickers per request, so the window walk in
+    `fetch_bars_hourly_many` is unchanged -- this only collapses the
+    per-ticker dimension.
+    """
+    return cast(
+        pd.DataFrame,
+        yf.download(
+            tickers,
+            start=start,
+            end=end + timedelta(days=1),
+            interval="1h",
+            auto_adjust=False,
+            actions=False,
+            group_by="ticker",
+            threads=False,
+            progress=False,
+        ),
+    )
+
+
+def _shape_hourly(raw: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """Raw hourly frame -> the project's hourly shape, for one ticker.
+
+    Extracted verbatim from `_fetch_hourly_window` so the batched and
+    per-ticker paths cannot drift: the session filter and the timezone
+    normalisation are the parts that would silently differ, and a
+    difference there changes which bars a band comparison sees.
+    """
+    if raw.empty:
+        return _empty_hourly_frame()
+
+    df = raw.copy()
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    idx = cast(pd.DatetimeIndex, df.index)
+    idx = (
+        idx.tz_localize("America/New_York")
+        if idx.tz is None
+        else idx.tz_convert("America/New_York")
+    )
+    df.index = idx
+    df = df.between_time("09:30", "16:00")
+    if df.empty:
+        return _empty_hourly_frame()
+
+    return pd.DataFrame(
+        {
+            "ticker": ticker,
+            "ts": df.index,
+            "open": df["Open"].to_numpy(),
+            "high": df["High"].to_numpy(),
+            "low": df["Low"].to_numpy(),
+            "close": df["Close"].to_numpy(),
+            "volume": df["Volume"].to_numpy(),
+        }
+    ).reset_index(drop=True)
+
+
+def _hourly_batch_key(tickers: list[str], start: date, end: date) -> str:
+    """`{n}_{sha1(tickers)}_{start}_{end}`.
+
+    A hash rather than the joined list, because 50 symbols exceed a sane
+    filename. The count is kept in the clear so a cache directory is
+    readable at a glance.
+    """
+    import hashlib
+
+    joined = ",".join(sorted(tickers))
+    digest = hashlib.sha1(joined.encode()).hexdigest()[:16]
+    return f"{len(tickers)}_{digest}_{start}_{end}"
+
+
+# `yahoo_hourly_v3`, not `_v2`. The key now identifies a *set* of tickers
+# rather than one, so a `_v2` entry answers a different question than the
+# one being asked. CLAUDE.md records what reusing a source string through a
+# semantic change costs: the `yahoo_daily` fix merged, passed CI, and never
+# ran, because every cached entry answered the post-fix request with the
+# pre-fix result.
+@cached(source="yahoo_hourly_v3", key_fn=_hourly_batch_key)
+def _fetch_hourly_window_batch(tickers: list[str], start: date, end: date) -> pd.DataFrame:
+    """One 60-day window for a batch, long-form with a `ticker` column.
+
+    Falls back to per-ticker on a batch that returns nothing, matching
+    `_fetch_daily_batch`'s partial-failure retry: one bad symbol must not
+    cost the other forty-nine.
+    """
+    raw = _download_hourly_batch(tickers, start, end)
+    frames: list[pd.DataFrame] = []
+    missing: list[str] = []
+
+    for ticker in tickers:
+        sub = _extract_ticker_frame(raw, ticker) if len(tickers) > 1 else raw
+        shaped = _shape_hourly(sub, ticker)
+        if shaped.empty:
+            missing.append(ticker)
+        else:
+            frames.append(shaped)
+
+    # A symbol absent from a multi-ticker response is indistinguishable from
+    # one that genuinely has no bars in the window, so it is retried alone.
+    # Expected to be common: most of the delisted union has no hourly data.
+    for ticker in missing:
+        shaped = _shape_hourly(_download_hourly(ticker, start, end), ticker)
+        if not shaped.empty:
+            frames.append(shaped)
+
+    if not frames:
+        return _empty_hourly_frame()
+    return cast(pd.DataFrame, pd.concat(frames, ignore_index=True))
+
+
+def fetch_bars_hourly_many(tickers: list[str], start: date, end: date) -> dict[str, pd.DataFrame]:
+    """Hourly bars for many tickers, one request per window per batch.
+
+    The per-ticker `fetch_bars_hourly` costs one request per ticker per
+    window. Measured 2026-08-26 in a nightly: **54.5 minutes for 1,470
+    tickers** at `RATE_LIMIT_PER_SEC = 0.5`, against 4.9 minutes for the
+    batched daily path over the same universe.
+
+    Returns a dict so a caller that iterates tickers keeps doing so; a
+    ticker with no bars is absent, matching `fetch_bars_hourly` returning
+    an empty frame.
+    """
+    per_ticker: dict[str, list[pd.DataFrame]] = {t: [] for t in tickers}
+    for w_start, w_end in _hourly_windows(start, end):
+        for batch in _split_batches(tickers):
+            got = _fetch_hourly_window_batch(batch, w_start, w_end)
+            if got.empty:
+                continue
+            for ticker, sub in got.groupby("ticker", sort=False):
+                per_ticker[str(ticker)].append(sub)
+
+    out: dict[str, pd.DataFrame] = {}
+    for ticker, parts in per_ticker.items():
+        if not parts:
+            continue
+        out[ticker] = cast(
+            pd.DataFrame,
+            pd.concat(parts, ignore_index=True)
+            .drop_duplicates(subset=["ticker", "ts"])
+            .sort_values("ts")
+            .reset_index(drop=True),
+        )
+    return out
+
+
 def fetch_bars_hourly(ticker: str, start: date, end: date) -> pd.DataFrame:
     """Hourly regular-session bars, walked in 60-day windows (DESIGN §4.4)."""
     windows = [

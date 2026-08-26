@@ -8,7 +8,6 @@ of this lives in `core/` (invariant 1).
 
 from __future__ import annotations
 
-import math
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -935,11 +934,26 @@ def run_bars_hourly(
         splits = actions.loc[actions["action_type"] == "split"] if not actions.empty else actions
         daily_range = _read_daily_range(engine, tickers)
 
+        # **One request per batch per window, not one per ticker.** The
+        # per-ticker path cost 54.5 minutes for 1,470 tickers on 2026-08-26
+        # at `RATE_LIMIT_PER_SEC = 0.5`, against 4.9 minutes for the batched
+        # daily path over the same universe -- the difference was the
+        # request shape, not the data. `fetch_bars_hourly_many` was verified
+        # against `fetch_bars_hourly` on live data before this call site
+        # changed: identical frames, row for row, for every ticker tried.
+        #
+        # Fetched up front rather than lazily inside the loop, because the
+        # window walk has to run once for the whole list to collapse the
+        # per-ticker dimension at all.
+        hourly_by_ticker = yahoo.fetch_bars_hourly_many(tickers, start, end)
+
         fetched: list[str] = []
         with Progress() as progress:
             task = progress.add_task("[cyan]hourly bars...", total=len(tickers))
             for ticker in tickers:
-                hourly = yahoo.fetch_bars_hourly(ticker, start, end)
+                # Absent means Yahoo returned nothing for it, which is what
+                # an empty frame meant before.
+                hourly = hourly_by_ticker.get(ticker, yahoo._empty_hourly_frame())
                 progress.update(task, advance=1, description=f"[cyan]{ticker}[/cyan]")
                 if hourly.empty:
                     # Delisted before the 725-day window opened. Expected for
@@ -1213,54 +1227,13 @@ def _depositary_tickers(engine: Engine, tickers: list[str]) -> set[str]:
     return {r.ticker for r in rows if core_universe.is_depositary_listing(r.name)}
 
 
-def _json_safe(value: object) -> object:
-    """Coerce one value into something `json.dumps` accepts.
-
-    `bar_rejects.payload` is JSONB, and psycopg serialises it with the
-    stdlib encoder. A `datetime.date` -- which is what `filed_on` and
-    `period_end` are, straight off a DataFrame -- raises `TypeError: Object
-    of type date is not JSON serializable`, and pandas/numpy scalars raise
-    the same way.
-
-    Found 2026-08-26: `cscan nightly` died here after `run_shares` had
-    already written 236,008 rows. The share data landed and the job still
-    reported `failed`, which aborted every remaining nightly step --
-    earnings, indicators, events, path capture and the sync. A reject log
-    took down the pipeline it exists to annotate.
-    """
-    import numpy as np
-
-    if value is None or isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        # NaN and the infinities are floats, and `json.dumps` emits them as
-        # bare `NaN`/`Infinity` -- which is not valid JSON and Postgres
-        # rejects on the way into JSONB. Absent stays absent (invariant 4).
-        return value if math.isfinite(value) else None
-    if value is pd.NaT:
-        # `NaT` is a `datetime` subclass, so it reaches the branch below and
-        # `isoformat()` returns the literal string "NaT" -- a missing date
-        # recorded as though it were a real one.
-        return None
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    if isinstance(value, np.integer):
-        return int(value)
-    if isinstance(value, np.floating):
-        return float(value)
-    if isinstance(value, np.bool_):
-        return bool(value)
-    # Anything left is a scalar of some other type -- a Decimal, a numpy
-    # datetime, an Interval. `str` is lossy but survives the round trip; a
-    # reject log that cannot be written is worse than one that is coarse.
-    return str(value)
-
-
-def _json_safe_payload(payload: dict) -> dict:
-    """`_json_safe` over a reject payload. Applied at every construction
-    site rather than inside `db_io.append`, so the coercion is visible where
-    the dates are put in."""
-    return {k: _json_safe(v) for k, v in payload.items()}
+# One implementation, in `db_io`, because `db_io.append` is the choke point
+# every reject passes through and per-site wrapping already failed once:
+# two sites were wrapped on 2026-08-26 and a third was missed, so the same
+# failure recurred two minutes after the commit. These aliases keep the
+# construction sites self-documenting.
+_json_safe = db_io.json_safe
+_json_safe_payload = db_io.json_safe_payload
 
 
 def _implausible_shares_reason(shares: int, bounds: SharesPlausibility) -> str | None:
@@ -1758,12 +1731,14 @@ def run_shares(
                             "ts": filed_on,
                             "rule": reason,
                             "severity": "reject",
-                            "payload": {
-                                "shares": shares,
-                                "filed_on": filed_on,
-                                "period_end": None,
-                                "source": SHARES_YAHOO_SOURCE,
-                            },
+                            "payload": _json_safe_payload(
+                                {
+                                    "shares": shares,
+                                    "filed_on": filed_on,
+                                    "period_end": None,
+                                    "source": SHARES_YAHOO_SOURCE,
+                                }
+                            ),
                         }
                     )
                     continue

@@ -172,11 +172,66 @@ def upsert(
     return total_inserted
 
 
+def json_safe(value: object) -> object:
+    """Coerce one value into something `json.dumps` accepts.
+
+    JSONB columns are serialised by psycopg with the stdlib encoder, which
+    raises on `datetime.date`, on numpy scalars, and on anything else a
+    DataFrame row hands over.
+
+    Found 2026-08-26: `cscan nightly` died writing a `bar_rejects` payload
+    whose `filed_on` was a `date`, **after** `run_shares` had written
+    236,008 rows. The data landed, the job reported `failed`, and that
+    aborted the eight remaining nightly steps. A reject log took down the
+    pipeline it exists to annotate.
+    """
+    import math
+    from datetime import date as _date
+    from datetime import datetime as _datetime
+
+    import numpy as np
+
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        # `json.dumps` emits bare `NaN`/`Infinity` for these, which is not
+        # valid JSON and Postgres rejects into JSONB. Absent stays absent.
+        return value if math.isfinite(value) else None
+    if value is pd.NaT:
+        # `NaT` is a `datetime` subclass, so it reaches the branch below and
+        # `isoformat()` returns the literal string "NaT" -- a missing date
+        # recorded as though it were real.
+        return None
+    if isinstance(value, (_datetime, _date)):
+        return value.isoformat()
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        f = float(value)
+        return f if math.isfinite(f) else None
+    if isinstance(value, np.bool_):
+        return bool(value)
+    return str(value)
+
+
+def json_safe_payload(payload: dict) -> dict:
+    return {k: json_safe(v) for k, v in payload.items()}
+
+
 def append(engine: Engine, table_name: str, data: list[dict] | pd.DataFrame) -> int:
     """Plain insert for append-only tables (`bar_rejects`, `runs`)."""
     rows = _rows_from(data)
     if not rows:
         return 0
+    # **Coerced here, not only at the call sites.** Two construction sites
+    # were wrapped on 2026-08-26 and a third was missed, so the same failure
+    # recurred two minutes after the "fix" was committed. Every reject
+    # passes through this function, which makes it the one place the
+    # guarantee can actually hold.
+    rows = [
+        {k: json_safe_payload(v) if isinstance(v, dict) else v for k, v in row.items()}
+        for row in rows
+    ]
     table = _table(engine, table_name)
     with engine.begin() as conn:
         conn.execute(table.insert(), rows)
