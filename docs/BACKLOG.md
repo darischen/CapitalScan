@@ -257,7 +257,7 @@ route stops firing.
 
 ---
 
-### Two nightly fetchers ask one ticker at a time; the daily one batches
+### Three nightly fetchers ask one ticker at a time; the daily one batches
 
 Raised 2026-08-26 while `cscan nightly` sat in `bars_hourly` for 15+
 minutes. The two fetchers in `jobs/fetch/yahoo.py` have different shapes and
@@ -314,6 +314,24 @@ Measured in the same nightly:
 already solved, and it grows linearly with the universe -- which just grew
 58%. `yf.download` accepts a ticker list at `interval="1h"`, so the fix is
 the same one daily already uses.
+
+**`run_earnings` is the third**, and it is Finnhub rather than Yahoo.
+`RATE_LIMIT_PER_SEC = 0.8` against 1,462 tickers is **30.5 minutes of pure
+waiting** before any overhead; measured 2026-08-26 at ~38 minutes, about 80%
+of theoretical.
+
+Finnhub's earnings-calendar endpoint takes a date range without a symbol,
+returning every issuer that reports in the window. One call could replace
+1,462, filtered locally against the ticker list. That is a different fix
+from the Yahoo batching -- a different endpoint, not a list parameter -- but
+the same shape of win.
+
+Updated tally, all measured in one nightly on 1,470 tickers:
+
+    bars_daily    batched      4.9 min
+    bars_hourly   per-ticker  54.5 min   -> fixed 2026-08-26, ~1 min
+    actions       per-ticker  21.3 min   -> cache never expires, see above
+    earnings      per-ticker  ~38 min    -> unfixed
 
 **Worth measuring first:** whether the nightly hourly step is actually one
 window per ticker or several. If several, the win multiplies; if the step
