@@ -196,8 +196,8 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 152 | Postgres on the Pi waits for the network rather than binding a wildcard | Pinned. Enforces PI_MIGRATION §2; boot-order drop-in on the cluster unit; no `config_hash` move |
 | 153 | The poller pushes to serving every tick | Pinned. Extends ADR 053 with a second sync path; gives ADR 150's sweep a serving target; no `config_hash` move |
 | 154 | An ETF is in the trade universe unconditionally | Pinned. Amends 149's `crit_mcap` requirement for funds; completes 147; ADR 112 wants re-measuring |
-| 155 | Quantile coverage fails and DESIGN §7.6 has no repair for it | **Provisional — decision required.** Four options costed; blocks the Phase 6 gate |
-| 156 | ETF market cap: `netAssets` disagrees with `sharesOutstanding` | **Provisional.** Resolved to `netAssets`: Yahoo's ETF share count is a constant frozen at 2021-03-17 |
+| 155 | Quantile coverage fails and DESIGN §7.6 has no repair for it | **Decided 2026-08-26: option C**, conformalised, calibrated on normal years excluding 2022 |
+| 156 | ETF market cap: `netAssets` disagrees with `sharesOutstanding` | **Decided 2026-08-26: option B via (i)** — store `netAssets / close` with its own `source` |
 
 ---
 
@@ -6372,6 +6372,50 @@ reader told "5% chance of a move below X" who sees it 8.7% of the time has
 been handed a wrong number, and invariant 8 exists because that claim has
 to hold.
 
+---
+
+### Decided 2026-08-26 — **option C, calibrated on normal years, excluding 2022**
+
+**Status: pinned.** User decision, taken against the measurements above.
+
+Conformalised quantile regression. Each interval is widened by the
+empirical quantile of the conformity score, giving a finite-sample marginal
+coverage guarantee -- the only option here that guarantees anything.
+
+**The calibration period is part of the decision, not an implementation
+detail.** Fit on **2015-2021 and 2023**; **exclude 2022**.
+
+That follows from the decomposition: a stable fit-induced under-dispersion
+of ~0.018 is present in every ordinary year, and 2022 carries a further
+excess on top (2022 scores 0.047, 2023 scores 0.018, in-train years score
+0.018). Calibrating on the stable component repairs it and transfers.
+Calibrating on 2022 absorbs one regime's shock into the band permanently,
+leaving it too wide for a year resembling 2023 where the fan is already
+close to right.
+
+**What this costs and what must be said wherever the numbers appear.**
+
+- Validate is **26,788 rows** and gets split. Both the calibration estimate
+  and the coverage verification lose precision, and that halving is stated
+  beside any coverage figure derived from it.
+- The guarantee is **marginal, not conditional**. Coverage holds on
+  average across the fan; it does not promise coverage within any
+  particular cell, drawdown bucket or volatility regime.
+- The calibration is **era-bound by construction**. It repairs the
+  component that was stable across 2015-2021 and 2023. It does not
+  anticipate the next 2022, and nothing here claims it does.
+
+**Holdout is not touched.** It is evaluated once, at the end. Spending it
+on calibration would end the study's only unbiased estimate on a
+preprocessing step.
+
+**Option E is not adopted, and its point is kept.** Reporting coverage as
+an era property claims nothing untrue, and the reason to prefer C is that
+Phase 6 exists to produce a calibrated number rather than a caveat. The
+honest part of E survives as the disclosure requirements above: a coverage
+miss on new data is still evidence of regime change, and is to be read that
+way rather than as a bug.
+
 
 ---
 
@@ -6468,6 +6512,39 @@ share count `netAssets / close` with a `source` that says so -- the
 identity is exact for a fund, which is what makes the derivation honest
 rather than a fabrication -- or `universe` learns to read an ETF's market
 cap from a different place. The first is smaller and keeps one code path;
+
+---
+
+### Decided 2026-08-26 — **option B, implemented as (i)**
+
+**Status: pinned.** User decision.
+
+`shares_outstanding` carries the **derived share count** `netAssets /
+close`, with `source` recording that it was derived rather than reported.
+For a fund the identity `price x shares = net assets` is exact by
+definition of NAV, so the division is a change of units and not an
+estimate. One code path; `mcap_usd = shares * close` keeps working
+unchanged and every consumer of it does too.
+
+Rejected: teaching `universe` to read an ETF's market cap from a second
+place. It is more explicit about the two being different quantities, and it
+adds a branch to a path that currently has none -- for a value that the
+identity makes equivalent anyway.
+
+**Consequences, and this is not a routine backfill.**
+
+- **QQQ's stored `mcap_usd` moves $289B -> $453B across 66 quarters, and
+  SPY's by 13%.** These are corrections, not revisions: the existing
+  figures are computed from a share count frozen at 2021-03-17 and repeated
+  identically on every one of 96-99 rows.
+- **VOO and IBIT stop being NULL**, which is what prompted the
+  investigation.
+- **No membership changes.** ADR 154 admits ETFs unconditionally,
+  `max_mcap_usd` is $6T, and `mcap_rank` is NULL on all 51,950 universe
+  rows.
+- **It wants its own migration and a `RESULTS.md` note**, not a ride along
+  in a nightly. Rewriting a recorded quantity across ten years of history
+  should be a dated, reversible act that a reader can find later.
 the second is cleaner and costs a migration.
 
 **Also worth recording:** this is why the ETF market caps stopped being
