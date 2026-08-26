@@ -18,7 +18,24 @@ from yfinance.data import YfData
 from capitalscan.jobs.fetch.base import cached, rate_limited, with_retry
 
 RATE_LIMIT_PER_SEC = 0.5
-DAILY_BATCH_SIZE = 50
+# Symbols per `yf.download` call, for both the daily and hourly batch paths.
+# **Raised 50 -> 100 on 2026-08-26.** The universe is ~1,470 and heading for
+# ~2,000, and at 0.5 req/s each halving of the batch count is a halving of
+# the wall clock: 30 requests becomes 15, ~60s becomes ~30s per window.
+#
+# Unlike `QUOTE_BATCH_SIZE` this is not a URL-length constraint --
+# `yf.download` POSTs the symbol list rather than putting it in a query
+# string, so the proxy failure mode that caps quotes at 100 does not apply
+# here. 100 is a deliberately conservative step rather than a measured
+# ceiling; raise it again only with a measurement.
+#
+# **Changing this changes every cache key.** `_batch_key` and
+# `_hourly_batch_key` are built from the ticker list, so a different
+# batching produces different keys. That is correct rather than dangerous:
+# new keys miss and re-fetch, and no existing entry is ever read as an
+# answer to a question it was not asked. The old entries become garbage and
+# can be deleted.
+DAILY_BATCH_SIZE = 100
 HOURLY_WINDOW_DAYS = 60
 # Symbols per `/v7/finance/quote` request. Yahoo accepts more, but the URL
 # is a GET query string and oversized batches start failing at the proxy

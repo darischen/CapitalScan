@@ -95,7 +95,9 @@ def test_a_10_for_1_split_back_adjusts_pre_split_bars_only(monkeypatch, written)
         ["2024-01-02 09:30", "2024-01-02 10:30", "2024-01-05 09:30", "2024-01-05 10:30"]
     )
     raw = _hourly_frame("KLAC", ts)
-    monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly", lambda t, s, e: raw)
+    monkeypatch.setattr(
+        ingest.yahoo, "fetch_bars_hourly_many", lambda ts, s, e: {t: raw for t in ts}
+    )
     monkeypatch.setattr(
         ingest,
         "_read_corporate_actions",
@@ -122,7 +124,9 @@ def test_a_reverse_split_adjusts_the_other_way(monkeypatch, written):
     """AMCR's shape: ratio 0.2 (1-for-5) — pre-split bars divide by 0.2, i.e. x5."""
     ts = pd.to_datetime(["2024-01-02 09:30", "2024-01-05 09:30"])
     raw = _hourly_frame("AMCR", ts)
-    monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly", lambda t, s, e: raw)
+    monkeypatch.setattr(
+        ingest.yahoo, "fetch_bars_hourly_many", lambda ts, s, e: {t: raw for t in ts}
+    )
     monkeypatch.setattr(
         ingest,
         "_read_corporate_actions",
@@ -145,7 +149,9 @@ def test_multiple_splits_compound(monkeypatch, written):
     """A bar before both splits divides by the product of both ratios."""
     ts = pd.to_datetime(["2024-01-02 09:30", "2024-01-16 09:30", "2024-01-30 09:30"])
     raw = _hourly_frame("TPL", ts)
-    monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly", lambda t, s, e: raw)
+    monkeypatch.setattr(
+        ingest.yahoo, "fetch_bars_hourly_many", lambda ts, s, e: {t: raw for t in ts}
+    )
     monkeypatch.setattr(
         ingest,
         "_read_corporate_actions",
@@ -179,7 +185,9 @@ def test_a_ticker_with_no_splits_is_untouched(monkeypatch, written):
     """The over-broad-fix guard: no split rows means factor 1.0 everywhere."""
     ts = pd.to_datetime(["2024-01-02 09:30", "2024-01-05 09:30"])
     raw = _hourly_frame("AAPL", ts)
-    monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly", lambda t, s, e: raw)
+    monkeypatch.setattr(
+        ingest.yahoo, "fetch_bars_hourly_many", lambda ts, s, e: {t: raw for t in ts}
+    )
     monkeypatch.setattr(ingest, "_read_corporate_actions", lambda engine, tickers: _splits([]))
 
     ingest.run_bars_hourly(["AAPL"], START, END, engine=_FakeEngine())
@@ -197,7 +205,9 @@ def test_rerunning_does_not_double_adjust(monkeypatch, written):
     """
     ts = pd.to_datetime(["2024-01-02 09:30", "2024-01-05 09:30"])
     raw = _hourly_frame("KLAC", ts)
-    monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly", lambda t, s, e: raw)
+    monkeypatch.setattr(
+        ingest.yahoo, "fetch_bars_hourly_many", lambda ts, s, e: {t: raw for t in ts}
+    )
     monkeypatch.setattr(
         ingest,
         "_read_corporate_actions",
@@ -246,7 +256,9 @@ def test_a_vendor_preadjusted_window_is_left_alone_while_earlier_bars_still_divi
             "volume": [1_000, 1_100, 1_200],
         }
     )
-    monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly", lambda t, s, e: raw)
+    monkeypatch.setattr(
+        ingest.yahoo, "fetch_bars_hourly_many", lambda ts, s, e: {t: raw for t in ts}
+    )
     monkeypatch.setattr(
         ingest,
         "_read_corporate_actions",
@@ -307,7 +319,9 @@ def test_a_small_ratio_split_vendor_already_adjusted_is_left_alone(monkeypatch, 
             "volume": [1_000],
         }
     )
-    monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly", lambda t, s, e: raw)
+    monkeypatch.setattr(
+        ingest.yahoo, "fetch_bars_hourly_many", lambda ts, s, e: {t: raw for t in ts}
+    )
     monkeypatch.setattr(
         ingest,
         "_read_corporate_actions",
@@ -364,7 +378,9 @@ def test_a_small_ratio_split_vendor_unadjusted_still_divides(monkeypatch, writte
             "volume": [1_000],
         }
     )
-    monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly", lambda t, s, e: raw)
+    monkeypatch.setattr(
+        ingest.yahoo, "fetch_bars_hourly_many", lambda ts, s, e: {t: raw for t in ts}
+    )
     monkeypatch.setattr(
         ingest,
         "_read_corporate_actions",
@@ -422,7 +438,9 @@ def test_a_ratio_escaping_the_daily_range_by_more_than_noise_is_rejected(monkeyp
     upserted: list[pd.DataFrame] = []
     rejects: list[dict] = []
 
-    monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly", lambda t, s, e: raw)
+    monkeypatch.setattr(
+        ingest.yahoo, "fetch_bars_hourly_many", lambda ts, s, e: {t: raw for t in ts}
+    )
     monkeypatch.setattr(ingest, "_read_corporate_actions", lambda engine, tickers: _splits([]))
     monkeypatch.setattr(
         ingest,

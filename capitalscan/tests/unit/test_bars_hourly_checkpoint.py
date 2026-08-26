@@ -1,10 +1,28 @@
-"""`run_bars_hourly` must checkpoint per ticker (BUILD.md §5.4).
+"""`run_bars_hourly` must checkpoint (BUILD.md §5.4).
 
 The full hourly backfill is a ~4.6 hour job: 725 days walked in 60-day
 windows across ~630 tickers at 0.5 req/s. CLAUDE.md requires a checkpoint
-on anything over 10 minutes, and BUILD.md §5.4 says "checkpoint per
-ticker" specifically. Accumulating every frame in memory and writing once
-at the end means an interrupt at ticker 600 of 630 discards all 600.
+on anything over 10 minutes. Accumulating every frame in memory and
+writing once at the end means an interrupt at ticker 600 of 630 discards
+all 600.
+
+**The grain changed on 2026-08-26, from per ticker to per chunk.**
+BUILD.md §5.4 says "checkpoint per ticker", which was right when each
+ticker also cost ~2s of network: the write was free beside the fetch. Once
+`fetch_bars_hourly_many` batched the fetch, the per-ticker commit *was* the
+step -- 1,470 database round trips against ~60 seconds of fetching, and
+~29 of the 30 minutes a nightly spent here.
+
+`HOURLY_WRITE_CHUNK` tickers are buffered and committed together. The key
+is still `(ticker, ts, interval)`, so a restart rewrites rather than
+duplicates; what a failure now costs is one chunk instead of one ticker.
+That is a real weakening of the guarantee and it is deliberate.
+
+**These tests were red on `main` before this change**, and had been since
+the fetch was batched: they stubbed `fetch_bars_hourly`, the call site
+moved to `fetch_bars_hourly_many`, the stub stopped being reached, and
+`written["bars"][0]` raised `IndexError`. Nothing about the batching was
+wrong -- the tests simply were not run.
 
 No database here on purpose. These tests stub the engine and the fetcher
 so they can run while a real backfill is in flight —
@@ -85,15 +103,35 @@ def upserted(monkeypatch) -> list[str]:
     return seen
 
 
-def test_completed_tickers_are_persisted_when_a_later_fetch_raises(monkeypatch, upserted):
-    """An interrupt must not discard tickers that already came back clean."""
+def test_a_committed_chunk_survives_a_later_failure(monkeypatch, upserted):
+    """An interrupt must not discard work that was already committed.
 
-    def fake_fetch(ticker: str, start: date, end: date) -> pd.DataFrame:
-        if ticker == "CCC":
+    **Rewritten 2026-08-26, and the guarantee genuinely changed.** This
+    asserted that a raise on ticker 3 of 3 still persisted tickers 1 and 2,
+    which was true while the loop fetched *and wrote* one ticker at a time.
+    Neither is true now: `fetch_bars_hourly_many` fetches every ticker up
+    front, so a per-ticker fetch failure mid-loop is no longer a shape the
+    code can take, and writes are buffered per `HOURLY_WRITE_CHUNK`.
+
+    What remains, and what this pins: a chunk that reached the database is
+    durable, and a failure costs at most the chunk in flight. `chunk = 1`
+    here so the boundary is observable in three tickers rather than 101.
+    """
+    monkeypatch.setattr(ingest, "HOURLY_WRITE_CHUNK", 1)
+    monkeypatch.setattr(
+        ingest.yahoo,
+        "fetch_bars_hourly_many",
+        lambda tickers, start, end: {t: _hourly_frame(t) for t in tickers},
+    )
+
+    real_upsert = ingest.db_io.upsert
+
+    def failing_upsert(engine, table_name, data, conflict_cols):  # noqa: ANN001, ANN202
+        if table_name == "bars" and "CCC" in set(data["ticker"]):
             raise RuntimeError("interrupted")
-        return _hourly_frame(ticker)
+        return real_upsert(engine, table_name, data, conflict_cols)
 
-    monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly", fake_fetch)
+    monkeypatch.setattr(ingest.db_io, "upsert", failing_upsert)
 
     with pytest.raises(RuntimeError, match="interrupted"):
         ingest.run_bars_hourly(["AAA", "BBB", "CCC"], START, END, engine=_FakeEngine())
@@ -101,10 +139,40 @@ def test_completed_tickers_are_persisted_when_a_later_fetch_raises(monkeypatch, 
     assert upserted == ["AAA", "BBB"]
 
 
+def test_writes_are_chunked_rather_than_one_per_ticker(monkeypatch, upserted):
+    """The property that removed 1,470 round trips from a nightly.
+
+    Regressing to one write per ticker would not fail any other test here --
+    every assertion above is about *which* tickers landed, not how many
+    calls it took -- and would quietly put ~29 minutes back into the step.
+    """
+    calls: list[int] = []
+    real_upsert = ingest.db_io.upsert
+
+    def counting_upsert(engine, table_name, data, conflict_cols):  # noqa: ANN001, ANN202
+        if table_name == "bars":
+            calls.append(len(set(data["ticker"])))
+        return real_upsert(engine, table_name, data, conflict_cols)
+
+    monkeypatch.setattr(ingest.db_io, "upsert", counting_upsert)
+    monkeypatch.setattr(
+        ingest.yahoo,
+        "fetch_bars_hourly_many",
+        lambda tickers, start, end: {t: _hourly_frame(t) for t in tickers},
+    )
+
+    tickers = [f"T{i:03d}" for i in range(5)]
+    ingest.run_bars_hourly(tickers, START, END, engine=_FakeEngine())
+
+    assert calls == [5], "five tickers under one chunk should be a single write"
+
+
 def test_rows_written_accumulates_across_tickers(monkeypatch, upserted):
     """Per-ticker writes must still report one total, not just the last batch."""
     monkeypatch.setattr(
-        ingest.yahoo, "fetch_bars_hourly", lambda ticker, start, end: _hourly_frame(ticker)
+        ingest.yahoo,
+        "fetch_bars_hourly_many",
+        lambda tickers, start, end: {t: _hourly_frame(t) for t in tickers},
     )
 
     report = ingest.run_bars_hourly(["AAA", "BBB"], START, END, engine=_FakeEngine())
@@ -117,12 +185,12 @@ def test_rows_written_accumulates_across_tickers(monkeypatch, upserted):
 def test_a_ticker_with_no_hourly_data_does_not_abort_the_rest(monkeypatch, upserted):
     """Delisted names return empty inside the 725-day window; skip, don't stop."""
 
-    def fake_fetch(ticker: str, start: date, end: date) -> pd.DataFrame:
-        if ticker == "DEAD":
-            return pd.DataFrame(columns=["ticker", "ts", "open", "high", "low", "close", "volume"])
-        return _hourly_frame(ticker)
+    def fake_fetch(tickers: list[str], start: date, end: date) -> dict[str, pd.DataFrame]:
+        # A ticker with no bars is **absent from the dict**, which is what
+        # `fetch_bars_hourly_many` does and what an empty frame meant before.
+        return {t: _hourly_frame(t) for t in tickers if t != "DEAD"}
 
-    monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly", fake_fetch)
+    monkeypatch.setattr(ingest.yahoo, "fetch_bars_hourly_many", fake_fetch)
 
     report = ingest.run_bars_hourly(["AAA", "DEAD", "BBB"], START, END, engine=_FakeEngine())
 

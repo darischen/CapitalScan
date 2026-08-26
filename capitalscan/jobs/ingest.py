@@ -909,6 +909,12 @@ def run_bars_daily(
     return report
 
 
+# Tickers buffered before one `bars` upsert in `run_bars_hourly`. Small
+# enough that an interrupt costs little to redo, large enough that the round
+# trips stop dominating: 1,470 tickers becomes 15 writes rather than 1,470.
+HOURLY_WRITE_CHUNK = 100
+
+
 def run_bars_hourly(
     tickers: list[str], start: date, end: date, engine: Engine | None = None
 ) -> IngestReport:
@@ -934,6 +940,28 @@ def run_bars_hourly(
         splits = actions.loc[actions["action_type"] == "split"] if not actions.empty else actions
         daily_range = _read_daily_range(engine, tickers)
 
+        # **Indexed once, not scanned once per ticker.** The loop below used
+        # `splits.loc[splits["ticker"] == ticker]` and the same for
+        # `daily_range`, which is a full boolean scan of each frame per
+        # ticker -- 2,940 scans across 1,470 tickers. That was invisible
+        # while every iteration also paid ~2s of network; batching the fetch
+        # (2026-08-26) removed the network and left the scans as a
+        # measurable share of the step.
+        #
+        # `groupby` builds both indices in one pass each. Missing tickers get
+        # an empty frame with the right columns, which is what the boolean
+        # mask produced before, so `_back_adjust_hourly` sees no change.
+        splits_by_ticker = (
+            {str(k): v for k, v in splits.groupby("ticker", sort=False)} if not splits.empty else {}
+        )
+        range_by_ticker = (
+            {str(k): v for k, v in daily_range.groupby("ticker", sort=False)}
+            if not daily_range.empty
+            else {}
+        )
+        _no_splits = splits.iloc[0:0]
+        _no_range = daily_range.iloc[0:0]
+
         # **One request per batch per window, not one per ticker.** The
         # per-ticker path cost 54.5 minutes for 1,470 tickers on 2026-08-26
         # at `RATE_LIMIT_PER_SEC = 0.5`, against 4.9 minutes for the batched
@@ -948,6 +976,21 @@ def run_bars_hourly(
         hourly_by_ticker = yahoo.fetch_bars_hourly_many(tickers, start, end)
 
         fetched: list[str] = []
+        pending: list[pd.DataFrame] = []
+        pending_tickers: list[str] = []
+
+        def _flush() -> None:
+            """Commit the buffered chunk. A no-op when nothing is pending,
+            so the call after the loop needs no guard at the call site."""
+            if not pending:
+                pending_tickers.clear()
+                return
+            frame = pd.concat(pending, ignore_index=True)
+            report.rows_written += db_io.upsert(engine, "bars", frame, ["ticker", "ts", "interval"])
+            fetched.extend(pending_tickers)
+            pending.clear()
+            pending_tickers.clear()
+
         with Progress() as progress:
             task = progress.add_task("[cyan]hourly bars...", total=len(tickers))
             for ticker in tickers:
@@ -960,14 +1003,8 @@ def run_bars_hourly(
                     # most of the union, not an error.
                     continue
 
-                ticker_splits = (
-                    splits.loc[splits["ticker"] == ticker] if not splits.empty else splits
-                )
-                ticker_daily_range = (
-                    daily_range.loc[daily_range["ticker"] == ticker]
-                    if not daily_range.empty
-                    else daily_range
-                )
+                ticker_splits = splits_by_ticker.get(ticker, _no_splits)
+                ticker_daily_range = range_by_ticker.get(ticker, _no_range)
                 raw, unresolved = _back_adjust_hourly(hourly, ticker_splits, ticker_daily_range)
 
                 unresolved_rejects: list[dict] = []
@@ -1023,9 +1060,13 @@ def run_bars_hourly(
 
                 guard_rejects = _flag_range_escape(clean, daily_range)
                 if guard_rejects:
+                    # `MultiIndex.isin` rather than a row-wise `.apply`.
+                    # `axis=1` builds a Series per row and is the slowest
+                    # thing pandas offers; this is one vectorised pass and
+                    # answers the identical question.
                     bad_keys = {(r["ticker"], r["ts"]) for r in guard_rejects}
-                    keep = ~clean.apply(lambda r: (r["ticker"], r["ts"]) in bad_keys, axis=1)
-                    clean = clean.loc[keep].reset_index(drop=True)
+                    keys = pd.MultiIndex.from_arrays([clean["ticker"], clean["ts"]])
+                    clean = clean.loc[~keys.isin(bad_keys)].reset_index(drop=True)
                     rejects = rejects + guard_rejects
 
                 for r in rejects:
@@ -1035,14 +1076,22 @@ def run_bars_hourly(
                 if rejects:
                     db_io.append(engine, "bar_rejects", rejects)
 
-                # Committed before the next fetch starts. The key is
-                # (ticker, ts, interval), so rerunning after an interrupt
-                # rewrites what is already there rather than duplicating it.
-                report.rows_written += db_io.upsert(
-                    engine, "bars", clean, ["ticker", "ts", "interval"]
-                )
-                fetched.append(ticker)
+                # **Buffered, then committed per chunk.** This upserted
+                # once per ticker, which is one database round trip per
+                # ticker -- 1,470 of them. That was free when each iteration
+                # also paid ~2s of network; after the fetch was batched
+                # (2026-08-26) the round trips became the step.
+                #
+                # The checkpoint is kept, only coarser. The key is still
+                # (ticker, ts, interval), so an interrupt rewrites rather
+                # than duplicates, and the most a restart redoes is one
+                # chunk of a 5-day window.
+                pending.append(clean)
+                pending_tickers.append(ticker)
+                if len(pending_tickers) >= HOURLY_WRITE_CHUNK:
+                    _flush()
 
+        _flush()
         report.tickers = sorted(set(fetched))
     return report
 
