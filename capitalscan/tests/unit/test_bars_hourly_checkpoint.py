@@ -98,7 +98,7 @@ def upserted(monkeypatch) -> list[str]:
     monkeypatch.setattr(
         ingest,
         "_read_daily_range",
-        lambda engine, tickers: pd.DataFrame(columns=["ticker", "d", "high", "low"]),
+        lambda engine, tickers, *a: pd.DataFrame(columns=["ticker", "d", "high", "low"]),
     )
     return seen
 

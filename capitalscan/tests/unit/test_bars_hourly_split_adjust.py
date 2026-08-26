@@ -84,7 +84,7 @@ def written(monkeypatch) -> dict[str, Any]:
     monkeypatch.setattr(
         ingest,
         "_read_daily_range",
-        lambda engine, tickers: pd.DataFrame(columns=["ticker", "d", "high", "low"]),
+        lambda engine, tickers, *a: pd.DataFrame(columns=["ticker", "d", "high", "low"]),
     )
     return {"bars": calls, "rejects": rejects}
 
@@ -269,7 +269,7 @@ def test_a_vendor_preadjusted_window_is_left_alone_while_earlier_bars_still_divi
     monkeypatch.setattr(
         ingest,
         "_read_daily_range",
-        lambda engine, tickers: pd.DataFrame(
+        lambda engine, tickers, *a: pd.DataFrame(
             {
                 "ticker": ["ANET", "ANET"],
                 "d": [date(2024, 1, 2), date(2024, 1, 30)],
@@ -339,7 +339,7 @@ def test_a_small_ratio_split_vendor_already_adjusted_is_left_alone(monkeypatch, 
     monkeypatch.setattr(
         ingest,
         "_read_daily_range",
-        lambda engine, tickers: pd.DataFrame(
+        lambda engine, tickers, *a: pd.DataFrame(
             {
                 "ticker": ["SPLT12"],
                 "d": [date(2024, 1, 15)],
@@ -398,7 +398,7 @@ def test_a_small_ratio_split_vendor_unadjusted_still_divides(monkeypatch, writte
     monkeypatch.setattr(
         ingest,
         "_read_daily_range",
-        lambda engine, tickers: pd.DataFrame(
+        lambda engine, tickers, *a: pd.DataFrame(
             {
                 "ticker": ["SPLT12B"],
                 "d": [date(2024, 1, 15)],
@@ -445,7 +445,7 @@ def test_a_ratio_escaping_the_daily_range_by_more_than_noise_is_rejected(monkeyp
     monkeypatch.setattr(
         ingest,
         "_read_daily_range",
-        lambda engine, tickers: pd.DataFrame(
+        lambda engine, tickers, *a: pd.DataFrame(
             {"ticker": ["KLAC"], "d": [date(2024, 1, 2)], "high": [102.0], "low": [98.0]}
         ),
     )

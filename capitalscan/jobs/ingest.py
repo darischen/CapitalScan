@@ -746,24 +746,36 @@ def _back_adjust_hourly(
     return out, unresolved
 
 
-def _read_daily_range(engine: Engine, tickers: list[str]) -> pd.DataFrame:
+def _read_daily_range(
+    engine: Engine, tickers: list[str], start: date | None = None, end: date | None = None
+) -> pd.DataFrame:
     """Per-(ticker, day) daily high/low, for the range-escape guard below.
 
-    Not date-bounded to the hourly fetch window: the guard only ever looks
-    up days that actually appear in the hourly batch being checked, and a
-    single small query per run is simpler than re-querying per ticker.
+    **Date-bounded since 2026-08-26.** This said "a single small query per
+    run is simpler than re-querying per ticker", and the query was not
+    small: unbounded over 1,470 tickers of full history it returns ~3.3M
+    rows. The guard only ever looks up days inside the hourly window being
+    checked, so every row outside it was read, held and merged against for
+    nothing -- a nightly's 5-day window needs ~7,000 of those 3.3M.
+
+    `start`/`end` default to None for callers that genuinely want the whole
+    range; the hourly ingest passes its own window.
     """
     if not tickers:
         return pd.DataFrame(columns=["ticker", "d", "high", "low"])
+    sql = (
+        "SELECT ticker, ts::date AS d, high, low FROM bars "
+        "WHERE interval = '1d' AND ticker = ANY(:tickers)"
+    )
+    params: dict[str, object] = {"tickers": tickers}
+    if start is not None:
+        sql += " AND ts >= :start"
+        params["start"] = start
+    if end is not None:
+        sql += " AND ts <= :end"
+        params["end"] = end
     with engine.connect() as conn:
-        return pd.read_sql(
-            text(
-                "SELECT ticker, ts::date AS d, high, low FROM bars "
-                "WHERE interval = '1d' AND ticker = ANY(:tickers)"
-            ),
-            conn,
-            params={"tickers": tickers},  # type: ignore[arg-type]
-        )
+        return pd.read_sql(text(sql), conn, params=params)  # type: ignore[arg-type]
 
 
 def _flag_range_escape(
@@ -938,7 +950,7 @@ def run_bars_hourly(
         # queries against small tables, not one per ticker.
         actions = _read_corporate_actions(engine, tickers)
         splits = actions.loc[actions["action_type"] == "split"] if not actions.empty else actions
-        daily_range = _read_daily_range(engine, tickers)
+        daily_range = _read_daily_range(engine, tickers, start, end)
 
         # **Indexed once, not scanned once per ticker.** The loop below used
         # `splits.loc[splits["ticker"] == ticker]` and the same for
@@ -959,8 +971,14 @@ def run_bars_hourly(
             if not daily_range.empty
             else {}
         )
+        actions_by_ticker = (
+            {str(k): v for k, v in actions.groupby("ticker", sort=False)}
+            if not actions.empty
+            else {}
+        )
         _no_splits = splits.iloc[0:0]
         _no_range = daily_range.iloc[0:0]
+        _no_actions = actions.iloc[0:0]
 
         # **One request per batch per window, not one per ticker.** The
         # per-ticker path cost 54.5 minutes for 1,470 tickers on 2026-08-26
@@ -1055,10 +1073,21 @@ def run_bars_hourly(
                 # produces a jump for it to (mis)explain; the check remains
                 # as a safety net for the same batch-boundary artifact
                 # `unresolved_rejects` documents for daily (ANET 2024-10-07).
-                clean, rejects = validate_bars(raw, corporate_actions=actions)
+                # **This ticker's actions, not everyone's.** `validate_bars`
+                # does `splits.groupby("ticker")` internally, so passing the
+                # whole frame walked all 1,470 tickers' splits on every one
+                # of 1,470 calls.
+                clean, rejects = validate_bars(
+                    raw, corporate_actions=actions_by_ticker.get(ticker, _no_actions)
+                )
                 rejects = rejects + unresolved_rejects
 
-                guard_rejects = _flag_range_escape(clean, daily_range)
+                # **This ticker's daily range, not the whole table.** The
+                # guard merges on ["ticker", "d"], so an inner join against
+                # the full frame can only ever match this ticker's rows --
+                # it just walked ~3.3M of them to find ~5. That merge, 1,470
+                # times, was the ~1 second per ticker the progress bar showed.
+                guard_rejects = _flag_range_escape(clean, ticker_daily_range)
                 if guard_rejects:
                     # `MultiIndex.isin` rather than a row-wise `.apply`.
                     # `axis=1` builds a Series per row and is the slowest
