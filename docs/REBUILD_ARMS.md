@@ -99,8 +99,8 @@ single-threaded on 590 tickers before `0b2cc00`. Statistics (`rho`,
 
 **The harness is parallel** as of `0b2cc00`, which spools ticker slices to
 parquet rather than pickling frames through a pipe (the deadlock `78d1e38`
-reverted). No wall-clock figure exists for the parallel version at this
-universe size — **measure it, do not quote the old 4h19m**.
+reverted). That is what makes 35.7 min possible against a figure of 4h19m
+recorded when it ran single-threaded on 590 tickers.
 
 ---
 
