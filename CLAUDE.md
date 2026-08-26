@@ -264,6 +264,35 @@ Long jobs, measured, so nobody starts one blind:
     `runs` row can be read correctly; do not quote it as an estimate.
   - **`runs` measures this from 2026-08-18, and did not before.** `cli.py::backtest` used to close its `with ingest.run_job(...)` block before calling `run_harness`, so `finished_at - started_at` timed the write phase **only** — 20-38 min against a 2h48m-to-4h55m job. A 2026-08-09 session read those durations as the whole job and briefly "corrected" this line to ~36 min. It was wrong. Session 15 moved the harness inside the block, so new rows time the whole job and a failing harness now records `status='failed'`. **Rows written before 2026-08-18 are still write-phase-only** and must be read that way; check `started_at` before quoting one.
   - `cscan weekly` genuinely is ~36 min: it calls `run_backtest` and deliberately skips the harness (`cli.py::weekly` docstring). Do not read a weekly duration as a `cscan backtest` duration.
+- **`cscan nightly`, every step measured 2026-08-26** on 1,470 tickers, after
+  the IPv6 fix. Twelve steps; the totals are dominated by three fetchers that
+  ask one ticker at a time.
+
+  | step | wall clock | rows |
+  |---|---|---|
+  | `bars_daily` (batched) | 4.9 min | 4,375 |
+  | `bars_hourly` (per-ticker) | **54.5 min** | 30,465 |
+  | `actions` (per-ticker) | 21.3 min | -- |
+  | `market` | 0.0 min | 5 |
+  | `shares` | ~10 min | 236,008 |
+  | `earnings` (per-ticker, Finnhub) | **~43 min** | -- |
+  | `indicators` (5-day) | 0.4 min | 4,250 |
+  | `events` (5-day) | 0.9 min | 2,448 |
+  | `path_capture` | 41.2 min | 6,497,038 |
+  | `peak_labels` | 1.2 min | 484,921 |
+  | `sync` (full 14-table copy) | ~1h45m | ~5.7M |
+  | **total** | **~4h35m** | |
+
+  - **Three fetchers account for ~2 hours of that**, and only because they
+    request one ticker at a time. `bars_hourly` was batched on 2026-08-26
+    (54.5 min -> ~1 min); `actions` and `earnings` are not, and are in
+    `BACKLOG.md`. `bars_daily` does the whole universe in 4.9 minutes by
+    batching, which is the comparison that makes the point.
+  - **Every per-step average recorded before 2026-08-26 was measured on ~929
+    tickers.** The universe is now 1,470, so scale by ~1.6 before using an
+    old figure -- `shares` went from a 2.2 min average to 10 minutes on
+    exactly that change, and a stale threshold caused two false "this is
+    stuck" alarms in one night.
 - `cscan bars --daily --lookback 8000`: **11 minutes for 521 tickers /
   2,002,797 rows** (measured 2026-08-25). Do **not** extrapolate from a small
   sample: 10 tickers took 2m37s, which predicts 2h20m and is wrong by an
