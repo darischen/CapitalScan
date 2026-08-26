@@ -331,7 +331,7 @@ exactly like a hang. Two working runs were killed for that reason on
 
 ---
 
-### ORKA is flagged inactive while trading at $6.9B
+### ORKA is flagged inactive while trading at $6.9B — **known, accepted, do not re-raise**
 
 Raised 2026-08-26. The row contradicts itself and the market:
 
@@ -356,12 +356,34 @@ under ORKA's ticker. Same class as the depositary pre-2018 entry below, and
 worth checking whether other reverse mergers carry the same inherited
 history.
 
-Find out what set the flag before clearing it -- a flag that reappears is
-worse than one that is simply wrong.
+**Decided 2026-08-26: leave the flag as it is.** ORKA stays `is_active =
+False` and stays out of every job that resolves tickers implicitly. It has 0
+events and 0 universe rows, so it contributes nothing to the study either
+way, and its pre-2024 bars are ARCA biopharma's, which is a reason to keep it
+out rather than a reason to fix it.
+
+**This is written down so it is findable, not so it is re-reported.** A
+future session comparing `last_indicator` against `last_bar` will find ORKA
+again and it will look like a new discovery. It is not. Do not raise it, do
+not re-investigate it, and do not delete the row -- it is currently the only
+visible instance of the 82-row flag problem below, and removing it would hide
+that class entirely.
+
+**The class is the real item.** 82 tickers carry `is_active = False` with
+`delisted_on = NULL`, against 18 that are properly retired with a date. So
+for the majority of inactive tickers there is no record of *when* they became
+inactive, and "deliberately retired" is indistinguishable from "something set
+a flag". Two others in that group still have recent bars -- `FISV` (renamed
+to `FI` in 2024) and `UA` (Under Armour's second class) -- and both of those
+are legitimately retired, which is what makes ORKA's case distinguishable
+only by inspection.
+
+Fixing the class means finding what writes the flag without a date. That is
+the work; ORKA is just the thread.
 
 ---
 
-### ETFs have `netAssets`, which is the number the criteria actually want
+### ETFs should use `netAssets` for market cap — **decided 2026-08-26**
 
 Raised 2026-08-26, and this probably supersedes the entry below rather than
 complementing it. Measured against Yahoo:
@@ -386,9 +408,25 @@ admitted despite having none. The exemption would still be right for
 `crit_rel_return` -- a 2024 fund cannot have 757 sessions -- but the market
 cap half would stop being a data gap.
 
+**One clarification, since the shorthand is easy to get wrong.** It is not
+that ETFs have no shares: Yahoo reports 917.8M for SPY and 393.1M for QQQ.
+The case for `netAssets` is that it is **published for all four** rather than
+two, and that it is the quantity itself rather than a proxy -- shares times
+price *estimates* assets under management, `netAssets` *is* it.
+
+Needs an ADR when implemented: it changes what `mcap_usd` means for one
+instrument class, and `McapPlausibility`'s bounds were written for company
+capitalisations.
+
 ---
 
-### VOO and IBIT have no share count, so no market cap — **highest priority**
+### Superseded: VOO and IBIT have no share count
+
+**Superseded 2026-08-26 by the `netAssets` entry above**, which is the chosen
+fix. Kept for the measurements it records. The framing below is wrong in one
+respect: the data is not missing, the wrong field was being read.
+
+#### Original entry
 
 **Superseded 2026-08-25.** SPY, VOO and IBIT now have `tickers` rows, bars
 and indicators. `SPY` was added to both `SEC_NON_FILER_TICKERS` and
