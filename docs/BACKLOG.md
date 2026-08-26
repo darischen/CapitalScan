@@ -257,7 +257,7 @@ route stops firing.
 
 ---
 
-### The hourly fetcher asks for one ticker at a time; the daily one batches
+### Two nightly fetchers ask one ticker at a time; the daily one batches
 
 Raised 2026-08-26 while `cscan nightly` sat in `bars_hourly` for 15+
 minutes. The two fetchers in `jobs/fetch/yahoo.py` have different shapes and
@@ -299,6 +299,22 @@ except by duration.
 not a flat frame. `_download_daily` already parses that shape, so the code
 to copy exists, but it is not a one-line change and the single-ticker
 degenerate case behaves differently again.
+
+**`run_actions` has the same shape and the same cost.** Its key is
+`@cached(source="yahoo_actions", key_fn=lambda ticker: ticker)` -- one
+request per ticker. Measured 2026-08-26 it ran **21+ minutes and counting**
+on the way to the ~49 minutes 1,470 tickers implies at 0.5 req/s.
+
+So this is a pattern rather than one fetcher. Measured in the same nightly:
+
+    bars_daily    batched      1,470 tickers    4.9 min
+    bars_hourly   per-ticker   1,470 tickers   54.5 min
+    actions       per-ticker   1,470 tickers   ~49 min
+
+**~1h40m of a nightly** is spent on a request shape the daily path already
+solved, and it grows linearly with the universe -- which just grew 58%.
+`yf.download(..., actions=True)` accepts a ticker list, so the same fix
+applies to both.
 
 **Worth measuring first:** whether the nightly hourly step is actually one
 window per ticker or several. If several, the win multiplies; if the step
