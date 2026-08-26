@@ -439,7 +439,7 @@ the work; ORKA is just the thread.
 
 ---
 
-### ETFs should use `netAssets` for market cap — **decided 2026-08-26**
+### ETF market cap — **investigated 2026-08-26, see ADR 156, not decided**
 
 Raised 2026-08-26, and this probably supersedes the entry below rather than
 complementing it. Measured against Yahoo:
@@ -463,6 +463,21 @@ carry genuine market caps and clear `crit_mcap` on merit, rather than being
 admitted despite having none. The exemption would still be right for
 `crit_rel_return` -- a 2024 fund cannot have 757 sessions -- but the market
 cap half would stop being a data gap.
+
+**Superseded by measurement.** `netAssets` and `sharesOutstanding`
+**disagree with each other**: for a fund, price times shares *is* net assets
+by construction, and it does not hold here.
+
+    SPY   netAssets/price = 1,038,381,651  vs shares 917,782,016  ratio 1.131
+    QQQ   netAssets/price =   637,101,310  vs shares 393,100,000  ratio 1.621
+
+Sixty-two percent apart on QQQ. Adopting `netAssets` would move its recorded
+market cap from **$289B to $453B**, so this is not filling two NULLs, it is
+changing a value that already exists across 66 quarters.
+
+ADR 156 records four options and recommends finding out which field is
+right before choosing either. Nothing is blocked meanwhile: ADR 154 already
+admits all four ETFs regardless of market cap.
 
 **One clarification, since the shorthand is easy to get wrong.** It is not
 that ETFs have no shares: Yahoo reports 917.8M for SPY and 393.1M for QQQ.

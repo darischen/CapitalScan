@@ -197,6 +197,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 153 | The poller pushes to serving every tick | Pinned. Extends ADR 053 with a second sync path; gives ADR 150's sweep a serving target; no `config_hash` move |
 | 154 | An ETF is in the trade universe unconditionally | Pinned. Amends 149's `crit_mcap` requirement for funds; completes 147; ADR 112 wants re-measuring |
 | 155 | Quantile coverage fails and DESIGN §7.6 has no repair for it | **Provisional — decision required.** Four options costed; blocks the Phase 6 gate |
+| 156 | ETF market cap: `netAssets` disagrees with `sharesOutstanding` | **Provisional — decision required.** 62% gap on QQQ; ADR 154 means nothing is blocked meanwhile |
 
 ---
 
@@ -6370,3 +6371,81 @@ offers a finite-sample guarantee for the same data cost.
 reader told "5% chance of a move below X" who sees it 8.7% of the time has
 been handed a wrong number, and invariant 8 exists because that claim has
 to hold.
+
+
+---
+
+## 156. ETF market cap: `netAssets` disagrees with `sharesOutstanding`
+
+**Date:** 2026-08-26. **Status:** Provisional — **a decision is required and is not made here.** Investigated in response to VOO and IBIT carrying no market cap.
+
+**Context.**
+
+ADR 154 admits ETFs to the trade universe unconditionally, because
+`crit_mcap` could not be judged for VOO and IBIT: `cscan shares` resolves
+neither, so `mcap_usd` is NULL. The obvious repair was to read `netAssets`
+instead, which Yahoo publishes for all four funds.
+
+Measured 2026-08-26:
+
+    SPY    sharesOutstanding 917,782,016   netAssets   $795.3B
+    QQQ    sharesOutstanding 393,100,000   netAssets   $452.8B
+    VOO    sharesOutstanding None          netAssets $1,686.9B
+    IBIT   sharesOutstanding None          netAssets    $46.5B
+
+**The two fields do not agree.** For a fund, price times shares *is* net
+assets by construction -- that identity is what a NAV means. It does not
+hold here:
+
+    SPY    netAssets/price = 1,038,381,651   vs shares   917,782,016   ratio 1.131
+    QQQ    netAssets/price =   637,101,310   vs shares   393,100,000   ratio 1.621
+
+Thirteen percent apart for SPY and **sixty-two percent** for QQQ. One of the
+two numbers is wrong, or they are measured at different times, or
+`netAssets` for QQQ counts something the share class does not.
+
+**This is what makes it a decision rather than a patch.** Switching to
+`netAssets` would not merely fill two NULLs. It would move QQQ's recorded
+market cap from **$289B to $453B**, a 57% change to a value that already
+exists, is stored across 66 quarters, and feeds `crit_mcap`.
+
+**What is not at stake.** Neither fund's membership changes: ADR 154 already
+admits all four regardless, and `max_mcap_usd` is $6T so nothing trips the
+plausibility guard. `mcap_rank` is NULL on all 51,950 universe rows, so no
+ranking is affected. The change is to a recorded quantity, not to who is
+in the study.
+
+**The options.**
+
+**A. Do nothing.** VOO and IBIT keep NULL market caps and stay admitted by
+exemption. Honest, and the exemption already exists precisely because the
+criteria ask a company-shaped question. Costs nothing and hides nothing.
+
+**B. Use `netAssets` for every ETF.** Fills the two NULLs and changes SPY
+and QQQ by 13% and 57%. Defensible only if `netAssets` is the more reliable
+of the two fields, which this measurement does not establish -- it
+establishes that they disagree.
+
+**C. Use `netAssets` only where `sharesOutstanding` is absent.** Fills VOO
+and IBIT, leaves SPY and QQQ untouched. Attractive, and wrong in a specific
+way: two funds would then carry market caps computed by different methods
+that demonstrably differ by up to 62%, with nothing in the row saying which
+was used. That is the `events.sector`-shaped problem again -- a column whose
+meaning varies by row.
+
+**D. Find out which field is right first.** The 62% gap on QQQ is large
+enough to be a data defect rather than a timing difference, and neither
+number has been checked against the issuer. Invesco publishes QQQ's shares
+outstanding daily; one comparison settles it.
+
+**Recommendation, not a decision.** **D, then A or B.** The measurement
+above says the two fields disagree; it does not say which to believe, and
+adopting either without knowing would be choosing a number for its
+convenience. Until then A costs nothing, because ADR 154 already means no
+ticker is excluded for want of this.
+
+**What must not happen.** Option C, or any variant where `mcap_usd` is
+derived one way for some rows and another way for others without the row
+recording which. `SharesPlausibility.source` exists on
+`shares_outstanding` for exactly this reason; whatever is decided, the
+provenance has to travel with the number.
