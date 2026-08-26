@@ -1167,10 +1167,68 @@ def _update_ticker_coverage(engine: Engine, clean_bars: pd.DataFrame) -> None:
 # ============ actions ============
 
 
-def run_actions(tickers: list[str], engine: Engine | None = None) -> IngestReport:
+ACTIONS_WINDOW_DAYS = 30
+
+
+def _tickers_with_actions(engine: Engine, tickers: list[str]) -> set[str]:
+    """Which of these already have corporate actions on file.
+
+    Decides full-history versus incremental per ticker. One query, not one
+    per ticker.
+    """
+    if not tickers:
+        return set()
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT DISTINCT ticker FROM corporate_actions WHERE ticker = ANY(:tickers)"),
+            {"tickers": tickers},
+        ).scalars()
+        return set(rows)
+
+
+def run_actions(
+    tickers: list[str],
+    engine: Engine | None = None,
+    start: date | None = None,
+    end: date | None = None,
+) -> IngestReport:
+    """Splits and dividends.
+
+    **Two paths, split on whether the ticker already has history.**
+
+    A ticker with rows on file needs only what is new, and that is
+    batchable: `fetch_actions_many` asks one request per `DAILY_BATCH_SIZE`
+    symbols. A ticker with nothing on file needs its whole series, which
+    only `yf.Ticker(t).actions` provides, one request each.
+
+    Nightly therefore costs a handful of requests instead of one per ticker.
+    Measured 2026-08-26 before this change: 1,470 tickers, 21.3 minutes when
+    the cache missed and 0.3 minutes when it hit -- and it always hit,
+    because `fetch_actions` keyed on the bare ticker and froze every name at
+    its first fetch. Batching without dating the key would have been fast
+    and still wrong; dating it without batching would have been correct and
+    ~49 minutes.
+
+    `start`/`end` default to a `ACTIONS_WINDOW_DAYS` lookback. The upsert
+    key is `(ticker, ex_date, action_type)`, so an overlapping window is a
+    no-op and a missed night heals on the next run.
+    """
     engine = engine or db_io.get_engine()
-    with run_job(engine, "actions", {"tickers": tickers}) as report:
-        frames = [yahoo.fetch_actions(t) for t in tickers]
+    end = end or date.today()
+    start = start or (end - timedelta(days=ACTIONS_WINDOW_DAYS))
+    with run_job(
+        engine, "actions", {"tickers": tickers, "start": str(start), "end": str(end)}
+    ) as report:
+        known = _tickers_with_actions(engine, tickers)
+        fresh = [t for t in tickers if t not in known]
+        incremental = [t for t in tickers if t in known]
+
+        frames: list[pd.DataFrame] = []
+        if incremental:
+            frames.extend(yahoo.fetch_actions_many(incremental, start, end).values())
+        # Full history, one request each. Rare by construction -- this is a
+        # ticker's first ingest, not a nightly cost.
+        frames.extend(yahoo.fetch_actions(t) for t in fresh)
         frames = [f for f in frames if not f.empty]
         if not frames:
             report.tickers = []

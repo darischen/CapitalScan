@@ -533,38 +533,149 @@ def _download_actions(ticker: str) -> pd.DataFrame:
     return cast(pd.DataFrame, yf.Ticker(ticker).actions)
 
 
-@cached(source="yahoo_actions", key_fn=lambda ticker: ticker)
+@rate_limited(per_sec=RATE_LIMIT_PER_SEC)
+@with_retry
+def _download_actions_batch(tickers: list[str], start: date, end: date) -> pd.DataFrame:
+    """Splits and dividends for many tickers, one request.
+
+    `actions=True` makes `yf.download` project `Dividends` and `Stock
+    Splits` beside the OHLCV columns, so the batch shape is the one
+    `_extract_ticker_frame` already parses. Same `end + 1 day` correction as
+    every other download here -- yfinance's `end` is exclusive, and CLAUDE.md
+    records what forgetting it cost.
+
+    **Windowed, unlike `_download_actions`.** `yf.Ticker(t).actions` returns
+    a ticker's entire history; this returns what falls inside the range.
+    That difference is the whole reason `run_actions` keeps both paths.
+    """
+    return cast(
+        pd.DataFrame,
+        yf.download(
+            tickers,
+            start=start,
+            end=end + timedelta(days=1),
+            interval="1d",
+            auto_adjust=False,
+            actions=True,
+            group_by="ticker",
+            progress=False,
+            threads=False,
+        ),
+    )
+
+
+def _actions_batch_key(tickers: list[str], start: date, end: date) -> str:
+    """Same shape as `_hourly_batch_key`: a hash of the set, plus the window.
+
+    **The window is what `yahoo_actions` was missing.** Its key was the bare
+    ticker, so the first fetch of a name answered every later one forever --
+    measured 2026-08-26, three cohorts whose newest `ex_date` equalled their
+    cache date exactly. A key must carry everything that determines the
+    answer, and for "what happened to this ticker" that includes when the
+    question was asked.
+    """
+    import hashlib
+
+    joined = ",".join(sorted(tickers))
+    digest = hashlib.sha1(joined.encode()).hexdigest()[:16]
+    return f"{len(tickers)}_{digest}_{start}_{end}"
+
+
+@cached(source="yahoo_actions_batch_v1", key_fn=_actions_batch_key)
+def _fetch_actions_window_batch(tickers: list[str], start: date, end: date) -> pd.DataFrame:
+    """One window, one batch, tidied to `_ACTIONS_COLUMNS`.
+
+    A symbol absent from the response is indistinguishable from one with no
+    actions in the window, and both are correct as "nothing to record", so
+    there is no per-ticker retry here -- unlike the bars paths, a missing
+    row is not missing data.
+    """
+    raw = _download_actions_batch(tickers, start, end)
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=_ACTIONS_COLUMNS)
+
+    records: list[dict] = []
+    for ticker in tickers:
+        try:
+            sub_frame = raw[ticker] if isinstance(raw.columns, pd.MultiIndex) else raw
+        except KeyError:
+            continue
+        if sub_frame is None or sub_frame.empty:
+            continue
+        records.extend(_actions_records(sub_frame.reset_index(), ticker))
+    return pd.DataFrame(records, columns=_ACTIONS_COLUMNS)
+
+
+def _actions_records(df: pd.DataFrame, ticker: str) -> list[dict]:
+    """`Dividends`/`Stock Splits` columns -> one record per non-zero event.
+
+    Shared by the per-ticker and batched paths so the two cannot drift into
+    disagreeing about what an action row looks like.
+    """
+    ts_col = "Date" if "Date" in df.columns else df.columns[0]
+    df = df.rename(columns={ts_col: "ts"})
+    records: list[dict] = []
+    for column, action_type in (("Stock Splits", "split"), ("Dividends", "dividend")):
+        if column not in df.columns:
+            continue
+        hit = df.loc[df[column].fillna(0) != 0]
+        for _, row in hit.iterrows():
+            records.append(
+                {
+                    "ticker": ticker,
+                    "ts": row["ts"],
+                    "action_type": action_type,
+                    "value": row[column],
+                }
+            )
+    return records
+
+
+def fetch_actions_many(tickers: list[str], start: date, end: date) -> dict[str, pd.DataFrame]:
+    """Windowed actions for many tickers, batched.
+
+    The nightly path. `fetch_actions` stays for a ticker with no history on
+    file, where the full series is genuinely wanted.
+    """
+    out: dict[str, list[pd.DataFrame]] = {t: [] for t in tickers}
+    for batch in _split_batches(tickers):
+        got = _fetch_actions_window_batch(batch, start, end)
+        if got.empty:
+            continue
+        for ticker, sub_frame in got.groupby("ticker", sort=False):
+            out[str(ticker)].append(sub_frame)
+    return {t: pd.concat(parts, ignore_index=True) for t, parts in out.items() if parts}
+
+
+def _actions_key(ticker: str) -> str:
+    """`{ticker}_{today}`.
+
+    **The date is the fix.** `yahoo_actions` keyed on the bare ticker, so a
+    ticker fetched on 2026-07-31 still answered with 2026-07-31's history a
+    month later -- measured at 640 tickers with zero August actions against
+    a 22% base rate in the fresh cohort. Keying on the day makes a stale
+    entry unreachable rather than merely old.
+    """
+    return f"{ticker}_{date.today().isoformat()}"
+
+
+@cached(source="yahoo_actions_v2", key_fn=_actions_key)
 def fetch_actions(ticker: str) -> pd.DataFrame:
-    """Splits and dividends, tidied to one row per event."""
+    """A ticker's **entire** split and dividend history, tidied.
+
+    Used where the full series is wanted -- a ticker with nothing on file.
+    `fetch_actions_many` is the incremental path and is what nightly runs.
+
+    `yahoo_actions_v2`, not `yahoo_actions`: the key now carries the date,
+    so every `_v1` entry answers a different question than the one being
+    asked. Reusing the source string is the failure CLAUDE.md records, where
+    a correct fix merged, passed CI and never ran.
+    """
     raw = _download_actions(ticker)
     if raw is None or raw.empty:
         return pd.DataFrame(columns=_ACTIONS_COLUMNS)
 
-    df = raw.reset_index().rename(columns={"Date": "ts"})
-    records: list[dict] = []
-    if "Stock Splits" in df.columns:
-        splits = df.loc[df["Stock Splits"] != 0]
-        for _, row in splits.iterrows():
-            records.append(
-                {
-                    "ticker": ticker,
-                    "ts": row["ts"],
-                    "action_type": "split",
-                    "value": row["Stock Splits"],
-                }
-            )
-    if "Dividends" in df.columns:
-        divs = df.loc[df["Dividends"] != 0]
-        for _, row in divs.iterrows():
-            records.append(
-                {
-                    "ticker": ticker,
-                    "ts": row["ts"],
-                    "action_type": "dividend",
-                    "value": row["Dividends"],
-                }
-            )
-    return pd.DataFrame(records, columns=_ACTIONS_COLUMNS)
+    return pd.DataFrame(_actions_records(raw.reset_index(), ticker), columns=_ACTIONS_COLUMNS)
 
 
 def _opt_float(value: object) -> float:
