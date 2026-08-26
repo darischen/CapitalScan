@@ -381,6 +381,73 @@ never expire at all.
 
 ---
 
+### `fetch_actions` freezes every ticker's corporate actions forever — **correctness**
+
+Known and listed before; **measured 2026-08-26** and it is worse than the
+one-line note suggested.
+
+```python
+@cached(source="yahoo_actions", key_fn=lambda ticker: ticker)
+def fetch_actions(ticker: str) -> pd.DataFrame:
+```
+
+**The key is the ticker alone.** No date, no window. The first fetch of a
+ticker answers every later fetch of it, permanently. This is the exact
+failure CLAUDE.md's cache section describes -- a key that does not capture
+everything determining the output -- and here the missing input is *when
+the question is asked*, which for a corporate-action history is the whole
+question.
+
+**Proof, from three cohorts that fell out of when each ticker entered the
+universe.** Cache-file mtime against the newest `ex_date` those tickers
+have:
+
+    cohort cached      tickers    max ex_date        actions after
+    2026-07-31           640      2026-07-31              0
+    2026-08-21           314      2026-08-20              0
+    2026-08-26           533      August present        118 tickers
+
+Each cohort's history stops **exactly at its cache date**. And the fresh
+cohort shows 118 of 533 (22%) with an August action, so ~141 of the 640
+stale tickers should have one. They have **zero**. Not fewer — none.
+
+**What it breaks, in order of severity.**
+
+`_read_corporate_actions` feeds two consumers, both in the hourly path:
+`_back_adjust_hourly`, which divides pre-split bars by the ratio, and
+`validate_bars`, which uses splits to tell a legitimate price jump from an
+anomaly. A missing split therefore does two harmful things at once -- it
+leaves hourly bars unadjusted across the ex-date, and it makes the
+validator reject the real bars around it as implausible. Silent in both
+directions.
+
+Six splits since 2026-07-01, one of them after the 07-31 freeze:
+
+    SCCO  2026-08-11  1.012
+
+Small ratio, so the damage today is minor. That is luck, not design: a
+4-for-1 like `CRWD 2026-07-02` landing after a ticker's freeze would put a
+75% discontinuity into its hourly series with no error anywhere.
+
+**The apparent speedup is the bug wearing a disguise.** `actions` ran in
+**0.3 minutes** on 2026-08-26 against a documented 21.3, and 94,736 rows
+were "written" — all of it read from disk. A correct fetcher costs ~1,470
+requests at `RATE_LIMIT_PER_SEC = 0.5`, about **49 minutes**. Anyone
+tuning nightly from the 0.3 figure is optimising a cache hit.
+
+**The fix is two changes and they must land together.**
+
+1. Put the date in the key: `key_fn=lambda ticker: f"{ticker}_{date.today():%Y-%m-%d}"`,
+   and bump `source` to `yahoo_actions_v2` so no pre-existing entry can
+   answer the new question.
+2. **Batch it first, or nightly grows by ~49 minutes.** `fetch_actions`
+   is one request per ticker; `_fetch_daily_batch` already shows the shape,
+   and `bars_hourly` went 54.5 min -> ~1 min on exactly this change.
+
+Doing (1) without (2) is correct and will get reverted for being slow.
+
+---
+
 ### `cscan sync` has no incremental path, and it is half of nightly
 
 Measured 2026-08-26. A full sync ships **7,469,519 rows in 114.2 minutes**.
