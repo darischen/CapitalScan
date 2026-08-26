@@ -33,7 +33,7 @@ import typer
 from typer.testing import CliRunner
 
 from capitalscan.core.config import Config
-from capitalscan.jobs import cli
+from capitalscan.jobs import cli, compute
 from capitalscan.jobs.config import config_hash
 
 SECTIONS = ["indicators", "signals", "exits", "costs", "universe", "stats", "splits"]
@@ -201,8 +201,11 @@ def test_indicators_command_threads_resolved_params(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_CONFIG_FILE", _toml(tmp_path, "[indicators]\nbb_window = 25\n"))
     captured = {}
 
-    def _fake_run_indicators(tickers, start, end, engine=None, params=None, max_workers=1):
+    def _fake_run_indicators(
+        tickers, start, end, engine=None, params=None, max_workers=1, chunk_size=None
+    ):
         captured["params"] = params
+        captured["chunk_size"] = chunk_size
         return SimpleNamespace(rows_written=0, rows_flagged=0)
 
     monkeypatch.setattr("capitalscan.jobs.compute.run_indicators", _fake_run_indicators)
@@ -211,6 +214,25 @@ def test_indicators_command_threads_resolved_params(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert captured["params"].bb_window == 25
+    # `chunk_size` bounds peak memory (2026-08-26); the CLI must pass it, not
+    # silently fall back to the function default.
+    assert captured["chunk_size"] == compute.INDICATOR_CHUNK_SIZE
+
+
+def test_indicators_command_threads_an_explicit_chunk_size(monkeypatch, tmp_path):
+    """The flag has to reach the job. A run that quietly used the default
+    would look identical while holding many times the memory."""
+    monkeypatch.setattr(cli, "_CONFIG_FILE", _toml(tmp_path, "[indicators]" + chr(10)))
+    captured = {}
+
+    def _fake(tickers, start, end, engine=None, params=None, max_workers=1, chunk_size=None):
+        captured["chunk_size"] = chunk_size
+        return SimpleNamespace(rows_written=0, rows_flagged=0)
+
+    monkeypatch.setattr("capitalscan.jobs.compute.run_indicators", _fake)
+    result = runner.invoke(cli.app, ["indicators", "--tickers", "AAPL", "--chunk-size", "37"])
+    assert result.exit_code == 0, result.output
+    assert captured["chunk_size"] == 37
 
 
 def test_indicators_command_malformed_config_exits_clean(monkeypatch, capsys):

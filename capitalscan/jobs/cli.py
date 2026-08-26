@@ -215,6 +215,18 @@ def earnings(
     )
 
 
+def compute_chunk_default() -> int:
+    """`compute.INDICATOR_CHUNK_SIZE`, read lazily.
+
+    `jobs.compute` imports pandas and the indicator registry, and this
+    module is imported to render `--help`. Reading the constant at call
+    time keeps `cscan --help` from paying for that.
+    """
+    from capitalscan.jobs import compute
+
+    return compute.INDICATOR_CHUNK_SIZE
+
+
 @app.command()
 def indicators(
     lookback: int = typer.Option(5, help="Days to look back"),
@@ -223,6 +235,11 @@ def indicators(
     ),
     tickers: Optional[str] = typer.Option(None, help="Comma-separated ticker list"),
     workers: int = typer.Option(1, help="ProcessPoolExecutor workers; 1 runs serially"),
+    chunk_size: int = typer.Option(
+        compute_chunk_default(),
+        "--chunk-size",
+        help="Tickers computed and written as one unit; bounds peak memory",
+    ),
 ) -> None:
     """Compute technical indicators."""
     from capitalscan.jobs import compute
@@ -234,7 +251,12 @@ def indicators(
     end = date.today()
     start = end - timedelta(days=lookback)
     report = compute.run_indicators(
-        resolved, start, end, params=config.indicators, max_workers=workers
+        resolved,
+        start,
+        end,
+        params=config.indicators,
+        max_workers=workers,
+        chunk_size=chunk_size,
     )
     console.print(
         f"indicators: {report.rows_written} written, {report.rows_flagged} tickers skipped "
