@@ -16,7 +16,7 @@ deleting the entry loses nothing.
 
 ## Open
 
-### Site auth is off, and the Pi migration is when that has to change
+### Site auth is deliberately off on the Pi (decided 2026-08-26)
 
 `SITE_AUTH_DISABLED=1`, turned off deliberately 2026-08-20 with the reason
 recorded: a Vercel deployment URL is hard to discover, the content is public
@@ -42,47 +42,6 @@ opens only on the exact string `"1"`, so `=0` is already refused, but a key
 left lying about is a decision waiting to be flipped by accident. With
 `SITE_PASSWORD` unset the site returns 503 rather than falling open, which
 is the correct direction to fail.
-
----
-
-### Expanding the universe beyond the S&P 500 seed
-
-**Largely done 2026-08-21 — see ADR 143.** Nasdaq listings at or above $5B
-are ingested, `min_mcap_usd` is $20B, and 543 tickers are ever `in_trade`
-against 378 before.
-
-**NBIS is resolved, and this entry used to blame the wrong cause.** It said
-NBIS "never enters `tickers` and is never evaluated at all". Untrue since
-ADR 143: it has a `tickers` row, 7 universe evaluations, 460 daily bars and
-2 events. It is not `in_trade` because `crit_rel_return` needs 757 daily
-bars and Nebius relisted in October 2024 — the criterion cannot be *judged*,
-and `is_tradeable` treats that as failing.
-
-**The entrant blackout is now visible rather than silent.** ADR 149 added
-the watch universe: a name passing market cap and the SMA200 slope, short
-only on a criterion unjudgeable for want of history, is `in_watch` with
-`watch_reason = 'history'`. ARM, GEV, SNDK, ALAB and NBIS — $1.18T — sit
-there fully computed, so each arrives with measured history the day it
-graduates. `crit_rel_return` itself stays at 756 bars (user's decision,
-2026-08-24).
-
-**What remains open.**
-
-**A mechanical rule for further expansion.** ADR 035's survivorship argument
-does not survive hand-picking: the S&P union is *complete*, failures
-included, while a ticker added because it looks interesting today is
-selected on the outcome the study measures. Any expansion needs a rule that
-could have been written in 2010 and applied mechanically — "the Nasdaq-100
-union" qualifies, "NBIS and a few others" does not.
-
-**`config_hash` and the rebuild.** Universe definition is config (ADR 060),
-so broadening it invalidates every measured row. Measured 2026-08-24, that
-is ~1h18m compute plus a 45m harness plus statistics.
-
-**Relative return needs a benchmark that means something.**
-`crit_rel_return` compares against the S&P series in `market_days`.
-Defensible for a Nasdaq name; for a foreign listing it quietly changes what
-the criterion tests.
 
 ---
 
@@ -348,6 +307,87 @@ is short in normal operation and only slow now because the universe grew
 
 ---
 
+### `run_indicators` holds every ticker's frame in memory before writing
+
+Raised 2026-08-26. It computes all tickers, concatenates the frames, then
+converts the whole thing to Python dicts for `db_io.upsert`. Measured on a
+1,462-ticker full-history run: **11 GB resident at peak, 2.5 GB free of 32**,
+and write throughput decayed from ~900 rows/s to **~46 rows/s** as memory
+filled before recovering. Total run 54 minutes, most of it the single write.
+
+`cscan backtest` already has `--chunk-size` for exactly this shape of
+problem, checkpointing per chunk. `cscan indicators` has no equivalent, so a
+full-history run over a growing universe gets worse every time the universe
+grows.
+
+**Chunk the write by ticker group**, the way the backtest chunks by ticker.
+That bounds peak memory to one group, keeps throughput at the fast rate, and
+makes the job restartable rather than all-or-nothing.
+
+**It also removes a diagnostic trap.** Because nothing is written until every
+ticker finishes, a mid-run `count(*)` returns the pre-run number and looks
+exactly like a hang. Two working runs were killed for that reason on
+2026-08-25.
+
+---
+
+### ORKA is flagged inactive while trading at $6.9B
+
+Raised 2026-08-26. The row contradicts itself and the market:
+
+    is_active     False
+    delisted_on   None          <- no delisting date
+    name          Oruka Therapeutics Inc. Common Stock
+    live screener $104.86, volume 778,973, market cap $6.94B
+    bars          2005-10-11 .. 2026-08-20  (5,246)
+
+`is_active = False` with `delisted_on = NULL` is internally inconsistent:
+nothing recorded *when* it stopped being active, because it never did.
+
+**The consequence is silent.** `_resolve_tickers(None)` returns active
+tickers only, so ORKA is excluded from every job invoked without an explicit
+ticker list. It was the single ticker with bars and no indicators after a
+full-universe run, and it was found only by comparing `last_indicator` against
+`last_bar` rather than by `NOT EXISTS`.
+
+**A second problem sits underneath.** Oruka was formed in 2024 by reverse
+merger with ARCA biopharma, so every bar before 2024 is ARCA's price history
+under ORKA's ticker. Same class as the depositary pre-2018 entry below, and
+worth checking whether other reverse mergers carry the same inherited
+history.
+
+Find out what set the flag before clearing it -- a flag that reappears is
+worse than one that is simply wrong.
+
+---
+
+### ETFs have `netAssets`, which is the number the criteria actually want
+
+Raised 2026-08-26, and this probably supersedes the entry below rather than
+complementing it. Measured against Yahoo:
+
+    SPY    sharesOutstanding 917,782,016   netAssets   $795B
+    QQQ    sharesOutstanding 393,100,000   netAssets   $453B
+    VOO    sharesOutstanding None          netAssets $1,687B
+    IBIT   sharesOutstanding None          netAssets    $47B
+
+**Yahoo publishes `netAssets` for all four and `sharesOutstanding` for only
+two.** So the missing-share-count problem is a missing *field choice*, not
+missing data.
+
+And net assets is the **correct** quantity. For a fund, shares times price is
+a proxy for assets under management; `netAssets` is the thing itself. Reading
+it when `quoteType == 'ETF'` gives VOO a real $1.69T and IBIT $47B instead of
+NULL.
+
+That would also make ADR 154's exemption less load-bearing. The funds would
+carry genuine market caps and clear `crit_mcap` on merit, rather than being
+admitted despite having none. The exemption would still be right for
+`crit_rel_return` -- a 2024 fund cannot have 757 sessions -- but the market
+cap half would stop being a data gap.
+
+---
+
 ### VOO and IBIT have no share count, so no market cap — **highest priority**
 
 **Superseded 2026-08-25.** SPY, VOO and IBIT now have `tickers` rows, bars
@@ -381,110 +421,6 @@ counts. That understates nothing dramatically today but is a silent staleness.
 
 ---
 
-### SPY has one quarter of universe history, not sixty-six
-
-Raised 2026-08-25. Only 2026Q2 was evaluated, so SPY participates in live
-screening but contributes no historical events to the study population.
-
-Backfilling means `cscan universe --quarter` for each of the other 65
-quarters. **Measured at 2m23s per quarter for a four-ticker subset**, so
-~2.6 hours — not the ~10s CLAUDE.md quotes, which is a different shape of
-run. It belongs in an overnight slot next to the NYSE rebuild rather than
-in a working session.
-
-Statistics are unaffected until then: `cell_stats` reads priced backtest
-rows, and SPY has none.
-
----
-
-### Historical: SPY, VOO and IBIT were not in the database
-
-Raised 2026-08-25. `SEC_NON_FILER_TICKERS` names `QQQ`, `VOO` and `IBIT`,
-which reads like three ETFs are tracked. **Only QQQ exists.** VOO and IBIT
-have no `tickers` row, no bars, no universe evaluation and no events.
-
-That list is a *skip-list*, not a seed: it says "if you see these, do not
-ask SEC for companyfacts". Nothing inserts them. QQQ is present because it
-was added by hand.
-
-Measured 2026-08-25:
-
-    QQQ    5,282 daily bars   66 universe rows   34,687 events
-    VOO    absent
-    IBIT   absent
-
-`SPY` is not on the list at all and should be — it is the S&P 500 tracker
-and the most obvious ETF in a study seeded from S&P membership.
-
-**The work**, per the path QQQ took:
-
-1. insert the `tickers` rows (no CIK, no sector — an ETF has neither)
-2. `cscan bars --tickers SPY,VOO,IBIT --backfill`
-3. `cscan indicators --tickers SPY,VOO,IBIT --lookback 8000`
-4. re-run `cscan universe` per quarter so they are evaluated
-5. add `SPY` to `SEC_NON_FILER_TICKERS` and to `core.training.ETF_TICKERS`
-
-**Step 5 is the one that will be forgotten.** `ETF_TICKERS` is what ADR 147
-excludes from training, and it is deliberately a separate list from
-`SEC_NON_FILER_TICKERS` — the first answers "is this an instrument rather
-than a company", the second "does SEC serve companyfacts". A new ETF added
-to one and not the other trains the model on a fund.
-
-**No `config_hash` move** — adding tickers is not a config change. But it
-does change the traded population, so ADR 112 wants re-measuring afterwards
-for the same reason ADR 148's sector backfill did.
-
-**IBIT is the odd one and is worth a deliberate decision.** A spot Bitcoin
-trust has no sector, no industry and no earnings date. ADR 041's
-earnings-window exclusion silently does nothing for it, and ADR 147 keeps it
-out of training regardless — so it would be tradeable and watchable while
-contributing nothing to the model. That is probably the right outcome; it
-should be chosen rather than inherited.
-
----
-
-### NYSE, the same treatment Nasdaq got — **second priority**
-
-Raised 2026-08-25. The seeds are the S&P 500 union and Nasdaq (ADR 143), so
-a large NYSE-listed name outside the index is unreachable — not filtered
-out, never evaluated.
-
-**The machinery already exists.** ADR 143's path was: fetch the exchange's
-listings with market caps, keep common stock above a floor, upsert into
-`tickers`, ingest bars, evaluate. `jobs/fetch/nasdaq.py` does exactly that
-and hardcodes `"exchange": "NASDAQ"` in one request parameter. The same
-endpoint serves NYSE.
-
-**Four things to get right, and three are already solved.**
-
-- **`_is_common` must hold.** The screener gives preferred series, warrants
-  and units the *issuer's* market cap, so they clear any floor on their
-  parent's size while their bars are a different instrument. That filter
-  exists and is tested.
-- **Do not reuse `fetch_listed`'s cache key.** It is `@cached(source=
-  "nasdaq_screener_v1", key_fn=lambda: "listed_with_mcap")` — a constant. A
-  second exchange through the same function returns the Nasdaq snapshot and
-  looks like NYSE has no listings. Either a new source string or a
-  key that includes the exchange.
-- **Sector comes free.** The screener returns one per listing, and ADR 148
-  established the crosswalk. Unlike the Nasdaq round, these names need not
-  arrive with NULL sectors.
-- **`config_hash` moves and a rebuild follows.** Universe definition is
-  config (ADR 060). Measured 2026-08-24: ~1h18m compute, 45m harness, plus
-  statistics.
-
-**The rule has to be mechanical**, per ADR 035: "every NYSE listing at or
-above the floor" qualifies, and could have been written in 2010. Picking
-names because they look interesting selects on the outcome the study
-measures.
-
-**Expect it to be larger than the Nasdaq round.** NYSE carries most of the
-large-cap universe that is not already in the S&P 500 — REITs, foreign
-issuers, and the industrial and financial names an index-seeded universe
-misses.
-
----
-
 ### Depositary listings have no pre-2018 history
 
 Not a wrong number — a missing one, and the distinction matters when
@@ -504,7 +440,7 @@ the history — that, not correctness, is now the reason to do it.
 
 ---
 
-### 98 tickers still have no sector
+### 123 tickers still have no sector (29 of them active)
 
 ADR 148's backfill resolved 254 of 352. The rest are delisted or renamed —
 YHOO, FB (now META), PCLN (now BKNG), TWTR, ATVI, CERN, FRC, SIVB — and
