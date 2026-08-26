@@ -381,6 +381,51 @@ never expire at all.
 
 ---
 
+### The Pi is serving the pre-NYSE generation — **highest priority**
+
+Raised 2026-08-26 after a 109.7-minute sync shipped 7,345,158 rows of the
+**wrong config**.
+
+    research GUC        f66729c7eda212a4     <- never moved after the rebuild
+    serving_config      f66729c7eda212a4
+
+    research events     a38d3ca6b58295e8  1,367,228   <- the NYSE rebuild
+                        f66729c7eda212a4  1,110,115   <- what shipped
+
+    Pi events           f66729c7eda212a4    556,185
+                        a38d3ca6b58295e8        158   <- poller pushes only
+
+`run_sync` chooses what to copy by reading
+`current_setting('capitalscan.default_config_hash')` on the **source**. That
+GUC still held the pre-NYSE hash, so a full sync faithfully copied the old
+generation and reported `ok`. Nothing failed; the wrong question was asked.
+
+**The ordering is a trap, and it cuts both ways.**
+`test_cli_config_resolution.py` records one half: *"The Postgres GUC must not
+move until a backtest has written events under the new hash... pointing them
+at a config with no rows yet returns an empty screener rather than an
+error."* The other half is this: once the backtest **has** written them,
+moving the GUC is not optional, and nothing checks that it happened.
+
+**So the repair is not one command.** Running `cscan db sync-config` alone
+would point the serving views at a hash the Pi holds **158** rows for, and
+the site would go nearly empty until a re-sync finished ~110 minutes later.
+
+The order that works:
+
+1. `cscan db sync-config` (moves `serving_config` and the GUC)
+2. `cscan sync` (~110 min, ships the 1,367,228 new events)
+3. verify `SELECT config_hash, count(*) FROM events` on the Pi before
+   trusting the site
+
+**Worth a guard.** `run_sync` could compare the GUC against the newest
+`config_hash` in `events` and refuse, or at least warn, when it is about to
+copy a generation older than one that exists. A sync that spends 110 minutes
+shipping superseded data should not report `ok` in the same words as one
+that shipped the current one.
+
+---
+
 ### `run_indicators` holds every ticker's frame in memory before writing
 
 Raised 2026-08-26. It computes all tickers, concatenates the frames, then
