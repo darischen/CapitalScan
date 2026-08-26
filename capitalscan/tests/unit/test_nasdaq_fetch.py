@@ -432,3 +432,32 @@ class TestTheExchangeSurvivesTheWholeCallChain:
         monkeypatch.setattr(nasdaq, "fetch_listed", _listed)
         nasdaq.tickers_above(10e9, nasdaq.NYSE)
         assert seen == [nasdaq.NYSE]
+
+
+class TestSlashClassSharesNormalise:
+    """NYSE writes class shares with a slash, Nasdaq and Wikipedia with a dot.
+
+    The original rule handled only the dot, so `BRK/B` reached Yahoo
+    unchanged and came back "possibly delisted". It then sat in `tickers`
+    as a second row for an instrument already present as `BRK-B` with 5,248
+    bars and 53,834 events.
+    """
+
+    def test_a_slash_becomes_a_hyphen(self):
+        assert nasdaq._normalise_symbol("BRK/B") == "BRK-B"
+
+    def test_a_dot_still_becomes_a_hyphen(self):
+        assert nasdaq._normalise_symbol("BRK.B") == "BRK-B"
+
+    def test_both_spellings_collapse_to_one(self):
+        """The property that matters: two exchanges naming one instrument
+        must not produce two rows."""
+        assert nasdaq._normalise_symbol("BRK/B") == nasdaq._normalise_symbol("BRK.B")
+
+    def test_it_still_trims_and_upper_cases(self):
+        assert nasdaq._normalise_symbol(" brk/b ") == "BRK-B"
+
+    def test_tickers_above_applies_it(self, monkeypatch):
+        rows = [_row("BRK/B", "900000000000.00", name="Berkshire Hathaway Inc Class B")]
+        monkeypatch.setattr(nasdaq, "fetch_listed", lambda *_a, **_k: pd.DataFrame(rows))
+        assert nasdaq.tickers_above(10e9, nasdaq.NYSE) == ["BRK-B"]

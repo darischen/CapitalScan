@@ -161,6 +161,25 @@ def fetch_listed(exchange: str = NASDAQ) -> pd.DataFrame:
     return pd.DataFrame(_fetch_rows(exchange))
 
 
+def _normalise_symbol(raw: object) -> str:
+    """Screener symbol -> the spelling the rest of `tickers` uses.
+
+    Upper-cased, with **both** `.` and `/` rewritten to `-`.
+
+    The `.` rule came from Wikipedia and Nasdaq, where a class share is
+    `BRK.B`. **NYSE's screener writes the same share as `BRK/B`**, and the
+    original rule left the slash alone -- so `BRK/B` reached Yahoo, which
+    answered *"possibly delisted; no timezone found"*, and `BRK/A` and
+    `BRK/B` landed in `tickers` as rows with no bars.
+
+    `BRK/B` was the worse half: `BRK-B` already existed with 5,248 bars and
+    53,834 events, so the malformed row was a **second row for one
+    instrument**, not a missing one. A duplicate under a different spelling
+    is invisible to every count and every join.
+    """
+    return str(raw).strip().upper().replace(".", "-").replace("/", "-")
+
+
 def tickers_above(
     min_mcap_usd: float = INGEST_MIN_MCAP_USD,
     exchange: str = NASDAQ,
@@ -186,7 +205,7 @@ def tickers_above(
     if frame.empty:
         return []
     out = {
-        str(row["symbol"]).strip().upper().replace(".", "-")
+        _normalise_symbol(row["symbol"])
         for row in frame.to_dict("records")
         if _market_cap(row) >= min_mcap_usd and _is_common(row)
     }
