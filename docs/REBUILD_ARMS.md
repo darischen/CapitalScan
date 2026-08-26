@@ -46,7 +46,7 @@ inside its events**. That is what makes the comparison possible at all.
 But the poller builds its ticker list from `universe.in_trade`, and
 `v_universe` feeds the site. So after any arm runs, live membership is that
 arm's. **Whichever arm should serve must run last**, or be restored with
-another full universe pass (~3 hours).
+another full universe pass (~20 min).
 
 **Never run `universe_backfill.ps1` while a backtest is running.** Not
 locking — MVCC handles that — but determinism: workers resolving
@@ -58,7 +58,7 @@ output for one config, violating ADR 060.
 ## Each arm, same shape
 
 ```powershell
-# a. universe, all 66 quarters (~2.6 min/quarter, ~3 hours)
+# a. universe, all 66 quarters (~18s/quarter, ~20 min)
 .\scripts\universe_backfill.ps1          # -StartFrom 2017Q3 to resume
 
 # b. backtest, split into phases so it is restartable
@@ -75,8 +75,27 @@ uv run cscan stats benchmarks
 **Keep `--chunk-size` identical across restarts.** `_chunk_already_done`
 keys on `(config_hash, chunk, of)`, so changing it re-runs every chunk.
 
-**`--phase harness` writes nothing.** It validates an already-written
-config, so it is safe to re-run and safe to defer.
+**`--phase harness` writes no *event* rows.** It validates an
+already-written config, so it is safe to re-run and safe to defer. It does
+write a `backtest_harness` row in `runs`, with the verdict in `notes`
+(`harness passed`, or the failing check) -- which is the cheapest way to
+watch a long run without polling processes.
+
+**Measured 2026-08-26**, on 1,470 tickers / 1,365,000 events under
+`a38d3ca6b58295e8`, after the IPv6 fix made `localhost` connect in 40ms:
+
+| step | wall clock |
+|---|---|
+| universe, 66 quarters | ~20 min |
+| `--phase compute` (59 chunks x 25, 8 workers) | 81.9 min |
+| `--phase finalize` | 3.6 min |
+| `--phase harness` (8 workers) | 35.7 min, `harness passed` |
+| **per arm, before statistics** | **~2h20m** |
+
+So the three arms are roughly **7 hours**, not the 18-24 this file first
+said. That estimate came from CLAUDE.md's 4h19m harness figure, measured
+single-threaded on 590 tickers before `0b2cc00`. Statistics (`rho`,
+`cells`, `benchmarks`) remain unmeasured and are additional.
 
 **The harness is parallel** as of `0b2cc00`, which spools ticker slices to
 parquet rather than pickling frames through a pipe (the deadlock `78d1e38`
