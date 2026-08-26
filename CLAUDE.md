@@ -182,12 +182,36 @@ No `cscan db migrate` or `uv sync`/`uv add` while a job is running. Migrate take
 
 Long jobs, measured, so nobody starts one blind:
 
-- `cscan backtest --workers 8`, full universe: **2h48m to 4h55m**. Write phase 20-36 min; the validation harness is single-threaded and takes the rest regardless of worker count — more workers do not shorten it.
+- `cscan backtest --workers 8`, full universe: **2h48m to 4h55m** on the pre-2026-08-25 universe. Write phase 20-36 min.
+  - **The harness is parallel now, and this line said otherwise until 2026-08-25.** It read "the validation harness is single-threaded and takes the rest regardless of worker count". That was true between `78d1e38` (which reverted a parallel harness that deadlocked passing frames to workers) and `0b2cc00`, which re-parallelised it by spooling ticker slices to **parquet** instead of pickling frames through a pipe. `research/harness.py::_run_harness_parallel` runs whenever `max_workers > 1`.
+  - The stale line was quoted in a 2026-08-25 session to size a rebuild at 8-12 hours, which was wrong by roughly the worker count. **Re-measure the harness before quoting any duration for it**; no wall-clock figure for the parallel version exists yet.
+  - `--phase` splits the job into `compute` (resumable, checkpointed per `--chunk-size`, default 25), `finalize` (cross-ticker cofire) and `harness` (validates an already-written config, writes nothing). Use the phases for anything long: `_chunk_already_done` keys on `(config_hash, chunk, of)`, so **keep `--chunk-size` identical across restarts** or every chunk re-runs.
   - **Re-measured 2026-08-13 by wall clock: 4h55m total** (write 35m50s, harness ~4h19m), on 627,380 rows / 590 tickers under `697f3ae71428d392`. That is 1.75x the 2h48m figure, so treat 2h48m as a floor rather than an estimate. Two plausible contributors, neither verified: the event count grew slightly, and ADR 108 added a seventh signal type, which widens `signal_types_all` and the cluster tagging the harness walks. **Budget five hours, not three.**
   - **`runs` measures this from 2026-08-18, and did not before.** `cli.py::backtest` used to close its `with ingest.run_job(...)` block before calling `run_harness`, so `finished_at - started_at` timed the write phase **only** — 20-38 min against a 2h48m-to-4h55m job. A 2026-08-09 session read those durations as the whole job and briefly "corrected" this line to ~36 min. It was wrong. Session 15 moved the harness inside the block, so new rows time the whole job and a failing harness now records `status='failed'`. **Rows written before 2026-08-18 are still write-phase-only** and must be read that way; check `started_at` before quoting one.
   - `cscan weekly` genuinely is ~36 min: it calls `run_backtest` and deliberately skips the harness (`cli.py::weekly` docstring). Do not read a weekly duration as a `cscan backtest` duration.
+- `cscan bars --daily --lookback 8000`: **11 minutes for 521 tickers /
+  2,002,797 rows** (measured 2026-08-25). Do **not** extrapolate from a small
+  sample: 10 tickers took 2m37s, which predicts 2h20m and is wrong by an
+  order of magnitude, because `_batch_key` puts every ticker in one
+  `yf.download` rather than one request each. Per-ticker timing does not
+  scale here.
+- `cscan indicators`: the slow one, and **it writes nothing until it
+  finishes** -- results are collected across all tickers then upserted once.
+  Querying `indicators` mid-run returns the pre-run count, which looks
+  exactly like a hang. Two working runs were killed on 2026-08-25 for that
+  reason. Pass `--workers 8`; it defaults to 1.
 - `cscan bars --hourly --backfill`, all tickers: **~4.5-5.5 hours**. Yahoo caps hourly at 60 days per request, so backfill walks 13 sequential windows per ticker at 0.5 req/s. No incremental path — already-stored data does not reduce the cost.
-- `cscan universe --quarter`, one quarter: ~10s.
+- `cscan universe --quarter`, one quarter: **~2.6 min** on the 1,563-ticker
+  universe (measured 2026-08-25 across 54 consecutive quarters). This line
+  said ~10s, which was true at an earlier universe size. A full 66-quarter
+  backfill is therefore **~3 hours**, not ten minutes.
+  - Use `scripts/universe_backfill.ps1` rather than a hand-rolled loop. It
+    resumes (`-StartFrom 2017Q3`), times each quarter, and collects failures
+    instead of dying on one bad quarter.
+  - **Never run it while a backtest is running.** Not locking -- MVCC handles
+    that -- but determinism: workers resolving eligibility against a
+    `universe` that changes mid-run produce different output for one config,
+    violating ADR 060.
 
 **Verify before you assert.** Query the database rather than trusting a prior report, including this one — several confident claims in earlier session reports did not hold up under direct measurement.
 
