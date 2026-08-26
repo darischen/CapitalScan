@@ -300,26 +300,66 @@ not a flat frame. `_download_daily` already parses that shape, so the code
 to copy exists, but it is not a one-line change and the single-ticker
 degenerate case behaves differently again.
 
-**`run_actions` has the same shape and the same cost.** Its key is
-`@cached(source="yahoo_actions", key_fn=lambda ticker: ticker)` -- one
-request per ticker. Measured 2026-08-26 it ran **21+ minutes and counting**
-on the way to the ~49 minutes 1,470 tickers implies at 0.5 req/s.
+**`run_actions` is a different and worse problem -- see the entry below.**
+It is also per-ticker, but batching it would save almost nothing, because
+its cache key never expires and so it almost never fetches.
 
-So this is a pattern rather than one fetcher. Measured in the same nightly:
+Measured in the same nightly:
 
     bars_daily    batched      1,470 tickers    4.9 min
     bars_hourly   per-ticker   1,470 tickers   54.5 min
-    actions       per-ticker   1,470 tickers   ~49 min
+    actions       per-ticker     531 new only  21.3 min  (rest cached forever)
 
-**~1h40m of a nightly** is spent on a request shape the daily path already
-solved, and it grows linearly with the universe -- which just grew 58%.
-`yf.download(..., actions=True)` accepts a ticker list, so the same fix
-applies to both.
+**~55 minutes of every nightly** goes on a request shape the daily path
+already solved, and it grows linearly with the universe -- which just grew
+58%. `yf.download` accepts a ticker list at `interval="1h"`, so the fix is
+the same one daily already uses.
 
 **Worth measuring first:** whether the nightly hourly step is actually one
 window per ticker or several. If several, the win multiplies; if the step
 is short in normal operation and only slow now because the universe grew
 58%, it may be less urgent than it looks tonight.
+
+---
+
+### `fetch_actions` caches on the ticker alone, so splits are never refreshed
+
+Raised 2026-08-26. **Correctness, not performance.**
+
+```python
+@cached(source="yahoo_actions", key_fn=lambda ticker: ticker)
+def fetch_actions(ticker: str) -> pd.DataFrame:
+```
+
+The key carries **no date**. Once a ticker's actions are cached the file is
+read forever and the network is never touched again. Measured on the live
+cache:
+
+    1,490 cached files
+    AAPL, ACN, ADBE    2026-07-31    cached 26 days ago, never refreshed
+    ZWS, ZTO           2026-08-26    tonight's new NYSE tickers
+
+AAPL's splits and dividends were fetched on 31 July. Every nightly since has
+read that file. **A split after that date is invisible**, and stays invisible
+until someone deletes the cache by hand.
+
+**Why this matters more than a stale quote.** `bars` are split-adjusted, and
+a missed split corrupts price history rather than just aging it. The
+indicators computed from those bars are wrong, and nothing raises -- the same
+silent-failure shape as ADR 145's adjusted-shares defect.
+
+It also explains the timing: `actions` took 21.3 min tonight rather than the
+~49 min 1,470 tickers implies, because only the ~531 new NYSE tickers missed.
+On an ordinary night it costs nearly nothing, because it does nearly nothing.
+
+**The fix is a key that can expire**, e.g. `ticker_asof` bucketed to a week
+or month, so a refresh happens on a cadence rather than never. That also
+makes the batching question moot for this fetcher: a fetch that does not run
+does not need to be faster.
+
+CLAUDE.md's `yahoo_daily` -> `_v2` account is the precedent, and this is the
+sharper version of it: there the key's *meaning* went stale, here the key can
+never expire at all.
 
 ---
 
