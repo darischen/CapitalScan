@@ -231,6 +231,73 @@ option helps.
 
 ---
 
+### `universe` cannot say which config produced it
+
+Raised 2026-08-25. `PRIMARY KEY (ticker, as_of)` and **no `config_hash`
+column**, so two configs' membership cannot coexist: evaluating a second
+config overwrites the first, row for row.
+
+`events` does carry `config_hash`, and ADR 122 stamps `in_trade` and
+`in_watch` onto each event at creation, so an arm's membership survives
+inside its events. That is what makes a multi-arm comparison possible at
+all. But the `universe` table itself only ever reflects whichever config
+ran last.
+
+**Two things follow, and the second is the sharp one.**
+
+The poller builds its ticker list from `universe.in_trade`, and `v_universe`
+feeds the site. So after an ablation arm runs, **live membership is that
+arm's**, whether or not it is the one meant to be serving. Restoring
+production means re-running the universe under the production config, which
+is another full 66-quarter pass.
+
+And this is the same defect class as the slope literal fixed the same day:
+ADR 060 makes universe definition config, while the table storing that
+definition's output cannot record which definition it was. A stale
+`universe` and a current one are indistinguishable by inspection.
+
+Adding the column would let arms coexist, make the three-rebuild plan
+roughly a third cheaper, and let a reader ask "which config said this".
+The cost is a migration plus every reader learning to scope on it --
+`core.universe.in_trade`, `_load_pollable_tickers`, `v_universe`,
+`v_watchlist`, the features lateral, and the sync subset.
+
+---
+
+### The three ablation arms, and the order they must run in
+
+Decided 2026-08-25. Three rebuilds rather than one, so each change is
+attributable:
+
+1. **NYSE at the current definition** -- `config_hash a38d3ca6b58295e8`
+2. **`sma200_slope_min = -0.01`** -- admits a flat base. Measured cost at
+   2026-06-30: +37 tickers at -1%, +74 at -2%, +167 at -5%.
+3. **`crit_rel_return` dropped from `required_criteria`** -- replaced by the
+   history it implies. Measured cost: **64 names pass everything else and
+   fail on this alone**, including AAPL at $4,250B, UNH $377B, MRK $317B,
+   QCOM $195B. Trade universe 184 -> 248, +35%.
+
+Each arm is a 66-quarter universe pass plus a backtest, roughly 6-8 hours,
+so **18-24 hours across the three**.
+
+**Run the production arm last**, because of the overwrite above. Otherwise
+the live site and the poller serve the last ablation rather than the
+chosen definition.
+
+**Worth stating about arm 3.** `crit_rel_return` compares against the
+*sector median*, so by construction roughly half of every sector fails it
+-- measured 440 pass, 448 fail at 2026-06-30. It is also a momentum filter
+inside a mean-reversion study: requiring three-year outperformance selects
+recent winners, while the signal looks for dips. Those pull against each
+other and the tension has never been measured. Arm 3 is that measurement.
+
+**One consequence to decide with arm 3.** The `history` watch route
+requires `crit_rel_return` to be `None`. Replacing the criterion with a
+plain history check makes a new ticker return `False` instead, and that
+route stops firing.
+
+---
+
 ### VOO and IBIT have no share count, so no market cap — **highest priority**
 
 **Superseded 2026-08-25.** SPY, VOO and IBIT now have `tickers` rows, bars

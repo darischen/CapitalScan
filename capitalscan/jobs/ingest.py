@@ -1329,7 +1329,24 @@ def run_exchange_expansion(
         new_rows = [r for r in rows if r["ticker"] not in existing]
 
         if new_rows:
-            db_io.upsert(engine, "tickers", new_rows, ["ticker"], update_columns=[])
+            # **Explicit `DO NOTHING`, not `db_io.upsert`.** That helper has
+            # no insert-only mode: `update_columns=None` overwrites every
+            # non-key column, which on a conflict would blank an existing
+            # row's ADR 148 sector and its CIK, and `update_columns=[]` is
+            # rejected by design. The pre-filter above already excludes
+            # known tickers, so this clause is the guard against a row
+            # appearing between the SELECT and the INSERT rather than the
+            # normal path.
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO tickers "
+                        "(ticker, cik, name, sector, industry, exchange, is_active) "
+                        "VALUES (:ticker, :cik, :name, :sector, :industry, :exchange, :is_active) "
+                        "ON CONFLICT (ticker) DO NOTHING"
+                    ),
+                    new_rows,
+                )
 
         with_cik = sum(1 for r in new_rows if r["cik"])
         report.rows_written = len(new_rows)
