@@ -91,6 +91,49 @@ Prefix `SET max_parallel_workers_per_gather=0;` if a **query** hits a shared-mem
 could not resize shared memory segment ... No space left on device
 ```
 
+**A table can go stale forever without anything reporting it.** Found
+2026-08-25: `indicators` held **4,011,351 rows while the planner believed
+80,043** — a 50x underestimate on every plan touching it. The symptom was a
+job that had "worked forever" suddenly crawling: 20 tickers of full history
+took **36 seconds on 2026-08-21** and 3 tickers took **8.8 minutes on
+2026-08-25**, with no change to the code path. `git log` on `compute.py`
+showed nothing touching `run_indicators`, which is what sent the
+investigation to the database.
+
+    relname      n_live_tup   actual      last_autoanalyze
+    indicators       80,043   4,011,351   never
+    bars          8,152,486   8,154,808   2026-08-26
+    events       16,175,934   16,269,169  2026-08-25
+
+**Autovacuum was on, with no table-level override.** One table was simply
+never serviced. The likely cause, assembled from three facts rather than
+observed: Postgres statistics are **not crash-safe**, the container exited
+255 unprompted on 2026-08-21 (recorded above), and autoanalyze fires at
+`50 + 0.1 * n_live_tup` — about 8,054 at the stale estimate. The only
+successful indicator writes since that crash were two nightly runs of 3,561
+and 4,497 rows, **8,058 total**, sitting on the threshold.
+
+**The trap is that the trigger scales with the number that is wrong.** A
+table growing in large batches, whose counters were reset, can sit under its
+own threshold indefinitely.
+
+Fixed by making the trigger absolute on the two tables that grow in bulk:
+
+```sql
+ALTER TABLE indicators SET (
+  autovacuum_analyze_scale_factor = 0.0,
+  autovacuum_analyze_threshold    = 50000,
+  autovacuum_vacuum_scale_factor  = 0.0,
+  autovacuum_vacuum_threshold     = 50000
+);
+```
+
+**Run `VACUUM (PARALLEL 0, ANALYZE)` after any bulk write**, and check
+`n_live_tup` against a real `count(*)` when a job is inexplicably slow.
+Six seconds of maintenance was the whole fix here, after roughly four hours
+lost to diagnosing it as a hang, a deadlock, a wrong interpreter and a
+`ProcessPoolExecutor` bug — none of which it was.
+
 **That setting does not cover maintenance commands.** It governs query-time gather nodes only. `VACUUM` parallelises index cleanup under `max_parallel_maintenance_workers` and ignores it entirely, so a large vacuum fails with the same message and the same fix does nothing. Use the command's own option:
 
 ```
