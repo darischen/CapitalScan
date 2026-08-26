@@ -381,6 +381,63 @@ never expire at all.
 
 ---
 
+### Watch-universe fires are invisible on the site
+
+Raised 2026-08-26 from a real miss: CCJ fired `confluence_high` at 06:45:40,
+the poller logged it, and the home page never showed it.
+
+    CCJ  in_trade=f  in_watch=t
+    universe 2026-06-30: crit_above_sma200 = f  (mcap, slope, rel_return pass)
+
+Nothing is broken. `FEED_DOMAIN` in `web/lib/screen.ts` filters `AND
+in_trade`, and CCJ is a watch name -- it fell below its 200-day SMA, which
+ADR 149's `pullback` route admits to watch rather than trade. The event is
+recorded honestly with `in_trade=false` stamped at creation (ADR 122).
+
+**27 of today's 164 fires are in this position**: `pullback` 23, `history`
+4. `in_watch` appears **nowhere** in the web layer and in no view
+definition, so the whole population is write-only as far as the site is
+concerned. That defeats the point of the watch universe, which exists to
+be *detected* on while staying out of training.
+
+ADR 149 already requires more than just showing them:
+
+> Notifications for watched names **must say which reason admitted them.**
+> A watch alert that looks identical to a tradeable one is how the
+> distinction is forgotten.
+
+**Decided 2026-08-26 (user):** stamp `watch_reason` onto `events`, the same
+way ADR 122 stamps `in_trade` -- not a read-time join to `universe`. The
+reason a fire was admitted is a property of *that fire*, and joining
+current membership would silently relabel a March event with today's
+reason. Display copy is human-readable, not the enum: `Watch Universe:
+Below 200-Day SMA` and `Watch Universe: Insufficient History`.
+
+Scope:
+
+- migration: `events.watch_reason text`; `v_ticker_state` and
+  `v_screen_live` project `in_watch` and `watch_reason` (neither exposes
+  `in_watch` today)
+- backfill: **448,566** rows where `in_watch`
+- `run_events` and `poll.py` stamp it going forward
+- `FEED_DOMAIN`: `AND (in_trade OR in_watch)` -- one constant, and it feeds
+  the screener rows, the calendar counts, the default-date query and the
+  last-fire empty state, so all four move together
+- `Ticker.tsx:102` becomes three states; today it says "outside trade
+  universe" for CCJ, which is true and misleading
+- statistics **suppressed** on watch rows. ADR 149: "no statistic reads
+  `in_watch`." Cell stats are computed over the trade universe, so printing
+  `p_hit` beside a watch row attributes a population's number to a name
+  outside it. DESIGN 11.9's `suppressed` state already exists for this.
+
+**Run it before a nightly, never after.** The migration is DDL on `events`,
+which `run_events` writes -- ACCESS EXCLUSIVE against a live writer. And
+the `run_events` change ships in the same commit, so migrating first means
+tonight's rows carry the reason from birth instead of needing a second
+backfill.
+
+---
+
 ### The Pi is serving the pre-NYSE generation — **highest priority**
 
 Raised 2026-08-26 after a 109.7-minute sync shipped 7,345,158 rows of the
