@@ -76,6 +76,8 @@ function state(over: Partial<TickerState> = {}): TickerState {
     daysToEarnings: null,
     vixClose: 15.8,
     inTrade: true,
+    inWatch: false,
+    watchReason: null,
     aboveSma200: true,
     mcapUsd: 2.1e12,
     ...over,

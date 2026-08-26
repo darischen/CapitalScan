@@ -4,9 +4,24 @@ import EventRows from "./EventRows";
 import LivePrice from "./LivePrice";
 import TickerSearch from "./TickerSearch";
 
-import { NONE, SIGNAL_LABELS, fmt, mcap, pct, signedPct, vol } from "@/lib/format";
+import {
+  NONE,
+  SIGNAL_LABELS,
+  fmt,
+  mcap,
+  pct,
+  signedPct,
+  vol,
+} from "@/lib/format";
+import { watchLabel } from "@/lib/screen";
 import type { Meta } from "@/lib/screen";
-import type { ChartBar, LiveQuote, Range, TickerEvent, TickerState } from "@/lib/ticker";
+import type {
+  ChartBar,
+  LiveQuote,
+  Range,
+  TickerEvent,
+  TickerState,
+} from "@/lib/ticker";
 import { RANGES } from "@/lib/ticker";
 
 /**
@@ -49,7 +64,9 @@ export function TickerHeader({
   latest?: ChartBar | null;
 }) {
   const distance =
-    state.close !== null && state.sma200 !== null ? state.close / state.sma200 - 1 : null;
+    state.close !== null && state.sma200 !== null
+      ? state.close / state.sma200 - 1
+      : null;
 
   return (
     <header className="tk-head">
@@ -89,17 +106,37 @@ export function TickerHeader({
         />
         <span className="k">close</span>
         <span className={live ? "num" : "num big"}>{fmt(state.close)}</span>
-        <span className={`num ${distance !== null && distance >= 0 ? "up" : "down"}`}>
+        <span
+          className={`num ${distance !== null && distance >= 0 ? "up" : "down"}`}
+        >
           {signedPct(distance)} vs 200d
         </span>
       </div>
 
       <div className="tk-tags">
-        {/* `in_trade` is the ADR 001 trade universe, and a ticker outside it
-            still charts. Saying so is the point: the events are real and the
-            screener will never show them. */}
-        <span className={state.inTrade ? "tag on" : "tag off"}>
-          {state.inTrade ? "in trade universe" : "outside trade universe"}
+        {/* Three states, not two. `in_trade` and `in_watch` are siblings
+            (ADR 149), so a name can be in neither -- and a watched name read
+            as "outside trade universe", which is true and tells you the
+            opposite of what is happening. CCJ fired on 2026-08-26, was
+            polled and priced all session, and this badge called it excluded.
+
+            `watch` gets its own class rather than reusing `on`: it is a
+            different claim, and colour carries meaning here (DESIGN 11.7). */}
+        <span
+          className={
+            state.inTrade ? "tag on" : state.inWatch ? "tag watch" : "tag off"
+          }
+          title={
+            state.inWatch
+              ? "Polled and priced, and excluded from every statistical population"
+              : undefined
+          }
+        >
+          {state.inTrade
+            ? "in trade universe"
+            : state.inWatch
+              ? watchLabel(state.watchReason)
+              : "outside both universes"}
         </span>
         {/* The ticker's whole history, from a count query — not the page
             length, which would understate it by the page size. */}
@@ -117,7 +154,9 @@ export function TickerHeader({
             {fmt(latest.low)} <b>C:</b>
             <span
               className={
-                latest.close !== null && latest.open !== null && latest.close >= latest.open
+                latest.close !== null &&
+                latest.open !== null &&
+                latest.close >= latest.open
                   ? "up"
                   : "down"
               }
@@ -162,7 +201,11 @@ export function BandGauge({ state }: { state: TickerState }) {
         <span className="k">Bollinger position</span>
         <span className="num v">{b === null ? NONE : b.toFixed(3)}</span>
       </div>
-      <div className="gauge-track" role="img" aria-label={`Bollinger %B ${fmt(b, 3)}`}>
+      <div
+        className="gauge-track"
+        role="img"
+        aria-label={`Bollinger %B ${fmt(b, 3)}`}
+      >
         <span className="gauge-mid" />
         {pos !== null && (
           <span
@@ -212,7 +255,9 @@ function Stat({
  */
 export function StateRail({ state }: { state: TickerState }) {
   const gap =
-    state.kFast !== null && state.kFull !== null ? Math.abs(state.kFast - state.kFull) : null;
+    state.kFast !== null && state.kFull !== null
+      ? Math.abs(state.kFast - state.kFull)
+      : null;
 
   return (
     <section className="rail-strip">
@@ -252,7 +297,9 @@ export function StateRail({ state }: { state: TickerState }) {
         // Five sessions is the horizon the grid measures, so inside that the
         // number is a caveat rather than a fact.
         cls={
-          state.daysToEarnings !== null && state.daysToEarnings >= 0 && state.daysToEarnings <= 5
+          state.daysToEarnings !== null &&
+          state.daysToEarnings >= 0 &&
+          state.daysToEarnings <= 5
             ? "flagged"
             : ""
         }
@@ -347,9 +394,14 @@ function typeList(e: TickerEvent): string[] {
  */
 function Outcome({ e }: { e: TickerEvent }) {
   if (e.netRet !== null) {
-    return <span className={`num ${e.netRet >= 0 ? "up" : "down"}`}>{signedPct(e.netRet)}</span>;
+    return (
+      <span className={`num ${e.netRet >= 0 ? "up" : "down"}`}>
+        {signedPct(e.netRet)}
+      </span>
+    );
   }
-  if (e.exitDate !== null) return <span className="dim">closed, no return</span>;
+  if (e.exitDate !== null)
+    return <span className="dim">closed, no return</span>;
   return <span className="dim">open</span>;
 }
 
@@ -374,8 +426,8 @@ function WhyEmpty({ sym, inTrade }: { sym: string; inTrade: boolean | null }) {
   if (inTrade) {
     return (
       <p className="dim pad">
-        No events for {sym} under the current config. The chart above is the full
-        series; nothing in it crossed a band or a threshold.
+        No events for {sym} under the current config. The chart above is the
+        full series; nothing in it crossed a band or a threshold.
       </p>
     );
   }
@@ -384,13 +436,13 @@ function WhyEmpty({ sym, inTrade }: { sym: string; inTrade: boolean | null }) {
       <span className="rail" />
       <div className="body">
         <p>
-          <strong className="num">{sym}</strong> is outside the trade universe, so no
-          events are recorded for it.
+          <strong className="num">{sym}</strong> is outside the trade universe,
+          so no events are recorded for it.
         </p>
         <p className="last">
-          Detection runs only on bars where the ticker was in the trade universe that
-          day (DESIGN §4.7). The chart above is the full price series and its bands are
-          real — the signals simply are not stored, and re-running{" "}
+          Detection runs only on bars where the ticker was in the trade universe
+          that day (DESIGN §4.7). The chart above is the full price series and
+          its bands are real — the signals simply are not stored, and re-running{" "}
           <code>cscan events</code> will not add them.
         </p>
       </div>
@@ -429,7 +481,10 @@ export function EventHistory({
           <Link href={`/ticker/${sym}`} className={all ? undefined : "on"}>
             confluence
           </Link>
-          <Link href={`/ticker/${sym}?all=1`} className={all ? "on" : undefined}>
+          <Link
+            href={`/ticker/${sym}?all=1`}
+            className={all ? "on" : undefined}
+          >
             every fire
           </Link>
         </nav>
@@ -437,11 +492,11 @@ export function EventHistory({
 
       {stopped && (
         <p className="note-gate">
-          Detection stopped at <span className="num">{newest}</span>: {sym} is outside
-          the trade universe, and events are only recorded for bars where a ticker was
-          in it that day (DESIGN §4.7). Rows before 2010-03-31 predate the first
-          universe snapshot, where the check has nothing to evaluate and admits every
-          ticker.
+          Detection stopped at <span className="num">{newest}</span>: {sym} is
+          outside the trade universe, and events are only recorded for bars
+          where a ticker was in it that day (DESIGN §4.7). Rows before
+          2010-03-31 predate the first universe snapshot, where the check has
+          nothing to evaluate and admits every ticker.
         </p>
       )}
 
@@ -452,9 +507,10 @@ export function EventHistory({
       )}
 
       <p className="foot dim">
-        Outcomes are measured on the <strong>touch</strong> entry, matching the chart
-        markers. The screener&rsquo;s hit rates are measured on <strong>next_open</strong>,
-        which is the entry the cell grid simulated. Same events, two entries.
+        Outcomes are measured on the <strong>touch</strong> entry, matching the
+        chart markers. The screener&rsquo;s hit rates are measured on{" "}
+        <strong>next_open</strong>, which is the entry the cell grid simulated.
+        Same events, two entries.
       </p>
     </section>
   );
@@ -479,8 +535,8 @@ export function NoTicker({ sym }: { sym: string }) {
           No indicator history for <strong className="num">{sym}</strong>.
         </p>
         <p className="last">
-          Either the symbol is not in this database, or it has bars but no computed
-          indicators. <Link href="/">Back to the screener</Link>.
+          Either the symbol is not in this database, or it has bars but no
+          computed indicators. <Link href="/">Back to the screener</Link>.
         </p>
       </div>
     </div>
