@@ -209,7 +209,14 @@ def test_the_serving_sweep_precedes_the_full_sync():
         text,
     )
     assert sweep is not None, "the serving sweep is gone"
-    assert sweep.start() < text.index("sync_report = sync_job.run_sync()")
+    # Also matched loosely. This asserted the literal
+    # `sync_report = sync_job.run_sync()` and broke on 2026-08-26 when
+    # nightly started passing `incremental=True` -- the ordering it exists
+    # to protect had not changed at all. The argument list is not this
+    # test's business.
+    full_sync = re.search(r"sync_report = sync_job\.run_sync\(", text)
+    assert full_sync is not None, "nightly no longer syncs"
+    assert sweep.start() < full_sync.start()
 
 
 # ---------------------------------------------------------------------------

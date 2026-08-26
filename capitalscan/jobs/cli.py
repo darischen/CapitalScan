@@ -1300,6 +1300,12 @@ def sync(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print what would be copied, copy nothing"
     ),
+    incremental: bool = typer.Option(
+        False,
+        "--incremental",
+        help="Ship only what is newer than the target's own watermark. "
+        "What `cscan nightly` uses; the bare command still copies everything.",
+    ),
 ) -> None:
     """Push the serving subset to the cloud store (ADR 053, ADR 137).
 
@@ -1329,7 +1335,7 @@ def sync(
         console.print(", ".join(plan["tables"]))
         return
 
-    report = sync_job.run_sync()
+    report = sync_job.run_sync(incremental=incremental)
     for name, n in report.rows.items():
         console.print(f"  {name:<16} {n:>9,}")
     console.print(f"[green]synced[/green] {report.total:,} rows")
@@ -2448,7 +2454,16 @@ def nightly() -> None:
         console.print(f"[yellow]warn[/yellow] serving sweep skipped: {exc}")
 
     try:
-        sync_report = sync_job.run_sync()
+        # **Incremental here, full in `cscan sync`.** Nightly adds one
+        # session; a full pass shipped 7,469,519 rows in 114.2 minutes on
+        # 2026-08-26 to deliver ~3,875 of them, which was two thirds of the
+        # whole job. The bound comes from the serving store's own watermark,
+        # so a Pi that missed a night is caught up rather than left with a
+        # hole, and an empty target still falls back to a full pass.
+        #
+        # Run `cscan sync` by hand after a rebuild, a reflash or a config
+        # change -- that is what the unbounded form is for.
+        sync_report = sync_job.run_sync(incremental=True)
         console.print(f"nightly: synced {sync_report.total:,} rows to serving")
     except RuntimeError as exc:
         console.print(f"[yellow]skip[/yellow] sync: {exc}")
