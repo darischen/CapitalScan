@@ -298,6 +298,56 @@ route stops firing.
 
 ---
 
+### The hourly fetcher asks for one ticker at a time; the daily one batches
+
+Raised 2026-08-26 while `cscan nightly` sat in `bars_hourly` for 15+
+minutes. The two fetchers in `jobs/fetch/yahoo.py` have different shapes and
+only one of them needs to:
+
+| | cache key | request |
+|---|---|---|
+| `_download_daily` | `_batch_key` = `tickers_start_end` | **every ticker in one `yf.download`** |
+| `_download_hourly` | `_window_key` = `ticker_start_end` | **one ticker, one 60-day window** |
+
+`_download_hourly` passes a single `ticker`, not a list. `yf.download`
+accepts a list at `interval="1h"` exactly as it does for daily, so the
+batching is available and simply unused.
+
+**The 60-day cap is not the reason.** Yahoo limits hourly to 60 days *per
+request*, so the window walk is mandatory either way. Batching tickers
+*within* each window is orthogonal to it: 1,470 tickers x 1 window becomes
+one request instead of 1,470.
+
+**The prize is the one daily already collected.** `cscan bars --daily
+--lookback 8000` did 521 tickers and 2,002,797 rows in **11 minutes**,
+against the 2h20m a per-ticker rate predicts. At `RATE_LIMIT_PER_SEC = 0.5`
+the per-ticker hourly path cannot beat ~49 minutes for a single window
+across the current universe, and CLAUDE.md records the full backfill at
+4.5-5.5 hours.
+
+**Two things to get right, and the first has already cost a session.**
+
+**Bump the `source` string, not just the key function.** `_window_key` is a
+promise: for these inputs, this is the answer. Batching changes what a key
+means, so it needs `yahoo_hourly_v3`. CLAUDE.md's own account of the
+`yahoo_daily` -> `yahoo_daily_v2` episode is the warning: a correct fix
+merged, CI passed, and **the next nightly still produced stale data**,
+because every cached entry answered the post-fix request with the pre-fix
+result. There is no error and a hit is indistinguishable from a fetch
+except by duration.
+
+**A batched `yf.download` returns a column MultiIndex keyed by ticker**,
+not a flat frame. `_download_daily` already parses that shape, so the code
+to copy exists, but it is not a one-line change and the single-ticker
+degenerate case behaves differently again.
+
+**Worth measuring first:** whether the nightly hourly step is actually one
+window per ticker or several. If several, the win multiplies; if the step
+is short in normal operation and only slow now because the universe grew
+58%, it may be less urgent than it looks tonight.
+
+---
+
 ### VOO and IBIT have no share count, so no market cap — **highest priority**
 
 **Superseded 2026-08-25.** SPY, VOO and IBIT now have `tickers` rows, bars
