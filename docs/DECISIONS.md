@@ -197,7 +197,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 153 | The poller pushes to serving every tick | Pinned. Extends ADR 053 with a second sync path; gives ADR 150's sweep a serving target; no `config_hash` move |
 | 154 | An ETF is in the trade universe unconditionally | Pinned. Amends 149's `crit_mcap` requirement for funds; completes 147; ADR 112 wants re-measuring |
 | 155 | Quantile coverage fails and DESIGN §7.6 has no repair for it | **Provisional — decision required.** Four options costed; blocks the Phase 6 gate |
-| 156 | ETF market cap: `netAssets` disagrees with `sharesOutstanding` | **Provisional — decision required.** 62% gap on QQQ; ADR 154 means nothing is blocked meanwhile |
+| 156 | ETF market cap: `netAssets` disagrees with `sharesOutstanding` | **Provisional.** Resolved to `netAssets`: Yahoo's ETF share count is a constant frozen at 2021-03-17 |
 
 ---
 
@@ -6438,11 +6438,42 @@ enough to be a data defect rather than a timing difference, and neither
 number has been checked against the issuer. Invesco publishes QQQ's shares
 outstanding daily; one comparison settles it.
 
-**Recommendation, not a decision.** **D, then A or B.** The measurement
-above says the two fields disagree; it does not say which to believe, and
-adopting either without knowing would be choosing a number for its
-convenience. Until then A costs nothing, because ADR 154 already means no
-ticker is excluded for want of this.
+**Resolved the same day, from data already held.** Option D turned out not
+to need the issuer. `shares_outstanding` answers it:
+
+    SPY   917,782,016   on 2020-08-28, 2020-11-26 and 2021-03-17
+    QQQ   393,100,000   on 2020-08-28, 2020-11-26 and 2021-03-17
+          99 and 96 rows respectively, every one ending 2021-03-17
+
+**The number never changes.** The same value is stamped on every date, the
+series stops in March 2021, and it is the identical figure Yahoo's `info`
+returns today. That is not a time series; it is one stale constant repeated.
+
+An ETF's share count moves **daily** through creation and redemption -- that
+mechanism is what holds the price near NAV. A constant share count is
+therefore not a disagreeing measurement, it is a wrong one.
+
+So the 62% gap on QQQ is not ambiguity between two plausible figures. It is
+a current number against one frozen five years ago, and **QQQ's recorded
+$289B is computed from a 2020 share count**.
+
+**Recommendation: B, use `netAssets` for every ETF.** Not because it fills
+two NULLs, but because the alternative is provably stale for all four. The
+SPY and QQQ revisions are corrections rather than changes.
+
+**What implementing it still needs.** `mcap_usd` is `shares * close`, so
+`netAssets` cannot simply be stored in `shares_outstanding.shares` without
+that column meaning two different things. Either it carries the derived
+share count `netAssets / close` with a `source` that says so -- the
+identity is exact for a fund, which is what makes the derivation honest
+rather than a fabrication -- or `universe` learns to read an ETF's market
+cap from a different place. The first is smaller and keeps one code path;
+the second is cleaner and costs a migration.
+
+**Also worth recording:** this is why the ETF market caps stopped being
+trustworthy in 2021 without anything reporting it. `run_shares` kept
+succeeding, `crit_mcap` kept passing, and the number behind it had been
+constant for five years.
 
 **What must not happen.** Option C, or any variant where `mcap_usd` is
 derived one way for some rows and another way for others without the row
