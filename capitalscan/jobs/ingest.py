@@ -8,6 +8,7 @@ of this lives in `core/` (invariant 1).
 
 from __future__ import annotations
 
+import math
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -1212,6 +1213,56 @@ def _depositary_tickers(engine: Engine, tickers: list[str]) -> set[str]:
     return {r.ticker for r in rows if core_universe.is_depositary_listing(r.name)}
 
 
+def _json_safe(value: object) -> object:
+    """Coerce one value into something `json.dumps` accepts.
+
+    `bar_rejects.payload` is JSONB, and psycopg serialises it with the
+    stdlib encoder. A `datetime.date` -- which is what `filed_on` and
+    `period_end` are, straight off a DataFrame -- raises `TypeError: Object
+    of type date is not JSON serializable`, and pandas/numpy scalars raise
+    the same way.
+
+    Found 2026-08-26: `cscan nightly` died here after `run_shares` had
+    already written 236,008 rows. The share data landed and the job still
+    reported `failed`, which aborted every remaining nightly step --
+    earnings, indicators, events, path capture and the sync. A reject log
+    took down the pipeline it exists to annotate.
+    """
+    import numpy as np
+
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        # NaN and the infinities are floats, and `json.dumps` emits them as
+        # bare `NaN`/`Infinity` -- which is not valid JSON and Postgres
+        # rejects on the way into JSONB. Absent stays absent (invariant 4).
+        return value if math.isfinite(value) else None
+    if value is pd.NaT:
+        # `NaT` is a `datetime` subclass, so it reaches the branch below and
+        # `isoformat()` returns the literal string "NaT" -- a missing date
+        # recorded as though it were a real one.
+        return None
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    if isinstance(value, np.bool_):
+        return bool(value)
+    # Anything left is a scalar of some other type -- a Decimal, a numpy
+    # datetime, an Interval. `str` is lossy but survives the round trip; a
+    # reject log that cannot be written is worse than one that is coarse.
+    return str(value)
+
+
+def _json_safe_payload(payload: dict) -> dict:
+    """`_json_safe` over a reject payload. Applied at every construction
+    site rather than inside `db_io.append`, so the coercion is visible where
+    the dates are put in."""
+    return {k: _json_safe(v) for k, v in payload.items()}
+
+
 def _implausible_shares_reason(shares: int, bounds: SharesPlausibility) -> str | None:
     """`None` when `shares` is plausible; otherwise the `bar_rejects.rule`.
 
@@ -1536,13 +1587,15 @@ def run_shares(
                             "ts": row["filed_on"],
                             "rule": reason,
                             "severity": "reject",
-                            "payload": {
-                                "shares": shares,
-                                "filed_on": row["filed_on"],
-                                "period_end": row.get("end"),
-                                "source": "sec_xbrl",
-                                "accn": row.get("accn"),
-                            },
+                            "payload": _json_safe_payload(
+                                {
+                                    "shares": shares,
+                                    "filed_on": row["filed_on"],
+                                    "period_end": row.get("end"),
+                                    "source": "sec_xbrl",
+                                    "accn": row.get("accn"),
+                                }
+                            ),
                         }
                     )
                     continue
@@ -1610,13 +1663,15 @@ def run_shares(
                         "ts": row["filed_on"],
                         "rule": "shares_scale_error_x1000",
                         "severity": "reject",
-                        "payload": {
-                            "shares": row["shares"],
-                            "filed_on": row["filed_on"],
-                            "period_end": row.get("period_end"),
-                            "source": "sec_xbrl",
-                            "accn": row.get("accn"),
-                        },
+                        "payload": _json_safe_payload(
+                            {
+                                "shares": row["shares"],
+                                "filed_on": row["filed_on"],
+                                "period_end": row.get("period_end"),
+                                "source": "sec_xbrl",
+                                "accn": row.get("accn"),
+                            }
+                        ),
                     }
                 )
 
