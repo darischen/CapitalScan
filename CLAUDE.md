@@ -271,7 +271,7 @@ Long jobs, measured, so nobody starts one blind:
   | step | wall clock | rows |
   |---|---|---|
   | `bars_daily` (batched) | 4.9 min | 4,375 |
-  | `bars_hourly` (per-ticker) | **54.5 min** | 30,465 |
+  | `bars_hourly` (**batched** 2026-08-26) | **~1.5 min** | 30,465 |
   | `actions` (per-ticker) | 21.3 min | -- |
   | `market` | 0.0 min | 5 |
   | `shares` | ~10 min | 236,008 |
@@ -281,7 +281,20 @@ Long jobs, measured, so nobody starts one blind:
   | `path_capture` | 41.2 min | 6,497,038 |
   | `peak_labels` | 1.2 min | 484,921 |
   | `sync` (full 14-table copy) | ~1h45m | ~5.7M |
-  | **total** | **~4h35m** | |
+  | **total** | **~3h47m** | |
+
+  - **That total was ~4h35m and the table's own rows contradicted it.**
+    `bars_hourly` was batched on 2026-08-26 and the line item recorded
+    it, but the sum was never re-added, so this file kept quoting a
+    figure 53 minutes stale. A session read it back as fact on
+    2026-08-26. **Re-add the column when you change a row.**
+  - **Indicator chunking does not appear here and should not.** It
+    fixed the full-history rebuild, where 1,462 tickers held 11 GB
+    resident. Nightly's `indicators` step is a 5-day window at 0.4 min
+    and never touched that path.
+  - **`sync` is now over half the job**, and ships ~1,900x more than
+    changed: 7,469,519 rows in 114.2 min to deliver ~3,875 new ones.
+    See `BACKLOG.md`. Skipping it makes a nightly **~1h53m**.
 
   - **Three fetchers account for ~2 hours of that**, and only because they
     request one ticker at a time. `bars_hourly` was batched on 2026-08-26
@@ -319,6 +332,33 @@ Long jobs, measured, so nobody starts one blind:
     that -- but determinism: workers resolving eligibility against a
     `universe` that changes mid-run produce different output for one config,
     violating ADR 060.
+
+**A `psql` session on the Pi reads the WRONG config generation.**
+`run_sync` ends by pinning `capitalscan.default_config_hash` on the serving
+database and **cannot**: custom `capitalscan.*` parameters need superuser,
+and `capscan` is not one. The failure is logged and explicitly called
+harmless, because `web/lib/db.ts` sets the hash on every connection from
+`serving_config` (ADR 115) — so the *site* is always right.
+
+What it is not harmless for is **you**, verifying by hand:
+
+    psql on the Pi   current_setting(...)  ->  f66729c7eda212a4   (stale)
+    serving_config                         ->  a38d3ca6b58295e8   (live)
+
+Every serving view filters on that GUC, so a manual query silently reads a
+generation the site does not serve. Hit 2026-08-26: `SELECT count(*) FROM
+v_screen_live WHERE signal_date='2026-08-26'` returned **0** while the page
+rendered 138 rows for that date. The instrument was wrong, not the system.
+
+`ALTER DATABASE ... SET TimeZone` works (a standard parameter) and
+`ALTER DATABASE ... SET capitalscan.default_config_hash` does not. Set it
+per session, always:
+
+```sql
+SET capitalscan.default_config_hash = '<hash from serving_config>';
+```
+
+---
 
 **Verify before you assert.** Query the database rather than trusting a prior report, including this one — several confident claims in earlier session reports did not hold up under direct measurement.
 
