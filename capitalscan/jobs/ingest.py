@@ -1972,21 +1972,30 @@ def run_earnings(
         if forward_days > 0:
             start = date.today()
             end = start + timedelta(days=forward_days)
-            for ticker in tickers:
-                calendar = finnhub.fetch_forward_calendar(start, end, symbol=ticker)
-                for _, row in calendar.iterrows():
-                    session = {"bmo": "bmo", "amc": "amc"}.get(
-                        str(row.get("hour")).lower(), "unknown"
-                    )
-                    rows.append(
-                        {
-                            "ticker": row["ticker"],
-                            "report_date": row["date"],
-                            "session": session,
-                            "source": row["source"],
-                            "confidence": row["confidence"],
-                        }
-                    )
+            # **One walk of the window, not one request per ticker.** The
+            # endpoint is bulk -- omitting `symbol` returns every listing in
+            # the range -- and this asked it 1,470 times. At
+            # `RATE_LIMIT_PER_SEC = 0.8` that is 30.6 minutes of rate
+            # limiting alone, and 43.5 minutes measured end to end on
+            # 2026-08-26. The chunked walk covers 90 days in ~33 seconds.
+            #
+            # It is also *more* complete than a single bulk call, which
+            # silently truncates at 1,500 rows: that response omitted AAPL
+            # entirely. `fetch_forward_calendar_many` splits any window that
+            # comes back at the cap, and returned 5,149 rows across 4,945
+            # tickers over the same 90 days.
+            calendar = finnhub.fetch_forward_calendar_many(start, end, tickers)
+            for _, row in calendar.iterrows():
+                session = {"bmo": "bmo", "amc": "amc"}.get(str(row.get("hour")).lower(), "unknown")
+                rows.append(
+                    {
+                        "ticker": row["ticker"],
+                        "report_date": row["date"],
+                        "session": session,
+                        "source": row["source"],
+                        "confidence": row["confidence"],
+                    }
+                )
 
         # `earnings` is keyed (ticker, report_date) and duplicates here are
         # structural, not anomalous: a company files several 8-Ks in one day and
