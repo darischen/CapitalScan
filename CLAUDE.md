@@ -268,33 +268,61 @@ Long jobs, measured, so nobody starts one blind:
   the IPv6 fix. Twelve steps; the totals are dominated by three fetchers that
   ask one ticker at a time.
 
+**Every figure below is one measured run, 2026-08-26 evening**, on 1,470
+  tickers. Where a step has two regimes the normal one is given and the
+  other is named, because quoting the wrong regime is how this table has
+  been wrong three times.
+
   | step | wall clock | rows |
   |---|---|---|
-  | `bars_daily` (batched) | 4.9 min | 4,375 |
-  | `bars_hourly` (**batched** 2026-08-26) | **~1.5 min** | 30,465 |
-  | `actions` (per-ticker) | 21.3 min | -- |
+  | `bars_daily` (batched) | 5.1 min | 5,737 |
+  | `bars_hourly` (batched; loop fixed `4f97d8b`) | **~2 min** | 40,605 |
+  | `actions` (batched + dated key `9b008c9`) | **~2 min** | 94,736 |
   | `market` | 0.0 min | 5 |
-  | `shares` | ~10 min | 236,008 |
-  | `earnings` (per-ticker, Finnhub) | **~43 min** | -- |
-  | `indicators` (5-day) | 0.4 min | 4,250 |
-  | `events` (5-day) | 0.9 min | 2,448 |
-  | `path_capture` | 41.2 min | 6,497,038 |
-  | `peak_labels` | 1.2 min | 484,921 |
-  | `sync` (full 14-table copy) | ~1h45m | ~5.7M |
-  | **total** | **~3h47m** | |
+  | `shares` | 0.7 min | 236,008 |
+  | `earnings` (**per-ticker**, Finnhub) | **43.5 min** | 1,378 |
+  | `indicators` (5-day, `max_workers=1`) | 1.6 min | 5,571 |
+  | `events` (5-day) | 1.2 min | 3,118 |
+  | `path_capture` (incremental) | **1.2 min** | 20,483 |
+  | `peak_labels` | 1.1 min | 484,929 |
+  | `sync` (full 14-table copy) | **114.2 min** | 7,469,519 |
+  | **total** | **~2h52m** | |
+  | **total without `sync`** | **~58 min** | |
 
-  - **That total was ~4h35m and the table's own rows contradicted it.**
-    `bars_hourly` was batched on 2026-08-26 and the line item recorded
-    it, but the sum was never re-added, so this file kept quoting a
-    figure 53 minutes stale. A session read it back as fact on
-    2026-08-26. **Re-add the column when you change a row.**
+  - **This table has been wrong three separate ways, all on 2026-08-26.**
+    Read the failure modes before trusting a figure in it.
+    1. **The sum was never re-added.** `bars_hourly` was batched, the row
+       was updated, the total stayed at ~4h35m. A session quoted it back as
+       fact. **Re-add the column when you change a row.**
+    2. **`actions` 21.3 min was a cache miss, and 0.3 min was the bug.**
+       `fetch_actions` keyed on the bare ticker with no date, so it always
+       hit and fetched nothing — 640 tickers had zero corporate actions
+       after 2026-07-31. Neither number described a working step. See
+       `BACKLOG.md`.
+    3. **`path_capture` 41.2 min / 6.5M rows was a post-rebuild
+       catch-up, not a nightly.** The `runs` history is unambiguous: normal
+       nights are **1-3 min / 10-25k rows**, and the ~41 min runs follow a
+       full backtest, which creates millions of events with incomplete
+       forward windows. Throughput is *higher* on those (2,627/s against
+       285/s), so the short runs are fixed overhead rather than slow work.
+       Nothing is wrong with the step.
+
+    The shared lesson: **a step has regimes, and one measurement is one
+    regime.** Check `runs` for the distribution before recording a number
+    here.
   - **Indicator chunking does not appear here and should not.** It
     fixed the full-history rebuild, where 1,462 tickers held 11 GB
     resident. Nightly's `indicators` step is a 5-day window at 0.4 min
     and never touched that path.
-  - **`sync` is now over half the job**, and ships ~1,900x more than
-    changed: 7,469,519 rows in 114.2 min to deliver ~3,875 new ones.
-    See `BACKLOG.md`. Skipping it makes a nightly **~1h53m**.
+  - **`sync` is two thirds of the job**, and ships ~1,900x more than
+    changed: 7,469,519 rows in 114.2 min to deliver ~3,875 new ones. See
+    `BACKLOG.md`. Skipping it makes a nightly **~58 min**.
+  - **`earnings` is now the whole non-sync cost** — 43.5 of those 58
+    minutes. It is the last per-ticker fetcher, and it is the same change
+    that took `bars_hourly` from 54.5 min to ~2 and `actions` from 21.3 to
+    ~2. Batch it and a nightly without `sync` is under fifteen minutes.
+  - **`indicators` runs `max_workers=1` in nightly** (`cli.py`). Harmless at
+    a 5-day window; do not read 1.6 min as what the step costs on history.
 
   - **Three fetchers account for ~2 hours of that**, and only because they
     request one ticker at a time. `bars_hourly` was batched on 2026-08-26
