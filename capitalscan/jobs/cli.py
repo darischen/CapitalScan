@@ -2206,6 +2206,12 @@ def stats_benchmarks_cmd(
         "Use 50 during sweeps where ranking rather than significance is the goal (ADR 061)",
     ),
     write: bool = typer.Option(True, help="Write to benchmarks. --no-write measures only"),
+    workers: int = typer.Option(
+        1,
+        help="Processes for the random-entry replications. Each rebuilds its own panels "
+        "(~35s) and then runs its share at ~4.5s each, so 8 takes 200 replications from "
+        "~15.6 min to ~2.5. Ignored when curves are collected",
+    ),
 ) -> None:
     """Session 13: the eight benchmark arms (DESIGN §6.4-§6.6, ADR 012).
 
@@ -2261,6 +2267,7 @@ def stats_benchmarks_cmd(
                 git_sha=git_sha(),
                 write=write,
                 progress=_tick,
+                max_workers=workers,
             )
             job.rows_written = report.rows_written
 

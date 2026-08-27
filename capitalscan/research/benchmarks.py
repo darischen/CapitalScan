@@ -58,6 +58,7 @@ from capitalscan.core.arms import (
 )
 from capitalscan.core.config import BenchmarkParams, Config, ReportingParams
 from capitalscan.core.types import Side
+from capitalscan.jobs import db_io
 from capitalscan.research.cell_stats import (
     GRID_CLUSTER_HEADS_ONLY,
     GRID_ENTRY_KIND,
@@ -941,6 +942,95 @@ def _int(value: Any) -> str:
     return str(int(value))
 
 
+def _replication_slice(
+    database_url: str,
+    config_hash: str,
+    split_key: str,
+    cfg: Config,
+    bm: BenchmarkParams,
+    lo: int,
+    hi: int,
+) -> list[tuple[int, dict[str, Any], dict[str, Any]]]:
+    """Replications `lo..hi` inclusive, in a worker process.
+
+    Spawn-safe on the same template as `backtest._backtest_one_ticker` and
+    `compute._compute_one_ticker` (CLAUDE.md "Platform"): opens its own
+    connection because engines are not picklable, performs no top-level
+    side effects, and is importable on its own.
+
+    **It rebuilds the panels rather than receiving them.** Measured
+    2026-08-27: setup is **35.4 s** and a replication is **4.52 s**, so 200
+    serial replications are 15.6 minutes and setup is 4% of it. Rebuilding
+    avoids pickling a price panel for the whole universe through a pipe --
+    the same trade `0b2cc00` made for the harness, which spools parquet
+    rather than sending frames.
+
+    **The setups do not fully overlap**, and that is the ceiling here.
+    `load_panels` is database-bound, so eight workers doing it at once
+    contend rather than run concurrently. Measured end to end on 200
+    replications: **8 workers 3.99 min, 4 workers 4.39 min, serial 15.6**.
+    Eight is worth having and sixteen would not be -- the returns flatten
+    where the setup contention starts, not where the cores run out.
+
+    **At small replication counts there is no win at all.** 24 replications
+    measured 109.7 s serial and 109.5 s on eight workers: the setup *is*
+    the job below roughly 40 draws. `--replications 50` sweeps (ADR 061)
+    should stay serial.
+
+    **A contiguous range, not one replication per task.** Each task pays
+    the setup, so 200 tasks would pay it 200 times. Eight ranges pay it
+    eight times, concurrently.
+
+    Returns plain tuples. `BenchmarkRow` is assembled in the parent so the
+    row's shape stays defined in one place.
+    """
+    engine = db_io.get_engine(database_url)
+    window = load_window(engine, cfg, split_key)
+    panels = load_panels(engine, window.tickers, window)
+    long_events = restrict_to_universe(
+        load_signal_events(engine, config_hash, split_key, Side.LONG), window
+    )
+    signal_entries = entries_from_events(long_events)
+    purchases = core_purchases(window, panels)
+    pools = eligible_days(panels, window, cfg)
+    cache: dict[tuple[str, int], Any] = {}
+
+    out: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
+    for replication in range(lo, hi + 1):
+        entries = random_entries(signal_entries, pools, config_hash, replication)
+        positions = build_positions(entries, panels, window, cfg, Side.LONG, cache)
+        sim = core_arms.simulate_portfolio(window.n_days, positions, bm, window.dates)
+        metrics = core_arms.arm_metrics(sim, bm)
+        out.append(
+            (
+                replication,
+                _metrics_dict(metrics),
+                _tax_row(sim.trades, purchases, metrics.total_ret, bm),
+            )
+        )
+    return out
+
+
+def _replication_ranges(replications: int, workers: int) -> list[tuple[int, int]]:
+    """Contiguous 1-based ranges, as evenly as they divide.
+
+    Even sizing matters more than it looks: every worker pays the same 35 s
+    setup, so one worker left with twice the replications sets the wall
+    clock for all of them.
+    """
+    workers = max(1, min(workers, replications))
+    base, extra = divmod(replications, workers)
+    ranges: list[tuple[int, int]] = []
+    start = 1
+    for i in range(workers):
+        size = base + (1 if i < extra else 0)
+        if size == 0:
+            continue
+        ranges.append((start, start + size - 1))
+        start += size
+    return ranges
+
+
 def run_benchmarks(
     engine: Engine,
     config_hash: str,
@@ -955,6 +1045,7 @@ def run_benchmarks(
     write: bool = True,
     progress: Any = None,
     collect_curves: bool = False,
+    max_workers: int = 1,
 ) -> tuple[pd.DataFrame, BenchmarkReport]:
     """Measure all eight arms on one config and split, and write them.
 
@@ -1036,25 +1127,62 @@ def run_benchmarks(
     # --- 13.2 random-entry null -------------------------------------------
     pools = eligible_days(panels, window, cfg)
     null_equities: list[pd.Series] = []
-    for replication in range(1, replications + 1):
-        entries = random_entries(signal_entries, pools, config_hash, replication)
-        positions = build_positions(entries, panels, window, cfg, Side.LONG, cache)
-        sim = core_arms.simulate_portfolio(window.n_days, positions, bm, window.dates)
-        metrics = core_arms.arm_metrics(sim, bm)
-        rows.append(
-            BenchmarkRow(
-                ARM_RANDOM,
-                {
-                    **_metrics_dict(metrics),
-                    **_tax_row(sim.trades, purchases, metrics.total_ret, bm),
-                },
-                replication=replication,
+
+    # **The replications are the job.** Measured 2026-08-27: setup 35.4 s,
+    # one replication 4.52 s, so 200 of them are 15.6 of the 16.1 minutes
+    # `benchmarks` cost -- and they were run one at a time while fifteen of
+    # sixteen cores idled. Each draw depends only on its own seed
+    # (`random_entries(..., config_hash, replication)`), so they are
+    # independent by construction.
+    #
+    # **`max_workers=1` keeps the in-process path**, which is what
+    # `collect_curves` needs: the equity series are large and returning 200
+    # of them through a pipe would trade the saving away. `research/curves`
+    # is the only caller that asks for them.
+    if max_workers > 1 and not collect_curves and replications > 1:
+        from concurrent.futures import ProcessPoolExecutor
+
+        url = engine.url.render_as_string(hide_password=False)
+        ranges = _replication_ranges(replications, max_workers)
+        done = 0
+        collected: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
+        with ProcessPoolExecutor(max_workers=len(ranges)) as pool:
+            futures = [
+                pool.submit(_replication_slice, url, config_hash, split_key, cfg, bm, lo, hi)
+                for lo, hi in ranges
+            ]
+            for future in futures:
+                part = future.result()
+                collected.extend(part)
+                done += len(part)
+                if progress is not None:
+                    progress(done, replications)
+        # Sorted because `as_completed` order is not replication order, and
+        # `benchmarks` is keyed on (arm, replication) -- an out-of-order
+        # write would still be correct but would make two runs of the same
+        # config produce different row ids.
+        for replication, metrics_d, tax_d in sorted(collected):
+            rows.append(BenchmarkRow(ARM_RANDOM, {**metrics_d, **tax_d}, replication=replication))
+    else:
+        for replication in range(1, replications + 1):
+            entries = random_entries(signal_entries, pools, config_hash, replication)
+            positions = build_positions(entries, panels, window, cfg, Side.LONG, cache)
+            sim = core_arms.simulate_portfolio(window.n_days, positions, bm, window.dates)
+            metrics = core_arms.arm_metrics(sim, bm)
+            rows.append(
+                BenchmarkRow(
+                    ARM_RANDOM,
+                    {
+                        **_metrics_dict(metrics),
+                        **_tax_row(sim.trades, purchases, metrics.total_ret, bm),
+                    },
+                    replication=replication,
+                )
             )
-        )
-        if collect_curves:
-            null_equities.append(sim.equity)
-        if progress is not None:
-            progress(replication, replications)
+            if collect_curves:
+                null_equities.append(sim.equity)
+            if progress is not None:
+                progress(replication, replications)
 
     # --- 13.3 trim and redeploy -------------------------------------------
     signals = trim_signals(short_events, long_events, window, bm)
