@@ -113,6 +113,23 @@ structurally invalid anyway, because `--chunk-size 24` versus 25 puts
 different tickers in "chunk 1". Normalised per ticker the first chunk was
 *faster* and the next three slower, which is what noise looks like.
 
+**Measured again 2026-08-27, whole phase this time: 90.3 min over 57
+chunks / 1,294,680 rows**, against 81.9 min over 59 / 1,365,000. Per row
+that is 4.19 ms against 3.60 -- **~16% slower, and real**: at n=57 the
+standard error is 4.0 s and the gap is ~12 s per chunk, about three of
+them. (57 not 61 because four chunks from an aborted attempt shared
+`of=61` and were correctly skipped.)
+
+**Most of that is a cost added on purpose.**
+`db_io.fill_event_sector_and_mcap` runs two `UPDATE`s per chunk, and the
+same work as a one-shot migration took 15m57s across both databases -- so
+roughly 8 minutes for research alone, spread over 61 chunks. The rest is
+wider rows: `sector` and `mcap_usd` now carry values where they were NULL,
+and `bb_mid`/`close`/`vix_pct_252d` will add three more.
+
+Budget ~96 min for compute, not 81.9. It buys a training frame that no
+longer has to join four tables to see what an event looked like.
+
 **Compare whole phases, never chunk samples.** The `backtest_compute` rows
 in `runs` sum to the phase; that sum is the only figure worth quoting.
 
