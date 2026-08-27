@@ -96,18 +96,24 @@ def upgrade() -> None:
     #    makes the value a fact about that fire rather than about today.
     #    Restricted to `in_watch`: a trade-universe event has no watch reason
     #    and NULL is the honest answer, not ''.
+    #    **A correlated subquery in SET, not `FROM LATERAL`.** The first
+    #    attempt used a lateral and Postgres rejected it: the target of an
+    #    UPDATE cannot be referenced from its own FROM clause
+    #    (`InvalidColumnReference: invalid reference to FROM-clause entry
+    #    for table "e"`). A scalar subquery in SET may reference the target,
+    #    and `ORDER BY ... LIMIT 1` still lets the index stop early rather
+    #    than materialising every matching universe row per event.
     op.execute(
         """
         UPDATE events e
-           SET watch_reason = u.watch_reason
-          FROM LATERAL (
+           SET watch_reason = (
                  SELECT u2.watch_reason
                    FROM universe u2
                   WHERE u2.ticker = e.ticker
                     AND u2.as_of <= e.signal_date
                   ORDER BY u2.as_of DESC
                   LIMIT 1
-               ) u
+               )
          WHERE e.in_watch
         """
     )
