@@ -505,6 +505,50 @@ to be full.
 
 ---
 
+### The nightly sweep deletes serving's rows before the sync can replace them
+
+**Realised 2026-08-26**, first time the sync has failed inside the window.
+
+`cli.py::nightly` runs `_sweep_provisional_poll_rows` against **serving**
+and then `run_sync`. The ordering is deliberate and the comment says why:
+*"Runs before `run_sync` so the authoritative rows land after the
+provisional ones are gone, never the reverse."* Reversed, a half-failed
+sync leaves provisional rows it was just told to drop.
+
+But it converts a sync failure into **visible data loss**. That night the
+sweep removed the Pi's poller rows for 2026-08-26, the sync died 53.8
+minutes in, and serving held **zero** events for the current session while
+research held 670. Not stale -- empty. The site showed nothing for today.
+
+**The trigger was physical, not logical.** The Pi is on **WiFi** (`eth0` is
+DOWN and has never carried a byte; `wlan0` has received 14.2 GB) with
+`brcmf_cfg80211_set_power_mgmt: power save enabled`, and the machine was
+being handled to fit a case. Postgres logged `could not receive data from
+client: Connection reset by peer` while psycopg logged `server closed the
+connection` -- each blamed the other, which is what a torn TCP connection
+looks like from both ends. `vcgencmd get_throttled` returned `0x0`, so no
+under-voltage was involved.
+
+**Mitigated, not fixed.** The incremental sync cut the transfer from 114
+minutes to **1m37s**, shrinking the exposure ~70x. A 97-second window is
+still a window, and the failure mode is unchanged.
+
+The durable fix is that the sweep and the sync are one outcome or neither:
+
+- sweep **after** a successful sync rather than before, accepting that a
+  half-failed sync briefly leaves superseded provisional rows -- which are
+  stale, not absent, and ADR 140 already says they were never authoritative
+- or scope the sweep to exactly the rows the sync just wrote over, so a
+  sync that never ran deletes nothing
+
+The second is stricter and needs the sync to report what it shipped. The
+first is a two-line change and fails toward stale rather than empty.
+
+**Also worth doing regardless**: plug the Pi into Ethernet, and disable
+WiFi power save. Neither is a code change and both remove failure classes.
+
+---
+
 ### Watch-universe fires are invisible on the site
 
 Raised 2026-08-26 from a real miss: CCJ fired `confluence_high` at 06:45:40,

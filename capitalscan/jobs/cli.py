@@ -164,11 +164,22 @@ def actions(
     lookback: int = typer.Option(30, help="Days to look back"),
     tickers: Optional[str] = typer.Option(None, help="Comma-separated ticker list"),
 ) -> None:
-    """Fetch corporate actions (splits, dividends)."""
+    """Fetch corporate actions (splits, dividends).
+
+    `--lookback` bounds the **incremental** window only. A ticker with no
+    rows on file still gets its whole history, because that is the only
+    thing `yf.Ticker(t).actions` returns and a partial history is worse
+    than a slow first fetch.
+    """
     from capitalscan.jobs import ingest
 
     resolved = _resolve_tickers(tickers)
-    report = ingest.run_actions(resolved)
+    # **Passed through.** This option was declared and then dropped on the
+    # floor -- `run_actions` took its own default and `--lookback 90` did
+    # nothing, silently. Same shape as `fetch_listed` taking `exchange`,
+    # using it for the cache key and calling `_fetch_rows()` with none.
+    end = date.today()
+    report = ingest.run_actions(resolved, start=end - timedelta(days=lookback), end=end)
     console.print(f"actions: upserted {report.rows_written} rows for {len(report.tickers)} tickers")
 
 
