@@ -158,7 +158,9 @@ this entry exists.
 
 ---
 
-### A full `cscan sync` costs 1.5+ hours and 3 GB, mostly to rewrite rows
+### ~~A full `cscan sync` costs 1.5+ hours and 3 GB, mostly to rewrite rows~~
+
+**CLOSED 2026-08-26, `4ad1d41`** — same fix as the incremental entry below. The 3 GB resident set was the same `to_dict("records")` cost.
 
 Measured 2026-08-25: a re-sync to an already-populated Pi ran **1h33m and
 climbing**, 44 minutes of CPU, resident memory growing 1.26 GB → 3.0 GB.
@@ -257,7 +259,9 @@ route stops firing.
 
 ---
 
-### Three nightly fetchers ask one ticker at a time; the daily one batches
+### ~~Three nightly fetchers ask one ticker at a time; the daily one batches~~
+
+**CLOSED 2026-08-26.** All three batched: `bars_hourly` 54.5 min -> ~2 (`4f97d8b`), `actions` 21.3 -> ~2 (`9b008c9`), `earnings` 43.5 min -> 33 seconds (`647ee25`). The earnings one also found that Finnhub truncates a calendar response at 1,500 entries silently, so the naive single bulk call would have dropped AAPL and most of the universe while looking 43 minutes faster.
 
 Raised 2026-08-26 while `cscan nightly` sat in `bars_hourly` for 15+
 minutes. The two fetchers in `jobs/fetch/yahoo.py` have different shapes and
@@ -340,7 +344,9 @@ is short in normal operation and only slow now because the universe grew
 
 ---
 
-### `fetch_actions` caches on the ticker alone, so splits are never refreshed
+### ~~`fetch_actions` caches on the ticker alone, so splits are never refreshed~~
+
+**CLOSED 2026-08-26, `9b008c9`.** Superseded by the measured entry below, which has the cohort evidence.
 
 Raised 2026-08-26. **Correctness, not performance.**
 
@@ -381,7 +387,9 @@ never expire at all.
 
 ---
 
-### `fetch_actions` freezes every ticker's corporate actions forever — **correctness**
+### ~~`fetch_actions` freezes every ticker's corporate actions forever — **correctness**~~
+
+**CLOSED 2026-08-26, `9b008c9`.** The key carries the date, `source` moved to `yahoo_actions_v2`, and `fetch_actions_many` batches the incremental window so dating the key did not cost 49 minutes. **Still to do: run `cscan actions` once by hand** — the 30-day default window reaches back to 2026-07-27 and the oldest frozen cohort stopped at 2026-07-31, so a single run repairs it.
 
 Known and listed before; **measured 2026-08-26** and it is worse than the
 one-line note suggested.
@@ -448,7 +456,9 @@ Doing (1) without (2) is correct and will get reverted for being slow.
 
 ---
 
-### `cscan sync` has no incremental path, and it is half of nightly
+### ~~`cscan sync` has no incremental path, and it is half of nightly~~
+
+**CLOSED 2026-08-26, `4ad1d41`.** Nightly passes `incremental=True`; `cscan sync` still copies everything. The bound is the target's own watermark minus `SYNC_OVERLAP_DAYS`, so a store that missed a fortnight gets a fortnight. Profiling while it ran also settled *why* it was slow, and it was not the obvious answer: the Pi sat at load 1.11 of 4 cores with the SD card 15% utilised, while the workstation held 894 MB and 53.8% of one core building 7.4M Python dicts in `to_dict("records")`.
 
 Measured 2026-08-26. A full sync ships **7,469,519 rows in 114.2 minutes**.
 The rows that actually changed since the previous night:
@@ -552,7 +562,9 @@ backfill.
 
 ---
 
-### The Pi is serving the pre-NYSE generation — **highest priority**
+### ~~The Pi is serving the pre-NYSE generation — **highest priority**~~
+
+**CLOSED 2026-08-26.** `db sync-config` moved both `serving_config` rows and the research GUC to `a38d3ca6b58295e8`, and a 114.2-minute sync shipped the generation. Verified independently on the Pi: 341,250 `next_open` + 343,484 `touch`, matching research exactly. Kept for the ordering trap it records.
 
 Raised 2026-08-26 after a 109.7-minute sync shipped 7,345,158 rows of the
 **wrong config**.
@@ -597,7 +609,9 @@ that shipped the current one.
 
 ---
 
-### `run_indicators` holds every ticker's frame in memory before writing
+### ~~`run_indicators` holds every ticker's frame in memory before writing~~
+
+**CLOSED 2026-08-26.** Chunked at `INDICATOR_CHUNK_SIZE`, and rows land per chunk rather than once at the end — which also removed the failure where a mid-run `count(*)` looked like a hang and two working runs were killed.
 
 Raised 2026-08-26. It computes all tickers, concatenates the frames, then
 converts the whole thing to Python dicts for `db_io.upsert`. Measured on a
