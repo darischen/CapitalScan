@@ -8,6 +8,7 @@ of this lives in `core/` (invariant 1).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -1049,7 +1050,147 @@ def run_bars_daily(
         report.rows_written = db_io.upsert(engine, "bars", clean, ["ticker", "ts", "interval"])
         report.tickers = sorted(set(raw["ticker"])) if not raw.empty else []
         _update_ticker_coverage(engine, clean)
+
+        # **The vendor's adjustment cannot be assumed.** See
+        # `reconcile_daily_splits`. Runs after the upsert because it
+        # reconciles what is now stored, not what was just fetched.
+        adjusted = reconcile_daily_splits(engine, report.tickers, report.run_id)
+        if adjusted:
+            console.print(
+                f"[bold yellow]back-adjusted {len(adjusted)} ticker(s)[/bold yellow] "
+                f"for splits the vendor left unadjusted: {', '.join(sorted(adjusted))}"
+            )
     return report
+
+
+# How far back to look for splits needing reconciliation. A split is only
+# ever mis-served around its ex-date, and re-checking twenty years of
+# history every night would read the whole table to find nothing.
+SPLIT_RECONCILE_DAYS = 120
+
+
+def reconcile_daily_splits(
+    engine: Engine, tickers: Sequence[str], run_id: str, lookback_days: int = SPLIT_RECONCILE_DAYS
+) -> list[str]:
+    """Back-adjust stored daily bars for splits the vendor did not apply.
+
+    Returns the tickers adjusted.
+
+    **`run_bars_daily` assumed Yahoo returns split-adjusted history.** On
+    2026-08-27 that failed in both directions inside one week:
+
+    - **IESC** (2-for-1, 2026-08-24) — the vendor never adjusted. A fresh
+      fetch still returned 685.04 on 08-21 against 313.23 on 08-25, so
+      re-fetching could not fix it. Our copy was faithful to a wrong
+      source, and IESC's indicators were computed across a fabricated 52%
+      crash that produced a signal.
+    - **AVB** (2.793-for-1, 2026-08-17) — the vendor *did* adjust; our
+      stored history was stale, because nothing re-reads history.
+
+    Both were repaired by hand. This exists so the next one is not.
+
+    **Only acts on a decisive `"unadjusted"`.** `daily_split_state` returns
+    `"unresolved"` when the ratio sits within `MIN_DETECTABLE_SPLIT_DISTANCE`
+    of 1.0, because there the adjusted and unadjusted hypotheses are not
+    separable from ordinary daily noise — a first pass at this detection
+    reported SCCO, HON, SPGI, CMCSA, FNF, UL and CBSH as unadjusted and all
+    seven were false. Adjusting on a coin flip corrupts a correct series,
+    which is strictly worse than leaving a suspect one alone.
+
+    **Idempotent.** Once applied, the same comparison returns `"adjusted"`,
+    so a second run is a no-op. That matters because this runs every night.
+
+    **Writes an audit row per adjustment.** Silently rewriting stored prices
+    is the kind of change that is impossible to explain later.
+    """
+    if not tickers:
+        return []
+    cutoff = date.today() - timedelta(days=lookback_days)
+    with engine.connect() as conn:
+        splits = pd.read_sql(
+            text(
+                "SELECT ticker, ex_date, ratio FROM corporate_actions "
+                " WHERE action_type = 'split' AND ratio IS NOT NULL "
+                "   AND ex_date >= :cutoff AND ticker = ANY(:tickers) "
+                " ORDER BY ticker, ex_date"
+            ),
+            conn,
+            params={"cutoff": cutoff, "tickers": list(tickers)},  # type: ignore[arg-type]
+        )
+    if splits.empty:
+        return []
+
+    adjusted: list[str] = []
+    for row in splits.itertuples(index=False):
+        ticker = str(row.ticker)
+        ex_date = _as_day(row.ex_date)
+        ratio = float(row.ratio)  # type: ignore[arg-type]
+        with engine.connect() as conn:
+            before = conn.execute(
+                text(
+                    "SELECT close FROM bars WHERE ticker=:t AND interval='1d' "
+                    " AND ts < :d ORDER BY ts DESC LIMIT 1"
+                ),
+                {"t": ticker, "d": ex_date},
+            ).scalar_one_or_none()
+            after = conn.execute(
+                text(
+                    "SELECT close FROM bars WHERE ticker=:t AND interval='1d' "
+                    " AND ts >= :d ORDER BY ts ASC LIMIT 1"
+                ),
+                {"t": ticker, "d": ex_date},
+            ).scalar_one_or_none()
+        if before is None or after is None:
+            continue
+        if daily_split_state(float(before), float(after), ratio) != "unadjusted":
+            continue
+
+        # Only the pre-ex-date rows are read and rewritten. `back_adjust_daily`
+        # is the same function the unit tests pin, not a second copy of the
+        # arithmetic (invariant 2).
+        with engine.connect() as conn:
+            frame = pd.read_sql(
+                text("SELECT * FROM bars WHERE ticker=:t AND interval='1d' AND ts < :d"),
+                conn,
+                params={"t": ticker, "d": ex_date},  # type: ignore[arg-type]
+            )
+        if frame.empty:
+            continue
+        fixed = back_adjust_daily(frame, ex_date, ratio)
+        fixed["run_id"] = run_id
+        db_io.upsert(engine, "bars", fixed, ["ticker", "ts", "interval"])
+        db_io.append(
+            engine,
+            "bar_rejects",
+            [
+                {
+                    "ticker": ticker,
+                    "ts": pd.Timestamp(ex_date),
+                    "rule": "vendor_split_unadjusted",
+                    "severity": "flag",
+                    "payload": _json_safe_payload(
+                        {
+                            "ratio": ratio,
+                            "ex_date": str(ex_date),
+                            "rows_adjusted": int(len(fixed)),
+                            "close_before": float(before),
+                            "close_after": float(after),
+                        }
+                    ),
+                    "run_id": run_id,
+                }
+            ],
+        )
+        adjusted.append(ticker)
+    return adjusted
+
+
+def _as_day(value: object) -> date:
+    """`ex_date` comes back as a `date` from psycopg and a `Timestamp` from
+    pandas depending on the path; `back_adjust_daily` compares against a
+    `date`."""
+    ts = pd.Timestamp(value)  # type: ignore[arg-type]
+    return date(ts.year, ts.month, ts.day)
 
 
 # Tickers buffered before one `bars` upsert in `run_bars_hourly`. Small
