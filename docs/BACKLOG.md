@@ -45,7 +45,9 @@ is the correct direction to fail.
 
 ---
 
-### `events.sector` and `events.mcap_usd` are NULL on every row
+### ~~`events.sector` and `events.mcap_usd` are NULL on every row~~
+
+**CLOSED 2026-08-27.** Both halves. Migration `c2b91e4a7d08` backfilled the serving generation on both databases; `db_io.fill_event_sector_and_mcap` (`1151db7`) populates them on write as a post-pass, the same shape as `add_cofire_count`, so neither writer carries the lookup into its per-ticker workers. Verified live: the rebuild running that night wrote 482,568 rows with **99.9%** carrying both. The ~0.1% that stay NULL are the 123 tickers with no sector on file and events predating their first `universe` evaluation -- absent, not wrong (invariant 4). The asymmetry the entry warned about is now stated in the database itself via column comments: `mcap_usd` is point-in-time, `sector` is the accepted snapshot.
 
 Raised 2026-08-25 while building the model's training matrix. Both columns
 exist on `events` and both are empty:
@@ -192,7 +194,9 @@ option helps.
 
 ---
 
-### `universe` cannot say which config produced it
+### ~~`universe` cannot say which config produced it~~
+
+**CLOSED 2026-08-27.** Migration `d4a17c93f60b`: `config_hash` added, primary key now `(ticker, as_of, config_hash)`, applied to both databases. Nine readers and three views scoped (`3e87f66`). Pre-existing rows were tagged `'unknown'` rather than guessed at -- `runs` for the universe job recorded only the quarter -- then a tagged 66-quarter pass ran and the unknowns were deleted behind a verification gate. **78,204 rows, all `a38d3ca6b58295e8`, 66 quarters.** Arms can now coexist, so arms 2 and 3 need no universe pass of their own and the production arm no longer has to run last.
 
 Raised 2026-08-25. `PRIMARY KEY (ticker, as_of)` and **no `config_hash`
 column**, so two configs' membership cannot coexist: evaluating a second
