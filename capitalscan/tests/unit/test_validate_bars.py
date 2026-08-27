@@ -167,3 +167,92 @@ class TestMultiTicker:
         assert set(clean["ticker"]) == {"TSM", "NVDA"}
         assert len(clean) == 2
         assert any(r["ticker"] == "TSM" and r["rule"] == "high_lt_low" for r in rejects)
+
+
+class TestFabricatedFlatBars:
+    """A zero-volume bar repeating the prior close is a carried-forward price.
+
+    **Found in production, 2026-08-27.** AVB stored four consecutive bars at
+    exactly 65.9005 with volume 0 for 2026-08-17..20, spanning its 2.793
+    split. Yahoo has since served four distinct real closes for those
+    sessions, so the flat run was vendor filler, not the market.
+
+    Both existing rules saw it and both are `flag`: `zero_or_null_volume`
+    fired on every one of those bars, on every run, and `identical_close_run`
+    fires once a run is long enough. Neither clears `keep`, so the bars were
+    written anyway and the indicators read a fake flat line across a split.
+
+    Neither signal is conclusive alone, which is why they stay flags. CCZ,
+    GJS and SBNY have genuine zero-volume sessions, and a flat close on real
+    volume is an ordinary quiet day. The **conjunction** is not ordinary: a
+    bar with no trades whose close equals the previous close contains no
+    observation at all. Invariant 4 says an absent value is dropped and
+    logged, never carried forward, so this rejects.
+    """
+
+    def test_zero_volume_repeating_the_prior_close_is_rejected(self):
+        rows = [
+            _bar(ts="2020-01-02", close=100.0, volume=1_000_000),
+            _bar(ts="2020-01-03", close=100.0, volume=0),
+        ]
+        clean, rejects = validate_bars(_frame(rows))
+        assert len(clean) == 1, "the real bar survives"
+        assert clean.iloc[0]["volume"] == 1_000_000
+        hard = [r for r in rejects if r["severity"] == "reject"]
+        assert [r["rule"] for r in hard] == ["flat_zero_volume_bar"]
+
+    def test_a_whole_fabricated_run_is_rejected_and_the_real_bars_kept(self):
+        """AVB's exact shape: one real bar, four filler, one real."""
+        rows = [_bar(ts="2020-01-02", close=100.0, volume=1_000_000)]
+        rows += [
+            _bar(ts=d, close=100.0, volume=0)
+            for d in ("2020-01-03", "2020-01-06", "2020-01-07", "2020-01-08")
+        ]
+        rows.append(_bar(ts="2020-01-09", close=101.0, volume=900_000))
+        clean, rejects = validate_bars(_frame(rows))
+        assert len(clean) == 2
+        assert sorted(clean["close"].tolist()) == [100.0, 101.0]
+        hard = [r for r in rejects if r["severity"] == "reject"]
+        assert len(hard) == 4
+        assert {r["rule"] for r in hard} == {"flat_zero_volume_bar"}
+
+    def test_zero_volume_alone_is_still_only_flagged(self):
+        """Illiquid names really do have no-trade sessions. Rejecting on
+        volume alone would throw away real data for CCZ, GJS and SBNY."""
+        rows = [
+            _bar(ts="2020-01-02", close=100.0, volume=1_000_000),
+            _bar(ts="2020-01-03", close=100.8, volume=0),
+        ]
+        clean, rejects = validate_bars(_frame(rows))
+        assert len(clean) == 2, "kept: the price moved, so it is an observation"
+        assert not [r for r in rejects if r["severity"] == "reject"]
+        assert "zero_or_null_volume" in {r["rule"] for r in rejects}
+
+    def test_a_flat_close_on_real_volume_is_untouched(self):
+        """An ordinary quiet day. No flag, no reject."""
+        rows = [
+            _bar(ts="2020-01-02", close=100.0, volume=1_000_000),
+            _bar(ts="2020-01-03", close=100.0, volume=800_000),
+        ]
+        clean, rejects = validate_bars(_frame(rows))
+        assert len(clean) == 2
+        assert not [r for r in rejects if r["severity"] == "reject"]
+
+    def test_the_first_bar_of_a_batch_is_never_rejected_for_flatness(self):
+        """It has no predecessor in the batch, so `close == prior` cannot be
+        evaluated. Guessing from outside the frame would make the rule depend
+        on fetch boundaries."""
+        clean, rejects = validate_bars(_frame([_bar(volume=0)]))
+        assert len(clean) == 1
+        assert not [r for r in rejects if r["severity"] == "reject"]
+
+    def test_tickers_do_not_bleed_into_each_other(self):
+        """The comparison is per ticker. B's first bar must not be measured
+        against A's last."""
+        rows = [
+            _bar(ticker="AAA", ts="2020-01-02", close=100.0, volume=1_000_000),
+            _bar(ticker="BBB", ts="2020-01-02", close=100.0, volume=0),
+        ]
+        clean, rejects = validate_bars(_frame(rows))
+        assert len(clean) == 2
+        assert not [r for r in rejects if r["severity"] == "reject"]
