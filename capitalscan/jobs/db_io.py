@@ -17,6 +17,7 @@ import math
 from typing import Any
 
 import pandas as pd
+from psycopg.types.json import Jsonb
 from sqlalchemy import Engine, MetaData, Table, create_engine
 from sqlalchemy import types as sa_types
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -260,9 +261,31 @@ def copy_upsert(
     def _identity(v: Any) -> Any:
         return None if isinstance(v, float) and math.isnan(v) else v
 
-    converters = [
-        _as_int if isinstance(table.columns[c].type, sa_types.Integer) else _identity for c in cols
-    ]
+    def _as_json(v: Any) -> Any:
+        """`Jsonb`, because text COPY will not adapt a bare dict.
+
+        The parameter path adapts a `dict` on its own -- psycopg infers
+        JSONB from the target column. `COPY` has no column context, so the
+        dumper is chosen from the Python type alone and a plain `dict`
+        raises `cannot adapt type 'dict' using placeholder '%t'`. Wrapping
+        names the type explicitly.
+
+        Five columns across the synced tables reach this: `runs.params`,
+        `signal_reports.state_json` and `.call_overlay_json`,
+        `cell_stats.exit_mix`, `predictions.features_json`.
+        """
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return None
+        return Jsonb(v) if isinstance(v, (dict, list)) else v
+
+    def _converter(col_type: Any) -> Any:
+        if isinstance(col_type, sa_types.Integer):
+            return _as_int
+        if isinstance(col_type, sa_types.JSON):
+            return _as_json
+        return _identity
+
+    converters = [_converter(table.columns[c].type) for c in cols]
 
     set_clause = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in targets)
     action = f"DO UPDATE SET {set_clause}" if targets else "DO NOTHING"

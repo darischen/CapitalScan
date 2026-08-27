@@ -275,19 +275,28 @@ Long jobs, measured, so nobody starts one blind:
 
   | step | wall clock | rows |
   |---|---|---|
-  | `bars_daily` (batched) | 5.1 min | 5,737 |
-  | `bars_hourly` (batched; loop fixed `4f97d8b`) | **~2 min** | 40,605 |
-  | `actions` (batched + dated key `9b008c9`) | **~2 min** | 94,736 |
+  | `bars_daily` (batched) | 5.0 min | 5,740 |
+  | `bars_hourly` (batched; loop fixed `4f97d8b`) | 5.4 min | 40,615 |
+  | `actions` (batched + dated key `9b008c9`) | 4.0 min | 349 |
   | `market` | 0.0 min | 5 |
   | `shares` | 0.7 min | 236,008 |
-  | `earnings` (**per-ticker**, Finnhub) | **43.5 min** | 1,378 |
-  | `indicators` (5-day, `max_workers=1`) | 1.6 min | 5,571 |
-  | `events` (5-day) | 1.2 min | 3,118 |
-  | `path_capture` (incremental) | **1.2 min** | 20,483 |
-  | `peak_labels` | 1.1 min | 484,929 |
-  | `sync` (full 14-table copy) | **114.2 min** | 7,469,519 |
-  | **total** | **~2h52m** | |
-  | **total without `sync`** | **~58 min** | |
+  | `earnings` (bulk calendar `647ee25`) | **0.6 min** | 1,203 |
+  | `indicators` (5-day, `max_workers=1`) | 1.4 min | 5,574 |
+  | `events` (5-day) | 1.2 min | 3,119 |
+  | `path_capture` (incremental) | 1.2 min | 17,117 |
+  | `peak_labels` | 1.0 min | 484,929 |
+  | `sync` (**incremental**, COPY) | **0.4 min** | 104,669 |
+  | **total** | **~21 min** | |
+
+  **Measured end to end 2026-08-26 19:00 PT: 20.5 minutes**, on 1,470
+  tickers, against ~4h35m two days earlier. What changed, in order of size:
+
+  | | before | after |
+  |---|---|---|
+  | `earnings` | 43.5 min | **0.6** — the Finnhub calendar is bulk and was being asked per symbol |
+  | `sync` | 114.2 min | **0.4** — incremental bound, then `COPY` instead of a dict per row |
+  | `bars_hourly` | 54.5 min | **5.4** — batched fetch, then three per-ticker scans removed |
+  | `actions` | 21.3 min | **4.0** — batched, and the cache key now carries a date |
 
   - **This table has been wrong three separate ways, all on 2026-08-26.**
     Read the failure modes before trusting a figure in it.
@@ -314,15 +323,35 @@ Long jobs, measured, so nobody starts one blind:
     fixed the full-history rebuild, where 1,462 tickers held 11 GB
     resident. Nightly's `indicators` step is a 5-day window at 0.4 min
     and never touched that path.
-  - **`sync` is two thirds of the job**, and ships ~1,900x more than
-    changed: 7,469,519 rows in 114.2 min to deliver ~3,875 new ones. See
-    `BACKLOG.md`. Skipping it makes a nightly **~58 min**.
-  - **`earnings` is now the whole non-sync cost** — 43.5 of those 58
-    minutes. It is the last per-ticker fetcher, and it is the same change
-    that took `bars_hourly` from 54.5 min to ~2 and `actions` from 21.3 to
-    ~2. Batch it and a nightly without `sync` is under fifteen minutes.
+  - **`cscan sync` and nightly's sync are different commands now.** The
+    bare command still copies everything; nightly passes
+    `incremental=True`, bounded by the **serving store's own watermark** so
+    a Pi that missed a night is caught up rather than left with a hole. A
+    full pass is still ~7.4M rows -- run it after a rebuild or a reflash.
+  - **`sync` writes via `COPY` into a TEMP staging table** (`bd8cbc5`).
+    Measured 78,589 rows/s against ~1,090 for the dict path. Profiling said
+    the obvious suspects were wrong: the Pi was 76% idle (load 1.11 of four
+    cores, SD card 15% utilised) while the workstation held 894 MB and
+    53.8% of *one* core. It was `to_dict("records")` and SQLAlchemy
+    re-binding, not the network and not the database.
   - **`indicators` runs `max_workers=1` in nightly** (`cli.py`). Harmless at
-    a 5-day window; do not read 1.6 min as what the step costs on history.
+    a 5-day window; do not read 1.4 min as what the step costs on history.
+  - **`bars_hourly` at 5.4 min is `_back_adjust_hourly`, not fetching.**
+    The fetch is ~15 batched requests, about 30 seconds. Predicting ~2 min
+    was wrong and the remainder is real per-ticker computation.
+
+**Editing a module while a job runs gives it a split brain.** Found
+2026-08-26: `cscan nightly` imported `db_io` at startup, then imported
+`sync` **lazily** when the sync step began -- picking up a `sync.py` edited
+in between, which called a `db_io.copy_upsert` that the already-cached
+`db_io` module did not have. It failed instantly with `module
+'capitalscan.jobs.db_io' has no attribute 'copy_upsert'`.
+
+Nothing was corrupted, and the failure was loud. But the rule is wider than
+"no concurrent writers": **a long-running job holds whichever modules it has
+already imported and picks up the rest from disk as it reaches them.** Edit
+freely during a job whose remaining steps you are not touching; do not edit
+a module the job has not reached yet.
 
   - **Three fetchers account for ~2 hours of that**, and only because they
     request one ticker at a time. `bars_hourly` was batched on 2026-08-26
