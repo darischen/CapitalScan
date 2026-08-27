@@ -549,7 +549,9 @@ WiFi power save. Neither is a code change and both remove failure classes.
 
 ---
 
-### Watch-universe fires are invisible on the site
+### ~~Watch-universe fires are invisible on the site~~
+
+**CLOSED 2026-08-26.** Migration `a4f8c21d7e63` applied to both databases, frontend merged in #42 and deployed to the Pi. Verified on the rendered page: CCJ present with a `watch-mark` span and the label `Watch Universe: Below 200-Day SMA`, no `SCREEN_QUERY_FAILED`. Backfill landed 379,737 `pullback` and 62,983 `history` on research; 5,844 rows stay NULL because they predate the first `universe` snapshot, which is the honest answer. **This overrides `c8d3a1f70b25`'s separate-view design, deliberately** -- recorded in the migration docstring. `v_watchlist` is left in place and should be retired in its own revision.
 
 Raised 2026-08-26 from a real miss: CCJ fired `confluence_high` at 06:45:40,
 the poller logged it, and the home page never showed it.
@@ -731,7 +733,9 @@ the work; ORKA is just the thread.
 
 ---
 
-### ETF market cap — **investigated 2026-08-26, see ADR 156, not decided**
+### ~~ETF market cap — **investigated 2026-08-26, see ADR 156, not decided**~~
+
+**DECIDED 2026-08-26, not yet built.** ADR 156 -> option B via (i): store the derived share count `netAssets / close` with its own `source`. Still to do, and it wants its own dated migration -- it rewrites QQQ's `mcap_usd` from $289B to $453B across 66 quarters, which is a correction rather than a change (the existing figure comes from a share count frozen at 2021-03-17) but is still a rewrite of recorded history.
 
 Raised 2026-08-26, and this probably supersedes the entry below rather than
 complementing it. Measured against Yahoo:
