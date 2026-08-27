@@ -407,9 +407,24 @@ generation the site does not serve. Hit 2026-08-26: `SELECT count(*) FROM
 v_screen_live WHERE signal_date='2026-08-26'` returned **0** while the page
 rendered 138 rows for that date. The instrument was wrong, not the system.
 
-`ALTER DATABASE ... SET TimeZone` works (a standard parameter) and
-`ALTER DATABASE ... SET capitalscan.default_config_hash` does not. Set it
-per session, always:
+**Fixable, as of 2026-08-27.** `capscan` cannot set a custom parameter,
+but `postgres` can, and SSH to the Pi gives you that:
+
+```bash
+ssh darischen@192.168.1.30 "sudo -u postgres psql -c   \"ALTER DATABASE capitalscan_serving SET capitalscan.default_config_hash = '<hash>'\""
+```
+
+**Re-run it after every rebuild**, because `run_sync`'s own pin still fails
+-- it connects as `capscan`. Verify the two agree before trusting any
+manual query:
+
+```sql
+SELECT current_setting('capitalscan.default_config_hash', true),
+       (SELECT config_hash FROM serving_config);
+```
+
+If they disagree, or you would rather not touch the database default, set
+it per session instead:
 
 ```sql
 SET capitalscan.default_config_hash = '<hash from serving_config>';
