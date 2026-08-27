@@ -31,13 +31,18 @@ export function fmt(value: number | null | undefined, digits = 2): string {
 }
 
 export function pct(value: number | null | undefined, digits = 0): string {
-  return value === null || value === undefined ? NONE : `${(value * 100).toFixed(digits)}%`;
+  return value === null || value === undefined
+    ? NONE
+    : `${(value * 100).toFixed(digits)}%`;
 }
 
 /** A signed percentage. Returns carry their direction in the glyph as well
  * as the colour, so the number still reads correctly in a screenshot or for
  * a reader who cannot separate the two hues. */
-export function signedPct(value: number | null | undefined, digits = 1): string {
+export function signedPct(
+  value: number | null | undefined,
+  digits = 1,
+): string {
   if (value === null || value === undefined) return NONE;
   const s = (value * 100).toFixed(digits);
   return value > 0 ? `+${s}%` : `${s}%`;
@@ -68,14 +73,34 @@ export function vol(value: number | null | undefined): string {
 }
 
 /**
- * A timestamp as market-clock time.
+ * The zone every timestamp on this site is rendered in, and its label.
  *
- * ET, not the viewer's zone: the reader is looking at a trading session and
- * "09:35" has to mean the open regardless of where they are sitting.
+ * **Pacific, not Eastern and not the viewer's own zone** (user's decision,
+ * 2026-08-27). This read `America/New_York` on the argument that "09:35"
+ * should mean the open wherever the reader sits. The reader is one person,
+ * sitting in Pacific, and a page showing 11:47 while their clock says 08:47
+ * is a subtraction they have to do on every glance.
+ *
+ * The viewer's own zone is deliberately not used either: the server renders
+ * these, so `toLocaleTimeString` without a zone would format in the *Pi's*
+ * zone and change meaning if the Pi ever moved.
+ *
+ * `America/Los_Angeles` handles the PDT/PST switch itself, which is why the
+ * label is the zone-agnostic "PT".
+ */
+export const DISPLAY_TZ = "America/Los_Angeles";
+export const DISPLAY_TZ_LABEL = "PT";
+
+/**
+ * A timestamp as wall-clock time in `DISPLAY_TZ`.
+ *
+ * Callers that print the label must use `DISPLAY_TZ_LABEL` rather than
+ * writing it out: three tooltips said "ET" in string literals, so changing
+ * the zone here alone would have left them confidently wrong.
  */
 export function clock(iso: string): string {
   return new Date(iso).toLocaleTimeString("en-US", {
-    timeZone: "America/New_York",
+    timeZone: DISPLAY_TZ,
     hour12: false,
     hour: "2-digit",
     minute: "2-digit",
@@ -89,10 +114,14 @@ export function clock(iso: string): string {
  * a staleness measure, and the exactness would imply a precision the number
  * does not have. `meta.stalenessDays` is the one counted in sessions.
  */
-export function sessionsBetween(from: string | null, to: string | null): string {
+export function sessionsBetween(
+  from: string | null,
+  to: string | null,
+): string {
   if (!from || !to) return "?";
   const days = Math.round(
-    (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000,
+    (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) /
+      86_400_000,
   );
   return `${days}d`;
 }
@@ -106,7 +135,10 @@ export function sessionsBetween(from: string | null, to: string | null): string 
  * `/ticker/TSM?` all resolve to the same page rather than to an empty one.
  */
 export function normalizeSymbol(raw: string): string {
-  return raw.toUpperCase().replace(/[^A-Z0-9.\-]/g, "").slice(0, 12);
+  return raw
+    .toUpperCase()
+    .replace(/[^A-Z0-9.\-]/g, "")
+    .slice(0, 12);
 }
 
 /**
