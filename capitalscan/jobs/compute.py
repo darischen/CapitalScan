@@ -1275,6 +1275,7 @@ def run_events(
         # See `db_io.fill_event_sector_and_mcap`: a post-pass, so neither
         # writer needs the lookup in its per-ticker path.
         db_io.fill_event_sector_and_mcap(engine, report.run_id)
+        db_io.fill_event_derived_state(engine, report.run_id)
         report.rows_flagged = skipped_null
         report.tickers = sorted({row["ticker"] for row in deduped})
     return report

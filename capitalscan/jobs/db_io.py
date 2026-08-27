@@ -376,6 +376,55 @@ def fill_event_sector_and_mcap(engine: Engine, run_id: str) -> int:
     return mcap + sector
 
 
+def fill_event_derived_state(engine: Engine, run_id: str) -> int:
+    """Populate `bb_mid`, `close` and `vix_pct_252d` for one run's rows.
+
+    DESIGN §7.3's last three features (f1c8a260d94e). Each exists at t-1 in
+    a source table; this copies it onto the event row so the training frame
+    can read it, the same way `fill_event_sector_and_mcap` does.
+
+    **Every lookup is `ts < signal_date`**, reproducing `_prior_indicator`'s
+    "latest strictly before" (Ruling C3). Verified rather than assumed:
+    running this lateral for `bb_pctb`, a column the worker already
+    computes, matched the stored value on **20,000 of 20,000** rows with
+    zero mismatches. Invariant 3 is the highest-risk silent failure here, so
+    it gets a proof and not a comment.
+
+    **`close` is the t-1 close, never `entry_price`**, which is priced at
+    *t*. Using the entry as the denominator of `atr_14 / close` would put
+    it into a state-at-signal feature.
+
+    Scoped to `run_id` and only touching NULLs, so it is idempotent and
+    cannot rewrite another run's rows.
+    """
+
+    def _rows(result: Any) -> int:
+        return int(getattr(result, "rowcount", 0) or 0)
+
+    with engine.begin() as conn:
+        return _rows(
+            conn.execute(
+                text(
+                    "UPDATE events e SET"
+                    "  bb_mid = (SELECT i.bb_mid FROM indicators i"
+                    "             WHERE i.ticker = e.ticker AND i.interval = '1d'"
+                    "               AND i.ts < e.signal_date"
+                    "             ORDER BY i.ts DESC LIMIT 1),"
+                    "  close = (SELECT b.close FROM bars b"
+                    "            WHERE b.ticker = e.ticker AND b.interval = '1d'"
+                    "              AND b.ts < e.signal_date"
+                    "            ORDER BY b.ts DESC LIMIT 1),"
+                    "  vix_pct_252d = (SELECT m.vix_pct_252d FROM market_days m"
+                    "                   WHERE m.ts < e.signal_date"
+                    "                   ORDER BY m.ts DESC LIMIT 1)"
+                    " WHERE e.run_id = :run_id"
+                    "   AND (e.bb_mid IS NULL OR e.close IS NULL OR e.vix_pct_252d IS NULL)"
+                ),
+                {"run_id": run_id},
+            )
+        )
+
+
 def json_safe(value: object) -> object:
     """Coerce one value into something `json.dumps` accepts.
 

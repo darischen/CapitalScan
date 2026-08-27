@@ -71,6 +71,13 @@ SHARES_FULL_HISTORY_START = date(2015, 1, 1)
 # backward" (see `fetch_shares_full`'s docstring).
 SHARES_YAHOO_SOURCE = "yahoo_shares_full"
 
+# ADR 156. A fund's share count is `netAssets / price`, and the source says
+# so: the value is derived, not reported, and a reader must be able to tell
+# which without inferring it from the ticker. Yahoo's `sharesOutstanding`
+# for an ETF is one constant frozen at 2021-03-17 -- wrong rather than
+# stale, because creation and redemption move the real count daily.
+SHARES_NETASSETS_SOURCE = "yahoo_netassets"
+
 
 @dataclass
 class IngestReport:
@@ -1835,6 +1842,59 @@ def run_shares(
                 and ticker not in depositary
             ):
                 continue  # SEC is current enough; do not spend a Yahoo call
+            # **ADR 156: a fund does not have a share count to report.**
+            # `netAssets / price` is exact for a fund (`price x shares` IS
+            # net assets, by definition of NAV), so this is a change of
+            # units rather than an estimate. Tried before `shares_full`
+            # because for an ETF that fetcher returns either a 2021 constant
+            # or nothing at all.
+            if core_training.is_etf(ticker):
+                try:
+                    na = yahoo.fetch_net_assets(ticker)
+                except Exception as exc:  # noqa: BLE001 - a skip, not a failure
+                    yahoo_skipped.append((ticker, f"netAssets fetch raised: {exc}"))
+                    continue
+                if na.empty:
+                    yahoo_skipped.append((ticker, "no netAssets published"))
+                    continue
+                row = na.iloc[0]
+                derived = int(round(float(row["net_assets"]) / float(row["price"])))
+                reason = _implausible_shares_reason(derived, shares_bounds)
+                if reason is not None:
+                    share_rejects.append(
+                        {
+                            "ticker": ticker,
+                            "ts": as_of,
+                            "rule": reason,
+                            "severity": "reject",
+                            "payload": _json_safe_payload(
+                                {
+                                    "shares": derived,
+                                    "net_assets": float(row["net_assets"]),
+                                    "price": float(row["price"]),
+                                    "source": SHARES_NETASSETS_SOURCE,
+                                }
+                            ),
+                        }
+                    )
+                    continue
+                # One row, dated today. `netAssets` is a current figure and
+                # there is no history to fabricate -- the same reason
+                # `fetch_shares_full`'s docstring rejects holding one
+                # current number backward across every `as_of`.
+                if (ticker, as_of) not in existing_keys:
+                    upsert_rows.append(
+                        {
+                            "ticker": ticker,
+                            "filed_on": as_of,
+                            "period_end": None,
+                            "shares": derived,
+                            "source": SHARES_NETASSETS_SOURCE,
+                        }
+                    )
+                yahoo_used.append(ticker)
+                continue
+
             try:
                 full = yahoo.fetch_shares_full(ticker, SHARES_FULL_HISTORY_START, as_of)
             except Exception as exc:  # yfinance failure is a skip, not a job failure

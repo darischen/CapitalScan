@@ -940,6 +940,7 @@ def run_backtest(
         # point-in-time universe lateral into every process. Same shape as
         # `add_cofire_count` -- the cross-cutting part runs once, here.
         db_io.fill_event_sector_and_mcap(engine, run_id)
+        db_io.fill_event_derived_state(engine, run_id)
 
     return BacktestReport(
         run_id=run_id,
