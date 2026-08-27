@@ -868,6 +868,52 @@ def _download_info(ticker: str) -> dict:
     return dict(yf.Ticker(ticker).info or {})
 
 
+def _net_assets_key(ticker: str) -> str:
+    """`{ticker}_{today}`.
+
+    Dated for the same reason `_actions_key` is: net assets move daily
+    through creation and redemption, so a key without a date freezes a
+    fund's size at whenever it was first asked about. `yahoo_actions` made
+    exactly that mistake and held 640 tickers at their 2026-07-31 values.
+    """
+    return f"{ticker}_{date.today().isoformat()}"
+
+
+@cached(source="yahoo_net_assets_v1", key_fn=_net_assets_key)
+def fetch_net_assets(ticker: str) -> pd.DataFrame:
+    """A fund's net assets and price, for ADR 156's derived share count.
+
+    **Why this exists.** `sharesOutstanding` is wrong for every ETF here,
+    not merely stale: measured 2026-08-26, SPY and QQQ carry one constant
+    repeated on all 96-99 dated rows, ending 2021-03-17, identical to what
+    `info` returns today. An ETF's share count moves daily through creation
+    and redemption -- that mechanism is what holds the price near NAV -- so
+    a constant is not a disagreeing measurement, it is a wrong one. VOO and
+    IBIT return nothing at all.
+
+    `netAssets` is published for all four. For a fund `price x shares` **is**
+    net assets by definition of NAV, so `netAssets / price` recovers the
+    share count exactly rather than estimating it. That identity is what
+    makes ADR 156's option (i) a change of units instead of a fabrication.
+
+    Returns a one-row frame -- `@cached` writes with `to_parquet`. An empty
+    frame means Yahoo published neither field, which is a skip, not a
+    failure: an ordinary company has no `netAssets` and should never reach
+    here.
+    """
+    raw = _download_info(ticker)
+    cols = ["ticker", "net_assets", "price"]
+    if not raw:
+        return pd.DataFrame(columns=cols)
+    net = raw.get("netAssets")
+    # `regularMarketPrice` first: `previousClose` is a day stale, and a
+    # fund's NAV and price move together intraday.
+    price = raw.get("regularMarketPrice") or raw.get("previousClose")
+    if net is None or not price:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame([{"ticker": ticker, "net_assets": float(net), "price": float(price)}])
+
+
 def _sector_key(ticker: str) -> str:
     return ticker
 

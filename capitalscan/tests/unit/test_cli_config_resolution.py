@@ -253,8 +253,8 @@ def test_universe_command_threads_resolved_params(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_CONFIG_FILE", _toml(tmp_path, "[universe]\nmin_mcap_usd = 5.0\n"))
     captured = {}
 
-    def _fake_run_universe(quarter, tickers=None, engine=None, up=None, today=None):
-        captured["up"] = up
+    def _fake_run_universe(quarter, tickers=None, engine=None, up=None, today=None, config=None):
+        captured["config"] = config
         return SimpleNamespace(tickers=[])
 
     monkeypatch.setattr("capitalscan.jobs.compute.run_universe", _fake_run_universe)
@@ -265,7 +265,14 @@ def test_universe_command_threads_resolved_params(monkeypatch, tmp_path):
     # Any `UniverseParams` field would do; this asserts the section is
     # threaded, not the field. It read `min_price` until ADR 142 removed
     # that field as dead config.
-    assert captured["up"].min_mcap_usd == 5.0
+    #
+    # **The whole `Config` is threaded now, not just its `universe`
+    # section** (d4a17c93f60b): `universe.config_hash` is a hash over the
+    # entire Config, so a job handed only `UniverseParams` could not
+    # compute the value every other job writes -- the divergence
+    # `run_events` records as Final-review Finding 1.
+    assert captured["config"] is not None, "run_universe was not given the resolved Config"
+    assert captured["config"].universe.min_mcap_usd == 5.0
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { clock, fmt } from "@/lib/format";
+import { DISPLAY_TZ_LABEL, clock, fmt } from "@/lib/format";
 import type { LiveQuote } from "@/lib/ticker";
 
 /**
@@ -85,7 +85,7 @@ export default function LivePrice({
       <span className="k">live</span>
       <span
         className={`num big ${close !== null && quote.price >= close ? "up" : "down"}`}
-        title={`polled ${clock(quote.ts)} ET`}
+        title={`polled ${clock(quote.ts)} ${DISPLAY_TZ_LABEL}`}
       >
         {fmt(quote.price)}
       </span>

@@ -192,8 +192,27 @@ reach it to run `sync`, so open it to the LAN and nothing wider. In
 `/etc/postgresql/*/main/postgresql.conf`:
 
 ```
-listen_addresses = 'localhost,192.168.1.30'     # the Pi's own LAN address
+listen_addresses = '*'
 ```
+
+**`'*'`, not the Pi's own address, and the reason is a real outage.** A
+named address must *exist* when Postgres binds. On 2026-08-27 a power cut
+took out the Pi and the router together; Postgres started at 06:17:15 and
+wlan0 did not associate until **06:21:57**, four minutes and forty-two
+seconds later. It bound loopback only, `systemctl` said `Started`, and the
+poller could not connect while RDP worked fine.
+
+The `network-online.target` drop-in below was already in place and applied
+correctly -- `systemctl show` confirmed `Wants=` and `After=` on the
+resolved unit. It did not help, and could not: `NetworkManager-wait-online`
+returned early while the supplicant was still `disconnected`, and no
+ordering fix waits five minutes for an interface. `0.0.0.0` binds
+regardless of which addresses exist yet.
+
+**Safe because `pg_hba.conf` is the access control, not the listener.** The
+rule below admits `capscan` to `capitalscan_serving` from
+`192.168.1.0/24` only, so widening the listener changes who can open a
+socket, never who can authenticate. The Pi has no port forwarding.
 
 In `pg_hba.conf`, add the workstation's subnet only:
 
@@ -202,7 +221,7 @@ host    capitalscan_serving    capscan    192.168.1.0/24    scram-sha-256
 ```
 
 ```bash
-sudo systemctl restart postgresql
+sudo systemctl restart postgresql@17-main   # NOT @18 - see the version note
 ```
 
 **That address does not exist yet at boot, and Postgres starts anyway.**
@@ -377,6 +396,66 @@ and it is wrapped so a Pi that is asleep reports a warning without failing
 the ingest.
 
 Nothing about the poller, the backtest, or the research database changes.
+
+---
+
+## Postgres tuning applied on the Pi (2026-08-26)
+
+Both set live and verified. **Neither is in a migration** -- they are
+properties of this machine, not of the schema, so a fresh serving store
+built elsewhere will not have them and should.
+
+```sql
+-- as the postgres unix user: sudo -u postgres psql
+ALTER DATABASE capitalscan_serving SET synchronous_commit = off;
+ALTER SYSTEM SET max_wal_size = '4GB';
+SELECT pg_reload_conf();
+```
+
+**`synchronous_commit = off`.** Every row in the serving store is derived
+and rebuildable by `cscan sync`, so a crash losing the last few
+transactions costs a re-sync and nothing else. That is exactly the trade
+this setting is for, and on SD-card storage it is the single largest write
+win available. Scoped to the database rather than the server, so anything
+else on this Postgres keeps full durability.
+
+**`max_wal_size` 1GB -> 4GB.** Its own log showed a checkpoint every ~270
+seconds during a sync, each writing ~8,700 buffers over a ~400MB WAL
+distance -- the 1GB ceiling was forcing checkpoints mid-transfer. 4GB lets
+a whole sync land between them. 30GB free on the card, so the space is
+there.
+
+**Applies to new sessions.** `ALTER DATABASE ... SET` does not touch
+connections that are already open, so a running job keeps the old value.
+
+**Considered and not applied:** `wal_compression = on`, which trades CPU
+for less WAL written. Plausible here -- the Pi sat at 24% CPU during a
+sync -- but unmeasured, so it stays a suggestion rather than a change.
+
+**Not doing:** moving the Pi to Ethernet. It runs on `wlan0` with power
+save enabled (`eth0` has never carried a byte), and that is what killed a
+53-minute sync on 2026-08-26. User's decision, 2026-08-26: the machine is
+not going to be handled often, and the incremental sync cut the exposure
+window from 114 minutes to ~2.
+
+---
+
+## The Pi runs PostgreSQL **17**
+
+Not 18. The workstation's `psql` client is 18 and this file has said 18 in
+places, which cost a real minute on 2026-08-27: `sudo systemctl restart
+postgresql@18-main` returns
+
+    Assertion failed on job for postgresql@18-main.service.
+
+because the template's `AssertPathExists=/etc/postgresql/18/main/
+postgresql.conf` does not hold. It is not a permissions or a service
+problem, and the message does not say which. Check first:
+
+```bash
+pg_lsclusters          # Ver Cluster Port Status -> 17 main 5432 online
+sudo systemctl restart postgresql@17-main
+```
 
 ---
 

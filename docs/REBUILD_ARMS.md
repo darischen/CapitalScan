@@ -62,15 +62,86 @@ output for one config, violating ADR 060.
 .\scripts\universe_backfill.ps1          # -StartFrom 2017Q3 to resume
 
 # b. backtest, split into phases so it is restartable
-uv run cscan backtest --workers 8 --phase compute
+uv run cscan backtest --workers 8 --chunk-size 24 --phase compute
 uv run cscan backtest --workers 8 --phase finalize
 uv run cscan backtest --workers 8 --phase harness
 
-# c. statistics, so the arms are comparable
-uv run cscan stats rho
-uv run cscan stats cells
-uv run cscan stats benchmarks
+# c. statistics. Every command needs --config-hash; cells and benchmarks
+#    need both splits, and NEVER holdout.
+uv run cscan stats rho        --config-hash <hash>
+uv run cscan stats cells      --config-hash <hash> --split-key train
+uv run cscan stats cells      --config-hash <hash> --split-key validate
+uv run cscan stats benchmarks --config-hash <hash> --split-key train    --workers 8
+uv run cscan stats benchmarks --config-hash <hash> --split-key validate --workers 8
 ```
+
+**Pass `--workers 8 --chunk-size 24`. The CLI defaults are `1` and `25`
+and are deliberately left alone**, so a bare `cscan backtest` runs serially.
+Changing the `--chunk-size` default would silently invalidate every
+in-progress rebuild: `_chunk_already_done` keys on `(config_hash, chunk,
+of)`, so a different value re-runs every chunk rather than resuming.
+
+**8 workers, not 16.** This machine is an **AMD Ryzen 7 3700X: 8 physical
+cores, 16 logical**. The second logical processor on each core shares that
+core's execution units and L1/L2 cache, so SMT pays off when threads stall
+on memory *latency* and pays off least when they are already saturating
+memory *bandwidth* -- which is what pandas frame work does. Eight is one
+worker per physical core.
+
+This line said 14 on 2026-08-27, from reading "16 logical" and treating
+them as sixteen independent cores. It was never measured. **Whether 10-12
+beats 8 here is an open empirical question**, and the way to settle it is
+one `--phase compute` run per setting against the same config, comparing
+the `backtest_compute` rows in `runs`. Until someone does that, 8 is the
+defensible number and the 81.9-minute baseline was measured at it.
+
+**`--chunk-size` should be a multiple of `--workers`.** The pool submits one
+ticker per worker, so 25 across 8 runs waves of 8, 8, 8 and then **1** --
+the last wave leaves seven workers idle, once per chunk for 59 chunks. 24
+is three clean waves. The gain is the ragged tail only, so expect a few
+percent, not the 20% an unaligned-to-aligned comparison might suggest.
+
+**Per-chunk timings are too noisy to compare in small numbers.** Measured
+across the 59 chunks of the 2026-08-26 run: **min 36.1 s, mean 83.2 s, max
+148.0 s, standard deviation 29.9 s**. Chunks differ in how much history
+their tickers carry, so a handful of them says nothing about a run.
+
+On 2026-08-27 four chunks averaging 93.2 s were read as a 16% regression
+against the 83.2 s mean. With sd = 29.9 the standard error at n=4 is ~15 s,
+so a 10 s gap is inside one standard error -- and the comparison was
+structurally invalid anyway, because `--chunk-size 24` versus 25 puts
+different tickers in "chunk 1". Normalised per ticker the first chunk was
+*faster* and the next three slower, which is what noise looks like.
+
+**Measured again 2026-08-27, whole phase this time: 90.3 min over 57
+chunks / 1,294,680 rows**, against 81.9 min over 59 / 1,365,000. Per row
+that is 4.19 ms against 3.60 -- **~16% slower, and real**: at n=57 the
+standard error is 4.0 s and the gap is ~12 s per chunk, about three of
+them. (57 not 61 because four chunks from an aborted attempt shared
+`of=61` and were correctly skipped.)
+
+**Most of that is a cost added on purpose.**
+`db_io.fill_event_sector_and_mcap` runs two `UPDATE`s per chunk, and the
+same work as a one-shot migration took 15m57s across both databases -- so
+roughly 8 minutes for research alone, spread over 61 chunks. The rest is
+wider rows: `sector` and `mcap_usd` now carry values where they were NULL,
+and `bb_mid`/`close`/`vix_pct_252d` will add three more.
+
+Budget ~96 min for compute, not 81.9. It buys a training frame that no
+longer has to join four tables to see what an event looked like.
+
+**Compare whole phases, never chunk samples.** The `backtest_compute` rows
+in `runs` sum to the phase; that sum is the only figure worth quoting.
+
+**`stats benchmarks --workers 8` is the largest statistics win.** The 200
+random-entry replications are independent by construction, each seeded on
+`(config_hash, replication)`, and were running one at a time. Measured
+2026-08-27 on validate: **15.6 min serial, 3.99 at 8 workers, 4.39 at 4**,
+output verified byte-identical to serial on every arm and replication.
+
+It does **not** help below ~40 replications -- 24 measured 109.7 s serial
+against 109.5 s on eight workers, because the 35 s per-worker setup is the
+whole job there. Leave ADR 061's `--replications 50` sweeps serial.
 
 **Keep `--chunk-size` identical across restarts.** `_chunk_already_done`
 keys on `(config_hash, chunk, of)`, so changing it re-runs every chunk.

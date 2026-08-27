@@ -52,6 +52,12 @@ from capitalscan.jobs import db_io
 from capitalscan.jobs.config import config_hash, split_key_for
 from capitalscan.jobs.ingest import IngestReport, run_job
 
+# Rows written without a resolved `Config`. Matches what migration
+# d4a17c93f60b backfilled onto every pre-existing row: nothing recorded
+# what produced them, and a guess written down as a fact is worse than
+# a label that says so.
+UNKNOWN_CONFIG_HASH = "unknown"
+
 MIN_BARS_FOR_INDICATORS = 280
 INDICATOR_COLUMNS = [
     "bb_mid",
@@ -642,6 +648,7 @@ def run_universe(
     engine: Engine | None = None,
     up: UniverseParams | None = None,
     today: date | None = None,
+    config: Config | None = None,
 ) -> IngestReport:
     """`universe` job (DESIGN §4.6). `quarter` like `'2026Q3'`.
 
@@ -649,9 +656,22 @@ def run_universe(
     (DEFECT 3) — injectable so tests do not depend on the real calendar;
     defaults to `date.today()` for real runs (jobs own clock access,
     invariant 1's IO carve-out — same pattern as `run_shares`'s `as_of`).
+
+    **`config`, not `up`, decides `config_hash`.** The hash is over the
+    whole `Config`, so deriving it from `UniverseParams` alone would produce
+    a different value than every other job writes — the divergence
+    `run_events`' docstring records as Final-review Finding 1, where a
+    `config_hash` computed from a partial object silently split one
+    generation into two under a natural key.
+
+    `up` is still accepted and still wins when both are given, because a
+    caller sweeping one parameter passes exactly that. When `config` is
+    absent the rows are tagged `'unknown'` — honest, and it keeps every
+    existing test caller working — but a real pass should pass `config`.
     """
     engine = engine or db_io.get_engine()
-    up = up or UniverseParams()
+    resolved_hash = config_hash(config) if config is not None else UNKNOWN_CONFIG_HASH
+    up = up or (config.universe if config is not None else UniverseParams())
     today = today or date.today()
     as_of = _quarter_end(quarter)
     if as_of > today:
@@ -661,7 +681,7 @@ def run_universe(
             "quarter closes, or evaluate the most recently completed quarter instead."
         )
 
-    with run_job(engine, "universe", {"quarter": quarter}) as report:
+    with run_job(engine, "universe", {"quarter": quarter, "config_hash": resolved_hash}) as report:
         mcap_bounds = McapPlausibility()
         mcap_rejects: list[dict] = []
         if tickers is None:
@@ -799,7 +819,13 @@ def run_universe(
                 r["run_id"] = report.run_id
             db_io.append(engine, "bar_rejects", mcap_rejects)
 
-        report.rows_written = db_io.upsert(engine, "universe", rows, ["ticker", "as_of"])
+        # **`config_hash` is part of the key now**, so two configs' membership
+        # coexists instead of the second overwriting the first row for row.
+        for row in rows:
+            row["config_hash"] = resolved_hash
+        report.rows_written = db_io.upsert(
+            engine, "universe", rows, ["ticker", "as_of", "config_hash"]
+        )
         report.tickers = [str(r["ticker"]) for r in rows]
     return report
 
@@ -906,15 +932,29 @@ def _read_market_days(engine: Engine, start: date, end: date) -> pd.DataFrame:
         )
 
 
-def _read_universe_flags(engine: Engine, tickers: list[str]) -> pd.DataFrame:
+def _read_universe_flags(engine: Engine, tickers: list[str], config_hash: str) -> pd.DataFrame:
+    """Trade/watch membership for one config generation.
+
+    **Scoped on `config_hash`, which it was not until 2026-08-27.** `universe`
+    held one generation when this was written, so `(ticker, as_of)` was
+    unique and an unscoped read was correct. `d4a17c93f60b` put
+    `config_hash` in the primary key so ablation arms can coexist, and the
+    same query then returns one row *per generation*: the caller's merge on
+    `(ticker, as_of)` would fan out, and a ticker `in_trade` under arm 2
+    would mark events for arm 1.
+
+    `research/backtest.py::_read_universe_flags` already scoped this way,
+    which is what made the divergence visible -- the two reads of the same
+    table disagreed about whether a generation is part of the key.
+    """
     with engine.connect() as conn:
         return pd.read_sql(
             text(
                 "SELECT ticker, as_of, in_trade, in_watch FROM universe "
-                "WHERE ticker = ANY(:tickers)"
+                "WHERE ticker = ANY(:tickers) AND config_hash = :chash"
             ),
             conn,
-            params={"tickers": tickers},  # type: ignore[arg-type]
+            params={"tickers": tickers, "chash": config_hash},  # type: ignore[arg-type]
         )
 
 
@@ -1133,7 +1173,7 @@ def run_events(
         bars = _read_bars_range(engine, tickers, target_start, target_end)
         indicators = _read_indicators_range(engine, tickers, ind_start, target_end)
         market = _read_market_days(engine, target_start, target_end).set_index("ts")
-        universe_flags = _read_universe_flags(engine, tickers)
+        universe_flags = _read_universe_flags(engine, tickers, chash)
 
         # Debounce on `debounce_key(hit)` — the explicit (ticker, signal_date,
         # bound) tuple, never on the `SignalHit` dataclass itself (DESIGN
@@ -1246,6 +1286,10 @@ def run_events(
                 ["config_hash", "ticker", "signal_date", "signal_type", "entry_kind"],
                 update_columns=_RUN_EVENTS_UPDATE_COLUMNS,
             )
+        # See `db_io.fill_event_sector_and_mcap`: a post-pass, so neither
+        # writer needs the lookup in its per-ticker path.
+        db_io.fill_event_sector_and_mcap(engine, report.run_id)
+        db_io.fill_event_derived_state(engine, report.run_id)
         report.rows_flagged = skipped_null
         report.tickers = sorted({row["ticker"] for row in deduped})
     return report

@@ -55,6 +55,7 @@ SELECT * FROM (
     FROM universe u
     JOIN tickers t ON t.ticker = u.ticker
     WHERE u.as_of <= :as_of
+      AND u.config_hash = current_setting('capitalscan.default_config_hash', true)
     ORDER BY u.ticker, u.as_of DESC
 ) s
 ORDER BY s.mcap_rank NULLS LAST, s.ticker

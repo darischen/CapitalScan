@@ -1,5 +1,6 @@
 import DatePicker from "./DatePicker";
 import {
+  DISPLAY_TZ_LABEL,
   SIGNAL_LABELS,
   clock,
   fmt,
@@ -278,7 +279,7 @@ function ReversalBadge({ row }: { row: ScreenRow }) {
     return (
       <span
         className="reversal live"
-        title={`poller at ${clock(rev.ts)} ET: above the band and below today's open${gap ? ` (${gap})` : ""}`}
+        title={`poller at ${clock(rev.ts)} ${DISPLAY_TZ_LABEL}: above the band and below today's open${gap ? ` (${gap})` : ""}`}
       >
         ↓ live reversal
       </span>
@@ -290,7 +291,7 @@ function ReversalBadge({ row }: { row: ScreenRow }) {
   return (
     <span
       className="reversal near"
-      title={`poller at ${clock(rev.ts)} ET: not reversing${gap ? ` (${gap})` : ""}`}
+      title={`poller at ${clock(rev.ts)} ${DISPLAY_TZ_LABEL}: not reversing${gap ? ` (${gap})` : ""}`}
     >
       {gap ?? "no reversal"}
     </span>

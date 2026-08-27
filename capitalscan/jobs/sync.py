@@ -136,7 +136,16 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
         SyncTable("tickers", "SELECT * FROM tickers", ("ticker",)),
         SyncTable("trading_days", "SELECT * FROM trading_days", ("d",)),
         SyncTable("market_days", "SELECT * FROM market_days", ("ts",)),
-        SyncTable("universe", "SELECT * FROM universe", ("ticker", "as_of")),
+        # **Keyed on the hash too, and scoped to it.** `universe` gained
+        # `config_hash` in d4a17c93f60b so ablation arms can coexist locally.
+        # Serving reads exactly one generation, so shipping the others would
+        # copy rows no query there can reach -- and shipping them under the
+        # old two-column key would collapse them onto each other.
+        SyncTable(
+            "universe",
+            "SELECT * FROM universe WHERE config_hash = :config_hash",
+            ("ticker", "as_of", "config_hash"),
+        ),
         SyncTable("serving_config", "SELECT * FROM serving_config", ("only_row",)),
         # Scoped by trade-universe membership rather than by ticker list:
         # the deployed chart only ever draws a name the screener can show.
@@ -148,14 +157,16 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
             "bars",
             "SELECT b.* FROM bars b WHERE b.interval = '1d' "
             "AND b.ts >= GREATEST(:cutoff, COALESCE(CAST(:bars_from AS date), :cutoff)) "
-            "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = b.ticker AND u.in_trade)",
+            "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = b.ticker AND u.in_trade "
+            "AND u.config_hash = :config_hash)",
             ("ticker", "ts", "interval"),
         ),
         SyncTable(
             "indicators",
             "SELECT i.* FROM indicators i WHERE i.interval = '1d' "
             "AND i.ts >= GREATEST(:cutoff, COALESCE(CAST(:indicators_from AS date), :cutoff)) "
-            "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = i.ticker AND u.in_trade)",
+            "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = i.ticker AND u.in_trade "
+            "AND u.config_hash = :config_hash)",
             ("ticker", "ts", "interval"),
         ),
         # **`runs`, narrowed to what the foreign key needs.** ADR 053 keeps
@@ -424,14 +435,19 @@ def run_sync(
                 source,
                 params={"cutoff": cutoff, "config_hash": config_hash, **bounds},  # type: ignore[arg-type]
             )
-            written = 0
-            per_batch = _rows_per_batch(len(frame.columns))
-            for start in range(0, len(frame), per_batch):
-                batch = frame.iloc[start : start + per_batch]
-                written += db_io.upsert(
-                    target, table.name, batch.to_dict("records"), list(table.key)
-                )
-            rows[table.name] = written
+            # **`COPY` into a staging table, not row dicts.** Profiled
+            # during a full sync on 2026-08-26: the Pi was 76% idle (load
+            # 1.11 of four cores, SD card 15% utilised) while this process
+            # held 894 MB and 53.8% of one core. The constraint was
+            # `to_dict("records")` building 7.4M Python dicts and SQLAlchemy
+            # re-binding each one -- three full representations of every row
+            # to move it between two databases.
+            #
+            # `_rows_per_batch` chunking is gone with it: `COPY` streams, so
+            # there are no bind parameters to stay under `MAX_BIND_PARAMS`,
+            # and the whole table lands in one transaction instead of one
+            # per 1,000 rows.
+            rows[table.name] = db_io.copy_upsert(target, table.name, frame, list(table.key))
 
         # Assigned *before* the pin, which can raise. Measured 2026-08-21:
         # a pin failure discarded the count and recorded rows_written = 0

@@ -95,7 +95,10 @@ def captured_upsert(monkeypatch):
     monkeypatch.setattr(
         compute,
         "_read_universe_flags",
-        lambda engine, tickers: pd.DataFrame(columns=["ticker", "as_of", "in_trade"]),
+        # `*a` absorbs the config_hash `run_events` now passes: this stub
+        # stands in for a real read, and pinning its arity here just makes
+        # an unrelated signature change look like a failure of this test.
+        lambda engine, tickers, *a: pd.DataFrame(columns=["ticker", "as_of", "in_trade"]),
     )
     return calls
 

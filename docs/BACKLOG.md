@@ -45,7 +45,9 @@ is the correct direction to fail.
 
 ---
 
-### `events.sector` and `events.mcap_usd` are NULL on every row
+### ~~`events.sector` and `events.mcap_usd` are NULL on every row~~
+
+**CLOSED 2026-08-27.** Both halves. Migration `c2b91e4a7d08` backfilled the serving generation on both databases; `db_io.fill_event_sector_and_mcap` (`1151db7`) populates them on write as a post-pass, the same shape as `add_cofire_count`, so neither writer carries the lookup into its per-ticker workers. Verified live: the rebuild running that night wrote 482,568 rows with **99.9%** carrying both. The ~0.1% that stay NULL are the 123 tickers with no sector on file and events predating their first `universe` evaluation -- absent, not wrong (invariant 4). The asymmetry the entry warned about is now stated in the database itself via column comments: `mcap_usd` is point-in-time, `sector` is the accepted snapshot.
 
 Raised 2026-08-25 while building the model's training matrix. Both columns
 exist on `events` and both are empty:
@@ -192,7 +194,9 @@ option helps.
 
 ---
 
-### `universe` cannot say which config produced it
+### ~~`universe` cannot say which config produced it~~
+
+**CLOSED 2026-08-27.** Migration `d4a17c93f60b`: `config_hash` added, primary key now `(ticker, as_of, config_hash)`, applied to both databases. Nine readers and three views scoped (`3e87f66`). Pre-existing rows were tagged `'unknown'` rather than guessed at -- `runs` for the universe job recorded only the quarter -- then a tagged 66-quarter pass ran and the unknowns were deleted behind a verification gate. **78,204 rows, all `a38d3ca6b58295e8`, 66 quarters.** Arms can now coexist, so arms 2 and 3 need no universe pass of their own and the production arm no longer has to run last.
 
 Raised 2026-08-25. `PRIMARY KEY (ticker, as_of)` and **no `config_hash`
 column**, so two configs' membership cannot coexist: evaluating a second
@@ -549,7 +553,9 @@ WiFi power save. Neither is a code change and both remove failure classes.
 
 ---
 
-### Watch-universe fires are invisible on the site
+### ~~Watch-universe fires are invisible on the site~~
+
+**CLOSED 2026-08-26.** Migration `a4f8c21d7e63` applied to both databases, frontend merged in #42 and deployed to the Pi. Verified on the rendered page: CCJ present with a `watch-mark` span and the label `Watch Universe: Below 200-Day SMA`, no `SCREEN_QUERY_FAILED`. Backfill landed 379,737 `pullback` and 62,983 `history` on research; 5,844 rows stay NULL because they predate the first `universe` snapshot, which is the honest answer. **This overrides `c8d3a1f70b25`'s separate-view design, deliberately** -- recorded in the migration docstring. `v_watchlist` is left in place and should be retired in its own revision.
 
 Raised 2026-08-26 from a real miss: CCJ fired `confluence_high` at 06:45:40,
 the poller logged it, and the home page never showed it.
@@ -731,7 +737,9 @@ the work; ORKA is just the thread.
 
 ---
 
-### ETF market cap — **investigated 2026-08-26, see ADR 156, not decided**
+### ~~ETF market cap — **investigated 2026-08-26, see ADR 156, not decided**~~
+
+**DECIDED 2026-08-26, not yet built.** ADR 156 -> option B via (i): store the derived share count `netAssets / close` with its own `source`. Still to do, and it wants its own dated migration -- it rewrites QQQ's `mcap_usd` from $289B to $453B across 66 quarters, which is a correction rather than a change (the existing figure comes from a share count frozen at 2021-03-17) but is still a rewrite of recorded history.
 
 Raised 2026-08-26, and this probably supersedes the entry below rather than
 complementing it. Measured against Yahoo:

@@ -135,7 +135,9 @@ def stub_reads(monkeypatch):
     monkeypatch.setattr(backtest, "_read_bars", fake_read_bars)
     monkeypatch.setattr(backtest, "_read_indicators", lambda engine, ticker, start: _indicators())
     monkeypatch.setattr(backtest, "_read_market_days", lambda engine: _empty_market())
-    monkeypatch.setattr(backtest, "_read_universe_flags", lambda engine, ticker: _universe(ticker))
+    monkeypatch.setattr(
+        backtest, "_read_universe_flags", lambda engine, ticker, *a: _universe(ticker)
+    )
     # The tests below call `_backtest_one_ticker(..., database_url=None)`,
     # and `None` means "resolve from `DATABASE_URL_RESEARCH`". Without this
     # stub they pass only on a machine holding a local `.env.local` and fail
@@ -149,6 +151,23 @@ class _FakeEngine:
         @staticmethod
         def render_as_string(hide_password=False):
             return "postgresql://fake/db"
+
+    def begin(self):
+        """`db_io.fill_event_sector_and_mcap` runs a post-pass in its own
+        transaction. A test double for an engine has to model that; without
+        it the fake raises `AttributeError: no attribute 'begin'` from
+        inside a job whose behaviour the test is not about."""
+        import contextlib
+
+        class _NullConn:
+            def execute(self, *a, **k):
+                return None
+
+        @contextlib.contextmanager
+        def _cm():
+            yield _NullConn()
+
+        return _cm()
 
 
 def _minimal_row(**overrides) -> dict:

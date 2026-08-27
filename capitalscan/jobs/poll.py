@@ -103,7 +103,7 @@ def _json_safe(value):
     return value
 
 
-def _load_pollable_tickers(engine: Engine) -> dict[str, str]:
+def _load_pollable_tickers(engine: Engine, chash: str) -> dict[str, str]:
     """Every ticker the poller watches, mapped to its population.
 
     `'trade'`, or the `watch_reason` -- `'history'` or `'pullback'` (ADR
@@ -122,9 +122,10 @@ def _load_pollable_tickers(engine: Engine) -> dict[str, str]:
         rows = conn.execute(
             text(
                 "SELECT DISTINCT ON (ticker) ticker, in_trade, in_watch, watch_reason "
-                "FROM universe "
+                "FROM universe WHERE config_hash = :chash "
                 "ORDER BY ticker, as_of DESC"
-            )
+            ),
+            {"chash": chash},
         ).fetchall()
     out: dict[str, str] = {}
     for r in rows:
@@ -135,9 +136,9 @@ def _load_pollable_tickers(engine: Engine) -> dict[str, str]:
     return out
 
 
-def _load_in_trade_tickers(engine: Engine) -> list[str]:
+def _load_in_trade_tickers(engine: Engine, chash: str) -> list[str]:
     """Trade-universe tickers only. Kept for callers that mean exactly that."""
-    return [t for t, pop in _load_pollable_tickers(engine).items() if pop == "trade"]
+    return [t for t, pop in _load_pollable_tickers(engine, chash).items() if pop == "trade"]
 
 
 WATCH_REASONS = ("history", "pullback")
@@ -892,7 +893,7 @@ def run_poll(
         # ADR 149: trade **and** watch. `population` labels the
         # notification and is written to the event row, so a watched name
         # never reaches the study population by omission.
-        population = _load_pollable_tickers(engine)
+        population = _load_pollable_tickers(engine, chash)
         resolved_tickers = tickers or sorted(population)
         if not resolved_tickers:
             report.notes = "no in_trade tickers on file"

@@ -384,12 +384,22 @@ def _read_market_days(engine: Engine) -> pd.DataFrame:
     return df
 
 
-def _read_universe_flags(engine: Engine, ticker: str) -> pd.DataFrame:
+def _read_universe_flags(engine: Engine, ticker: str, config_hash: str) -> pd.DataFrame:
+    """Membership for one ticker, scoped to the config that defined it.
+
+    **The scope is not optional.** `universe` gained `config_hash` in
+    d4a17c93f60b so arms can coexist; unscoped, this would mix an ablation
+    arm's membership into the production backtest and take whichever row
+    happened to have the later `as_of`.
+    """
     with engine.connect() as conn:
         return pd.read_sql(
-            text("SELECT ticker, as_of, in_trade, in_watch FROM universe WHERE ticker = :ticker"),
+            text(
+                "SELECT ticker, as_of, in_trade, in_watch FROM universe "
+                "WHERE ticker = :ticker AND config_hash = :chash"
+            ),
             conn,
-            params={"ticker": ticker},
+            params={"ticker": ticker, "chash": config_hash},
         )
 
 
@@ -495,7 +505,7 @@ def _backtest_one_ticker(
     indicators = _read_indicators(engine, ticker, date.fromisoformat(config.splits.event_start))
     hourly = _read_bars(engine, ticker, date.fromisoformat(config.splits.ingest_start), "1h")
     market = _read_market_days(engine)
-    universe_flags = _read_universe_flags(engine, ticker)
+    universe_flags = _read_universe_flags(engine, ticker, config_hash(config))
 
     candidates, _null_rejects = research_candidates.scan_candidates(
         bars, indicators, config.signals
@@ -925,6 +935,12 @@ def run_backtest(
             ["config_hash", "ticker", "signal_date", "signal_type", "entry_kind"],
             update_columns=update_columns,
         )
+        # `sector` and `mcap_usd` have no slot in `_EVENT_COLUMNS`, by
+        # design: filling them per worker would carry a ticker lookup and a
+        # point-in-time universe lateral into every process. Same shape as
+        # `add_cofire_count` -- the cross-cutting part runs once, here.
+        db_io.fill_event_sector_and_mcap(engine, run_id)
+        db_io.fill_event_derived_state(engine, run_id)
 
     return BacktestReport(
         run_id=run_id,

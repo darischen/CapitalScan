@@ -215,6 +215,7 @@ SELECT {cols}
       SELECT u.mcap_usd
         FROM universe u
        WHERE u.ticker = e.ticker AND u.as_of <= e.signal_date
+         AND u.config_hash = :chash
        ORDER BY u.as_of DESC
        LIMIT 1
   ) u ON TRUE

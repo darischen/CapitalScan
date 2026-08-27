@@ -22,7 +22,9 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
+from capitalscan.core.config import Config, SignalParams
 from capitalscan.jobs import compute, db_io, ingest
+from capitalscan.jobs.config import config_hash
 from capitalscan.jobs.fetch import yahoo
 
 TICKER = "TSM"
@@ -136,14 +138,23 @@ def _mark_tradeable(engine, ticker: str = TICKER) -> None:
     checking. `as_of` predates `START` so every bar in the window is
     covered.
     """
+    # **`config_hash` is part of the key and part of the predicate.**
+    # `d4a17c93f60b` put it in `universe`'s primary key, so the old
+    # `ON CONFLICT (ticker, as_of)` matches no constraint and Postgres
+    # rejects it outright. `run_events` also filters membership on the
+    # hash now, so a row written under any other value is invisible to the
+    # very code this test is exercising -- the generation has to be the one
+    # the default config resolves to, not a placeholder.
+    chash = config_hash(Config(signals=SignalParams()))
     with engine.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO universe (ticker, as_of, in_train, in_trade) "
-                "VALUES (:ticker, :as_of, true, true) "
-                "ON CONFLICT (ticker, as_of) DO UPDATE SET in_trade = true, in_train = true"
+                "INSERT INTO universe (ticker, as_of, config_hash, in_train, in_trade) "
+                "VALUES (:ticker, :as_of, :chash, true, true) "
+                "ON CONFLICT (ticker, as_of, config_hash) "
+                "DO UPDATE SET in_trade = true, in_train = true"
             ),
-            {"ticker": ticker, "as_of": date(2024, 12, 31)},
+            {"ticker": ticker, "as_of": date(2024, 12, 31), "chash": chash},
         )
 
 

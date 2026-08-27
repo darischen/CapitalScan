@@ -18,7 +18,9 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
+from capitalscan.core.config import Config, SignalParams
 from capitalscan.jobs import call_overlay, db_io, ingest, poll
+from capitalscan.jobs.config import config_hash
 from capitalscan.jobs.fetch import yahoo
 
 TICKER = "TSM"
@@ -75,11 +77,23 @@ def seeded(engine, monkeypatch):
     for the same signal in the backtest path.
     """
     ingest.ensure_tickers([TICKER], engine=engine)
+    # `config_hash` joined the primary key in `d4a17c93f60b`, and
+    # `poll.py` selects membership `WHERE config_hash = :chash`. Both the
+    # conflict key and the value have to carry it or this row is written
+    # under a generation the poller never looks at.
     db_io.upsert(
         engine,
         "universe",
-        [{"ticker": TICKER, "as_of": SIGNAL_DATE, "in_train": True, "in_trade": True}],
-        ["ticker", "as_of"],
+        [
+            {
+                "ticker": TICKER,
+                "as_of": SIGNAL_DATE,
+                "config_hash": config_hash(Config(signals=SignalParams())),
+                "in_train": True,
+                "in_trade": True,
+            }
+        ],
+        ["ticker", "as_of", "config_hash"],
     )
     db_io.upsert(
         engine,
