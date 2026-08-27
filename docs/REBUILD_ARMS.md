@@ -101,6 +101,21 @@ the last wave leaves seven workers idle, once per chunk for 59 chunks. 24
 is three clean waves. The gain is the ragged tail only, so expect a few
 percent, not the 20% an unaligned-to-aligned comparison might suggest.
 
+**Per-chunk timings are too noisy to compare in small numbers.** Measured
+across the 59 chunks of the 2026-08-26 run: **min 36.1 s, mean 83.2 s, max
+148.0 s, standard deviation 29.9 s**. Chunks differ in how much history
+their tickers carry, so a handful of them says nothing about a run.
+
+On 2026-08-27 four chunks averaging 93.2 s were read as a 16% regression
+against the 83.2 s mean. With sd = 29.9 the standard error at n=4 is ~15 s,
+so a 10 s gap is inside one standard error -- and the comparison was
+structurally invalid anyway, because `--chunk-size 24` versus 25 puts
+different tickers in "chunk 1". Normalised per ticker the first chunk was
+*faster* and the next three slower, which is what noise looks like.
+
+**Compare whole phases, never chunk samples.** The `backtest_compute` rows
+in `runs` sum to the phase; that sum is the only figure worth quoting.
+
 **`stats benchmarks --workers 8` is the largest statistics win.** The 200
 random-entry replications are independent by construction, each seeded on
 `(config_hash, replication)`, and were running one at a time. Measured
