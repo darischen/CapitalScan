@@ -62,11 +62,9 @@ output for one config, violating ADR 060.
 .\scripts\universe_backfill.ps1          # -StartFrom 2017Q3 to resume
 
 # b. backtest, split into phases so it is restartable
-# --workers 14 on this 16-core machine, not 8: measured 2026-08-27, the
-# pool runs one ticker per worker and half the cores sat idle.
-uv run cscan backtest --workers 14 --phase compute --chunk-size 28
-uv run cscan backtest --workers 14 --phase finalize
-uv run cscan backtest --workers 14 --phase harness
+uv run cscan backtest --workers 8 --chunk-size 24 --phase compute
+uv run cscan backtest --workers 8 --phase finalize
+uv run cscan backtest --workers 8 --phase harness
 
 # c. statistics. Every command needs --config-hash; cells and benchmarks
 #    need both splits, and NEVER holdout.
@@ -77,10 +75,31 @@ uv run cscan stats benchmarks --config-hash <hash> --split-key train    --worker
 uv run cscan stats benchmarks --config-hash <hash> --split-key validate --workers 8
 ```
 
-**`--chunk-size` must be a multiple of `--workers`.** The pool submits one
-ticker per worker, so 25 tickers across 8 workers runs waves of 8, 8, 8 and
-then **1** -- the last wave leaves seven workers idle, once per chunk for 59
-chunks. 28 across 14 is exactly two full waves.
+**Pass `--workers 8 --chunk-size 24`. The CLI defaults are `1` and `25`
+and are deliberately left alone**, so a bare `cscan backtest` runs serially.
+Changing the `--chunk-size` default would silently invalidate every
+in-progress rebuild: `_chunk_already_done` keys on `(config_hash, chunk,
+of)`, so a different value re-runs every chunk rather than resuming.
+
+**8 workers, not 16.** This machine is an **AMD Ryzen 7 3700X: 8 physical
+cores, 16 logical**. The second logical processor on each core shares that
+core's execution units and L1/L2 cache, so SMT pays off when threads stall
+on memory *latency* and pays off least when they are already saturating
+memory *bandwidth* -- which is what pandas frame work does. Eight is one
+worker per physical core.
+
+This line said 14 on 2026-08-27, from reading "16 logical" and treating
+them as sixteen independent cores. It was never measured. **Whether 10-12
+beats 8 here is an open empirical question**, and the way to settle it is
+one `--phase compute` run per setting against the same config, comparing
+the `backtest_compute` rows in `runs`. Until someone does that, 8 is the
+defensible number and the 81.9-minute baseline was measured at it.
+
+**`--chunk-size` should be a multiple of `--workers`.** The pool submits one
+ticker per worker, so 25 across 8 runs waves of 8, 8, 8 and then **1** --
+the last wave leaves seven workers idle, once per chunk for 59 chunks. 24
+is three clean waves. The gain is the ragged tail only, so expect a few
+percent, not the 20% an unaligned-to-aligned comparison might suggest.
 
 **`stats benchmarks --workers 8` is the largest statistics win.** The 200
 random-entry replications are independent by construction, each seeded on
