@@ -52,6 +52,12 @@ from capitalscan.jobs import db_io
 from capitalscan.jobs.config import config_hash, split_key_for
 from capitalscan.jobs.ingest import IngestReport, run_job
 
+# Rows written without a resolved `Config`. Matches what migration
+# d4a17c93f60b backfilled onto every pre-existing row: nothing recorded
+# what produced them, and a guess written down as a fact is worse than
+# a label that says so.
+UNKNOWN_CONFIG_HASH = "unknown"
+
 MIN_BARS_FOR_INDICATORS = 280
 INDICATOR_COLUMNS = [
     "bb_mid",
@@ -642,6 +648,7 @@ def run_universe(
     engine: Engine | None = None,
     up: UniverseParams | None = None,
     today: date | None = None,
+    config: Config | None = None,
 ) -> IngestReport:
     """`universe` job (DESIGN §4.6). `quarter` like `'2026Q3'`.
 
@@ -649,9 +656,22 @@ def run_universe(
     (DEFECT 3) — injectable so tests do not depend on the real calendar;
     defaults to `date.today()` for real runs (jobs own clock access,
     invariant 1's IO carve-out — same pattern as `run_shares`'s `as_of`).
+
+    **`config`, not `up`, decides `config_hash`.** The hash is over the
+    whole `Config`, so deriving it from `UniverseParams` alone would produce
+    a different value than every other job writes — the divergence
+    `run_events`' docstring records as Final-review Finding 1, where a
+    `config_hash` computed from a partial object silently split one
+    generation into two under a natural key.
+
+    `up` is still accepted and still wins when both are given, because a
+    caller sweeping one parameter passes exactly that. When `config` is
+    absent the rows are tagged `'unknown'` — honest, and it keeps every
+    existing test caller working — but a real pass should pass `config`.
     """
     engine = engine or db_io.get_engine()
-    up = up or UniverseParams()
+    resolved_hash = config_hash(config) if config is not None else UNKNOWN_CONFIG_HASH
+    up = up or (config.universe if config is not None else UniverseParams())
     today = today or date.today()
     as_of = _quarter_end(quarter)
     if as_of > today:
@@ -661,7 +681,7 @@ def run_universe(
             "quarter closes, or evaluate the most recently completed quarter instead."
         )
 
-    with run_job(engine, "universe", {"quarter": quarter}) as report:
+    with run_job(engine, "universe", {"quarter": quarter, "config_hash": resolved_hash}) as report:
         mcap_bounds = McapPlausibility()
         mcap_rejects: list[dict] = []
         if tickers is None:
@@ -799,7 +819,13 @@ def run_universe(
                 r["run_id"] = report.run_id
             db_io.append(engine, "bar_rejects", mcap_rejects)
 
-        report.rows_written = db_io.upsert(engine, "universe", rows, ["ticker", "as_of"])
+        # **`config_hash` is part of the key now**, so two configs' membership
+        # coexists instead of the second overwriting the first row for row.
+        for row in rows:
+            row["config_hash"] = resolved_hash
+        report.rows_written = db_io.upsert(
+            engine, "universe", rows, ["ticker", "as_of", "config_hash"]
+        )
         report.tickers = [str(r["ticker"]) for r in rows]
     return report
 
