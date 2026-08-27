@@ -172,6 +172,23 @@ class _FakeEngine:
         def render_as_string(hide_password=False):
             return "postgresql://fake/db"
 
+    def begin(self):
+        """`db_io.fill_event_sector_and_mcap` runs a post-pass in its own
+        transaction. A test double for an engine has to model that; without
+        it the fake raises `AttributeError: no attribute 'begin'` from
+        inside a job whose behaviour the test is not about."""
+        import contextlib
+
+        class _NullConn:
+            def execute(self, *a, **k):
+                return None
+
+        @contextlib.contextmanager
+        def _cm():
+            yield _NullConn()
+
+        return _cm()
+
 
 def _minimal_row(**overrides) -> dict:
     row = {col: None for col in backtest._EVENT_COLUMNS}

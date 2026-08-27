@@ -18,7 +18,7 @@ from typing import Any
 
 import pandas as pd
 from psycopg.types.json import Jsonb
-from sqlalchemy import Engine, MetaData, Table, create_engine
+from sqlalchemy import Engine, MetaData, Table, create_engine, text
 from sqlalchemy import types as sa_types
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.pool import NullPool, QueuePool
@@ -311,6 +311,69 @@ def copy_upsert(
             f"ON CONFLICT ({conflict}) {action}"
         )
     return len(payload)
+
+
+def fill_event_sector_and_mcap(engine: Engine, run_id: str) -> int:
+    """Populate `events.sector` and `events.mcap_usd` for one run's rows.
+
+    **A post-pass, not a hot-path change.** Both writers -- `run_events`
+    and `run_backtest` -- would otherwise have to carry a sector lookup and
+    a point-in-time universe lateral into every per-ticker worker.
+    `add_cofire_count` already establishes the shape: do the cross-cutting
+    part once, after the workers return.
+
+    **Why the columns exist and were empty.** Migration c2b91e4a7d08
+    backfilled 1.37M rows for the serving config, but `_EVENT_COLUMNS` has
+    no slot for either name, so anything written afterwards was NULL again.
+    That is the trap `BACKLOG.md` describes: an unqualified `sector` in a
+    query over `events JOIN tickers` resolves to the `events` copy -- a
+    column that exists, is spelled correctly, and is empty.
+
+    **The two columns have different honesty**, and the migration's column
+    comments say so in the database. `mcap_usd` is point-in-time: the
+    universe evaluation in force at `signal_date`. `sector` is a current
+    snapshot, because `tickers.sector` has no history -- the mild
+    look-ahead ADR 135 names and the backlog accepts.
+
+    Scoped to `run_id` so a re-run does not rewrite another run's rows, and
+    idempotent: it only touches rows where the value is still NULL.
+    """
+
+    def _rows(result: Any) -> int:
+        """`rowcount` is optional in DBAPI and absent on a stubbed cursor.
+
+        The count is reported, never acted on -- the fill is idempotent and
+        scoped by `run_id`, so a driver that declines to say how many rows
+        it touched changes nothing. Returning 0 rather than raising keeps
+        this from turning an informational number into a failure.
+        """
+        return int(getattr(result, "rowcount", 0) or 0)
+
+    with engine.begin() as conn:
+        mcap = _rows(
+            conn.execute(
+                text(
+                    "UPDATE events e SET mcap_usd = ("
+                    "  SELECT u.mcap_usd FROM universe u"
+                    "   WHERE u.ticker = e.ticker AND u.as_of <= e.signal_date"
+                    "     AND u.config_hash = e.config_hash AND u.mcap_usd IS NOT NULL"
+                    "   ORDER BY u.as_of DESC LIMIT 1)"
+                    " WHERE e.run_id = :run_id AND e.mcap_usd IS NULL"
+                ),
+                {"run_id": run_id},
+            )
+        )
+        sector = _rows(
+            conn.execute(
+                text(
+                    "UPDATE events e SET sector = t.sector FROM tickers t"
+                    " WHERE t.ticker = e.ticker AND e.run_id = :run_id"
+                    "   AND e.sector IS NULL AND t.sector IS NOT NULL"
+                ),
+                {"run_id": run_id},
+            )
+        )
+    return mcap + sector
 
 
 def json_safe(value: object) -> object:

@@ -935,6 +935,11 @@ def run_backtest(
             ["config_hash", "ticker", "signal_date", "signal_type", "entry_kind"],
             update_columns=update_columns,
         )
+        # `sector` and `mcap_usd` have no slot in `_EVENT_COLUMNS`, by
+        # design: filling them per worker would carry a ticker lookup and a
+        # point-in-time universe lateral into every process. Same shape as
+        # `add_cofire_count` -- the cross-cutting part runs once, here.
+        db_io.fill_event_sector_and_mcap(engine, run_id)
 
     return BacktestReport(
         run_id=run_id,

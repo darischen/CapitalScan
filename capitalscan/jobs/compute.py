@@ -1272,6 +1272,9 @@ def run_events(
                 ["config_hash", "ticker", "signal_date", "signal_type", "entry_kind"],
                 update_columns=_RUN_EVENTS_UPDATE_COLUMNS,
             )
+        # See `db_io.fill_event_sector_and_mcap`: a post-pass, so neither
+        # writer needs the lookup in its per-ticker path.
+        db_io.fill_event_sector_and_mcap(engine, report.run_id)
         report.rows_flagged = skipped_null
         report.tickers = sorted({row["ticker"] for row in deduped})
     return report
