@@ -432,6 +432,40 @@ SET capitalscan.default_config_hash = '<hash from serving_config>';
 
 ---
 
+**Every timestamp in `runs` is UTC, and nothing in the output says so.**
+The research database is `TimeZone = Etc/UTC`, so `psql` prints `+00` and a
+row reads `13:00:11`. In PDT that is **06:00**, seven hours earlier than it
+looks. Misread once on 2026-08-27: a sync scheduled for 1pm PT was found
+"already running at 13:00" and reported as in flight. It had started at
+6am and been dead for three hours.
+
+Convert before quoting a `runs` time, and get the offset from the database
+rather than assuming seven -- PST is eight:
+
+```sql
+SELECT started_at AT TIME ZONE 'America/Los_Angeles' AS started_pt,
+       now() - started_at AS age
+FROM runs ORDER BY started_at DESC LIMIT 5;
+```
+
+**`status = 'running'` is not evidence a job is running.** It means a row
+was opened and never closed, which is also what a power loss, a kill and a
+crash leave behind. A job that dies mid-run cannot write `finished_at`, so
+the corpse is indistinguishable from live work by that column alone. Check
+for a process and a backend before believing it:
+
+```
+SELECT count(*) FROM pg_stat_activity
+ WHERE datname='capitalscan' AND pid<>pg_backend_pid() AND state<>'idle';
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+  Where-Object { $_.CommandLine -like '*cscan.exe*' }
+```
+
+Zero live backends and no `cscan` process means the row is stale. Mark it
+`failed` rather than leaving it, because the next reader hits the same trap.
+
+---
+
 **Verify before you assert.** Query the database rather than trusting a prior report, including this one — several confident claims in earlier session reports did not hold up under direct measurement.
 
 ---
