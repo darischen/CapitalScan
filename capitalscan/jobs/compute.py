@@ -932,15 +932,29 @@ def _read_market_days(engine: Engine, start: date, end: date) -> pd.DataFrame:
         )
 
 
-def _read_universe_flags(engine: Engine, tickers: list[str]) -> pd.DataFrame:
+def _read_universe_flags(engine: Engine, tickers: list[str], config_hash: str) -> pd.DataFrame:
+    """Trade/watch membership for one config generation.
+
+    **Scoped on `config_hash`, which it was not until 2026-08-27.** `universe`
+    held one generation when this was written, so `(ticker, as_of)` was
+    unique and an unscoped read was correct. `d4a17c93f60b` put
+    `config_hash` in the primary key so ablation arms can coexist, and the
+    same query then returns one row *per generation*: the caller's merge on
+    `(ticker, as_of)` would fan out, and a ticker `in_trade` under arm 2
+    would mark events for arm 1.
+
+    `research/backtest.py::_read_universe_flags` already scoped this way,
+    which is what made the divergence visible -- the two reads of the same
+    table disagreed about whether a generation is part of the key.
+    """
     with engine.connect() as conn:
         return pd.read_sql(
             text(
                 "SELECT ticker, as_of, in_trade, in_watch FROM universe "
-                "WHERE ticker = ANY(:tickers)"
+                "WHERE ticker = ANY(:tickers) AND config_hash = :chash"
             ),
             conn,
-            params={"tickers": tickers},  # type: ignore[arg-type]
+            params={"tickers": tickers, "chash": config_hash},  # type: ignore[arg-type]
         )
 
 
@@ -1159,7 +1173,7 @@ def run_events(
         bars = _read_bars_range(engine, tickers, target_start, target_end)
         indicators = _read_indicators_range(engine, tickers, ind_start, target_end)
         market = _read_market_days(engine, target_start, target_end).set_index("ts")
-        universe_flags = _read_universe_flags(engine, tickers)
+        universe_flags = _read_universe_flags(engine, tickers, chash)
 
         # Debounce on `debounce_key(hit)` — the explicit (ticker, signal_date,
         # bound) tuple, never on the `SignalHit` dataclass itself (DESIGN
