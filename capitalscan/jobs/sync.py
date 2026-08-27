@@ -424,14 +424,19 @@ def run_sync(
                 source,
                 params={"cutoff": cutoff, "config_hash": config_hash, **bounds},  # type: ignore[arg-type]
             )
-            written = 0
-            per_batch = _rows_per_batch(len(frame.columns))
-            for start in range(0, len(frame), per_batch):
-                batch = frame.iloc[start : start + per_batch]
-                written += db_io.upsert(
-                    target, table.name, batch.to_dict("records"), list(table.key)
-                )
-            rows[table.name] = written
+            # **`COPY` into a staging table, not row dicts.** Profiled
+            # during a full sync on 2026-08-26: the Pi was 76% idle (load
+            # 1.11 of four cores, SD card 15% utilised) while this process
+            # held 894 MB and 53.8% of one core. The constraint was
+            # `to_dict("records")` building 7.4M Python dicts and SQLAlchemy
+            # re-binding each one -- three full representations of every row
+            # to move it between two databases.
+            #
+            # `_rows_per_batch` chunking is gone with it: `COPY` streams, so
+            # there are no bind parameters to stay under `MAX_BIND_PARAMS`,
+            # and the whole table lands in one transaction instead of one
+            # per 1,000 rows.
+            rows[table.name] = db_io.copy_upsert(target, table.name, frame, list(table.key))
 
         # Assigned *before* the pin, which can raise. Measured 2026-08-21:
         # a pin failure discarded the count and recorded rows_written = 0

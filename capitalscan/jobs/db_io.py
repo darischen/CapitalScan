@@ -18,6 +18,7 @@ from typing import Any
 
 import pandas as pd
 from sqlalchemy import Engine, MetaData, Table, create_engine
+from sqlalchemy import types as sa_types
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.pool import NullPool, QueuePool
 
@@ -170,6 +171,123 @@ def upsert(
         total_inserted += len(batch)
 
     return total_inserted
+
+
+def copy_upsert(
+    engine: Engine,
+    table_name: str,
+    frame: pd.DataFrame,
+    conflict_cols: list[str],
+    update_columns: list[str] | None = None,
+) -> int:
+    """`COPY` into a staging table, then one server-side upsert.
+
+    **Same contract as `upsert`, different mechanics.** Use it where the row
+    count is large enough that per-row Python dominates; `upsert` stays the
+    default everywhere else and is unchanged.
+
+    **Why.** Profiled during a full `cscan sync` on 2026-08-26: the Pi sat at
+    load 1.11 of four cores with its SD card 15% utilised, while the
+    workstation held 894 MB and 53.8% of *one* core. Neither the network nor
+    the database was the constraint -- it was Python. `upsert` turns every
+    row into a dict, SQLAlchemy re-binds each dict into parameters, and the
+    rows make three full representations of themselves to travel between two
+    databases that could have spoken directly. 7,469,519 rows took 114.2
+    minutes, about 1,090 rows/s.
+
+    `COPY` streams instead. No dict per row, no bind parameters, and the
+    conflict resolution happens inside Postgres against a staging table.
+
+    **One transaction, one connection.** The staging table is `TEMP`, so it
+    is bound to this session and disappears with it -- there is no name to
+    collide with a concurrent sync and nothing to clean up on failure.
+    `upsert` opens a transaction per 1,000 rows; this opens one.
+
+    **`ON COMMIT DROP` rather than an explicit drop**, so an exception
+    between the COPY and the INSERT cannot leave the staging table behind.
+    """
+    if frame.empty:
+        return 0
+
+    table = _table(engine, table_name)
+    table_col_names = [c.name for c in table.columns]
+    cols = [c for c in table_col_names if c in frame.columns]
+    if not cols:
+        raise ValueError(f"{table_name!r}: the frame shares no columns with the table")
+    missing_keys = [c for c in conflict_cols if c not in cols]
+    if missing_keys:
+        raise ValueError(
+            f"{table_name!r}: conflict_cols {missing_keys!r} are absent from the frame, "
+            "so ON CONFLICT could not match a row"
+        )
+
+    targets = (
+        update_columns
+        if update_columns is not None
+        else [c for c in cols if c not in conflict_cols]
+    )
+    invalid = [c for c in targets if c not in table_col_names or c in conflict_cols]
+    if invalid:
+        raise ValueError(f"update_columns for {table_name!r} contains invalid entries {invalid!r}")
+
+    quoted = ", ".join(f'"{c}"' for c in cols)
+    stage = f"_copy_{table_name}"
+    # NaN/NaT are pandas' absent markers and Postgres wants NULL. `object`
+    # first, because `where` on a float column would coerce None back to NaN.
+    payload = frame[cols].astype(object).where(pd.notna(frame[cols]), None)
+
+    # **Integer columns need coercing back, per value rather than per
+    # column.** A pandas column holding both integers and a null is
+    # `float64`, so `10` is really `10.0`; `astype(object)` preserves the
+    # float and `COPY` writes the text `"10.0"`, which Postgres rejects for
+    # an integer column. The dict path never hit this because psycopg
+    # adapts a Python float to an integer parameter; text COPY does not.
+    #
+    # Doing it as `payload[name] = payload[name].map(...)` does not work and
+    # fails in both directions: assigning a Series back into an
+    # object-dtype frame **re-infers the dtype**, turning the ints back into
+    # floats *and* the Nones back into NaN. Measured -- `[10, 20, None]`
+    # came out `[10.0, 20.0, nan]`. The conversion has to happen after the
+    # frame is out of the way.
+    #
+    # The table's declared type is the authority, not the frame's dtype:
+    # the frame's dtype is exactly what is wrong here.
+    def _as_int(v: Any) -> Any:
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return None
+        return int(v)
+
+    def _identity(v: Any) -> Any:
+        return None if isinstance(v, float) and math.isnan(v) else v
+
+    converters = [
+        _as_int if isinstance(table.columns[c].type, sa_types.Integer) else _identity for c in cols
+    ]
+
+    set_clause = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in targets)
+    action = f"DO UPDATE SET {set_clause}" if targets else "DO NOTHING"
+    conflict = ", ".join(f'"{c}"' for c in conflict_cols)
+
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            f'CREATE TEMP TABLE "{stage}" (LIKE "{table_name}" INCLUDING DEFAULTS) ON COMMIT DROP'
+        )
+        # The psycopg3 connection underneath SQLAlchemy's wrapper. `COPY`
+        # is a driver feature with no SQLAlchemy surface, and it must run on
+        # *this* connection -- the staging table is TEMP and invisible to
+        # any other.
+        raw = conn.connection.driver_connection
+        if raw is None:  # pragma: no cover - a live connection always has one
+            raise RuntimeError("no driver connection available for COPY")
+        with raw.cursor() as cur:
+            with cur.copy(f'COPY "{stage}" ({quoted}) FROM STDIN') as cp:
+                for row in payload.itertuples(index=False, name=None):
+                    cp.write_row([f(v) for f, v in zip(converters, row)])
+        conn.exec_driver_sql(
+            f'INSERT INTO "{table_name}" ({quoted}) SELECT {quoted} FROM "{stage}" '
+            f"ON CONFLICT ({conflict}) {action}"
+        )
+    return len(payload)
 
 
 def json_safe(value: object) -> object:
