@@ -380,6 +380,47 @@ Nothing about the poller, the backtest, or the research database changes.
 
 ---
 
+## Postgres tuning applied on the Pi (2026-08-26)
+
+Both set live and verified. **Neither is in a migration** -- they are
+properties of this machine, not of the schema, so a fresh serving store
+built elsewhere will not have them and should.
+
+```sql
+-- as the postgres unix user: sudo -u postgres psql
+ALTER DATABASE capitalscan_serving SET synchronous_commit = off;
+ALTER SYSTEM SET max_wal_size = '4GB';
+SELECT pg_reload_conf();
+```
+
+**`synchronous_commit = off`.** Every row in the serving store is derived
+and rebuildable by `cscan sync`, so a crash losing the last few
+transactions costs a re-sync and nothing else. That is exactly the trade
+this setting is for, and on SD-card storage it is the single largest write
+win available. Scoped to the database rather than the server, so anything
+else on this Postgres keeps full durability.
+
+**`max_wal_size` 1GB -> 4GB.** Its own log showed a checkpoint every ~270
+seconds during a sync, each writing ~8,700 buffers over a ~400MB WAL
+distance -- the 1GB ceiling was forcing checkpoints mid-transfer. 4GB lets
+a whole sync land between them. 30GB free on the card, so the space is
+there.
+
+**Applies to new sessions.** `ALTER DATABASE ... SET` does not touch
+connections that are already open, so a running job keeps the old value.
+
+**Considered and not applied:** `wal_compression = on`, which trades CPU
+for less WAL written. Plausible here -- the Pi sat at 24% CPU during a
+sync -- but unmeasured, so it stays a suggestion rather than a change.
+
+**Not doing:** moving the Pi to Ethernet. It runs on `wlan0` with power
+save enabled (`eth0` has never carried a byte), and that is what killed a
+53-minute sync on 2026-08-26. User's decision, 2026-08-26: the machine is
+not going to be handled often, and the incremental sync cut the exposure
+window from 114 minutes to ~2.
+
+---
+
 ## What could bite
 
 **mDNS is the single point of failure for the nice URL.** If
