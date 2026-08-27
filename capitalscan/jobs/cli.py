@@ -288,7 +288,9 @@ def universe(
         raise typer.Exit(code=1)
     config = _resolve_config_or_exit()
     resolved = [t.strip().upper() for t in tickers.split(",")] if tickers else None
-    report = compute.run_universe(quarter, tickers=resolved, up=config.universe)
+    # `config`, not `up`: the row's `config_hash` is over the whole Config
+    # (d4a17c93f60b). Passing only `up` would tag rows 'unknown'.
+    report = compute.run_universe(quarter, tickers=resolved, config=config)
     console.print(f"universe: evaluated {len(report.tickers)} tickers as of {quarter}")
 
 

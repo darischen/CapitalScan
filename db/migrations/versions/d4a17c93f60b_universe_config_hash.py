@@ -72,6 +72,151 @@ def upgrade() -> None:
         "ON universe (config_hash, ticker, as_of DESC)"
     )
 
+    # **The three views that read `universe` must scope too**, or the
+    # lateral takes whichever generation happens to have the later `as_of`.
+    # They use the GUC rather than a literal, the same way `v_screen_live`
+    # already scopes `events` (ADR 115): `web/lib/db.ts` sets it per
+    # connection from `serving_config`, so the site and these views cannot
+    # disagree about which generation is live.
+    #
+    # `v_screen_live` is not here: its only match for "universe" is the
+    # string literal `'watch_universe'`, not a read of the table.
+    op.execute(
+        """CREATE OR REPLACE VIEW v_universe AS
+SELECT DISTINCT ON (u.ticker) u.ticker,
+    t.name,
+    t.sector,
+    t.industry,
+    u.as_of,
+    u.in_train,
+    u.in_trade,
+    u.mcap_usd,
+    u.mcap_rank,
+    u.adv_20d_usd,
+    u.crit_mcap,
+    u.crit_above_sma200,
+    u.crit_sma200_slope,
+    u.crit_rel_return,
+    u.crit_rev_growth,
+    t.is_active,
+    t.delisted_on,
+    u.in_watch,
+    u.watch_reason
+   FROM universe u
+     JOIN tickers t ON t.ticker = u.ticker
+  WHERE u.config_hash = current_setting('capitalscan.default_config_hash'::text, true)
+  ORDER BY u.ticker, u.as_of DESC"""
+    )
+    op.execute(
+        """CREATE OR REPLACE VIEW v_ticker_state AS
+SELECT i.ticker,
+    t.name,
+    t.sector,
+    i.ts AS as_of,
+    b.close,
+    b.volume,
+    i.bb_lower,
+    i.bb_mid,
+    i.bb_upper,
+    i.bb_pctb,
+    i.bb_width,
+    i.bb_width_pct,
+    i.k_full,
+    i.d_full,
+    i.k_fast,
+    i.k_cross_up,
+    i.k_cross_down,
+    i.sma_200,
+    i.sma200_slope_60,
+    i.atr_14,
+    i.rv_20d,
+    i.rv_pct_252d,
+    i.vol_z_20d,
+    i.dd_52w,
+    i.days_to_earnings,
+    m.vix_close,
+    m.vix_pct_252d,
+    m.spx_ret_1d,
+    u.in_trade,
+    u.mcap_usd,
+    u.crit_mcap,
+    u.crit_above_sma200,
+    u.crit_sma200_slope,
+    u.crit_rel_return,
+    u.crit_rev_growth,
+    b.close > i.sma_200 AS above_sma200,
+    u.in_watch,
+    u.watch_reason
+   FROM tickers t
+     CROSS JOIN LATERAL ( SELECT ind.ts
+           FROM indicators ind
+          WHERE ind.ticker = t.ticker AND ind."interval" = '1d'::text AND (EXISTS ( SELECT 1
+                   FROM bars bb
+                  WHERE bb.ticker = ind.ticker AND bb.ts = ind.ts AND
+                      bb."interval" = ind."interval"))
+          ORDER BY ind.ts DESC
+         LIMIT 1) latest
+     JOIN indicators i ON i.ticker = t.ticker AND i.ts = latest.ts AND i."interval" = '1d'::text
+     JOIN bars b ON b.ticker = i.ticker AND b.ts = i.ts AND b."interval" = i."interval"
+     LEFT JOIN market_days m ON m.ts = i.ts::date
+     LEFT JOIN LATERAL ( SELECT u2.in_trade,
+            u2.mcap_usd,
+            u2.crit_mcap,
+            u2.crit_above_sma200,
+            u2.crit_sma200_slope,
+            u2.crit_rel_return,
+            u2.crit_rev_growth,
+            u2.in_watch,
+            u2.watch_reason
+           FROM universe u2
+          WHERE u2.ticker = i.ticker AND u2.as_of <= i.ts::date
+            AND u2.config_hash = current_setting('capitalscan.default_config_hash'::text, true)
+          ORDER BY u2.as_of DESC
+         LIMIT 1) u ON true"""
+    )
+    # DROP/CREATE, not REPLACE: `v_watchlist` is dropped in its own
+    # downgrade for the same reason -- CREATE OR REPLACE cannot change a
+    # view's column set, and this one is rebuilt wholesale.
+    op.execute("DROP VIEW IF EXISTS v_watchlist")
+    op.execute(
+        """CREATE VIEW v_watchlist AS
+SELECT e.ticker,
+    e.signal_date,
+    e.signal_type,
+    e.signal_types_all,
+    e.signal_strength,
+    e.touch_level,
+    e.bb_pctb,
+    e.k_full,
+    e.k_fast,
+    e.k_cross_up,
+    e.dd_52w,
+    e.dd_bucket,
+    e.above_sma200,
+    e.seq_in_cluster,
+    e.cofire_count,
+    t.sector,
+    u.watch_reason,
+    u.mcap_usd,
+    u.crit_rel_return,
+    u.crit_above_sma200,
+    u.crit_sma200_slope
+   FROM events e
+     JOIN tickers t ON t.ticker = e.ticker
+     JOIN LATERAL ( SELECT u2.watch_reason,
+            u2.mcap_usd,
+            u2.crit_rel_return,
+            u2.crit_above_sma200,
+            u2.crit_sma200_slope
+           FROM universe u2
+          WHERE u2.ticker = e.ticker AND u2.as_of <= e.signal_date
+            AND u2.config_hash = current_setting('capitalscan.default_config_hash'::text, true)
+          ORDER BY u2.as_of DESC
+         LIMIT 1) u ON true
+  WHERE e.is_cluster_head AND e.entry_kind = 'next_open'::text AND e.in_watch AND
+      e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)"""
+    )
+
     op.execute(
         "COMMENT ON COLUMN universe.config_hash IS "
         "'The config whose UniverseParams produced this row. ''unknown'' "
@@ -86,6 +231,136 @@ def downgrade() -> None:
     # the tagged rows is the only way back that cannot violate the old key,
     # and it is lossless in the sense that matters: they are reproducible by
     # re-running the pass that wrote them.
+    # Views first: they reference the column this downgrade drops.
+    op.execute("DROP VIEW IF EXISTS v_watchlist")
+    op.execute(
+        """CREATE VIEW v_watchlist AS
+SELECT e.ticker,
+    e.signal_date,
+    e.signal_type,
+    e.signal_types_all,
+    e.signal_strength,
+    e.touch_level,
+    e.bb_pctb,
+    e.k_full,
+    e.k_fast,
+    e.k_cross_up,
+    e.dd_52w,
+    e.dd_bucket,
+    e.above_sma200,
+    e.seq_in_cluster,
+    e.cofire_count,
+    t.sector,
+    u.watch_reason,
+    u.mcap_usd,
+    u.crit_rel_return,
+    u.crit_above_sma200,
+    u.crit_sma200_slope
+   FROM events e
+     JOIN tickers t ON t.ticker = e.ticker
+     JOIN LATERAL ( SELECT u2.watch_reason,
+            u2.mcap_usd,
+            u2.crit_rel_return,
+            u2.crit_above_sma200,
+            u2.crit_sma200_slope
+           FROM universe u2
+          WHERE u2.ticker = e.ticker AND u2.as_of <= e.signal_date
+          ORDER BY u2.as_of DESC
+         LIMIT 1) u ON true
+  WHERE e.is_cluster_head AND e.entry_kind = 'next_open'::text AND e.in_watch AND
+      e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)"""
+    )
+    op.execute(
+        """CREATE OR REPLACE VIEW v_ticker_state AS
+SELECT i.ticker,
+    t.name,
+    t.sector,
+    i.ts AS as_of,
+    b.close,
+    b.volume,
+    i.bb_lower,
+    i.bb_mid,
+    i.bb_upper,
+    i.bb_pctb,
+    i.bb_width,
+    i.bb_width_pct,
+    i.k_full,
+    i.d_full,
+    i.k_fast,
+    i.k_cross_up,
+    i.k_cross_down,
+    i.sma_200,
+    i.sma200_slope_60,
+    i.atr_14,
+    i.rv_20d,
+    i.rv_pct_252d,
+    i.vol_z_20d,
+    i.dd_52w,
+    i.days_to_earnings,
+    m.vix_close,
+    m.vix_pct_252d,
+    m.spx_ret_1d,
+    u.in_trade,
+    u.mcap_usd,
+    u.crit_mcap,
+    u.crit_above_sma200,
+    u.crit_sma200_slope,
+    u.crit_rel_return,
+    u.crit_rev_growth,
+    b.close > i.sma_200 AS above_sma200,
+    u.in_watch,
+    u.watch_reason
+   FROM tickers t
+     CROSS JOIN LATERAL ( SELECT ind.ts
+           FROM indicators ind
+          WHERE ind.ticker = t.ticker AND ind."interval" = '1d'::text AND (EXISTS ( SELECT 1
+                   FROM bars bb
+                  WHERE bb.ticker = ind.ticker AND bb.ts = ind.ts AND
+                      bb."interval" = ind."interval"))
+          ORDER BY ind.ts DESC
+         LIMIT 1) latest
+     JOIN indicators i ON i.ticker = t.ticker AND i.ts = latest.ts AND i."interval" = '1d'::text
+     JOIN bars b ON b.ticker = i.ticker AND b.ts = i.ts AND b."interval" = i."interval"
+     LEFT JOIN market_days m ON m.ts = i.ts::date
+     LEFT JOIN LATERAL ( SELECT u2.in_trade,
+            u2.mcap_usd,
+            u2.crit_mcap,
+            u2.crit_above_sma200,
+            u2.crit_sma200_slope,
+            u2.crit_rel_return,
+            u2.crit_rev_growth,
+            u2.in_watch,
+            u2.watch_reason
+           FROM universe u2
+          WHERE u2.ticker = i.ticker AND u2.as_of <= i.ts::date
+          ORDER BY u2.as_of DESC
+         LIMIT 1) u ON true"""
+    )
+    op.execute(
+        """CREATE OR REPLACE VIEW v_universe AS
+SELECT DISTINCT ON (u.ticker) u.ticker,
+    t.name,
+    t.sector,
+    t.industry,
+    u.as_of,
+    u.in_train,
+    u.in_trade,
+    u.mcap_usd,
+    u.mcap_rank,
+    u.adv_20d_usd,
+    u.crit_mcap,
+    u.crit_above_sma200,
+    u.crit_sma200_slope,
+    u.crit_rel_return,
+    u.crit_rev_growth,
+    t.is_active,
+    t.delisted_on,
+    u.in_watch,
+    u.watch_reason
+   FROM universe u
+     JOIN tickers t ON t.ticker = u.ticker
+  ORDER BY u.ticker, u.as_of DESC"""
+    )
     op.execute("DELETE FROM universe WHERE config_hash <> 'unknown'")
     op.execute("DROP INDEX IF EXISTS universe_config_ticker_asof_idx")
     op.execute("ALTER TABLE universe DROP CONSTRAINT universe_pkey")

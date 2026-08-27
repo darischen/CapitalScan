@@ -173,7 +173,9 @@ def stub_events_reads(monkeypatch):
         compute, "_read_indicators_range", lambda engine, tickers, start, end: _events_indicators()
     )
     monkeypatch.setattr(compute, "_read_market_days", lambda engine, start, end: _empty_market())
-    monkeypatch.setattr(compute, "_read_universe_flags", lambda engine, tickers: _empty_universe())
+    monkeypatch.setattr(
+        compute, "_read_universe_flags", lambda engine, tickers, *a: _empty_universe()
+    )
 
 
 @pytest.fixture()
@@ -186,7 +188,9 @@ def stub_backtest_reads(monkeypatch):
         backtest, "_read_indicators", lambda engine, ticker, start: _backtest_indicators()
     )
     monkeypatch.setattr(backtest, "_read_market_days", lambda engine: _empty_market())
-    monkeypatch.setattr(backtest, "_read_universe_flags", lambda engine, ticker: _empty_universe())
+    monkeypatch.setattr(
+        backtest, "_read_universe_flags", lambda engine, ticker, *a: _empty_universe()
+    )
 
 
 @pytest.fixture()

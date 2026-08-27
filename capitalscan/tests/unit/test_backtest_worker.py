@@ -135,7 +135,9 @@ def stub_reads(monkeypatch):
     monkeypatch.setattr(backtest, "_read_bars", fake_read_bars)
     monkeypatch.setattr(backtest, "_read_indicators", lambda engine, ticker, start: _indicators())
     monkeypatch.setattr(backtest, "_read_market_days", lambda engine: _empty_market())
-    monkeypatch.setattr(backtest, "_read_universe_flags", lambda engine, ticker: _universe(ticker))
+    monkeypatch.setattr(
+        backtest, "_read_universe_flags", lambda engine, ticker, *a: _universe(ticker)
+    )
     # The tests below call `_backtest_one_ticker(..., database_url=None)`,
     # and `None` means "resolve from `DATABASE_URL_RESEARCH`". Without this
     # stub they pass only on a machine holding a local `.env.local` and fail

@@ -66,12 +66,25 @@ class TestTheUnscopedTablesAreDeliberate:
     def test_bars_is_bounded_by_the_cutoff_not_a_hash(self):
         sql = _sql_for("bars")
         assert ":cutoff" in sql
-        assert "config_hash" not in sql
+        assert "b.config_hash" not in sql
 
     def test_indicators_is_bounded_by_the_cutoff_not_a_hash(self):
         sql = _sql_for("indicators")
         assert ":cutoff" in sql
-        assert "config_hash" not in sql
+        assert "i.config_hash" not in sql
+
+    def test_their_universe_predicate_IS_scoped_by_hash(self):
+        """The rows are not hash-scoped; the membership test inside them is.
+
+        `universe` gained `config_hash` in d4a17c93f60b, so
+        `EXISTS (... u.in_trade)` unscoped would match *any* arm's
+        membership and ship chart data for names the served generation does
+        not consider tradeable. These assertions read `u.config_hash`
+        specifically -- the pair above pins that the bar rows themselves
+        stay generation-agnostic, which is the property this class is about.
+        """
+        for name in ("bars", "indicators"):
+            assert "u.config_hash = :config_hash" in _sql_for(name)
 
     def test_bars_and_indicators_ship_only_tradeable_names(self):
         """Already narrow: both require `universe.in_trade`, so the store

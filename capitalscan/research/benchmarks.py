@@ -59,6 +59,7 @@ from capitalscan.core.arms import (
 from capitalscan.core.config import BenchmarkParams, Config, ReportingParams
 from capitalscan.core.types import Side
 from capitalscan.jobs import db_io
+from capitalscan.jobs.config import config_hash as _config_hash
 from capitalscan.research.cell_stats import (
     GRID_CLUSTER_HEADS_ONLY,
     GRID_ENTRY_KIND,
@@ -186,11 +187,12 @@ def load_window(engine: Engine, cfg: Config, split_key: str) -> ArmWindow:
         )
         universe = pd.read_sql(
             text(
-                "SELECT ticker, as_of FROM universe WHERE in_trade AND as_of <= :end "
+                "SELECT ticker, as_of FROM universe "
+                "WHERE in_trade AND as_of <= :end AND config_hash = :chash "
                 "ORDER BY as_of, ticker"
             ),
             conn,
-            params={"end": end},
+            params={"end": end, "chash": _config_hash(cfg)},  # type: ignore[arg-type]
         )
         delistings = conn.execute(
             text("SELECT ticker, delisted_on FROM tickers WHERE delisted_on IS NOT NULL")

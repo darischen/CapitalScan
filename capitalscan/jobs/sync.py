@@ -136,7 +136,16 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
         SyncTable("tickers", "SELECT * FROM tickers", ("ticker",)),
         SyncTable("trading_days", "SELECT * FROM trading_days", ("d",)),
         SyncTable("market_days", "SELECT * FROM market_days", ("ts",)),
-        SyncTable("universe", "SELECT * FROM universe", ("ticker", "as_of")),
+        # **Keyed on the hash too, and scoped to it.** `universe` gained
+        # `config_hash` in d4a17c93f60b so ablation arms can coexist locally.
+        # Serving reads exactly one generation, so shipping the others would
+        # copy rows no query there can reach -- and shipping them under the
+        # old two-column key would collapse them onto each other.
+        SyncTable(
+            "universe",
+            "SELECT * FROM universe WHERE config_hash = :config_hash",
+            ("ticker", "as_of", "config_hash"),
+        ),
         SyncTable("serving_config", "SELECT * FROM serving_config", ("only_row",)),
         # Scoped by trade-universe membership rather than by ticker list:
         # the deployed chart only ever draws a name the screener can show.
@@ -148,14 +157,16 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
             "bars",
             "SELECT b.* FROM bars b WHERE b.interval = '1d' "
             "AND b.ts >= GREATEST(:cutoff, COALESCE(CAST(:bars_from AS date), :cutoff)) "
-            "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = b.ticker AND u.in_trade)",
+            "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = b.ticker AND u.in_trade "
+            "AND u.config_hash = :config_hash)",
             ("ticker", "ts", "interval"),
         ),
         SyncTable(
             "indicators",
             "SELECT i.* FROM indicators i WHERE i.interval = '1d' "
             "AND i.ts >= GREATEST(:cutoff, COALESCE(CAST(:indicators_from AS date), :cutoff)) "
-            "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = i.ticker AND u.in_trade)",
+            "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = i.ticker AND u.in_trade "
+            "AND u.config_hash = :config_hash)",
             ("ticker", "ts", "interval"),
         ),
         # **`runs`, narrowed to what the foreign key needs.** ADR 053 keeps
