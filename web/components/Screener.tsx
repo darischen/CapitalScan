@@ -1,4 +1,5 @@
 import DatePicker from "./DatePicker";
+import TickerSearch from "./TickerSearch";
 import {
   DISPLAY_TZ_LABEL,
   SIGNAL_LABELS,
@@ -175,6 +176,18 @@ export function StatusStrip({
           </span>
         </>
       )}
+
+      {/* The same type-ahead the ticker page carries (user's request,
+          2026-08-27), placed right of the role badge and before `.strip-nav`
+          so the nav stays pinned right by its own `margin-left: auto`.
+
+          **It reaches names the screener cannot.** The table lists what
+          fired for the selected date; the menu lists every ticker and tags
+          the ones outside the trade universe, so a watch-universe name like
+          CCJ is reachable from the home page instead of only by editing a
+          URL. That was the original complaint behind ADR 149's display
+          work. */}
+      <TickerSearch />
       {/* The other two surfaces. Pushed right rather than given a nav bar of
           its own: there are three routes, the strip is already the page's
           one persistent element, and a second horizontal band above a dense

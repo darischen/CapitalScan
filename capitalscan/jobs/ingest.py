@@ -485,6 +485,36 @@ def validate_bars(
             else:
                 flag(idx, "large_unexplained_return", {"pct_change": chg})
 
+        # **Zero volume AND an unchanged close is filler, not a session.**
+        # Found 2026-08-27: AVB held four bars at exactly 65.9005 with
+        # volume 0 across 2026-08-17..20, spanning its 2.793 split, while
+        # the vendor now serves four distinct real closes for those days.
+        #
+        # Both signals already existed as flags and both fired; neither
+        # clears `keep`, so the bars were stored and the indicators read a
+        # fake flat line straight through a split. That is deliberate for
+        # each signal alone -- CCZ, GJS and SBNY have real no-trade
+        # sessions, and a flat close on real volume is a quiet day -- but
+        # the conjunction carries no observation at all: no trades, and a
+        # price copied from yesterday. Invariant 4 drops an absent value
+        # and logs it rather than carrying it forward, so this rejects.
+        #
+        # Compared against the prior row *within this ticker's group*, so
+        # the first bar of a batch is never rejected (nothing to compare)
+        # and one ticker cannot be measured against another.
+        prior_in_group = group["close"].shift(1)
+        for idx, row in group.iterrows():
+            if not keep.at[idx]:
+                continue
+            prior = prior_in_group.at[idx]
+            no_volume = not row["volume"] or pd.isna(row["volume"])
+            if no_volume and pd.notna(prior) and row["close"] == prior:
+                reject(
+                    idx,
+                    "flat_zero_volume_bar",
+                    {"close": row["close"], "prior_close": prior, "volume": row["volume"]},
+                )
+
         flat_run = (group["close"] == group["close"].shift(1)).astype(int)
         run_len = flat_run.groupby((flat_run != flat_run.shift()).cumsum()).cumsum()
         for idx, length in run_len.items():
@@ -567,6 +597,100 @@ def find_missing_bars(bars: pd.DataFrame, trading_days: pd.DataFrame) -> pd.Data
         for d in sorted(set(expected) - present):
             gaps.append({"ticker": ticker, "missing_date": d.date()})
     return pd.DataFrame(gaps, columns=["ticker", "missing_date"])
+
+
+# ============ daily split back-adjustment ============
+
+# Below this distance from 1.0 a split cannot be told from ordinary daily
+# noise by comparing closes across the ex-date. A 1.008 split (SCCO) moves
+# price 0.8%; single sessions move more than that constantly. CLAUDE.md
+# records the same limitation biting `_split_adjustment_factor`, and a
+# first pass at the detection query below reported SCCO, HON, SPGI, CMCSA,
+# FNF, UL and CBSH as unadjusted purely because `ratio * 0.85 .. ratio *
+# 1.15` brackets 1.0 when the ratio is near 1.0. Those were all false.
+MIN_DETECTABLE_SPLIT_DISTANCE = 0.15
+
+# How close the observed jump must sit to the ratio (or to 1.0) to call it.
+SPLIT_STATE_TOLERANCE = 0.08
+
+
+def daily_split_state(before_close: float, after_close: float, ratio: float) -> str:
+    """Has the vendor already back-adjusted this ticker's daily history?
+
+    Returns `"unadjusted"`, `"adjusted"` or `"unresolved"`.
+
+    **Why this exists.** `run_bars_daily` assumed the vendor returns
+    split-adjusted history. On 2026-08-27 that assumption failed in both
+    directions at once:
+
+    - **IESC** split 2-for-1 on 2026-08-24. Yahoo recorded the event on a
+      row with `Close = NaN` and `Volume = 0` and never propagated it
+      backward. A fresh fetch still returns 685.04 on 08-21 against 313.23
+      on 08-25, so re-fetching does **not** fix it -- the vendor's own
+      history is unadjusted and our copy faithfully mirrored it.
+    - **AVB** split 2.793-for-1 on 2026-08-17. Yahoo *did* adjust, but our
+      stored history predated the adjustment and nothing re-read it.
+
+    One assumption, two opposite failures, and neither raised anything.
+    Every split through MNST on 2026-08-11 was fine, so the corruption
+    window is "any split after the last full re-fetch".
+
+    **The comparison.** `corporate_actions.ratio` is `new_shares /
+    old_shares` (10 for KLAC's 10-for-1, 0.2 for AMCR's 1-for-5), the same
+    convention `_split_adjustment_factor` documents against the live table.
+    Dividing pre-split prices by `ratio` is the adjustment, so an
+    *unadjusted* series shows `before / after ~= ratio` and an adjusted one
+    shows `before / after ~= 1`.
+
+    **`unresolved` is a real answer, not a failure.** When `ratio` is within
+    `MIN_DETECTABLE_SPLIT_DISTANCE` of 1.0 the two hypotheses are not
+    separable from daily noise, and guessing picks a wrong one about as
+    often as a right one. Silently adjusting on a coin flip would corrupt a
+    correct series, which is worse than leaving a known-suspect one alone.
+    """
+    if before_close is None or after_close is None:
+        return "unresolved"
+    if not (before_close > 0 and after_close > 0):
+        return "unresolved"
+    if ratio is None or ratio <= 0 or abs(ratio - 1.0) < MIN_DETECTABLE_SPLIT_DISTANCE:
+        return "unresolved"
+
+    observed = before_close / after_close
+    to_ratio = abs(observed - ratio) / ratio
+    to_one = abs(observed - 1.0)
+    if to_ratio <= SPLIT_STATE_TOLERANCE and to_ratio < to_one:
+        return "unadjusted"
+    if to_one <= SPLIT_STATE_TOLERANCE and to_one < to_ratio:
+        return "adjusted"
+    return "unresolved"
+
+
+def back_adjust_daily(frame: pd.DataFrame, ex_date: date, ratio: float) -> pd.DataFrame:
+    """Divide price columns strictly before `ex_date` by `ratio`.
+
+    Never mutates: returns a new frame (conventions). Prices are rounded to
+    4dp, matching the storage precision every comparison already assumes.
+
+    **`volume` is multiplied, not divided.** A 2-for-1 split doubles the
+    share count, so a pre-split volume of 100,000 old shares is 200,000
+    new ones. Getting this backwards leaves the price series right and
+    every volume-derived figure wrong by `ratio` squared.
+
+    Strictly `<` the ex-date: the ex-date bar itself already trades on the
+    new share count.
+    """
+    out = frame.copy()
+    if out.empty or ratio is None or ratio <= 0:
+        return out
+    mask = pd.to_datetime(out["ts"]).dt.date < ex_date
+    if not mask.any():
+        return out
+    for col in ("open", "high", "low", "close", "adj_close"):
+        if col in out.columns:
+            out.loc[mask, col] = (out.loc[mask, col] / ratio).round(4)
+    if "volume" in out.columns:
+        out.loc[mask, "volume"] = (out.loc[mask, "volume"] * ratio).round()
+    return out
 
 
 # ============ hourly split back-adjustment (Session 9 hourly-split-adjust) ============
