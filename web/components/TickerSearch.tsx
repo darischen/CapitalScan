@@ -7,7 +7,11 @@ import { mcap } from "@/lib/format";
 import type { TickerHit } from "@/lib/ticker";
 
 /**
- * Type-ahead in the ticker page's header.
+ * Type-ahead in the ticker page's header, and in the home page's status
+ * strip (2026-08-27).
+ *
+ * Rendered in two places and owned by neither: it takes no props and routes
+ * on its own, so a second mount is a second instance, not shared state.
  *
  * **Every name, tradeable or not.** The menu tags the ones outside the
  * trade universe rather than hiding them: those are the tickers whose page
@@ -46,9 +50,12 @@ export default function TickerSearch() {
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       try {
-        const response = await fetch(`/api/tickers?q=${encodeURIComponent(q)}`, {
-          signal: controller.signal,
-        });
+        const response = await fetch(
+          `/api/tickers?q=${encodeURIComponent(q)}`,
+          {
+            signal: controller.signal,
+          },
+        );
         if (!response.ok) return;
         const { tickers } = (await response.json()) as { tickers: TickerHit[] };
         setHits(tickers);
@@ -68,7 +75,8 @@ export default function TickerSearch() {
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
-      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
+      if (box.current && !box.current.contains(e.target as Node))
+        setOpen(false);
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -152,7 +160,6 @@ export default function TickerSearch() {
           ))}
         </ul>
       )}
-
     </div>
   );
 }
