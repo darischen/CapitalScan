@@ -76,6 +76,8 @@ function state(over: Partial<TickerState> = {}): TickerState {
     daysToEarnings: null,
     vixClose: 15.8,
     inTrade: true,
+    inWatch: false,
+    watchReason: null,
     aboveSma200: true,
     mcapUsd: 2.1e12,
     ...over,
@@ -152,7 +154,9 @@ const SORT_CTX = {
 describe("gate 7: the staleness banner triggers above 2 days", () => {
   const strip = (days: number) => {
     const m = meta({ stalenessDays: days, stale: days > STALE_AFTER_DAYS });
-    return renderToStaticMarkup(<StatusStrip meta={m} fired={4} signalDate="2026-08-18" />);
+    return renderToStaticMarkup(
+      <StatusStrip meta={m} fired={4} signalDate="2026-08-18" />,
+    );
   };
 
   it("does not fire at 1 day", () => {
@@ -218,14 +222,24 @@ describe("gate 7: the staleness banner triggers above 2 days", () => {
 
   it("renders a disabled arrow at the end of the history rather than removing it", () => {
     const html = renderToStaticMarkup(
-      <StatusStrip meta={meta()} fired={0} signalDate="2010-01-05" prevDate={null} nextDate="2010-01-06" />,
+      <StatusStrip
+        meta={meta()}
+        fired={0}
+        signalDate="2010-01-05"
+        prevDate={null}
+        nextDate="2010-01-06"
+      />,
     );
     expect(html).toContain('class="off"');
   });
 
   it("reports the read-write role when the read-only one is unset", () => {
     const html = renderToStaticMarkup(
-      <StatusStrip meta={meta({ readOnly: false })} fired={0} signalDate={null} />,
+      <StatusStrip
+        meta={meta({ readOnly: false })}
+        fired={0}
+        signalDate={null}
+      />,
     );
     expect(html).toContain("read-write role");
   });
@@ -257,11 +271,17 @@ describe("gate 6: the empty state carries a last-fire reference", () => {
 
 describe("the two reversals are told apart", () => {
   const render = (over: Partial<ScreenRow>) =>
-    renderToStaticMarkup(<ScreenerTable rows={[row(over)]} withStats={false} sortCtx={SORT_CTX} />);
+    renderToStaticMarkup(
+      <ScreenerTable rows={[row(over)]} withStats={false} sortCtx={SORT_CTX} />,
+    );
 
   it("shows the close-confirmed reversal as a solid badge", () => {
     const html = render({
-      signalTypesAll: ["bear_close_above_upper", "confluence_high", "bb_upper_touch"],
+      signalTypesAll: [
+        "bear_close_above_upper",
+        "confluence_high",
+        "bb_upper_touch",
+      ],
     });
     expect(html).toContain("↓ reversal");
     expect(html).not.toContain("live reversal");
@@ -378,7 +398,12 @@ describe("gates 4 and 5: statistics render whole or not at all", () => {
       <ScreenerTable
         rows={[
           row({
-            stats: { kind: "suppressed", cellId: "c", reason: "n_eff 12 < min_n_eff 30", nEff: 12 },
+            stats: {
+              kind: "suppressed",
+              cellId: "c",
+              reason: "n_eff 12 < min_n_eff 30",
+              nEff: 12,
+            },
           }),
         ]}
         withStats
@@ -439,7 +464,9 @@ describe("the ticker page's states", () => {
   });
 
   it("renders a ticker with no events without an empty table", () => {
-    const html = renderToStaticMarkup(<EventHistory sym="TSM" events={[]} all={false} total={0} />);
+    const html = renderToStaticMarkup(
+      <EventHistory sym="TSM" events={[]} all={false} total={0} />,
+    );
     expect(html).toContain("No events for TSM");
     expect(html).not.toContain("<tbody>");
   });
@@ -453,7 +480,13 @@ describe("the ticker page's states", () => {
    */
   it("explains an empty history on a ticker outside the trade universe", () => {
     const html = renderToStaticMarkup(
-      <EventHistory sym="SMCI" events={[]} all={false} total={0} inTrade={false} />,
+      <EventHistory
+        sym="SMCI"
+        events={[]}
+        all={false}
+        total={0}
+        inTrade={false}
+      />,
     );
     expect(html).toContain("outside the trade universe");
     expect(html).toContain("will not add them");
@@ -481,7 +514,13 @@ describe("the ticker page's states", () => {
 
   it("says nothing about the universe for a ticker that is in it", () => {
     const html = renderToStaticMarkup(
-      <EventHistory sym="TSM" events={[event()]} all={false} total={1} inTrade={true} />,
+      <EventHistory
+        sym="TSM"
+        events={[event()]}
+        all={false}
+        total={1}
+        inTrade={true}
+      />,
     );
     expect(html).not.toContain("Detection stopped at");
   });
@@ -490,13 +529,25 @@ describe("the ticker page's states", () => {
     const open = renderToStaticMarkup(
       <EventHistory
         sym="TSM"
-        events={[event({ netRet: null, exitDate: null, exitPrice: null, exitReason: null })]}
+        events={[
+          event({
+            netRet: null,
+            exitDate: null,
+            exitPrice: null,
+            exitReason: null,
+          }),
+        ]}
         all={false}
         total={1}
       />,
     );
     const closed = renderToStaticMarkup(
-      <EventHistory sym="TSM" events={[event({ netRet: 0 })]} all={false} total={1} />,
+      <EventHistory
+        sym="TSM"
+        events={[event({ netRet: 0 })]}
+        all={false}
+        total={1}
+      />,
     );
     expect(open).toContain(">open<");
     expect(closed).toContain("0.0%");
@@ -505,13 +556,20 @@ describe("the ticker page's states", () => {
 
   it("marks a row the poller wrote before clustering ran", () => {
     const html = renderToStaticMarkup(
-      <EventHistory sym="TSM" events={[event({ isClusterHead: null })]} all={false} total={1} />,
+      <EventHistory
+        sym="TSM"
+        events={[event({ isClusterHead: null })]}
+        all={false}
+        total={1}
+      />,
     );
     expect(html).toContain("pending cluster");
   });
 
   it("says the outcomes are measured on a different entry from the screener's", () => {
-    const html = renderToStaticMarkup(<EventHistory sym="TSM" events={[event()]} all={false} total={1} />);
+    const html = renderToStaticMarkup(
+      <EventHistory sym="TSM" events={[event()]} all={false} total={1} />,
+    );
     expect(html).toContain("touch");
     expect(html).toContain("next_open");
   });
@@ -564,7 +622,11 @@ describe("the ticker page's states", () => {
         state={state()}
         meta={meta()}
         fired={3}
-        live={{ price: 415.22, ts: "2026-08-18T17:35:00.000Z", aheadOfBar: false }}
+        live={{
+          price: 415.22,
+          ts: "2026-08-18T17:35:00.000Z",
+          aheadOfBar: false,
+        }}
       />,
     );
     expect(html).toContain(">live<");
@@ -583,15 +645,63 @@ describe("the ticker page's states", () => {
     expect(html).toContain("num big");
   });
 
-  it("says when a ticker is outside the trade universe", () => {
+  /**
+   * Three states, not two (ADR 149).
+   *
+   * `in_trade` and `in_watch` are siblings, so a name can be in neither,
+   * and the badge has to say which of the three it is. This asserted a
+   * binary until 2026-08-26, when CCJ read as "outside trade universe"
+   * while it was being polled and priced all session -- true, and the
+   * opposite of what a reader takes from it.
+   */
+  it("distinguishes trade, watch and neither", () => {
     const inside = renderToStaticMarkup(
       <TickerHeader state={state({ inTrade: true })} meta={meta()} fired={3} />,
     );
-    const outside = renderToStaticMarkup(
-      <TickerHeader state={state({ inTrade: false })} meta={meta()} fired={3} />,
+    const neither = renderToStaticMarkup(
+      <TickerHeader
+        state={state({ inTrade: false, inWatch: false })}
+        meta={meta()}
+        fired={3}
+      />,
     );
     expect(inside).toContain("in trade universe");
-    expect(outside).toContain("outside trade universe");
+    expect(neither).toContain("outside both universes");
+    // The old copy must not come back: it is the wrong claim for a watched
+    // name and indistinguishable from the right one for an excluded name.
+    expect(neither).not.toContain("outside trade universe");
+  });
+
+  /** The reason, not the enum. ADR 149 requires a watch alert to say which
+   * route admitted it -- "a watch alert that looks identical to a tradeable
+   * one is how the distinction is forgotten". */
+  it.each([
+    ["pullback", "Watch Universe: Below 200-Day SMA"],
+    ["history", "Watch Universe: Insufficient History"],
+  ])("labels a watched ticker admitted by %s", (reason, label) => {
+    const html = renderToStaticMarkup(
+      <TickerHeader
+        state={state({ inTrade: false, inWatch: true, watchReason: reason })}
+        meta={meta()}
+        fired={3}
+      />,
+    );
+    expect(html).toContain(label);
+    expect(html).not.toContain("outside");
+  });
+
+  /** 5,844 `in_watch` events predate the first `universe` snapshot and have
+   * no reason on file. A bare label beats rendering "null". */
+  it("falls back to a plain label when the watch reason is unknown", () => {
+    const html = renderToStaticMarkup(
+      <TickerHeader
+        state={state({ inTrade: false, inWatch: true, watchReason: null })}
+        meta={meta()}
+        fired={3}
+      />,
+    );
+    expect(html).toContain("Watch Universe");
+    expect(html).not.toContain("null");
   });
 
   /** 210 of 712 tickers carry no name. An em-dash where a company name goes
@@ -619,7 +729,9 @@ describe("the ticker page's states", () => {
 
 describe("the band gauge", () => {
   it("places the tick at the percentage %B names", () => {
-    const html = renderToStaticMarkup(<BandGauge state={state({ bbPctB: 0.25 })} />);
+    const html = renderToStaticMarkup(
+      <BandGauge state={state({ bbPctB: 0.25 })} />,
+    );
     expect(html).toContain("left:25%");
     expect(html).not.toContain("outside");
   });
@@ -628,20 +740,26 @@ describe("the band gauge", () => {
    * 1 is what `bb_upper_touch` means — so the tick pins to the edge and the
    * printed number stays exact. */
   it("pins the tick at the edge but prints the true value", () => {
-    const html = renderToStaticMarkup(<BandGauge state={state({ bbPctB: 1.37 })} />);
+    const html = renderToStaticMarkup(
+      <BandGauge state={state({ bbPctB: 1.37 })} />,
+    );
     expect(html).toContain("left:100%");
     expect(html).toContain("outside");
     expect(html).toContain("1.370");
   });
 
   it("pins the low side too", () => {
-    const html = renderToStaticMarkup(<BandGauge state={state({ bbPctB: -0.2 })} />);
+    const html = renderToStaticMarkup(
+      <BandGauge state={state({ bbPctB: -0.2 })} />,
+    );
     expect(html).toContain("left:0%");
     expect(html).toContain("outside");
   });
 
   it("draws no tick at all when %B is unknown", () => {
-    const html = renderToStaticMarkup(<BandGauge state={state({ bbPctB: null })} />);
+    const html = renderToStaticMarkup(
+      <BandGauge state={state({ bbPctB: null })} />,
+    );
     expect(html).not.toContain("gauge-tick");
     expect(html).toContain("—");
   });
@@ -669,14 +787,18 @@ describe("gate 8: both %K series are named and distinguishable", () => {
    * `fast_agreement_tol`, so the gap is the quantity that decides whether a
    * threshold crossing is a signal at all. */
   it("the state rail prints both and the gap between them", () => {
-    const html = renderToStaticMarkup(<StateRail state={state({ kFast: 53.3, kFull: 76.7 })} />);
+    const html = renderToStaticMarkup(
+      <StateRail state={state({ kFast: 53.3, kFull: 76.7 })} />,
+    );
     expect(html).toContain("53.3");
     expect(html).toContain("76.7");
     expect(html).toContain("23.4");
   });
 
   it("shows market cap at the end of the rail", () => {
-    const html = renderToStaticMarkup(<StateRail state={state({ mcapUsd: 2.476e12 })} />);
+    const html = renderToStaticMarkup(
+      <StateRail state={state({ mcapUsd: 2.476e12 })} />,
+    );
     expect(html).toContain("market cap");
     expect(html).toContain("2.48T");
   });
@@ -684,7 +806,9 @@ describe("gate 8: both %K series are named and distinguishable", () => {
   /** A name with no `universe` snapshot has no cap. The placeholder is the
    * same em-dash every other missing value uses, never a zero. */
   it("renders the placeholder when there is no market cap", () => {
-    const html = renderToStaticMarkup(<StateRail state={state({ mcapUsd: null })} />);
+    const html = renderToStaticMarkup(
+      <StateRail state={state({ mcapUsd: null })} />,
+    );
     // Scoped to the cell. A looser `not.toContain("0M")` fails on the
     // volume beside it, which legitimately renders `14.0M`.
     const cell = html.slice(html.indexOf("market cap"));
@@ -693,7 +817,9 @@ describe("gate 8: both %K series are named and distinguishable", () => {
   });
 
   it("prints no gap when one of them is missing, rather than a wrong one", () => {
-    const html = renderToStaticMarkup(<StateRail state={state({ kFull: null })} />);
+    const html = renderToStaticMarkup(
+      <StateRail state={state({ kFull: null })} />,
+    );
     expect(html).not.toContain("Δ");
   });
 });
@@ -702,12 +828,36 @@ describe("gate 8: both %K series are named and distinguishable", () => {
 
 describe("gate 10: identical input renders identically", () => {
   const cases: [string, () => string][] = [
-    ["StatusStrip", () => renderToStaticMarkup(<StatusStrip meta={meta()} fired={4} signalDate="2026-08-18" />)],
-    ["ScreenerTable", () => renderToStaticMarkup(<ScreenerTable rows={[row()]} withStats={false} sortCtx={SORT_CTX} />)],
+    [
+      "StatusStrip",
+      () =>
+        renderToStaticMarkup(
+          <StatusStrip meta={meta()} fired={4} signalDate="2026-08-18" />,
+        ),
+    ],
+    [
+      "ScreenerTable",
+      () =>
+        renderToStaticMarkup(
+          <ScreenerTable rows={[row()]} withStats={false} sortCtx={SORT_CTX} />,
+        ),
+    ],
     ["StateRail", () => renderToStaticMarkup(<StateRail state={state()} />)],
     ["BandGauge", () => renderToStaticMarkup(<BandGauge state={state()} />)],
-    ["EventHistory", () => renderToStaticMarkup(<EventHistory sym="TSM" events={[event()]} all={false} total={1} />)],
-    ["TickerHeader", () => renderToStaticMarkup(<TickerHeader state={state()} meta={meta()} fired={1} />)],
+    [
+      "EventHistory",
+      () =>
+        renderToStaticMarkup(
+          <EventHistory sym="TSM" events={[event()]} all={false} total={1} />,
+        ),
+    ],
+    [
+      "TickerHeader",
+      () =>
+        renderToStaticMarkup(
+          <TickerHeader state={state()} meta={meta()} fired={1} />,
+        ),
+    ],
   ];
 
   it.each(cases)("%s is a pure function of its props", (_name, render) => {
@@ -720,13 +870,15 @@ describe("gate 10: identical input renders identically", () => {
    * day boundary, which is the failure that shows up in a screenshot
    * comparison months later and never in a test.
    */
-  it.each(cases)("%s renders nothing that depends on the current time", (_name, render) => {
-    const html = render();
-    const today = new Date().toISOString().slice(0, 10);
-    expect(html).not.toContain(today);
-  });
+  it.each(cases)(
+    "%s renders nothing that depends on the current time",
+    (_name, render) => {
+      const html = render();
+      const today = new Date().toISOString().slice(0, 10);
+      expect(html).not.toContain(today);
+    },
+  );
 });
-
 
 /* --- the picker returns to base state after opening (ADR 139) ----------- */
 
@@ -741,7 +893,10 @@ describe("opening the charts resets the picker", () => {
    * the browser refuses a tab -- `disarm` routes through `sync`, which calls
    * `setBlocked([])`.
    */
-  const source = readFileSync(join(__dirname, "..", "components", "OpenSelected.tsx"), "utf8");
+  const source = readFileSync(
+    join(__dirname, "..", "components", "OpenSelected.tsx"),
+    "utf8",
+  );
   const openBody = source.slice(
     source.indexOf("const open = useCallback"),
     source.indexOf("const count = selected.length"),
@@ -758,7 +913,9 @@ describe("opening the charts resets the picker", () => {
   it("records what was blocked before it resets anything", () => {
     // `setBlocked(refused)` must precede the reset. Reversed, the guard
     // would read stale state and a blocked open could still collapse.
-    expect(openBody.indexOf("setBlocked(refused)")).toBeLessThan(openBody.indexOf("disarm()"));
+    expect(openBody.indexOf("setBlocked(refused)")).toBeLessThan(
+      openBody.indexOf("disarm()"),
+    );
   });
 
   it("keeps `sync` clearing blocked, which is why the guard is required", () => {

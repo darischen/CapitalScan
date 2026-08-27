@@ -46,9 +46,12 @@
    * literal names stay behind them: if the variable is ever missing (a test
    * renderer with no layout, a stylesheet loaded standalone) the page falls
    * back to an installed copy rather than to Times. */
-  --mono: var(--font-mono), "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  --sans: var(--font-sans), "Inter Tight", Inter, system-ui, -apple-system, sans-serif;
-  --display: var(--font-display), "IBM Plex Sans Condensed", "IBM Plex Sans", var(--sans);
+  --mono:
+    var(--font-mono), "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --sans:
+    var(--font-sans), "Inter Tight", Inter, system-ui, -apple-system, sans-serif;
+  --display:
+    var(--font-display), "IBM Plex Sans Condensed", "IBM Plex Sans", var(--sans);
 
   /* One superfamily across mono and display, a different face for prose.
    * Headers and data then look related rather than pasted together. */
@@ -80,7 +83,9 @@ body {
 .num {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum" 1, "zero" 1;
+  font-feature-settings:
+    "tnum" 1,
+    "zero" 1;
 }
 
 h1,
@@ -1198,6 +1203,35 @@ table.screen td.rail span[data-side="short"] {
   border: 1px solid var(--short);
   border-radius: 2px;
   white-space: nowrap;
+}
+
+/* ADR 149's watch universe, marked rather than coloured.
+   `in_trade` and `in_watch` are siblings, so this is a third state, not a
+   degraded first one. It reads as an annotation on the ticker -- dimmed,
+   superscript-weight, no fill -- because colour in this panel means
+   direction and outcome, and spending a hue on membership would compete
+   with the side marker two cells to the left. */
+.watch-mark {
+  margin-left: 0.35em;
+  padding: 0 0.25em;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  font-size: 0.7em;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--muted);
+  vertical-align: super;
+  text-decoration: none;
+  cursor: help;
+}
+
+/* The ticker page's badge for the same state. `tag on` and `tag off` are
+   the trade-universe pair; this sits between them and must not read as
+   either. */
+.tag.watch {
+  border-color: var(--rule);
+  color: var(--text);
+  background: transparent;
 }
 
 /* The poller's live judgement, distinguished from the close-confirmed one.

@@ -266,11 +266,22 @@ def evaluate_criteria(
     `mcap` is point-in-time: the caller resolves it from the latest filing
     with `filed_on < as_of` (DESIGN §2.4). A ticker with no filing yet gets
     `None`, not a backfilled current share count.
+
+    **`crit_sma200_slope` reads its floor from config**, not from a literal.
+    It was `0.0` in this file until 2026-08-25, which broke invariant 9 and,
+    worse, meant the traded population could be changed in code without
+    moving `config_hash` -- two different universes under one hash, which is
+    the state ADR 060 makes universe definition config to prevent.
+
+    The comparison stays **strict**. `> 0.0` and `>= 0.0` differ by no rows:
+    measured 2026-08-25 over 909 tickers, none has a slope of exactly zero,
+    because it is a float ratio. Admitting a flat base needs a negative
+    floor, which is a sweep rather than a sign change.
     """
     return {
         "crit_mcap": _cmp(mcap, up.min_mcap_usd, strict=False),
         "crit_above_sma200": _cmp(ind_row.get("close"), ind_row.get("sma_200")),
-        "crit_sma200_slope": _cmp(ind_row.get("sma200_slope_60"), 0.0),
+        "crit_sma200_slope": _cmp(ind_row.get("sma200_slope_60"), up.sma200_slope_min),
         "crit_rel_return": _cmp(ind_row.get("rel_return_756d"), sector_median_return),
         "crit_rev_growth": rev_growth_positive,
     }

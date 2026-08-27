@@ -1,6 +1,14 @@
 import DatePicker from "./DatePicker";
-import { SIGNAL_LABELS, clock, fmt, pct, screenHref, sessionsBetween, vol } from "@/lib/format";
-import { nextDir } from "@/lib/screen";
+import {
+  SIGNAL_LABELS,
+  clock,
+  fmt,
+  pct,
+  screenHref,
+  sessionsBetween,
+  vol,
+} from "@/lib/format";
+import { watchLabel, nextDir } from "@/lib/screen";
 import type {
   CellStats,
   Meta,
@@ -41,10 +49,6 @@ function dayClass(row: ScreenRow): string {
   return "";
 }
 
-
-
-
-
 export function StatusStrip({
   meta,
   fired,
@@ -69,7 +73,8 @@ export function StatusStrip({
   // current the database is. They diverge whenever the last backtest is
   // older than the last ingest, and a single date would report the fresher
   // one beside the older rows.
-  const trailing = signalDate !== null && meta.asOf !== null && signalDate < meta.asOf;
+  const trailing =
+    signalDate !== null && meta.asOf !== null && signalDate < meta.asOf;
   return (
     <div className={meta.stale ? "strip stale" : "strip"}>
       {/* Date navigation (user's request, 2026-08-19). Steps to the next
@@ -118,13 +123,19 @@ export function StatusStrip({
         {/* Only when you are not on it. On the newest date it would be a
             link to the page you are already reading. */}
         {nextDate && (
-          <a className="latest" href={screenHref(null, { withStats, confluenceOnly })}>
+          <a
+            className="latest"
+            href={screenHref(null, { withStats, confluenceOnly })}
+          >
             latest
           </a>
         )}
       </span>
       {trailing && (
-        <span className="stale-badge num" title="v_screen shows entry_kind='next_open', which only cscan backtest writes">
+        <span
+          className="stale-badge num"
+          title="v_screen shows entry_kind='next_open', which only cscan backtest writes"
+        >
           trails bars by {sessionsBetween(signalDate, meta.asOf)}
         </span>
       )}
@@ -147,7 +158,8 @@ export function StatusStrip({
         </span>
       ) : (
         <span>
-          fresh · <span className="num">{meta.stalenessDays ?? 0}</span> sessions
+          fresh · <span className="num">{meta.stalenessDays ?? 0}</span>{" "}
+          sessions
         </span>
       )}
       <span className="sep">·</span>
@@ -206,7 +218,6 @@ function StatsCell({ stats }: { stats: CellStats | Suppressed | null }) {
   );
 }
 
-
 /**
  * The reversal state, in whichever of its two forms this row has.
  *
@@ -228,7 +239,10 @@ function StatsCell({ stats }: { stats: CellStats | Suppressed | null }) {
 function ReversalBadge({ row }: { row: ScreenRow }) {
   if (row.signalTypesAll.includes("bear_close_above_upper")) {
     return (
-      <span className="reversal" title="closed above the band and below its open: ADR 111's confirming reversal">
+      <span
+        className="reversal"
+        title="closed above the band and below its open: ADR 111's confirming reversal"
+      >
         ↓ reversal
       </span>
     );
@@ -257,7 +271,8 @@ function ReversalBadge({ row }: { row: ScreenRow }) {
   if (!rev.aboveBand) return null;
 
   // Negative is below the open and therefore reversing.
-  const gap = rev.openGapAtr === null ? null : `${rev.openGapAtr.toFixed(2)} ATR vs open`;
+  const gap =
+    rev.openGapAtr === null ? null : `${rev.openGapAtr.toFixed(2)} ATR vs open`;
 
   if (rev.confirmed) {
     return (
@@ -331,7 +346,9 @@ function SortHeader({
     <th
       className={className}
       title={title}
-      aria-sort={active ? (ctx.dir === "asc" ? "ascending" : "descending") : "none"}
+      aria-sort={
+        active ? (ctx.dir === "asc" ? "ascending" : "descending") : "none"
+      }
     >
       <a
         className={active ? "sortlink on" : "sortlink"}
@@ -345,7 +362,11 @@ function SortHeader({
         {label}
         {/* Reserved whether or not it is showing, so switching columns does
             not shift the header row by the width of a glyph. */}
-        <span className="caret" data-dir={active ? ctx.dir : undefined} aria-hidden="true">
+        <span
+          className="caret"
+          data-dir={active ? ctx.dir : undefined}
+          aria-hidden="true"
+        >
           {active ? (ctx.dir === "asc" ? "▲" : "▼") : ""}
         </span>
       </a>
@@ -387,7 +408,12 @@ export function ScreenerTable({
             ctx={sortCtx}
             title="Confluence first, then band, then stochastic; short side above long within each"
           />
-          <SortHeader label="Str" sortKey="strength" ctx={sortCtx} className="r" />
+          <SortHeader
+            label="Str"
+            sortKey="strength"
+            ctx={sortCtx}
+            className="r"
+          />
           <SortHeader
             label="Bollinger Lower / Mid / Upper"
             sortKey="bollinger"
@@ -418,7 +444,12 @@ export function ScreenerTable({
             className="r"
             title="Coloured against the open: cool closed up, warm closed down"
           />
-          <SortHeader label="Vol" sortKey="volume" ctx={sortCtx} className="r" />
+          <SortHeader
+            label="Vol"
+            sortKey="volume"
+            ctx={sortCtx}
+            className="r"
+          />
           <SortHeader
             label="Live"
             sortKey="live"
@@ -426,7 +457,12 @@ export function ScreenerTable({
             className="r"
             title="Newest price the poller saw"
           />
-          <SortHeader label="Fired" sortKey="fired" ctx={sortCtx} className="r" />
+          <SortHeader
+            label="Fired"
+            sortKey="fired"
+            ctx={sortCtx}
+            className="r"
+          />
           {withStats && <th>Cell</th>}
         </tr>
       </thead>
@@ -443,7 +479,12 @@ export function ScreenerTable({
                 would read as "Select ROST checkbox" in a row that just said
                 ROST. */}
             <td className="pick">
-              <input type="checkbox" name="ticker" value={row.ticker} aria-label={row.ticker} />
+              <input
+                type="checkbox"
+                name="ticker"
+                value={row.ticker}
+                aria-label={row.ticker}
+              />
             </td>
             <td className="rail">
               {/* The signature element. `title` rather than visible text so
@@ -453,6 +494,19 @@ export function ScreenerTable({
             </td>
             <td className="ticker" data-label="Ticker">
               <a href={`/ticker/${row.ticker}`}>{row.ticker}</a>
+              {/* A mark, not a colour and not a column. These rows are a
+                  minority (27 of 164 on 2026-08-26) and the reader's
+                  question is "why has this no statistics", which the title
+                  answers on hover. A separate column would cost every row
+                  width to annotate a sixth of them. */}
+              {row.inWatch && (
+                <abbr
+                  className="watch-mark"
+                  title={watchLabel(row.watchReason)}
+                >
+                  W
+                </abbr>
+              )}
             </td>
             {/* Every type, spelled out (user's request, 2026-08-19). The
                 previous `+2` made the reader hover to learn what a
@@ -469,7 +523,9 @@ export function ScreenerTable({
                 .map((t, i) => (
                   <span key={t}>
                     {i > 0 && <span className="sep-dot"> · </span>}
-                    <span className={i === 0 ? undefined : "dim"}>{SIGNAL_LABELS[t] ?? t}</span>
+                    <span className={i === 0 ? undefined : "dim"}>
+                      {SIGNAL_LABELS[t] ?? t}
+                    </span>
                   </span>
                 ))}
               {/* Pulled out of the list and badged (user's request,
@@ -491,7 +547,11 @@ export function ScreenerTable({
                 `core/indicators.py` computed it; nothing is recomputed
                 here. `title` carries the session so a reader can confirm
                 which one it is without a column for it. */}
-            <td className="r num" data-label="Bollinger" title={row.bandTs ? `bands at ${row.bandTs}` : undefined}>
+            <td
+              className="r num"
+              data-label="Bollinger"
+              title={row.bandTs ? `bands at ${row.bandTs}` : undefined}
+            >
               {fmt(row.bbLower)}
               <span className="dim"> / </span>
               {fmt(row.bbMid)}
@@ -544,11 +604,21 @@ export function ScreenerTable({
             <td className="r num" data-label="Vol">
               {vol(row.volume)}
             </td>
-            <td className="r num" data-label="Live" title={row.livePriceTs ? `as of ${clock(row.livePriceTs)}` : undefined}>
+            <td
+              className="r num"
+              data-label="Live"
+              title={
+                row.livePriceTs ? `as of ${clock(row.livePriceTs)}` : undefined
+              }
+            >
               {fmt(row.livePrice)}
             </td>
             <td className="r num" data-label="Fired">
-              {row.firedAt ? clock(row.firedAt) : <span className="dim">—</span>}
+              {row.firedAt ? (
+                clock(row.firedAt)
+              ) : (
+                <span className="dim">—</span>
+              )}
             </td>
             {withStats && (
               <td data-label="Cell">

@@ -164,11 +164,22 @@ def actions(
     lookback: int = typer.Option(30, help="Days to look back"),
     tickers: Optional[str] = typer.Option(None, help="Comma-separated ticker list"),
 ) -> None:
-    """Fetch corporate actions (splits, dividends)."""
+    """Fetch corporate actions (splits, dividends).
+
+    `--lookback` bounds the **incremental** window only. A ticker with no
+    rows on file still gets its whole history, because that is the only
+    thing `yf.Ticker(t).actions` returns and a partial history is worse
+    than a slow first fetch.
+    """
     from capitalscan.jobs import ingest
 
     resolved = _resolve_tickers(tickers)
-    report = ingest.run_actions(resolved)
+    # **Passed through.** This option was declared and then dropped on the
+    # floor -- `run_actions` took its own default and `--lookback 90` did
+    # nothing, silently. Same shape as `fetch_listed` taking `exchange`,
+    # using it for the cache key and calling `_fetch_rows()` with none.
+    end = date.today()
+    report = ingest.run_actions(resolved, start=end - timedelta(days=lookback), end=end)
     console.print(f"actions: upserted {report.rows_written} rows for {len(report.tickers)} tickers")
 
 
@@ -215,6 +226,18 @@ def earnings(
     )
 
 
+def compute_chunk_default() -> int:
+    """`compute.INDICATOR_CHUNK_SIZE`, read lazily.
+
+    `jobs.compute` imports pandas and the indicator registry, and this
+    module is imported to render `--help`. Reading the constant at call
+    time keeps `cscan --help` from paying for that.
+    """
+    from capitalscan.jobs import compute
+
+    return compute.INDICATOR_CHUNK_SIZE
+
+
 @app.command()
 def indicators(
     lookback: int = typer.Option(5, help="Days to look back"),
@@ -223,6 +246,11 @@ def indicators(
     ),
     tickers: Optional[str] = typer.Option(None, help="Comma-separated ticker list"),
     workers: int = typer.Option(1, help="ProcessPoolExecutor workers; 1 runs serially"),
+    chunk_size: int = typer.Option(
+        compute_chunk_default(),
+        "--chunk-size",
+        help="Tickers computed and written as one unit; bounds peak memory",
+    ),
 ) -> None:
     """Compute technical indicators."""
     from capitalscan.jobs import compute
@@ -234,7 +262,12 @@ def indicators(
     end = date.today()
     start = end - timedelta(days=lookback)
     report = compute.run_indicators(
-        resolved, start, end, params=config.indicators, max_workers=workers
+        resolved,
+        start,
+        end,
+        params=config.indicators,
+        max_workers=workers,
+        chunk_size=chunk_size,
     )
     console.print(
         f"indicators: {report.rows_written} written, {report.rows_flagged} tickers skipped "
@@ -1278,6 +1311,12 @@ def sync(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print what would be copied, copy nothing"
     ),
+    incremental: bool = typer.Option(
+        False,
+        "--incremental",
+        help="Ship only what is newer than the target's own watermark. "
+        "What `cscan nightly` uses; the bare command still copies everything.",
+    ),
 ) -> None:
     """Push the serving subset to the cloud store (ADR 053, ADR 137).
 
@@ -1307,7 +1346,7 @@ def sync(
         console.print(", ".join(plan["tables"]))
         return
 
-    report = sync_job.run_sync()
+    report = sync_job.run_sync(incremental=incremental)
     for name, n in report.rows.items():
         console.print(f"  {name:<16} {n:>9,}")
     console.print(f"[green]synced[/green] {report.total:,} rows")
@@ -2426,7 +2465,16 @@ def nightly() -> None:
         console.print(f"[yellow]warn[/yellow] serving sweep skipped: {exc}")
 
     try:
-        sync_report = sync_job.run_sync()
+        # **Incremental here, full in `cscan sync`.** Nightly adds one
+        # session; a full pass shipped 7,469,519 rows in 114.2 minutes on
+        # 2026-08-26 to deliver ~3,875 of them, which was two thirds of the
+        # whole job. The bound comes from the serving store's own watermark,
+        # so a Pi that missed a night is caught up rather than left with a
+        # hole, and an empty target still falls back to a full pass.
+        #
+        # Run `cscan sync` by hand after a rebuild, a reflash or a config
+        # change -- that is what the unbounded form is for.
+        sync_report = sync_job.run_sync(incremental=True)
         console.print(f"nightly: synced {sync_report.total:,} rows to serving")
     except RuntimeError as exc:
         console.print(f"[yellow]skip[/yellow] sync: {exc}")

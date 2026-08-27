@@ -160,6 +160,11 @@ def _merge_days_to_earnings(engine: Engine, indicators: pd.DataFrame) -> pd.Data
     return pd.concat(out, ignore_index=True)
 
 
+#: Tickers computed and written as one unit. Bounds peak memory and makes
+#: progress visible; see `run_indicators` for why both matter.
+INDICATOR_CHUNK_SIZE = 200
+
+
 def run_indicators(
     tickers: list[str],
     target_start: date,
@@ -167,9 +172,30 @@ def run_indicators(
     engine: Engine | None = None,
     params: IndicatorParams | None = None,
     max_workers: int = 1,
+    chunk_size: int = INDICATOR_CHUNK_SIZE,
 ) -> IngestReport:
     """`indicators` job (DESIGN §4.5). `max_workers > 1` uses a spawn-mode
     `ProcessPoolExecutor`; each worker opens its own connection.
+
+    **Computed and written in chunks of `chunk_size` tickers.** It used to
+    compute every ticker, hold every frame, `pd.concat` them, and convert
+    the result to dicts for one upsert. Measured 2026-08-26 on a
+    1,462-ticker full-history run: **11 GB resident, 2.5 GB free of 32**,
+    and write throughput decaying from ~900 rows/s to **~46** as memory
+    filled. Three layers stacked -- every frame in `results`, `concat`
+    doubling them, then a dict per row on top.
+
+    Chunking bounds all three to one group at a time.
+
+    **It also fixes a diagnostic problem.** With a single write at the end,
+    nothing landed until every ticker finished, so a mid-run `count(*)`
+    returned the pre-run number and was indistinguishable from a hang. Two
+    working runs were killed for exactly that reason on 2026-08-25. Rows now
+    appear per chunk, so progress is observable.
+
+    **One pool for the whole job, not one per chunk.** Spawn costs a couple
+    of seconds per worker, and re-creating the pool eight times would pay it
+    eight times for no benefit.
     """
     engine = engine or db_io.get_engine()
     params = params or IndicatorParams()
@@ -183,20 +209,47 @@ def run_indicators(
         "indicators",
         {"tickers": tickers, "start": str(target_start), "end": str(target_end)},
     ) as report:
-        args = [
-            (ticker, read_start, target_end, target_start, target_end, params, database_url)
-            for ticker in tickers
-        ]
-        if max_workers > 1:
-            with ProcessPoolExecutor(max_workers=max_workers) as pool:
-                results = list(pool.map(_compute_one_ticker, *zip(*args)))
-        else:
-            results = [_compute_one_ticker(*a) for a in args]
+        cols = ["ticker", "ts", "interval", *INDICATOR_COLUMNS, "days_to_earnings", "run_id"]
+        groups = [tickers[i : i + chunk_size] for i in range(0, len(tickers), chunk_size)]
+        all_skipped: list[str] = []
+        computed: list[str] = []
+        written = 0
 
-        frames = [ind for _, ind in results if ind is not None]
-        skipped = [ticker for ticker, ind in results if ind is None]
+        pool = ProcessPoolExecutor(max_workers=max_workers) if max_workers > 1 else None
+        try:
+            for group in groups:
+                args = [
+                    (t, read_start, target_end, target_start, target_end, params, database_url)
+                    for t in group
+                ]
+                if pool is not None:
+                    results = list(pool.map(_compute_one_ticker, *zip(*args)))
+                else:
+                    results = [_compute_one_ticker(*a) for a in args]
 
-        if skipped:
+                frames = [ind for _, ind in results if ind is not None]
+                all_skipped.extend(t for t, ind in results if ind is None)
+                computed.extend(t for t, ind in results if ind is not None)
+
+                if frames:
+                    merged = pd.concat(frames, ignore_index=False)
+                    merged["ts"] = merged.index
+                    merged = merged.reset_index(drop=True)
+                    merged = _merge_days_to_earnings(engine, merged)
+                    merged["interval"] = "1d"
+                    merged["run_id"] = report.run_id
+                    written += db_io.upsert(
+                        engine, "indicators", merged[cols], ["ticker", "ts", "interval"]
+                    )
+                # Dropped explicitly: the loop would otherwise hold the
+                # previous chunk's frames alive until the next assignment,
+                # which is half the point of chunking.
+                del results, frames
+        finally:
+            if pool is not None:
+                pool.shutdown()
+
+        if all_skipped:
             db_io.append(
                 engine,
                 "bar_rejects",
@@ -209,23 +262,13 @@ def run_indicators(
                         "payload": {"min_bars": MIN_BARS_FOR_INDICATORS},
                         "run_id": report.run_id,
                     }
-                    for t in skipped
+                    for t in all_skipped
                 ],
             )
-            report.rows_flagged = len(skipped)
+            report.rows_flagged = len(all_skipped)
 
-        if frames:
-            merged = pd.concat(frames, ignore_index=False)
-            merged["ts"] = merged.index
-            merged = merged.reset_index(drop=True)
-            merged = _merge_days_to_earnings(engine, merged)
-            merged["interval"] = "1d"
-            merged["run_id"] = report.run_id
-            cols = ["ticker", "ts", "interval", *INDICATOR_COLUMNS, "days_to_earnings", "run_id"]
-            report.rows_written = db_io.upsert(
-                engine, "indicators", merged[cols], ["ticker", "ts", "interval"]
-            )
-        report.tickers = [ticker for ticker, ind in results if ind is not None]
+        report.rows_written = written
+        report.tickers = computed
     return report
 
 

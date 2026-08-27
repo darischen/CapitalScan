@@ -18,7 +18,24 @@ from yfinance.data import YfData
 from capitalscan.jobs.fetch.base import cached, rate_limited, with_retry
 
 RATE_LIMIT_PER_SEC = 0.5
-DAILY_BATCH_SIZE = 50
+# Symbols per `yf.download` call, for both the daily and hourly batch paths.
+# **Raised 50 -> 100 on 2026-08-26.** The universe is ~1,470 and heading for
+# ~2,000, and at 0.5 req/s each halving of the batch count is a halving of
+# the wall clock: 30 requests becomes 15, ~60s becomes ~30s per window.
+#
+# Unlike `QUOTE_BATCH_SIZE` this is not a URL-length constraint --
+# `yf.download` POSTs the symbol list rather than putting it in a query
+# string, so the proxy failure mode that caps quotes at 100 does not apply
+# here. 100 is a deliberately conservative step rather than a measured
+# ceiling; raise it again only with a measurement.
+#
+# **Changing this changes every cache key.** `_batch_key` and
+# `_hourly_batch_key` are built from the ticker list, so a different
+# batching produces different keys. That is correct rather than dangerous:
+# new keys miss and re-fetch, and no existing entry is ever read as an
+# answer to a question it was not asked. The old entries become garbage and
+# can be deleted.
+DAILY_BATCH_SIZE = 100
 HOURLY_WINDOW_DAYS = 60
 # Symbols per `/v7/finance/quote` request. Yahoo accepts more, but the URL
 # is a GET query string and oversized batches start failing at the proxy
@@ -335,6 +352,163 @@ def _fetch_hourly_window(ticker: str, start: date, end: date) -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
+@rate_limited(per_sec=RATE_LIMIT_PER_SEC)
+@with_retry
+def _download_hourly_batch(tickers: list[str], start: date, end: date) -> pd.DataFrame:
+    """One hourly request for many tickers.
+
+    Same call as `_download_hourly` with a list instead of a string, and the
+    same `end + 1 day` exclusive-bound correction. `group_by="ticker"` gives
+    the column MultiIndex `_extract_ticker_frame` already parses for daily.
+
+    **The 60-day cap is unaffected.** Yahoo limits hourly *history per
+    request*, not tickers per request, so the window walk in
+    `fetch_bars_hourly_many` is unchanged -- this only collapses the
+    per-ticker dimension.
+    """
+    return cast(
+        pd.DataFrame,
+        yf.download(
+            tickers,
+            start=start,
+            end=end + timedelta(days=1),
+            interval="1h",
+            auto_adjust=False,
+            actions=False,
+            group_by="ticker",
+            threads=False,
+            progress=False,
+        ),
+    )
+
+
+def _shape_hourly(raw: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """Raw hourly frame -> the project's hourly shape, for one ticker.
+
+    Extracted verbatim from `_fetch_hourly_window` so the batched and
+    per-ticker paths cannot drift: the session filter and the timezone
+    normalisation are the parts that would silently differ, and a
+    difference there changes which bars a band comparison sees.
+    """
+    if raw.empty:
+        return _empty_hourly_frame()
+
+    df = raw.copy()
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    idx = cast(pd.DatetimeIndex, df.index)
+    idx = (
+        idx.tz_localize("America/New_York")
+        if idx.tz is None
+        else idx.tz_convert("America/New_York")
+    )
+    df.index = idx
+    df = df.between_time("09:30", "16:00")
+    if df.empty:
+        return _empty_hourly_frame()
+
+    return pd.DataFrame(
+        {
+            "ticker": ticker,
+            "ts": df.index,
+            "open": df["Open"].to_numpy(),
+            "high": df["High"].to_numpy(),
+            "low": df["Low"].to_numpy(),
+            "close": df["Close"].to_numpy(),
+            "volume": df["Volume"].to_numpy(),
+        }
+    ).reset_index(drop=True)
+
+
+def _hourly_batch_key(tickers: list[str], start: date, end: date) -> str:
+    """`{n}_{sha1(tickers)}_{start}_{end}`.
+
+    A hash rather than the joined list, because 50 symbols exceed a sane
+    filename. The count is kept in the clear so a cache directory is
+    readable at a glance.
+    """
+    import hashlib
+
+    joined = ",".join(sorted(tickers))
+    digest = hashlib.sha1(joined.encode()).hexdigest()[:16]
+    return f"{len(tickers)}_{digest}_{start}_{end}"
+
+
+# `yahoo_hourly_v3`, not `_v2`. The key now identifies a *set* of tickers
+# rather than one, so a `_v2` entry answers a different question than the
+# one being asked. CLAUDE.md records what reusing a source string through a
+# semantic change costs: the `yahoo_daily` fix merged, passed CI, and never
+# ran, because every cached entry answered the post-fix request with the
+# pre-fix result.
+@cached(source="yahoo_hourly_v3", key_fn=_hourly_batch_key)
+def _fetch_hourly_window_batch(tickers: list[str], start: date, end: date) -> pd.DataFrame:
+    """One 60-day window for a batch, long-form with a `ticker` column.
+
+    Falls back to per-ticker on a batch that returns nothing, matching
+    `_fetch_daily_batch`'s partial-failure retry: one bad symbol must not
+    cost the other forty-nine.
+    """
+    raw = _download_hourly_batch(tickers, start, end)
+    frames: list[pd.DataFrame] = []
+    missing: list[str] = []
+
+    for ticker in tickers:
+        sub = _extract_ticker_frame(raw, ticker) if len(tickers) > 1 else raw
+        shaped = _shape_hourly(sub, ticker)
+        if shaped.empty:
+            missing.append(ticker)
+        else:
+            frames.append(shaped)
+
+    # A symbol absent from a multi-ticker response is indistinguishable from
+    # one that genuinely has no bars in the window, so it is retried alone.
+    # Expected to be common: most of the delisted union has no hourly data.
+    for ticker in missing:
+        shaped = _shape_hourly(_download_hourly(ticker, start, end), ticker)
+        if not shaped.empty:
+            frames.append(shaped)
+
+    if not frames:
+        return _empty_hourly_frame()
+    return cast(pd.DataFrame, pd.concat(frames, ignore_index=True))
+
+
+def fetch_bars_hourly_many(tickers: list[str], start: date, end: date) -> dict[str, pd.DataFrame]:
+    """Hourly bars for many tickers, one request per window per batch.
+
+    The per-ticker `fetch_bars_hourly` costs one request per ticker per
+    window. Measured 2026-08-26 in a nightly: **54.5 minutes for 1,470
+    tickers** at `RATE_LIMIT_PER_SEC = 0.5`, against 4.9 minutes for the
+    batched daily path over the same universe.
+
+    Returns a dict so a caller that iterates tickers keeps doing so; a
+    ticker with no bars is absent, matching `fetch_bars_hourly` returning
+    an empty frame.
+    """
+    per_ticker: dict[str, list[pd.DataFrame]] = {t: [] for t in tickers}
+    for w_start, w_end in _hourly_windows(start, end):
+        for batch in _split_batches(tickers):
+            got = _fetch_hourly_window_batch(batch, w_start, w_end)
+            if got.empty:
+                continue
+            for ticker, sub in got.groupby("ticker", sort=False):
+                per_ticker[str(ticker)].append(sub)
+
+    out: dict[str, pd.DataFrame] = {}
+    for ticker, parts in per_ticker.items():
+        if not parts:
+            continue
+        out[ticker] = cast(
+            pd.DataFrame,
+            pd.concat(parts, ignore_index=True)
+            .drop_duplicates(subset=["ticker", "ts"])
+            .sort_values("ts")
+            .reset_index(drop=True),
+        )
+    return out
+
+
 def fetch_bars_hourly(ticker: str, start: date, end: date) -> pd.DataFrame:
     """Hourly regular-session bars, walked in 60-day windows (DESIGN §4.4)."""
     windows = [
@@ -359,38 +533,149 @@ def _download_actions(ticker: str) -> pd.DataFrame:
     return cast(pd.DataFrame, yf.Ticker(ticker).actions)
 
 
-@cached(source="yahoo_actions", key_fn=lambda ticker: ticker)
+@rate_limited(per_sec=RATE_LIMIT_PER_SEC)
+@with_retry
+def _download_actions_batch(tickers: list[str], start: date, end: date) -> pd.DataFrame:
+    """Splits and dividends for many tickers, one request.
+
+    `actions=True` makes `yf.download` project `Dividends` and `Stock
+    Splits` beside the OHLCV columns, so the batch shape is the one
+    `_extract_ticker_frame` already parses. Same `end + 1 day` correction as
+    every other download here -- yfinance's `end` is exclusive, and CLAUDE.md
+    records what forgetting it cost.
+
+    **Windowed, unlike `_download_actions`.** `yf.Ticker(t).actions` returns
+    a ticker's entire history; this returns what falls inside the range.
+    That difference is the whole reason `run_actions` keeps both paths.
+    """
+    return cast(
+        pd.DataFrame,
+        yf.download(
+            tickers,
+            start=start,
+            end=end + timedelta(days=1),
+            interval="1d",
+            auto_adjust=False,
+            actions=True,
+            group_by="ticker",
+            progress=False,
+            threads=False,
+        ),
+    )
+
+
+def _actions_batch_key(tickers: list[str], start: date, end: date) -> str:
+    """Same shape as `_hourly_batch_key`: a hash of the set, plus the window.
+
+    **The window is what `yahoo_actions` was missing.** Its key was the bare
+    ticker, so the first fetch of a name answered every later one forever --
+    measured 2026-08-26, three cohorts whose newest `ex_date` equalled their
+    cache date exactly. A key must carry everything that determines the
+    answer, and for "what happened to this ticker" that includes when the
+    question was asked.
+    """
+    import hashlib
+
+    joined = ",".join(sorted(tickers))
+    digest = hashlib.sha1(joined.encode()).hexdigest()[:16]
+    return f"{len(tickers)}_{digest}_{start}_{end}"
+
+
+@cached(source="yahoo_actions_batch_v1", key_fn=_actions_batch_key)
+def _fetch_actions_window_batch(tickers: list[str], start: date, end: date) -> pd.DataFrame:
+    """One window, one batch, tidied to `_ACTIONS_COLUMNS`.
+
+    A symbol absent from the response is indistinguishable from one with no
+    actions in the window, and both are correct as "nothing to record", so
+    there is no per-ticker retry here -- unlike the bars paths, a missing
+    row is not missing data.
+    """
+    raw = _download_actions_batch(tickers, start, end)
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=_ACTIONS_COLUMNS)
+
+    records: list[dict] = []
+    for ticker in tickers:
+        try:
+            sub_frame = raw[ticker] if isinstance(raw.columns, pd.MultiIndex) else raw
+        except KeyError:
+            continue
+        if sub_frame is None or sub_frame.empty:
+            continue
+        records.extend(_actions_records(sub_frame.reset_index(), ticker))
+    return pd.DataFrame(records, columns=_ACTIONS_COLUMNS)
+
+
+def _actions_records(df: pd.DataFrame, ticker: str) -> list[dict]:
+    """`Dividends`/`Stock Splits` columns -> one record per non-zero event.
+
+    Shared by the per-ticker and batched paths so the two cannot drift into
+    disagreeing about what an action row looks like.
+    """
+    ts_col = "Date" if "Date" in df.columns else df.columns[0]
+    df = df.rename(columns={ts_col: "ts"})
+    records: list[dict] = []
+    for column, action_type in (("Stock Splits", "split"), ("Dividends", "dividend")):
+        if column not in df.columns:
+            continue
+        hit = df.loc[df[column].fillna(0) != 0]
+        for _, row in hit.iterrows():
+            records.append(
+                {
+                    "ticker": ticker,
+                    "ts": row["ts"],
+                    "action_type": action_type,
+                    "value": row[column],
+                }
+            )
+    return records
+
+
+def fetch_actions_many(tickers: list[str], start: date, end: date) -> dict[str, pd.DataFrame]:
+    """Windowed actions for many tickers, batched.
+
+    The nightly path. `fetch_actions` stays for a ticker with no history on
+    file, where the full series is genuinely wanted.
+    """
+    out: dict[str, list[pd.DataFrame]] = {t: [] for t in tickers}
+    for batch in _split_batches(tickers):
+        got = _fetch_actions_window_batch(batch, start, end)
+        if got.empty:
+            continue
+        for ticker, sub_frame in got.groupby("ticker", sort=False):
+            out[str(ticker)].append(sub_frame)
+    return {t: pd.concat(parts, ignore_index=True) for t, parts in out.items() if parts}
+
+
+def _actions_key(ticker: str) -> str:
+    """`{ticker}_{today}`.
+
+    **The date is the fix.** `yahoo_actions` keyed on the bare ticker, so a
+    ticker fetched on 2026-07-31 still answered with 2026-07-31's history a
+    month later -- measured at 640 tickers with zero August actions against
+    a 22% base rate in the fresh cohort. Keying on the day makes a stale
+    entry unreachable rather than merely old.
+    """
+    return f"{ticker}_{date.today().isoformat()}"
+
+
+@cached(source="yahoo_actions_v2", key_fn=_actions_key)
 def fetch_actions(ticker: str) -> pd.DataFrame:
-    """Splits and dividends, tidied to one row per event."""
+    """A ticker's **entire** split and dividend history, tidied.
+
+    Used where the full series is wanted -- a ticker with nothing on file.
+    `fetch_actions_many` is the incremental path and is what nightly runs.
+
+    `yahoo_actions_v2`, not `yahoo_actions`: the key now carries the date,
+    so every `_v1` entry answers a different question than the one being
+    asked. Reusing the source string is the failure CLAUDE.md records, where
+    a correct fix merged, passed CI and never ran.
+    """
     raw = _download_actions(ticker)
     if raw is None or raw.empty:
         return pd.DataFrame(columns=_ACTIONS_COLUMNS)
 
-    df = raw.reset_index().rename(columns={"Date": "ts"})
-    records: list[dict] = []
-    if "Stock Splits" in df.columns:
-        splits = df.loc[df["Stock Splits"] != 0]
-        for _, row in splits.iterrows():
-            records.append(
-                {
-                    "ticker": ticker,
-                    "ts": row["ts"],
-                    "action_type": "split",
-                    "value": row["Stock Splits"],
-                }
-            )
-    if "Dividends" in df.columns:
-        divs = df.loc[df["Dividends"] != 0]
-        for _, row in divs.iterrows():
-            records.append(
-                {
-                    "ticker": ticker,
-                    "ts": row["ts"],
-                    "action_type": "dividend",
-                    "value": row["Dividends"],
-                }
-            )
-    return pd.DataFrame(records, columns=_ACTIONS_COLUMNS)
+    return pd.DataFrame(_actions_records(raw.reset_index(), ticker), columns=_ACTIONS_COLUMNS)
 
 
 def _opt_float(value: object) -> float:

@@ -279,8 +279,8 @@ class TestRunEventsBackwardCompatibility:
         `bbc99a02ebdc999f`.
 
         Moved again 2026-08-21 by `min_mcap_usd` 30e9 -> 20e9. New value:
-        `f66729c7eda212a4`."""
-        assert jobs_config_hash(Config()) == "f66729c7eda212a4"
+        `a38d3ca6b58295e8`."""
+        assert jobs_config_hash(Config()) == "a38d3ca6b58295e8"
 
     def test_sp_only_caller_still_works_and_matches_config_signals_default(
         self, stub_events_reads, captured_events_upsert
@@ -301,7 +301,7 @@ class TestRunEventsBackwardCompatibility:
         events_calls = [c for c in captured_events_upsert if c["table_name"] == "events"]
         row = events_calls[0]["data"][0]
         assert (
-            row["config_hash"] == "f66729c7eda212a4"
+            row["config_hash"] == "a38d3ca6b58295e8"
         )  # min_mcap_usd 30e9 -> 20e9 (was bbc99a02ebdc999f)
         assert row["split_key"] == "holdout"  # 2026-07-30 is past the default validate_end
 

@@ -16,7 +16,7 @@ deleting the entry loses nothing.
 
 ## Open
 
-### Site auth is off, and the Pi migration is when that has to change
+### Site auth is deliberately off on the Pi (decided 2026-08-26)
 
 `SITE_AUTH_DISABLED=1`, turned off deliberately 2026-08-20 with the reason
 recorded: a Vercel deployment URL is hard to discover, the content is public
@@ -42,47 +42,6 @@ opens only on the exact string `"1"`, so `=0` is already refused, but a key
 left lying about is a decision waiting to be flipped by accident. With
 `SITE_PASSWORD` unset the site returns 503 rather than falling open, which
 is the correct direction to fail.
-
----
-
-### Expanding the universe beyond the S&P 500 seed
-
-**Largely done 2026-08-21 — see ADR 143.** Nasdaq listings at or above $5B
-are ingested, `min_mcap_usd` is $20B, and 543 tickers are ever `in_trade`
-against 378 before.
-
-**NBIS is resolved, and this entry used to blame the wrong cause.** It said
-NBIS "never enters `tickers` and is never evaluated at all". Untrue since
-ADR 143: it has a `tickers` row, 7 universe evaluations, 460 daily bars and
-2 events. It is not `in_trade` because `crit_rel_return` needs 757 daily
-bars and Nebius relisted in October 2024 — the criterion cannot be *judged*,
-and `is_tradeable` treats that as failing.
-
-**The entrant blackout is now visible rather than silent.** ADR 149 added
-the watch universe: a name passing market cap and the SMA200 slope, short
-only on a criterion unjudgeable for want of history, is `in_watch` with
-`watch_reason = 'history'`. ARM, GEV, SNDK, ALAB and NBIS — $1.18T — sit
-there fully computed, so each arrives with measured history the day it
-graduates. `crit_rel_return` itself stays at 756 bars (user's decision,
-2026-08-24).
-
-**What remains open.**
-
-**A mechanical rule for further expansion.** ADR 035's survivorship argument
-does not survive hand-picking: the S&P union is *complete*, failures
-included, while a ticker added because it looks interesting today is
-selected on the outcome the study measures. Any expansion needs a rule that
-could have been written in 2010 and applied mechanically — "the Nasdaq-100
-union" qualifies, "NBIS and a few others" does not.
-
-**`config_hash` and the rebuild.** Universe definition is config (ADR 060),
-so broadening it invalidates every measured row. Measured 2026-08-24, that
-is ~1h18m compute plus a 45m harness plus statistics.
-
-**Relative return needs a benchmark that means something.**
-`crit_rel_return` compares against the S&P series in `market_days`.
-Defensible for a Nasdaq name; for a foreign listing it quietly changes what
-the criterion tests.
 
 ---
 
@@ -199,7 +158,9 @@ this entry exists.
 
 ---
 
-### A full `cscan sync` costs 1.5+ hours and 3 GB, mostly to rewrite rows
+### ~~A full `cscan sync` costs 1.5+ hours and 3 GB, mostly to rewrite rows~~
+
+**CLOSED 2026-08-26, `4ad1d41`** — same fix as the incremental entry below. The 3 GB resident set was the same `to_dict("records")` cost.
 
 Measured 2026-08-25: a re-sync to an already-populated Pi ran **1h33m and
 climbing**, 44 minutes of CPU, resident memory growing 1.26 GB → 3.0 GB.
@@ -231,7 +192,604 @@ option helps.
 
 ---
 
-### VOO and IBIT have no share count, so no market cap — **highest priority**
+### `universe` cannot say which config produced it
+
+Raised 2026-08-25. `PRIMARY KEY (ticker, as_of)` and **no `config_hash`
+column**, so two configs' membership cannot coexist: evaluating a second
+config overwrites the first, row for row.
+
+`events` does carry `config_hash`, and ADR 122 stamps `in_trade` and
+`in_watch` onto each event at creation, so an arm's membership survives
+inside its events. That is what makes a multi-arm comparison possible at
+all. But the `universe` table itself only ever reflects whichever config
+ran last.
+
+**Two things follow, and the second is the sharp one.**
+
+The poller builds its ticker list from `universe.in_trade`, and `v_universe`
+feeds the site. So after an ablation arm runs, **live membership is that
+arm's**, whether or not it is the one meant to be serving. Restoring
+production means re-running the universe under the production config, which
+is another full 66-quarter pass.
+
+And this is the same defect class as the slope literal fixed the same day:
+ADR 060 makes universe definition config, while the table storing that
+definition's output cannot record which definition it was. A stale
+`universe` and a current one are indistinguishable by inspection.
+
+Adding the column would let arms coexist, make the three-rebuild plan
+roughly a third cheaper, and let a reader ask "which config said this".
+The cost is a migration plus every reader learning to scope on it --
+`core.universe.in_trade`, `_load_pollable_tickers`, `v_universe`,
+`v_watchlist`, the features lateral, and the sync subset.
+
+---
+
+### The three ablation arms, and the order they must run in
+
+Decided 2026-08-25. Three rebuilds rather than one, so each change is
+attributable:
+
+1. **NYSE at the current definition** -- `config_hash a38d3ca6b58295e8`
+2. **`sma200_slope_min = -0.01`** -- admits a flat base. Measured cost at
+   2026-06-30: +37 tickers at -1%, +74 at -2%, +167 at -5%.
+3. **`crit_rel_return` dropped from `required_criteria`** -- replaced by the
+   history it implies. Measured cost: **64 names pass everything else and
+   fail on this alone**, including AAPL at $4,250B, UNH $377B, MRK $317B,
+   QCOM $195B. Trade universe 184 -> 248, +35%.
+
+Each arm is a 66-quarter universe pass plus a backtest, roughly 6-8 hours,
+so **18-24 hours across the three**.
+
+**Run the production arm last**, because of the overwrite above. Otherwise
+the live site and the poller serve the last ablation rather than the
+chosen definition.
+
+**Worth stating about arm 3.** `crit_rel_return` compares against the
+*sector median*, so by construction roughly half of every sector fails it
+-- measured 440 pass, 448 fail at 2026-06-30. It is also a momentum filter
+inside a mean-reversion study: requiring three-year outperformance selects
+recent winners, while the signal looks for dips. Those pull against each
+other and the tension has never been measured. Arm 3 is that measurement.
+
+**One consequence to decide with arm 3.** The `history` watch route
+requires `crit_rel_return` to be `None`. Replacing the criterion with a
+plain history check makes a new ticker return `False` instead, and that
+route stops firing.
+
+---
+
+### ~~Three nightly fetchers ask one ticker at a time; the daily one batches~~
+
+**CLOSED 2026-08-26.** All three batched: `bars_hourly` 54.5 min -> ~2 (`4f97d8b`), `actions` 21.3 -> ~2 (`9b008c9`), `earnings` 43.5 min -> 33 seconds (`647ee25`). The earnings one also found that Finnhub truncates a calendar response at 1,500 entries silently, so the naive single bulk call would have dropped AAPL and most of the universe while looking 43 minutes faster.
+
+Raised 2026-08-26 while `cscan nightly` sat in `bars_hourly` for 15+
+minutes. The two fetchers in `jobs/fetch/yahoo.py` have different shapes and
+only one of them needs to:
+
+| | cache key | request |
+|---|---|---|
+| `_download_daily` | `_batch_key` = `tickers_start_end` | **every ticker in one `yf.download`** |
+| `_download_hourly` | `_window_key` = `ticker_start_end` | **one ticker, one 60-day window** |
+
+`_download_hourly` passes a single `ticker`, not a list. `yf.download`
+accepts a list at `interval="1h"` exactly as it does for daily, so the
+batching is available and simply unused.
+
+**The 60-day cap is not the reason.** Yahoo limits hourly to 60 days *per
+request*, so the window walk is mandatory either way. Batching tickers
+*within* each window is orthogonal to it: 1,470 tickers x 1 window becomes
+one request instead of 1,470.
+
+**The prize is the one daily already collected.** `cscan bars --daily
+--lookback 8000` did 521 tickers and 2,002,797 rows in **11 minutes**,
+against the 2h20m a per-ticker rate predicts. At `RATE_LIMIT_PER_SEC = 0.5`
+the per-ticker hourly path cannot beat ~49 minutes for a single window
+across the current universe, and CLAUDE.md records the full backfill at
+4.5-5.5 hours.
+
+**Two things to get right, and the first has already cost a session.**
+
+**Bump the `source` string, not just the key function.** `_window_key` is a
+promise: for these inputs, this is the answer. Batching changes what a key
+means, so it needs `yahoo_hourly_v3`. CLAUDE.md's own account of the
+`yahoo_daily` -> `yahoo_daily_v2` episode is the warning: a correct fix
+merged, CI passed, and **the next nightly still produced stale data**,
+because every cached entry answered the post-fix request with the pre-fix
+result. There is no error and a hit is indistinguishable from a fetch
+except by duration.
+
+**A batched `yf.download` returns a column MultiIndex keyed by ticker**,
+not a flat frame. `_download_daily` already parses that shape, so the code
+to copy exists, but it is not a one-line change and the single-ticker
+degenerate case behaves differently again.
+
+**`run_actions` is a different and worse problem -- see the entry below.**
+It is also per-ticker, but batching it would save almost nothing, because
+its cache key never expires and so it almost never fetches.
+
+Measured in the same nightly:
+
+    bars_daily    batched      1,470 tickers    4.9 min
+    bars_hourly   per-ticker   1,470 tickers   54.5 min
+    actions       per-ticker     531 new only  21.3 min  (rest cached forever)
+
+**~55 minutes of every nightly** goes on a request shape the daily path
+already solved, and it grows linearly with the universe -- which just grew
+58%. `yf.download` accepts a ticker list at `interval="1h"`, so the fix is
+the same one daily already uses.
+
+**`run_earnings` is the third**, and it is Finnhub rather than Yahoo.
+`RATE_LIMIT_PER_SEC = 0.8` against 1,462 tickers is **30.5 minutes of pure
+waiting** before any overhead; measured 2026-08-26 at ~38 minutes, about 80%
+of theoretical.
+
+Finnhub's earnings-calendar endpoint takes a date range without a symbol,
+returning every issuer that reports in the window. One call could replace
+1,462, filtered locally against the ticker list. That is a different fix
+from the Yahoo batching -- a different endpoint, not a list parameter -- but
+the same shape of win.
+
+Updated tally, all measured in one nightly on 1,470 tickers:
+
+    bars_daily    batched      4.9 min
+    bars_hourly   per-ticker  54.5 min   -> fixed 2026-08-26, ~1 min
+    actions       per-ticker  21.3 min   -> cache never expires, see above
+    earnings      per-ticker  ~38 min    -> unfixed
+
+**Worth measuring first:** whether the nightly hourly step is actually one
+window per ticker or several. If several, the win multiplies; if the step
+is short in normal operation and only slow now because the universe grew
+58%, it may be less urgent than it looks tonight.
+
+---
+
+### ~~`fetch_actions` caches on the ticker alone, so splits are never refreshed~~
+
+**CLOSED 2026-08-26, `9b008c9`.** Superseded by the measured entry below, which has the cohort evidence.
+
+Raised 2026-08-26. **Correctness, not performance.**
+
+```python
+@cached(source="yahoo_actions", key_fn=lambda ticker: ticker)
+def fetch_actions(ticker: str) -> pd.DataFrame:
+```
+
+The key carries **no date**. Once a ticker's actions are cached the file is
+read forever and the network is never touched again. Measured on the live
+cache:
+
+    1,490 cached files
+    AAPL, ACN, ADBE    2026-07-31    cached 26 days ago, never refreshed
+    ZWS, ZTO           2026-08-26    tonight's new NYSE tickers
+
+AAPL's splits and dividends were fetched on 31 July. Every nightly since has
+read that file. **A split after that date is invisible**, and stays invisible
+until someone deletes the cache by hand.
+
+**Why this matters more than a stale quote.** `bars` are split-adjusted, and
+a missed split corrupts price history rather than just aging it. The
+indicators computed from those bars are wrong, and nothing raises -- the same
+silent-failure shape as ADR 145's adjusted-shares defect.
+
+It also explains the timing: `actions` took 21.3 min tonight rather than the
+~49 min 1,470 tickers implies, because only the ~531 new NYSE tickers missed.
+On an ordinary night it costs nearly nothing, because it does nearly nothing.
+
+**The fix is a key that can expire**, e.g. `ticker_asof` bucketed to a week
+or month, so a refresh happens on a cadence rather than never. That also
+makes the batching question moot for this fetcher: a fetch that does not run
+does not need to be faster.
+
+CLAUDE.md's `yahoo_daily` -> `_v2` account is the precedent, and this is the
+sharper version of it: there the key's *meaning* went stale, here the key can
+never expire at all.
+
+---
+
+### ~~`fetch_actions` freezes every ticker's corporate actions forever — **correctness**~~
+
+**CLOSED 2026-08-26, `9b008c9`.** The key carries the date, `source` moved to `yahoo_actions_v2`, and `fetch_actions_many` batches the incremental window so dating the key did not cost 49 minutes. **Still to do: run `cscan actions` once by hand** — the 30-day default window reaches back to 2026-07-27 and the oldest frozen cohort stopped at 2026-07-31, so a single run repairs it.
+
+Known and listed before; **measured 2026-08-26** and it is worse than the
+one-line note suggested.
+
+```python
+@cached(source="yahoo_actions", key_fn=lambda ticker: ticker)
+def fetch_actions(ticker: str) -> pd.DataFrame:
+```
+
+**The key is the ticker alone.** No date, no window. The first fetch of a
+ticker answers every later fetch of it, permanently. This is the exact
+failure CLAUDE.md's cache section describes -- a key that does not capture
+everything determining the output -- and here the missing input is *when
+the question is asked*, which for a corporate-action history is the whole
+question.
+
+**Proof, from three cohorts that fell out of when each ticker entered the
+universe.** Cache-file mtime against the newest `ex_date` those tickers
+have:
+
+    cohort cached      tickers    max ex_date        actions after
+    2026-07-31           640      2026-07-31              0
+    2026-08-21           314      2026-08-20              0
+    2026-08-26           533      August present        118 tickers
+
+Each cohort's history stops **exactly at its cache date**. And the fresh
+cohort shows 118 of 533 (22%) with an August action, so ~141 of the 640
+stale tickers should have one. They have **zero**. Not fewer — none.
+
+**What it breaks, in order of severity.**
+
+`_read_corporate_actions` feeds two consumers, both in the hourly path:
+`_back_adjust_hourly`, which divides pre-split bars by the ratio, and
+`validate_bars`, which uses splits to tell a legitimate price jump from an
+anomaly. A missing split therefore does two harmful things at once -- it
+leaves hourly bars unadjusted across the ex-date, and it makes the
+validator reject the real bars around it as implausible. Silent in both
+directions.
+
+Six splits since 2026-07-01, one of them after the 07-31 freeze:
+
+    SCCO  2026-08-11  1.012
+
+Small ratio, so the damage today is minor. That is luck, not design: a
+4-for-1 like `CRWD 2026-07-02` landing after a ticker's freeze would put a
+75% discontinuity into its hourly series with no error anywhere.
+
+**The apparent speedup is the bug wearing a disguise.** `actions` ran in
+**0.3 minutes** on 2026-08-26 against a documented 21.3, and 94,736 rows
+were "written" — all of it read from disk. A correct fetcher costs ~1,470
+requests at `RATE_LIMIT_PER_SEC = 0.5`, about **49 minutes**. Anyone
+tuning nightly from the 0.3 figure is optimising a cache hit.
+
+**The fix is two changes and they must land together.**
+
+1. Put the date in the key: `key_fn=lambda ticker: f"{ticker}_{date.today():%Y-%m-%d}"`,
+   and bump `source` to `yahoo_actions_v2` so no pre-existing entry can
+   answer the new question.
+2. **Batch it first, or nightly grows by ~49 minutes.** `fetch_actions`
+   is one request per ticker; `_fetch_daily_batch` already shows the shape,
+   and `bars_hourly` went 54.5 min -> ~1 min on exactly this change.
+
+Doing (1) without (2) is correct and will get reverted for being slow.
+
+---
+
+### ~~`cscan sync` has no incremental path, and it is half of nightly~~
+
+**CLOSED 2026-08-26, `4ad1d41`.** Nightly passes `incremental=True`; `cscan sync` still copies everything. The bound is the target's own watermark minus `SYNC_OVERLAP_DAYS`, so a store that missed a fortnight gets a fortnight. Profiling while it ran also settled *why* it was slow, and it was not the obvious answer: the Pi sat at load 1.11 of 4 cores with the SD card 15% utilised, while the workstation held 894 MB and 53.8% of one core building 7.4M Python dicts in `to_dict("records")`.
+
+Measured 2026-08-26. A full sync ships **7,469,519 rows in 114.2 minutes**.
+The rows that actually changed since the previous night:
+
+    table         shipped      new
+    bars        3,346,546    1,457
+    indicators  3,346,546    1,415
+    events        684,734    1,003
+    total       7,469,519   ~3,875
+
+**A 1,900x amplification**, and roughly **114 of nightly's ~227 minutes**
+for 0.05% of the payload.
+
+Two causes compounding.
+
+`run_sync` selects by `cutoff_date`, never by "changed since the last
+sync". There is no watermark, no `updated_at` predicate, no window.
+
+And `ServingParams.history_years` is **30**. It was 3, sized against Neon's
+512MB free tier; when the Pi replaced Neon the constraint disappeared and
+the value was raised, which quietly turned `cutoff_date` into "the
+beginning of time". Neither change was wrong on its own. Together they mean
+every nightly re-reads the entire served history.
+
+**The pattern already exists here.** `run_live_sync` takes a
+`LiveWatermark`, ships only what is past it, and runs ~78 times a session
+at no noticeable cost. `run_sync` predates it.
+
+Proposed shape -- a bounded window rather than a strict watermark, because
+the sync is an upsert and re-shipping is free:
+
+    run_sync(since_days=7)   # nightly:  ~10k rows, seconds
+    run_sync()               # rebuild:  everything, 114 min
+
+Seven days rather than one so a failed night, or a restated bar, heals
+itself without anyone noticing. That is the same reasoning `run_indicators`
+and `run_events` already use for their 5-day nightly windows.
+
+**What it must not lose.** A full pass is still required when the target is
+empty, or when the `config_hash` being served changes -- otherwise the
+window ships one day of rows onto a database that has none of the history
+they belong to. The 2026-08-26 sync was exactly that case and was correct
+to be full.
+
+---
+
+### The nightly sweep deletes serving's rows before the sync can replace them
+
+**Realised 2026-08-26**, first time the sync has failed inside the window.
+
+`cli.py::nightly` runs `_sweep_provisional_poll_rows` against **serving**
+and then `run_sync`. The ordering is deliberate and the comment says why:
+*"Runs before `run_sync` so the authoritative rows land after the
+provisional ones are gone, never the reverse."* Reversed, a half-failed
+sync leaves provisional rows it was just told to drop.
+
+But it converts a sync failure into **visible data loss**. That night the
+sweep removed the Pi's poller rows for 2026-08-26, the sync died 53.8
+minutes in, and serving held **zero** events for the current session while
+research held 670. Not stale -- empty. The site showed nothing for today.
+
+**The trigger was physical, not logical.** The Pi is on **WiFi** (`eth0` is
+DOWN and has never carried a byte; `wlan0` has received 14.2 GB) with
+`brcmf_cfg80211_set_power_mgmt: power save enabled`, and the machine was
+being handled to fit a case. Postgres logged `could not receive data from
+client: Connection reset by peer` while psycopg logged `server closed the
+connection` -- each blamed the other, which is what a torn TCP connection
+looks like from both ends. `vcgencmd get_throttled` returned `0x0`, so no
+under-voltage was involved.
+
+**Mitigated, not fixed.** The incremental sync cut the transfer from 114
+minutes to **1m37s**, shrinking the exposure ~70x. A 97-second window is
+still a window, and the failure mode is unchanged.
+
+The durable fix is that the sweep and the sync are one outcome or neither:
+
+- sweep **after** a successful sync rather than before, accepting that a
+  half-failed sync briefly leaves superseded provisional rows -- which are
+  stale, not absent, and ADR 140 already says they were never authoritative
+- or scope the sweep to exactly the rows the sync just wrote over, so a
+  sync that never ran deletes nothing
+
+The second is stricter and needs the sync to report what it shipped. The
+first is a two-line change and fails toward stale rather than empty.
+
+**Also worth doing regardless**: plug the Pi into Ethernet, and disable
+WiFi power save. Neither is a code change and both remove failure classes.
+
+---
+
+### Watch-universe fires are invisible on the site
+
+Raised 2026-08-26 from a real miss: CCJ fired `confluence_high` at 06:45:40,
+the poller logged it, and the home page never showed it.
+
+    CCJ  in_trade=f  in_watch=t
+    universe 2026-06-30: crit_above_sma200 = f  (mcap, slope, rel_return pass)
+
+Nothing is broken. `FEED_DOMAIN` in `web/lib/screen.ts` filters `AND
+in_trade`, and CCJ is a watch name -- it fell below its 200-day SMA, which
+ADR 149's `pullback` route admits to watch rather than trade. The event is
+recorded honestly with `in_trade=false` stamped at creation (ADR 122).
+
+**27 of today's 164 fires are in this position**: `pullback` 23, `history`
+4. `in_watch` appears **nowhere** in the web layer and in no view
+definition, so the whole population is write-only as far as the site is
+concerned. That defeats the point of the watch universe, which exists to
+be *detected* on while staying out of training.
+
+ADR 149 already requires more than just showing them:
+
+> Notifications for watched names **must say which reason admitted them.**
+> A watch alert that looks identical to a tradeable one is how the
+> distinction is forgotten.
+
+**Decided 2026-08-26 (user):** stamp `watch_reason` onto `events`, the same
+way ADR 122 stamps `in_trade` -- not a read-time join to `universe`. The
+reason a fire was admitted is a property of *that fire*, and joining
+current membership would silently relabel a March event with today's
+reason. Display copy is human-readable, not the enum: `Watch Universe:
+Below 200-Day SMA` and `Watch Universe: Insufficient History`.
+
+Scope:
+
+- migration: `events.watch_reason text`; `v_ticker_state` and
+  `v_screen_live` project `in_watch` and `watch_reason` (neither exposes
+  `in_watch` today)
+- backfill: **448,566** rows where `in_watch`
+- `run_events` and `poll.py` stamp it going forward
+- `FEED_DOMAIN`: `AND (in_trade OR in_watch)` -- one constant, and it feeds
+  the screener rows, the calendar counts, the default-date query and the
+  last-fire empty state, so all four move together
+- `Ticker.tsx:102` becomes three states; today it says "outside trade
+  universe" for CCJ, which is true and misleading
+- statistics **suppressed** on watch rows. ADR 149: "no statistic reads
+  `in_watch`." Cell stats are computed over the trade universe, so printing
+  `p_hit` beside a watch row attributes a population's number to a name
+  outside it. DESIGN 11.9's `suppressed` state already exists for this.
+
+**Run it before a nightly, never after.** The migration is DDL on `events`,
+which `run_events` writes -- ACCESS EXCLUSIVE against a live writer. And
+the `run_events` change ships in the same commit, so migrating first means
+tonight's rows carry the reason from birth instead of needing a second
+backfill.
+
+---
+
+### ~~The Pi is serving the pre-NYSE generation — **highest priority**~~
+
+**CLOSED 2026-08-26.** `db sync-config` moved both `serving_config` rows and the research GUC to `a38d3ca6b58295e8`, and a 114.2-minute sync shipped the generation. Verified independently on the Pi: 341,250 `next_open` + 343,484 `touch`, matching research exactly. Kept for the ordering trap it records.
+
+Raised 2026-08-26 after a 109.7-minute sync shipped 7,345,158 rows of the
+**wrong config**.
+
+    research GUC        f66729c7eda212a4     <- never moved after the rebuild
+    serving_config      f66729c7eda212a4
+
+    research events     a38d3ca6b58295e8  1,367,228   <- the NYSE rebuild
+                        f66729c7eda212a4  1,110,115   <- what shipped
+
+    Pi events           f66729c7eda212a4    556,185
+                        a38d3ca6b58295e8        158   <- poller pushes only
+
+`run_sync` chooses what to copy by reading
+`current_setting('capitalscan.default_config_hash')` on the **source**. That
+GUC still held the pre-NYSE hash, so a full sync faithfully copied the old
+generation and reported `ok`. Nothing failed; the wrong question was asked.
+
+**The ordering is a trap, and it cuts both ways.**
+`test_cli_config_resolution.py` records one half: *"The Postgres GUC must not
+move until a backtest has written events under the new hash... pointing them
+at a config with no rows yet returns an empty screener rather than an
+error."* The other half is this: once the backtest **has** written them,
+moving the GUC is not optional, and nothing checks that it happened.
+
+**So the repair is not one command.** Running `cscan db sync-config` alone
+would point the serving views at a hash the Pi holds **158** rows for, and
+the site would go nearly empty until a re-sync finished ~110 minutes later.
+
+The order that works:
+
+1. `cscan db sync-config` (moves `serving_config` and the GUC)
+2. `cscan sync` (~110 min, ships the 1,367,228 new events)
+3. verify `SELECT config_hash, count(*) FROM events` on the Pi before
+   trusting the site
+
+**Worth a guard.** `run_sync` could compare the GUC against the newest
+`config_hash` in `events` and refuse, or at least warn, when it is about to
+copy a generation older than one that exists. A sync that spends 110 minutes
+shipping superseded data should not report `ok` in the same words as one
+that shipped the current one.
+
+---
+
+### ~~`run_indicators` holds every ticker's frame in memory before writing~~
+
+**CLOSED 2026-08-26.** Chunked at `INDICATOR_CHUNK_SIZE`, and rows land per chunk rather than once at the end — which also removed the failure where a mid-run `count(*)` looked like a hang and two working runs were killed.
+
+Raised 2026-08-26. It computes all tickers, concatenates the frames, then
+converts the whole thing to Python dicts for `db_io.upsert`. Measured on a
+1,462-ticker full-history run: **11 GB resident at peak, 2.5 GB free of 32**,
+and write throughput decayed from ~900 rows/s to **~46 rows/s** as memory
+filled before recovering. Total run 54 minutes, most of it the single write.
+
+`cscan backtest` already has `--chunk-size` for exactly this shape of
+problem, checkpointing per chunk. `cscan indicators` has no equivalent, so a
+full-history run over a growing universe gets worse every time the universe
+grows.
+
+**Chunk the write by ticker group**, the way the backtest chunks by ticker.
+That bounds peak memory to one group, keeps throughput at the fast rate, and
+makes the job restartable rather than all-or-nothing.
+
+**It also removes a diagnostic trap.** Because nothing is written until every
+ticker finishes, a mid-run `count(*)` returns the pre-run number and looks
+exactly like a hang. Two working runs were killed for that reason on
+2026-08-25.
+
+---
+
+### ORKA is flagged inactive while trading at $6.9B — **known, accepted, do not re-raise**
+
+Raised 2026-08-26. The row contradicts itself and the market:
+
+    is_active     False
+    delisted_on   None          <- no delisting date
+    name          Oruka Therapeutics Inc. Common Stock
+    live screener $104.86, volume 778,973, market cap $6.94B
+    bars          2005-10-11 .. 2026-08-20  (5,246)
+
+`is_active = False` with `delisted_on = NULL` is internally inconsistent:
+nothing recorded *when* it stopped being active, because it never did.
+
+**The consequence is silent.** `_resolve_tickers(None)` returns active
+tickers only, so ORKA is excluded from every job invoked without an explicit
+ticker list. It was the single ticker with bars and no indicators after a
+full-universe run, and it was found only by comparing `last_indicator` against
+`last_bar` rather than by `NOT EXISTS`.
+
+**A second problem sits underneath.** Oruka was formed in 2024 by reverse
+merger with ARCA biopharma, so every bar before 2024 is ARCA's price history
+under ORKA's ticker. Same class as the depositary pre-2018 entry below, and
+worth checking whether other reverse mergers carry the same inherited
+history.
+
+**Decided 2026-08-26: leave the flag as it is.** ORKA stays `is_active =
+False` and stays out of every job that resolves tickers implicitly. It has 0
+events and 0 universe rows, so it contributes nothing to the study either
+way, and its pre-2024 bars are ARCA biopharma's, which is a reason to keep it
+out rather than a reason to fix it.
+
+**This is written down so it is findable, not so it is re-reported.** A
+future session comparing `last_indicator` against `last_bar` will find ORKA
+again and it will look like a new discovery. It is not. Do not raise it, do
+not re-investigate it, and do not delete the row -- it is currently the only
+visible instance of the 82-row flag problem below, and removing it would hide
+that class entirely.
+
+**The class is the real item.** 82 tickers carry `is_active = False` with
+`delisted_on = NULL`, against 18 that are properly retired with a date. So
+for the majority of inactive tickers there is no record of *when* they became
+inactive, and "deliberately retired" is indistinguishable from "something set
+a flag". Two others in that group still have recent bars -- `FISV` (renamed
+to `FI` in 2024) and `UA` (Under Armour's second class) -- and both of those
+are legitimately retired, which is what makes ORKA's case distinguishable
+only by inspection.
+
+Fixing the class means finding what writes the flag without a date. That is
+the work; ORKA is just the thread.
+
+---
+
+### ETF market cap — **investigated 2026-08-26, see ADR 156, not decided**
+
+Raised 2026-08-26, and this probably supersedes the entry below rather than
+complementing it. Measured against Yahoo:
+
+    SPY    sharesOutstanding 917,782,016   netAssets   $795B
+    QQQ    sharesOutstanding 393,100,000   netAssets   $453B
+    VOO    sharesOutstanding None          netAssets $1,687B
+    IBIT   sharesOutstanding None          netAssets    $47B
+
+**Yahoo publishes `netAssets` for all four and `sharesOutstanding` for only
+two.** So the missing-share-count problem is a missing *field choice*, not
+missing data.
+
+And net assets is the **correct** quantity. For a fund, shares times price is
+a proxy for assets under management; `netAssets` is the thing itself. Reading
+it when `quoteType == 'ETF'` gives VOO a real $1.69T and IBIT $47B instead of
+NULL.
+
+That would also make ADR 154's exemption less load-bearing. The funds would
+carry genuine market caps and clear `crit_mcap` on merit, rather than being
+admitted despite having none. The exemption would still be right for
+`crit_rel_return` -- a 2024 fund cannot have 757 sessions -- but the market
+cap half would stop being a data gap.
+
+**Superseded by measurement.** `netAssets` and `sharesOutstanding`
+**disagree with each other**: for a fund, price times shares *is* net assets
+by construction, and it does not hold here.
+
+    SPY   netAssets/price = 1,038,381,651  vs shares 917,782,016  ratio 1.131
+    QQQ   netAssets/price =   637,101,310  vs shares 393,100,000  ratio 1.621
+
+Sixty-two percent apart on QQQ. Adopting `netAssets` would move its recorded
+market cap from **$289B to $453B**, so this is not filling two NULLs, it is
+changing a value that already exists across 66 quarters.
+
+ADR 156 records four options and recommends finding out which field is
+right before choosing either. Nothing is blocked meanwhile: ADR 154 already
+admits all four ETFs regardless of market cap.
+
+**One clarification, since the shorthand is easy to get wrong.** It is not
+that ETFs have no shares: Yahoo reports 917.8M for SPY and 393.1M for QQQ.
+The case for `netAssets` is that it is **published for all four** rather than
+two, and that it is the quantity itself rather than a proxy -- shares times
+price *estimates* assets under management, `netAssets` *is* it.
+
+Needs an ADR when implemented: it changes what `mcap_usd` means for one
+instrument class, and `McapPlausibility`'s bounds were written for company
+capitalisations.
+
+---
+
+### Superseded: VOO and IBIT have no share count
+
+**Superseded 2026-08-26 by the `netAssets` entry above**, which is the chosen
+fix. Kept for the measurements it records. The framing below is wrong in one
+respect: the data is not missing, the wrong field was being read.
+
+#### Original entry
 
 **Superseded 2026-08-25.** SPY, VOO and IBIT now have `tickers` rows, bars
 and indicators. `SPY` was added to both `SEC_NON_FILER_TICKERS` and
@@ -264,110 +822,6 @@ counts. That understates nothing dramatically today but is a silent staleness.
 
 ---
 
-### SPY has one quarter of universe history, not sixty-six
-
-Raised 2026-08-25. Only 2026Q2 was evaluated, so SPY participates in live
-screening but contributes no historical events to the study population.
-
-Backfilling means `cscan universe --quarter` for each of the other 65
-quarters. **Measured at 2m23s per quarter for a four-ticker subset**, so
-~2.6 hours — not the ~10s CLAUDE.md quotes, which is a different shape of
-run. It belongs in an overnight slot next to the NYSE rebuild rather than
-in a working session.
-
-Statistics are unaffected until then: `cell_stats` reads priced backtest
-rows, and SPY has none.
-
----
-
-### Historical: SPY, VOO and IBIT were not in the database
-
-Raised 2026-08-25. `SEC_NON_FILER_TICKERS` names `QQQ`, `VOO` and `IBIT`,
-which reads like three ETFs are tracked. **Only QQQ exists.** VOO and IBIT
-have no `tickers` row, no bars, no universe evaluation and no events.
-
-That list is a *skip-list*, not a seed: it says "if you see these, do not
-ask SEC for companyfacts". Nothing inserts them. QQQ is present because it
-was added by hand.
-
-Measured 2026-08-25:
-
-    QQQ    5,282 daily bars   66 universe rows   34,687 events
-    VOO    absent
-    IBIT   absent
-
-`SPY` is not on the list at all and should be — it is the S&P 500 tracker
-and the most obvious ETF in a study seeded from S&P membership.
-
-**The work**, per the path QQQ took:
-
-1. insert the `tickers` rows (no CIK, no sector — an ETF has neither)
-2. `cscan bars --tickers SPY,VOO,IBIT --backfill`
-3. `cscan indicators --tickers SPY,VOO,IBIT --lookback 8000`
-4. re-run `cscan universe` per quarter so they are evaluated
-5. add `SPY` to `SEC_NON_FILER_TICKERS` and to `core.training.ETF_TICKERS`
-
-**Step 5 is the one that will be forgotten.** `ETF_TICKERS` is what ADR 147
-excludes from training, and it is deliberately a separate list from
-`SEC_NON_FILER_TICKERS` — the first answers "is this an instrument rather
-than a company", the second "does SEC serve companyfacts". A new ETF added
-to one and not the other trains the model on a fund.
-
-**No `config_hash` move** — adding tickers is not a config change. But it
-does change the traded population, so ADR 112 wants re-measuring afterwards
-for the same reason ADR 148's sector backfill did.
-
-**IBIT is the odd one and is worth a deliberate decision.** A spot Bitcoin
-trust has no sector, no industry and no earnings date. ADR 041's
-earnings-window exclusion silently does nothing for it, and ADR 147 keeps it
-out of training regardless — so it would be tradeable and watchable while
-contributing nothing to the model. That is probably the right outcome; it
-should be chosen rather than inherited.
-
----
-
-### NYSE, the same treatment Nasdaq got — **second priority**
-
-Raised 2026-08-25. The seeds are the S&P 500 union and Nasdaq (ADR 143), so
-a large NYSE-listed name outside the index is unreachable — not filtered
-out, never evaluated.
-
-**The machinery already exists.** ADR 143's path was: fetch the exchange's
-listings with market caps, keep common stock above a floor, upsert into
-`tickers`, ingest bars, evaluate. `jobs/fetch/nasdaq.py` does exactly that
-and hardcodes `"exchange": "NASDAQ"` in one request parameter. The same
-endpoint serves NYSE.
-
-**Four things to get right, and three are already solved.**
-
-- **`_is_common` must hold.** The screener gives preferred series, warrants
-  and units the *issuer's* market cap, so they clear any floor on their
-  parent's size while their bars are a different instrument. That filter
-  exists and is tested.
-- **Do not reuse `fetch_listed`'s cache key.** It is `@cached(source=
-  "nasdaq_screener_v1", key_fn=lambda: "listed_with_mcap")` — a constant. A
-  second exchange through the same function returns the Nasdaq snapshot and
-  looks like NYSE has no listings. Either a new source string or a
-  key that includes the exchange.
-- **Sector comes free.** The screener returns one per listing, and ADR 148
-  established the crosswalk. Unlike the Nasdaq round, these names need not
-  arrive with NULL sectors.
-- **`config_hash` moves and a rebuild follows.** Universe definition is
-  config (ADR 060). Measured 2026-08-24: ~1h18m compute, 45m harness, plus
-  statistics.
-
-**The rule has to be mechanical**, per ADR 035: "every NYSE listing at or
-above the floor" qualifies, and could have been written in 2010. Picking
-names because they look interesting selects on the outcome the study
-measures.
-
-**Expect it to be larger than the Nasdaq round.** NYSE carries most of the
-large-cap universe that is not already in the S&P 500 — REITs, foreign
-issuers, and the industrial and financial names an index-seeded universe
-misses.
-
----
-
 ### Depositary listings have no pre-2018 history
 
 Not a wrong number — a missing one, and the distinction matters when
@@ -387,7 +841,7 @@ the history — that, not correctness, is now the reason to do it.
 
 ---
 
-### 98 tickers still have no sector
+### 123 tickers still have no sector (29 of them active)
 
 ADR 148's backfill resolved 254 of 352. The rest are delisted or renamed —
 YHOO, FB (now META), PCLN (now BKNG), TWTR, ATVI, CERN, FRC, SIVB — and

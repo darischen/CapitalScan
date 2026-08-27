@@ -72,6 +72,37 @@ def _scalar(engine, sql: str) -> int:
         return int(conn.execute(text(sql)).scalar_one())
 
 
+def _shadow_columns(engine) -> str:
+    """The pre-ADR-116 column list, quoted, in its original order.
+
+    **Both diffs project this rather than `SELECT *`.** `EXCEPT` requires
+    matching arity, so a column added to `v_ticker_state` afterwards turns
+    both assertions into a syntax error -- which is what happened on
+    2026-08-26 when `a4f8c21d7e63` appended `in_watch` and `watch_reason`,
+    and it failed CI as `each EXCEPT query must have the same number of
+    columns`.
+
+    That failure said nothing about behaviour. This test exists to prove
+    the ADR 116 rewrite returns what it returned before, and a column that
+    did not exist then cannot participate in that question. Naming the old
+    columns keeps the comparison exact on every one of them while letting
+    the view grow.
+    """
+    with engine.connect() as conn:
+        names = list(
+            conn.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = :v "
+                    "ORDER BY ordinal_position"
+                ),
+                {"v": SHADOW},
+            ).scalars()
+        )
+    assert names, f"{SHADOW} has no columns; the shadow view was not built"
+    return ", ".join(f'"{n}"' for n in names)
+
+
 def test_the_shadow_view_was_actually_built(shadow):
     """Guards every assertion below against passing on a missing view.
 
@@ -90,12 +121,16 @@ def test_the_shadow_view_was_actually_built(shadow):
 def test_the_rewrite_drops_nothing(shadow):
     """Every row the old view returned, the new one returns identically.
 
-    Column for column: `EXCEPT` compares whole rows, so a single changed
-    `bb_upper` on one ticker fails this.
+    Column for column across every pre-ADR-116 column: `EXCEPT` compares
+    whole rows, so a single changed `bb_upper` on one ticker fails this.
+    Columns added after ADR 116 are excluded deliberately -- see
+    `_shadow_columns`.
     """
+    cols = _shadow_columns(shadow)
     missing = _scalar(
         shadow,
-        f"SELECT count(*) FROM (SELECT * FROM {SHADOW} EXCEPT SELECT * FROM v_ticker_state) d",
+        f"SELECT count(*) FROM (SELECT {cols} FROM {SHADOW} "
+        f"EXCEPT SELECT {cols} FROM v_ticker_state) d",
     )
     assert missing == 0, f"{missing} row(s) present before ADR 116 and absent after"
 
@@ -106,9 +141,11 @@ def test_the_rewrite_invents_nothing(shadow):
     A rewrite returning two rows per ticker would still contain every
     original row and pass the test above.
     """
+    cols = _shadow_columns(shadow)
     extra = _scalar(
         shadow,
-        f"SELECT count(*) FROM (SELECT * FROM v_ticker_state EXCEPT SELECT * FROM {SHADOW}) d",
+        f"SELECT count(*) FROM (SELECT {cols} FROM v_ticker_state "
+        f"EXCEPT SELECT {cols} FROM {SHADOW}) d",
     )
     assert extra == 0, f"{extra} row(s) absent before ADR 116 and present after"
 

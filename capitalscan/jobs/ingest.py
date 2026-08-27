@@ -746,24 +746,36 @@ def _back_adjust_hourly(
     return out, unresolved
 
 
-def _read_daily_range(engine: Engine, tickers: list[str]) -> pd.DataFrame:
+def _read_daily_range(
+    engine: Engine, tickers: list[str], start: date | None = None, end: date | None = None
+) -> pd.DataFrame:
     """Per-(ticker, day) daily high/low, for the range-escape guard below.
 
-    Not date-bounded to the hourly fetch window: the guard only ever looks
-    up days that actually appear in the hourly batch being checked, and a
-    single small query per run is simpler than re-querying per ticker.
+    **Date-bounded since 2026-08-26.** This said "a single small query per
+    run is simpler than re-querying per ticker", and the query was not
+    small: unbounded over 1,470 tickers of full history it returns ~3.3M
+    rows. The guard only ever looks up days inside the hourly window being
+    checked, so every row outside it was read, held and merged against for
+    nothing -- a nightly's 5-day window needs ~7,000 of those 3.3M.
+
+    `start`/`end` default to None for callers that genuinely want the whole
+    range; the hourly ingest passes its own window.
     """
     if not tickers:
         return pd.DataFrame(columns=["ticker", "d", "high", "low"])
+    sql = (
+        "SELECT ticker, ts::date AS d, high, low FROM bars "
+        "WHERE interval = '1d' AND ticker = ANY(:tickers)"
+    )
+    params: dict[str, object] = {"tickers": tickers}
+    if start is not None:
+        sql += " AND ts >= :start"
+        params["start"] = start
+    if end is not None:
+        sql += " AND ts <= :end"
+        params["end"] = end
     with engine.connect() as conn:
-        return pd.read_sql(
-            text(
-                "SELECT ticker, ts::date AS d, high, low FROM bars "
-                "WHERE interval = '1d' AND ticker = ANY(:tickers)"
-            ),
-            conn,
-            params={"tickers": tickers},  # type: ignore[arg-type]
-        )
+        return pd.read_sql(text(sql), conn, params=params)  # type: ignore[arg-type]
 
 
 def _flag_range_escape(
@@ -909,6 +921,12 @@ def run_bars_daily(
     return report
 
 
+# Tickers buffered before one `bars` upsert in `run_bars_hourly`. Small
+# enough that an interrupt costs little to redo, large enough that the round
+# trips stop dominating: 1,470 tickers becomes 15 writes rather than 1,470.
+HOURLY_WRITE_CHUNK = 100
+
+
 def run_bars_hourly(
     tickers: list[str], start: date, end: date, engine: Engine | None = None
 ) -> IngestReport:
@@ -932,27 +950,79 @@ def run_bars_hourly(
         # queries against small tables, not one per ticker.
         actions = _read_corporate_actions(engine, tickers)
         splits = actions.loc[actions["action_type"] == "split"] if not actions.empty else actions
-        daily_range = _read_daily_range(engine, tickers)
+        daily_range = _read_daily_range(engine, tickers, start, end)
+
+        # **Indexed once, not scanned once per ticker.** The loop below used
+        # `splits.loc[splits["ticker"] == ticker]` and the same for
+        # `daily_range`, which is a full boolean scan of each frame per
+        # ticker -- 2,940 scans across 1,470 tickers. That was invisible
+        # while every iteration also paid ~2s of network; batching the fetch
+        # (2026-08-26) removed the network and left the scans as a
+        # measurable share of the step.
+        #
+        # `groupby` builds both indices in one pass each. Missing tickers get
+        # an empty frame with the right columns, which is what the boolean
+        # mask produced before, so `_back_adjust_hourly` sees no change.
+        splits_by_ticker = (
+            {str(k): v for k, v in splits.groupby("ticker", sort=False)} if not splits.empty else {}
+        )
+        range_by_ticker = (
+            {str(k): v for k, v in daily_range.groupby("ticker", sort=False)}
+            if not daily_range.empty
+            else {}
+        )
+        actions_by_ticker = (
+            {str(k): v for k, v in actions.groupby("ticker", sort=False)}
+            if not actions.empty
+            else {}
+        )
+        _no_splits = splits.iloc[0:0]
+        _no_range = daily_range.iloc[0:0]
+        _no_actions = actions.iloc[0:0]
+
+        # **One request per batch per window, not one per ticker.** The
+        # per-ticker path cost 54.5 minutes for 1,470 tickers on 2026-08-26
+        # at `RATE_LIMIT_PER_SEC = 0.5`, against 4.9 minutes for the batched
+        # daily path over the same universe -- the difference was the
+        # request shape, not the data. `fetch_bars_hourly_many` was verified
+        # against `fetch_bars_hourly` on live data before this call site
+        # changed: identical frames, row for row, for every ticker tried.
+        #
+        # Fetched up front rather than lazily inside the loop, because the
+        # window walk has to run once for the whole list to collapse the
+        # per-ticker dimension at all.
+        hourly_by_ticker = yahoo.fetch_bars_hourly_many(tickers, start, end)
 
         fetched: list[str] = []
+        pending: list[pd.DataFrame] = []
+        pending_tickers: list[str] = []
+
+        def _flush() -> None:
+            """Commit the buffered chunk. A no-op when nothing is pending,
+            so the call after the loop needs no guard at the call site."""
+            if not pending:
+                pending_tickers.clear()
+                return
+            frame = pd.concat(pending, ignore_index=True)
+            report.rows_written += db_io.upsert(engine, "bars", frame, ["ticker", "ts", "interval"])
+            fetched.extend(pending_tickers)
+            pending.clear()
+            pending_tickers.clear()
+
         with Progress() as progress:
             task = progress.add_task("[cyan]hourly bars...", total=len(tickers))
             for ticker in tickers:
-                hourly = yahoo.fetch_bars_hourly(ticker, start, end)
+                # Absent means Yahoo returned nothing for it, which is what
+                # an empty frame meant before.
+                hourly = hourly_by_ticker.get(ticker, yahoo._empty_hourly_frame())
                 progress.update(task, advance=1, description=f"[cyan]{ticker}[/cyan]")
                 if hourly.empty:
                     # Delisted before the 725-day window opened. Expected for
                     # most of the union, not an error.
                     continue
 
-                ticker_splits = (
-                    splits.loc[splits["ticker"] == ticker] if not splits.empty else splits
-                )
-                ticker_daily_range = (
-                    daily_range.loc[daily_range["ticker"] == ticker]
-                    if not daily_range.empty
-                    else daily_range
-                )
+                ticker_splits = splits_by_ticker.get(ticker, _no_splits)
+                ticker_daily_range = range_by_ticker.get(ticker, _no_range)
                 raw, unresolved = _back_adjust_hourly(hourly, ticker_splits, ticker_daily_range)
 
                 unresolved_rejects: list[dict] = []
@@ -1003,14 +1073,29 @@ def run_bars_hourly(
                 # produces a jump for it to (mis)explain; the check remains
                 # as a safety net for the same batch-boundary artifact
                 # `unresolved_rejects` documents for daily (ANET 2024-10-07).
-                clean, rejects = validate_bars(raw, corporate_actions=actions)
+                # **This ticker's actions, not everyone's.** `validate_bars`
+                # does `splits.groupby("ticker")` internally, so passing the
+                # whole frame walked all 1,470 tickers' splits on every one
+                # of 1,470 calls.
+                clean, rejects = validate_bars(
+                    raw, corporate_actions=actions_by_ticker.get(ticker, _no_actions)
+                )
                 rejects = rejects + unresolved_rejects
 
-                guard_rejects = _flag_range_escape(clean, daily_range)
+                # **This ticker's daily range, not the whole table.** The
+                # guard merges on ["ticker", "d"], so an inner join against
+                # the full frame can only ever match this ticker's rows --
+                # it just walked ~3.3M of them to find ~5. That merge, 1,470
+                # times, was the ~1 second per ticker the progress bar showed.
+                guard_rejects = _flag_range_escape(clean, ticker_daily_range)
                 if guard_rejects:
+                    # `MultiIndex.isin` rather than a row-wise `.apply`.
+                    # `axis=1` builds a Series per row and is the slowest
+                    # thing pandas offers; this is one vectorised pass and
+                    # answers the identical question.
                     bad_keys = {(r["ticker"], r["ts"]) for r in guard_rejects}
-                    keep = ~clean.apply(lambda r: (r["ticker"], r["ts"]) in bad_keys, axis=1)
-                    clean = clean.loc[keep].reset_index(drop=True)
+                    keys = pd.MultiIndex.from_arrays([clean["ticker"], clean["ts"]])
+                    clean = clean.loc[~keys.isin(bad_keys)].reset_index(drop=True)
                     rejects = rejects + guard_rejects
 
                 for r in rejects:
@@ -1020,14 +1105,22 @@ def run_bars_hourly(
                 if rejects:
                     db_io.append(engine, "bar_rejects", rejects)
 
-                # Committed before the next fetch starts. The key is
-                # (ticker, ts, interval), so rerunning after an interrupt
-                # rewrites what is already there rather than duplicating it.
-                report.rows_written += db_io.upsert(
-                    engine, "bars", clean, ["ticker", "ts", "interval"]
-                )
-                fetched.append(ticker)
+                # **Buffered, then committed per chunk.** This upserted
+                # once per ticker, which is one database round trip per
+                # ticker -- 1,470 of them. That was free when each iteration
+                # also paid ~2s of network; after the fetch was batched
+                # (2026-08-26) the round trips became the step.
+                #
+                # The checkpoint is kept, only coarser. The key is still
+                # (ticker, ts, interval), so an interrupt rewrites rather
+                # than duplicates, and the most a restart redoes is one
+                # chunk of a 5-day window.
+                pending.append(clean)
+                pending_tickers.append(ticker)
+                if len(pending_tickers) >= HOURLY_WRITE_CHUNK:
+                    _flush()
 
+        _flush()
         report.tickers = sorted(set(fetched))
     return report
 
@@ -1074,10 +1167,68 @@ def _update_ticker_coverage(engine: Engine, clean_bars: pd.DataFrame) -> None:
 # ============ actions ============
 
 
-def run_actions(tickers: list[str], engine: Engine | None = None) -> IngestReport:
+ACTIONS_WINDOW_DAYS = 30
+
+
+def _tickers_with_actions(engine: Engine, tickers: list[str]) -> set[str]:
+    """Which of these already have corporate actions on file.
+
+    Decides full-history versus incremental per ticker. One query, not one
+    per ticker.
+    """
+    if not tickers:
+        return set()
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT DISTINCT ticker FROM corporate_actions WHERE ticker = ANY(:tickers)"),
+            {"tickers": tickers},
+        ).scalars()
+        return set(rows)
+
+
+def run_actions(
+    tickers: list[str],
+    engine: Engine | None = None,
+    start: date | None = None,
+    end: date | None = None,
+) -> IngestReport:
+    """Splits and dividends.
+
+    **Two paths, split on whether the ticker already has history.**
+
+    A ticker with rows on file needs only what is new, and that is
+    batchable: `fetch_actions_many` asks one request per `DAILY_BATCH_SIZE`
+    symbols. A ticker with nothing on file needs its whole series, which
+    only `yf.Ticker(t).actions` provides, one request each.
+
+    Nightly therefore costs a handful of requests instead of one per ticker.
+    Measured 2026-08-26 before this change: 1,470 tickers, 21.3 minutes when
+    the cache missed and 0.3 minutes when it hit -- and it always hit,
+    because `fetch_actions` keyed on the bare ticker and froze every name at
+    its first fetch. Batching without dating the key would have been fast
+    and still wrong; dating it without batching would have been correct and
+    ~49 minutes.
+
+    `start`/`end` default to a `ACTIONS_WINDOW_DAYS` lookback. The upsert
+    key is `(ticker, ex_date, action_type)`, so an overlapping window is a
+    no-op and a missed night heals on the next run.
+    """
     engine = engine or db_io.get_engine()
-    with run_job(engine, "actions", {"tickers": tickers}) as report:
-        frames = [yahoo.fetch_actions(t) for t in tickers]
+    end = end or date.today()
+    start = start or (end - timedelta(days=ACTIONS_WINDOW_DAYS))
+    with run_job(
+        engine, "actions", {"tickers": tickers, "start": str(start), "end": str(end)}
+    ) as report:
+        known = _tickers_with_actions(engine, tickers)
+        fresh = [t for t in tickers if t not in known]
+        incremental = [t for t in tickers if t in known]
+
+        frames: list[pd.DataFrame] = []
+        if incremental:
+            frames.extend(yahoo.fetch_actions_many(incremental, start, end).values())
+        # Full history, one request each. Rare by construction -- this is a
+        # ticker's first ingest, not a nightly cost.
+        frames.extend(yahoo.fetch_actions(t) for t in fresh)
         frames = [f for f in frames if not f.empty]
         if not frames:
             report.tickers = []
@@ -1212,6 +1363,15 @@ def _depositary_tickers(engine: Engine, tickers: list[str]) -> set[str]:
     return {r.ticker for r in rows if core_universe.is_depositary_listing(r.name)}
 
 
+# One implementation, in `db_io`, because `db_io.append` is the choke point
+# every reject passes through and per-site wrapping already failed once:
+# two sites were wrapped on 2026-08-26 and a third was missed, so the same
+# failure recurred two minutes after the commit. These aliases keep the
+# construction sites self-documenting.
+_json_safe = db_io.json_safe
+_json_safe_payload = db_io.json_safe_payload
+
+
 def _implausible_shares_reason(shares: int, bounds: SharesPlausibility) -> str | None:
     """`None` when `shares` is plausible; otherwise the `bar_rejects.rule`.
 
@@ -1258,6 +1418,105 @@ SEC_NON_FILER_TICKERS = frozenset({"QQQ", "SPY", "VOO", "IBIT"})
 # NULL-sector cell rather than being excluded, and ADR 041's earnings-window
 # exclusion silently does nothing for it. Tradeable and uncellable is a
 # state nothing in the schema forbids. See `BACKLOG.md`.
+
+
+def run_exchange_expansion(
+    exchange: str,
+    min_mcap_usd: float | None = None,
+    engine: Engine | None = None,
+) -> IngestReport:
+    """Seed `tickers` from an exchange screener (ADR 143's path, generalised).
+
+    ADR 143 added Nasdaq as a second seed source beside the S&P 500 union.
+    That round inserted its rows by hand; this is the same work written
+    down, so the NYSE round is reproducible rather than remembered.
+
+    **Inserts only.** `ON CONFLICT DO NOTHING`, so a ticker already on file
+    keeps its sector, its CIK and its `is_active` flag. An upsert here would
+    overwrite ADR 148's resolved sectors with the screener's own vocabulary,
+    which is neither GICS nor Yahoo's and would silently reintroduce the
+    two-levels-for-one-sector defect 148 exists to fix.
+
+    **`sector` is left NULL on new rows for the same reason.**
+    `run_sector_backfill` resolves it from the source of record afterwards.
+    The screener does return a sector, and using it would look like a free
+    win; it is the wrong vocabulary and 148 already paid for that lesson.
+
+    **CIK is resolved at insert**, because without it `run_shares` finds no
+    filings, `mcap_usd` stays NULL and every new name fails `crit_mcap`
+    while `cscan universe` reports success. ADR 143 records exactly that
+    happening: 296 rows with a NULL market cap, no error, no warning. The
+    order that works is bars, indicators, **shares**, then universe.
+
+    `min_mcap_usd` defaults to the ingest floor, deliberately below the
+    trade floor: a name at $6B today may have been above $20B earlier in
+    the window, and its bars are the only way those quarters can be
+    measured.
+    """
+    from capitalscan.jobs.fetch import nasdaq as screener
+
+    engine = engine or db_io.get_engine()
+    floor = screener.INGEST_MIN_MCAP_USD if min_mcap_usd is None else min_mcap_usd
+
+    with run_job(engine, "tickers", {"exchange": exchange, "min_mcap_usd": floor}) as report:
+        symbols = screener.tickers_above(floor, exchange)
+        if not symbols:
+            report.notes = f"screener returned no {exchange} listings at or above {floor:,.0f}"
+            return report
+
+        cik_lookup = sec.fetch_cik_lookup().set_index("ticker")["cik"]
+        rows = [
+            {
+                "ticker": t,
+                "cik": str(cik_lookup.get(t)) if t in cik_lookup.index else None,
+                "name": None,
+                "sector": None,
+                "industry": None,
+                "exchange": exchange,
+                "is_active": True,
+            }
+            for t in symbols
+        ]
+
+        with engine.begin() as conn:
+            existing = {
+                r[0]
+                for r in conn.execute(
+                    text("SELECT ticker FROM tickers WHERE ticker = ANY(:syms)"),
+                    {"syms": symbols},
+                )
+            }
+        new_rows = [r for r in rows if r["ticker"] not in existing]
+
+        if new_rows:
+            # **Explicit `DO NOTHING`, not `db_io.upsert`.** That helper has
+            # no insert-only mode: `update_columns=None` overwrites every
+            # non-key column, which on a conflict would blank an existing
+            # row's ADR 148 sector and its CIK, and `update_columns=[]` is
+            # rejected by design. The pre-filter above already excludes
+            # known tickers, so this clause is the guard against a row
+            # appearing between the SELECT and the INSERT rather than the
+            # normal path.
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO tickers "
+                        "(ticker, cik, name, sector, industry, exchange, is_active) "
+                        "VALUES (:ticker, :cik, :name, :sector, :industry, :exchange, :is_active) "
+                        "ON CONFLICT (ticker) DO NOTHING"
+                    ),
+                    new_rows,
+                )
+
+        with_cik = sum(1 for r in new_rows if r["cik"])
+        report.rows_written = len(new_rows)
+        report.notes = (
+            f"{exchange}: {len(symbols)} listings at or above {floor:,.0f}, "
+            f"{len(existing)} already on file, {len(new_rows)} inserted, "
+            f"{with_cik} with a CIK. Sector is NULL by design -- run "
+            f"run_sector_backfill next, then bars, indicators, shares, universe."
+        )
+    return report
 
 
 def run_sector_backfill(
@@ -1437,13 +1696,15 @@ def run_shares(
                             "ts": row["filed_on"],
                             "rule": reason,
                             "severity": "reject",
-                            "payload": {
-                                "shares": shares,
-                                "filed_on": row["filed_on"],
-                                "period_end": row.get("end"),
-                                "source": "sec_xbrl",
-                                "accn": row.get("accn"),
-                            },
+                            "payload": _json_safe_payload(
+                                {
+                                    "shares": shares,
+                                    "filed_on": row["filed_on"],
+                                    "period_end": row.get("end"),
+                                    "source": "sec_xbrl",
+                                    "accn": row.get("accn"),
+                                }
+                            ),
                         }
                     )
                     continue
@@ -1511,13 +1772,15 @@ def run_shares(
                         "ts": row["filed_on"],
                         "rule": "shares_scale_error_x1000",
                         "severity": "reject",
-                        "payload": {
-                            "shares": row["shares"],
-                            "filed_on": row["filed_on"],
-                            "period_end": row.get("period_end"),
-                            "source": "sec_xbrl",
-                            "accn": row.get("accn"),
-                        },
+                        "payload": _json_safe_payload(
+                            {
+                                "shares": row["shares"],
+                                "filed_on": row["filed_on"],
+                                "period_end": row.get("period_end"),
+                                "source": "sec_xbrl",
+                                "accn": row.get("accn"),
+                            }
+                        ),
                     }
                 )
 
@@ -1604,12 +1867,14 @@ def run_shares(
                             "ts": filed_on,
                             "rule": reason,
                             "severity": "reject",
-                            "payload": {
-                                "shares": shares,
-                                "filed_on": filed_on,
-                                "period_end": None,
-                                "source": SHARES_YAHOO_SOURCE,
-                            },
+                            "payload": _json_safe_payload(
+                                {
+                                    "shares": shares,
+                                    "filed_on": filed_on,
+                                    "period_end": None,
+                                    "source": SHARES_YAHOO_SOURCE,
+                                }
+                            ),
                         }
                     )
                     continue
@@ -1707,21 +1972,30 @@ def run_earnings(
         if forward_days > 0:
             start = date.today()
             end = start + timedelta(days=forward_days)
-            for ticker in tickers:
-                calendar = finnhub.fetch_forward_calendar(start, end, symbol=ticker)
-                for _, row in calendar.iterrows():
-                    session = {"bmo": "bmo", "amc": "amc"}.get(
-                        str(row.get("hour")).lower(), "unknown"
-                    )
-                    rows.append(
-                        {
-                            "ticker": row["ticker"],
-                            "report_date": row["date"],
-                            "session": session,
-                            "source": row["source"],
-                            "confidence": row["confidence"],
-                        }
-                    )
+            # **One walk of the window, not one request per ticker.** The
+            # endpoint is bulk -- omitting `symbol` returns every listing in
+            # the range -- and this asked it 1,470 times. At
+            # `RATE_LIMIT_PER_SEC = 0.8` that is 30.6 minutes of rate
+            # limiting alone, and 43.5 minutes measured end to end on
+            # 2026-08-26. The chunked walk covers 90 days in ~33 seconds.
+            #
+            # It is also *more* complete than a single bulk call, which
+            # silently truncates at 1,500 rows: that response omitted AAPL
+            # entirely. `fetch_forward_calendar_many` splits any window that
+            # comes back at the cap, and returned 5,149 rows across 4,945
+            # tickers over the same 90 days.
+            calendar = finnhub.fetch_forward_calendar_many(start, end, tickers)
+            for _, row in calendar.iterrows():
+                session = {"bmo": "bmo", "amc": "amc"}.get(str(row.get("hour")).lower(), "unknown")
+                rows.append(
+                    {
+                        "ticker": row["ticker"],
+                        "report_date": row["date"],
+                        "session": session,
+                        "source": row["source"],
+                        "confidence": row["confidence"],
+                    }
+                )
 
         # `earnings` is keyed (ticker, report_date) and duplicates here are
         # structural, not anomalous: a company files several 8-Ks in one day and

@@ -141,6 +141,36 @@ ports:
 `netstat` afterwards shows two IPv4 listeners and no IPv6 entry. Loopback is
 listed because every connection string in the project uses `localhost`.
 
+**That last sentence was the bug, and it took a month to surface.** Removing
+the IPv6 listener while every connection string says `localhost` means each
+connect resolves `::1` first, finds nothing, and waits out a TCP timeout
+before falling back.
+
+Measured 2026-08-25: **`connect` 130.15s**, the query 0.00s, the fetch
+0.04s. `_compute_one_ticker` opens a fresh connection per ticker
+(`use_null_pool=True`), so every ticker paid 130 seconds. A 36-second
+indicator run became hours, and it presented as a **hang** rather than as
+slowness -- eight workers each sitting in a TCP timeout show 0% CPU and
+open no database connections, which looks exactly like a deadlock.
+
+Hours went into diagnosing it as a `ProcessPoolExecutor` deadlock, a wrong
+interpreter, stale planner statistics, and a pickle-through-pipe problem.
+It was none of them. `docker-compose.yml` now publishes **both loopback
+families**:
+
+```yaml
+ports:
+  - "127.0.0.1:5432:5432"
+  - "[::1]:5432:5432"        # loopback only, never [::]
+```
+
+`localhost` went from 130.06s to 0.04s. `[::1]` rather than `[::]` keeps the
+global-IPv6 exposure this section exists to prevent.
+
+**The general lesson:** narrowing a listener is a change to every client
+that names the host by a resolving alias, not only to the ones you were
+thinking about.
+
 **Recreating the container is safe** — the volume is named
 `capitalscan-data`, so `docker compose up -d` preserves all 19 GB. Verified:
 1,109,962 events before and after.

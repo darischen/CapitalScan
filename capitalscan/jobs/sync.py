@@ -66,7 +66,7 @@ from typing import Any
 import pandas as pd
 from psycopg.errors import InsufficientPrivilege
 from sqlalchemy import Engine, text
-from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 
 from capitalscan.core.config import ServingParams
 from capitalscan.jobs import db_io
@@ -140,15 +140,21 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
         SyncTable("serving_config", "SELECT * FROM serving_config", ("only_row",)),
         # Scoped by trade-universe membership rather than by ticker list:
         # the deployed chart only ever draws a name the screener can show.
+        # `GREATEST(:cutoff, :bars_from)` -- the cutoff is the history
+        # boundary and `bars_from` is the incremental one. Whichever is
+        # later wins, so a NULL `bars_from` (an empty or unknown target)
+        # degrades to the full cutoff pass rather than to nothing.
         SyncTable(
             "bars",
-            "SELECT b.* FROM bars b WHERE b.interval = '1d' AND b.ts >= :cutoff "
+            "SELECT b.* FROM bars b WHERE b.interval = '1d' "
+            "AND b.ts >= GREATEST(:cutoff, COALESCE(CAST(:bars_from AS date), :cutoff)) "
             "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = b.ticker AND u.in_trade)",
             ("ticker", "ts", "interval"),
         ),
         SyncTable(
             "indicators",
-            "SELECT i.* FROM indicators i WHERE i.interval = '1d' AND i.ts >= :cutoff "
+            "SELECT i.* FROM indicators i WHERE i.interval = '1d' "
+            "AND i.ts >= GREATEST(:cutoff, COALESCE(CAST(:indicators_from AS date), :cutoff)) "
             "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = i.ticker AND u.in_trade)",
             ("ticker", "ts", "interval"),
         ),
@@ -181,12 +187,14 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
         SyncTable(
             "events",
             "SELECT * FROM events WHERE config_hash = :config_hash "
-            "AND entry_kind IN ('next_open', 'touch') AND signal_date >= :cutoff",
+            "AND entry_kind IN ('next_open', 'touch') "
+            "AND signal_date >= GREATEST(:cutoff, COALESCE(CAST(:events_from AS date), :cutoff))",
             ("config_hash", "ticker", "signal_date", "signal_type", "entry_kind"),
         ),
         SyncTable(
             "signal_reports",
-            "SELECT * FROM signal_reports WHERE fired_at >= :cutoff",
+            "SELECT * FROM signal_reports WHERE "
+            "fired_at >= GREATEST(:cutoff, COALESCE(CAST(:reports_from AS date), :cutoff))",
             ("id",),
         ),
         # Scoped to the config being served. Unfiltered, these shipped every
@@ -302,12 +310,57 @@ class SyncReport:
         return sum(self.rows.values())
 
 
+# Days re-shipped below the target's own watermark. The sync upserts, so an
+# overlap costs bandwidth and nothing else, and it absorbs the cases a bare
+# watermark misses: a row corrected after the fact, a night that failed
+# halfway, a bar restated by the vendor.
+SYNC_OVERLAP_DAYS = 7
+
+
+def _incremental_bounds(
+    target: Engine, config_hash: str, overlap_days: int = SYNC_OVERLAP_DAYS
+) -> dict[str, date | None]:
+    """How far back each large table needs to be re-shipped.
+
+    **Derived from the target, not from a fixed window.** A constant
+    "last 7 days" is wrong exactly when it matters -- a Pi that has been
+    off for a fortnight would get seven days of rows and a permanent hole,
+    with no error. Reading the target's own newest row means the window is
+    however far behind it actually is, plus the overlap.
+
+    `None` means "no incremental bound": the table is empty on the target,
+    or holds nothing for this config, so the full `cutoff` pass is the only
+    correct answer. That is also what makes a first sync, a rebuilt serving
+    store and a config change work without a flag.
+
+    A failure to read is `None` too. Being slow is recoverable; guessing a
+    watermark and shipping a subset is not.
+    """
+    queries = {
+        "bars_from": "SELECT max(ts)::date FROM bars WHERE interval = '1d'",
+        "indicators_from": "SELECT max(ts)::date FROM indicators WHERE interval = '1d'",
+        "events_from": ("SELECT max(signal_date) FROM events WHERE config_hash = :config_hash"),
+        "reports_from": "SELECT max(fired_at)::date FROM signal_reports",
+    }
+    out: dict[str, date | None] = {}
+    for name, sql in queries.items():
+        try:
+            with target.connect() as conn:
+                got = conn.execute(text(sql), {"config_hash": config_hash}).scalar_one_or_none()
+        except SQLAlchemyError:
+            logger.warning("could not read the %s watermark; falling back to a full pass", name)
+            got = None
+        out[name] = (got - timedelta(days=overlap_days)) if got is not None else None
+    return out
+
+
 def run_sync(
     source: Engine | None = None,
     target: Engine | None = None,
     sp: ServingParams | None = None,
     today: date | None = None,
     config_hash: str | None = None,
+    incremental: bool = False,
 ) -> SyncReport:
     """Copy the serving subset from `source` to `target`.
 
@@ -334,12 +387,42 @@ def run_sync(
                     text("SELECT current_setting('capitalscan.default_config_hash', true)")
                 ).scalar_one()
 
+        # **Full by default; `incremental=True` is the nightly path.**
+        # `cscan sync` means "copy the serving subset", and that is the
+        # command you reach for after a rebuild, a reflash or a config
+        # change -- it must not quietly ship a window.
+        #
+        # Nightly is the case that cannot afford it. A full pass shipped
+        # 7,469,519 rows in 114.2 minutes on 2026-08-26 to deliver ~3,875
+        # that had changed: a 1,900x amplification and two thirds of the
+        # job. `cutoff` stopped bounding anything when
+        # `ServingParams.history_years` went from 3 to 30, which was right
+        # on its own and turned this into a whole-table copy.
+        #
+        # Even incremental, an empty table or an unseen `config_hash`
+        # produces NULL bounds and falls back to the full `cutoff` pass, so
+        # the fast path cannot leave a new serving store half-populated.
+        bounds: dict[str, date | None] = (
+            _incremental_bounds(target, str(config_hash))
+            if incremental
+            else {k: None for k in ("bars_from", "indicators_from", "events_from", "reports_from")}
+        )
+        logger.info(
+            "sync mode=%s bounds=%s",
+            "incremental" if incremental else "full",
+            {k: str(v) for k, v in bounds.items()},
+        )
+
         rows: dict[str, int] = {}
         for table in _tables(cutoff, str(config_hash)):
+            # pandas-stubs types `params` values as non-optional; a NULL
+            # bound is exactly how "no incremental floor" is expressed and
+            # psycopg binds it fine. The mismatch is the stub, not the call
+            # -- same as `_read_corporate_actions`' list binding.
             frame = pd.read_sql(
                 text(table.sql),
                 source,
-                params={"cutoff": cutoff, "config_hash": config_hash},
+                params={"cutoff": cutoff, "config_hash": config_hash, **bounds},  # type: ignore[arg-type]
             )
             written = 0
             per_batch = _rows_per_batch(len(frame.columns))

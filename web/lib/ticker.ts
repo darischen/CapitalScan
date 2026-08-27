@@ -41,7 +41,9 @@ export const DEFAULT_RANGE: Range = "1y";
  * test, not by review.
  */
 export function parseRange(raw: string | undefined): Range {
-  return raw !== undefined && Object.hasOwn(RANGES, raw) ? (raw as Range) : DEFAULT_RANGE;
+  return raw !== undefined && Object.hasOwn(RANGES, raw)
+    ? (raw as Range)
+    : DEFAULT_RANGE;
 }
 
 export interface ChartBar {
@@ -136,6 +138,16 @@ export interface TickerState {
   daysToEarnings: number | null;
   vixClose: number | null;
   inTrade: boolean | null;
+  /**
+   * ADR 149's watch universe. `inTrade` and `inWatch` are siblings, never
+   * complements: a name can be in neither, and the badge has to say which
+   * of the three it is. Saying only "outside trade universe" for a watched
+   * name is true and misleading, which is what it did until 2026-08-26 --
+   * CCJ read as excluded when it was being polled and priced.
+   */
+  inWatch: boolean;
+  /** `pullback` | `history`; null on a trade-universe row. */
+  watchReason: string | null;
   aboveSma200: boolean | null;
   mcapUsd: number | null;
 }
@@ -262,7 +274,9 @@ function toBar(r: ChartRowRaw): ChartBar {
     // only ever compared, so it converts here rather than at every use.
     eventIds: (r.event_ids ?? []).map(Number),
     signalTypes: r.signal_types ?? [],
-    sides: (r.sides ?? []).map((s) => (s === "short" ? "short" : "long")) as Side[],
+    sides: (r.sides ?? []).map((s) =>
+      s === "short" ? "short" : "long",
+    ) as Side[],
     signalStrength: r.signal_strength,
   };
 }
@@ -359,7 +373,10 @@ export function toLiveBar(today: LiveRow | null): ChartBar | null {
   };
 }
 
-export async function chart(ticker: string, range: Range = DEFAULT_RANGE): Promise<ChartBar[]> {
+export async function chart(
+  ticker: string,
+  range: Range = DEFAULT_RANGE,
+): Promise<ChartBar[]> {
   const [rows, today] = await Promise.all([
     query<ChartRowRaw>(CHART_SQL, [ticker, RANGES[range]]),
     liveBar(ticker),
@@ -398,7 +415,11 @@ export async function chartBefore(
   limit?: number,
 ): Promise<ChartBar[]> {
   return (
-    await query<ChartRowRaw>(CHART_BEFORE_SQL, [ticker, before, clampPage(limit)])
+    await query<ChartRowRaw>(CHART_BEFORE_SQL, [
+      ticker,
+      before,
+      clampPage(limit),
+    ])
   ).map(toBar);
 }
 
@@ -407,7 +428,7 @@ const STATE_SQL = `
          bb_lower, bb_mid, bb_upper, bb_pctb, bb_width_pct,
          k_full, d_full, k_fast, k_cross_up, k_cross_down,
          sma_200, atr_14, rv_20d, dd_52w, days_to_earnings, vix_close,
-         in_trade, above_sma200, mcap_usd
+         in_trade, in_watch, watch_reason, above_sma200, mcap_usd
     FROM v_ticker_state
    WHERE ticker = $1
 `;
@@ -436,6 +457,8 @@ interface StateRowRaw {
   days_to_earnings: number | null;
   vix_close: string | null;
   in_trade: boolean | null;
+  in_watch: boolean | null;
+  watch_reason: string | null;
   above_sma200: boolean | null;
   mcap_usd: string | null;
 }
@@ -476,6 +499,10 @@ export async function state(ticker: string): Promise<TickerState | null> {
     daysToEarnings: r.days_to_earnings,
     vixClose: num(r.vix_close),
     inTrade: r.in_trade,
+    // ADR 149. `=== true` because the column is nullable and NULL means
+    // "not watched", never "unknown".
+    inWatch: r.in_watch === true,
+    watchReason: r.watch_reason,
     aboveSma200: r.above_sma200,
     mcapUsd: num(r.mcap_usd),
   };
@@ -634,7 +661,10 @@ export async function events(
   }));
 }
 
-export async function countEvents(ticker: string, all = false): Promise<number> {
+export async function countEvents(
+  ticker: string,
+  all = false,
+): Promise<number> {
   const [row] = await query<{ n: number }>(EVENTS_COUNT_SQL, [ticker, all]);
   return row?.n ?? 0;
 }
@@ -682,7 +712,10 @@ const SEARCH_SQL = `
 
 export const SEARCH_LIMIT = 6;
 
-export async function searchTickers(term: string, limit = SEARCH_LIMIT): Promise<TickerHit[]> {
+export async function searchTickers(
+  term: string,
+  limit = SEARCH_LIMIT,
+): Promise<TickerHit[]> {
   // An empty term matches everything, which would return the six largest
   // companies to someone who has typed nothing. The caller shows no menu
   // in that state; this makes it impossible rather than conventional.
@@ -728,12 +761,18 @@ export async function searchTickers(term: string, limit = SEARCH_LIMIT): Promise
  * Both shapes now come from one row, so they cannot disagree by
  * construction rather than by being fetched carefully.
  */
-export async function liveQuote(ticker: string, barDate: string): Promise<LiveQuote | null> {
+export async function liveQuote(
+  ticker: string,
+  barDate: string,
+): Promise<LiveQuote | null> {
   return toLiveQuote(await liveRowFor(ticker), barDate);
 }
 
 /** The quote shape, from the row. Pure, so a test can feed it one. */
-export function toLiveQuote(row: LiveRow | null, barDate: string): LiveQuote | null {
+export function toLiveQuote(
+  row: LiveRow | null,
+  barDate: string,
+): LiveQuote | null {
   if (!row) return null;
   // **Nothing is live outside the session.** The poller's last tick lands
   // before the bell and then stops, so after the close this is a snapshot

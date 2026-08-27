@@ -104,12 +104,18 @@ def _market_cap(row: dict[str, Any]) -> float:
         return 0.0
 
 
+#: The screener serves several exchanges from one endpoint. `NASDAQ` was
+#: the only one until 2026-08-25.
+NASDAQ = "NASDAQ"
+NYSE = "NYSE"
+
+
 @rate_limited(per_sec=RATE_LIMIT_PER_SEC)
 @with_retry
-def _fetch_rows() -> list[dict[str, Any]]:
+def _fetch_rows(exchange: str = NASDAQ) -> list[dict[str, Any]]:
     resp = requests.get(
         SCREENER_URL,
-        params={"tableonly": "true", "limit": "25", "exchange": "NASDAQ", "download": "true"},
+        params={"tableonly": "true", "limit": "25", "exchange": exchange, "download": "true"},
         headers=_HEADERS,
         timeout=60,
     )
@@ -118,8 +124,26 @@ def _fetch_rows() -> list[dict[str, Any]]:
     return cast(list[dict[str, Any]], payload["data"]["rows"])
 
 
-@cached(source="nasdaq_screener_v1", key_fn=lambda: "listed_with_mcap")
-def fetch_listed() -> pd.DataFrame:
+def _listed_key(exchange: str = NASDAQ) -> str:
+    """Cache key, and the asymmetry is deliberate.
+
+    The key was the bare constant `listed_with_mcap` while Nasdaq was the
+    only exchange. Making it `listed_with_mcap_{exchange}` for *everything*
+    would change Nasdaq's key too, turning its next call into a miss and
+    silently replacing the snapshot the current universe was built from.
+    That is precisely the failure CLAUDE.md records: a cache key is a
+    promise, and changing what a key means is how a fix ships and never
+    runs.
+
+    So Nasdaq keeps its existing key and every other exchange gets its own.
+    The cost is one branch here. The alternative cost is a universe that
+    changes underneath a rebuild for no stated reason.
+    """
+    return "listed_with_mcap" if exchange == NASDAQ else f"listed_with_mcap_{exchange}"
+
+
+@cached(source="nasdaq_screener_v1", key_fn=_listed_key)
+def fetch_listed(exchange: str = NASDAQ) -> pd.DataFrame:
     """Every Nasdaq-listed security, with market cap, sector and country.
 
     **Returns a frame, not the endpoint's list of dicts.** `@cached` writes
@@ -134,11 +158,33 @@ def fetch_listed() -> pd.DataFrame:
     change the universe silently between two runs of one command. Bump
     `nasdaq_screener_v1` to take a fresh snapshot deliberately.
     """
-    return pd.DataFrame(_fetch_rows())
+    return pd.DataFrame(_fetch_rows(exchange))
 
 
-def tickers_above(min_mcap_usd: float = INGEST_MIN_MCAP_USD) -> list[str]:
-    """Listed Nasdaq tickers at or above `min_mcap_usd`, sorted.
+def _normalise_symbol(raw: object) -> str:
+    """Screener symbol -> the spelling the rest of `tickers` uses.
+
+    Upper-cased, with **both** `.` and `/` rewritten to `-`.
+
+    The `.` rule came from Wikipedia and Nasdaq, where a class share is
+    `BRK.B`. **NYSE's screener writes the same share as `BRK/B`**, and the
+    original rule left the slash alone -- so `BRK/B` reached Yahoo, which
+    answered *"possibly delisted; no timezone found"*, and `BRK/A` and
+    `BRK/B` landed in `tickers` as rows with no bars.
+
+    `BRK/B` was the worse half: `BRK-B` already existed with 5,248 bars and
+    53,834 events, so the malformed row was a **second row for one
+    instrument**, not a missing one. A duplicate under a different spelling
+    is invisible to every count and every join.
+    """
+    return str(raw).strip().upper().replace(".", "-").replace("/", "-")
+
+
+def tickers_above(
+    min_mcap_usd: float = INGEST_MIN_MCAP_USD,
+    exchange: str = NASDAQ,
+) -> list[str]:
+    """Listed tickers on `exchange` at or above `min_mcap_usd`, sorted.
 
     Symbols are normalised the way `run_tickers_refresh` normalises
     Wikipedia's: upper-cased with `.` rewritten to `-`, so a class share
@@ -155,11 +201,11 @@ def tickers_above(min_mcap_usd: float = INGEST_MIN_MCAP_USD) -> list[str]:
     snapshot produce identical lists -- the same determinism `run_events`
     depends on, reached one layer earlier.
     """
-    frame = fetch_listed()
+    frame = fetch_listed(exchange)
     if frame.empty:
         return []
     out = {
-        str(row["symbol"]).strip().upper().replace(".", "-")
+        _normalise_symbol(row["symbol"])
         for row in frame.to_dict("records")
         if _market_cap(row) >= min_mcap_usd and _is_common(row)
     }

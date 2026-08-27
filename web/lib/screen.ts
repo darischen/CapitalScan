@@ -69,8 +69,45 @@ export interface ScreenRow {
    * know yet whether it is a cluster head.
    */
   isClusterHead: boolean | null;
+  /**
+   * The ADR 149 watch universe: this name failed a trade criterion and was
+   * admitted to watch instead. It still fires, is still priced, and is
+   * **never** part of a statistical population -- `stats` is always
+   * `Suppressed` with reason `watch_universe` on these rows.
+   *
+   * Stamped on the event at creation, not looked up now, so a fire from
+   * 2019 reports why it was watched *then*.
+   */
+  inWatch: boolean;
+  /**
+   * Which route admitted it, or `null` on a trade-universe row.
+   * `WATCH_REASON_LABEL` turns it into the display string.
+   */
+  watchReason: WatchReason | null;
   /** Populated only when `withStats` is requested. See ADR 114. */
   stats: CellStats | Suppressed | null;
+}
+
+/**
+ * `universe.watch_reason`. Two routes today (ADR 149); the union is closed
+ * so a third added to the enum fails the build here rather than rendering
+ * as a raw slug on the screener.
+ */
+export type WatchReason = "pullback" | "history";
+
+/**
+ * Display copy, not the enum. A reader should not have to know that
+ * `pullback` means "below its 200-day average".
+ */
+export const WATCH_REASON_LABEL: Record<WatchReason, string> = {
+  pullback: "Watch Universe: Below 200-Day SMA",
+  history: "Watch Universe: Insufficient History",
+};
+
+/** Falls back to a generic label rather than throwing on an unknown slug. */
+export function watchLabel(reason: WatchReason | string | null): string {
+  if (!reason) return "Watch Universe";
+  return WATCH_REASON_LABEL[reason as WatchReason] ?? "Watch Universe";
 }
 
 export interface Reversal {
@@ -285,11 +322,18 @@ const FIRST_DIR: Record<SortKey, SortDir> = {
 };
 
 export function isSortKey(value: string | undefined): value is SortKey {
-  return value !== undefined && Object.prototype.hasOwnProperty.call(SORT_COLUMNS, value);
+  return (
+    value !== undefined &&
+    Object.prototype.hasOwnProperty.call(SORT_COLUMNS, value)
+  );
 }
 
 /** The direction a header link should request. Flips only the active one. */
-export function nextDir(key: SortKey, active: SortKey | null, dir: SortDir): SortDir {
+export function nextDir(
+  key: SortKey,
+  active: SortKey | null,
+  dir: SortDir,
+): SortDir {
   if (key !== active) return FIRST_DIR[key];
   return dir === "asc" ? "desc" : "asc";
 }
@@ -297,7 +341,6 @@ export function nextDir(key: SortKey, active: SortKey | null, dir: SortDir): Sor
 export function defaultDir(key: SortKey): SortDir {
   return FIRST_DIR[key];
 }
-
 
 interface ScreenOptions {
   date?: string;
@@ -362,7 +405,7 @@ interface ScreenOptions {
  */
 const FEED_DOMAIN = `
   entry_kind = 'touch'
-  AND in_trade
+  AND (in_trade OR in_watch)
   AND config_hash = current_setting('capitalscan.default_config_hash', true)
 `;
 
@@ -491,7 +534,8 @@ const feedSql = (order: string) => `
          s.bb_lower, s.bb_mid, s.bb_upper, s.band_ts::date AS band_ts,
          s.open, s.high, s.low, s.close, s.volume,
          s.live_price, s.live_price_ts, s.fired_at,
-         s.rev_confirmed, s.rev_above_band, s.rev_open_gap_atr, s.rev_ts
+         s.rev_confirmed, s.rev_above_band, s.rev_open_gap_atr, s.rev_ts,
+         s.in_watch, s.watch_reason
     FROM v_screen_live s
    WHERE s.signal_date = $1::date
      AND ($4::boolean IS NOT TRUE OR s.is_cluster_head IS NOT FALSE)
@@ -543,12 +587,17 @@ interface FeedRowRaw {
   rev_above_band: boolean | null;
   rev_open_gap_atr: string | null;
   rev_ts: Date | null;
+  in_watch: boolean | null;
+  watch_reason: string | null;
 }
 
-export async function screen(options: ScreenOptions = {}): Promise<ScreenResult> {
+export async function screen(
+  options: ScreenOptions = {},
+): Promise<ScreenResult> {
   const limit = clampLimit(options.limit);
   const sort = options.sort ?? null;
-  const dir: SortDir = options.dir ?? (sort === null ? "desc" : defaultDir(sort));
+  const dir: SortDir =
+    options.dir ?? (sort === null ? "desc" : defaultDir(sort));
   // Default on. `?all=1` clears it, so nothing is unreachable.
   const confluenceOnly = options.confluenceOnly !== false;
   const headsOnly = options.headsOnly === true;
@@ -557,7 +606,9 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
   // same day. `null` here means the view is empty, which the caller renders
   // as the empty state rather than as a failure.
   const date =
-    options.date ?? (await query<{ d: Date | null }>(LATEST_DATE_SQL))[0]?.d ?? null;
+    options.date ??
+    (await query<{ d: Date | null }>(LATEST_DATE_SQL))[0]?.d ??
+    null;
   if (date === null) {
     return {
       rows: [],
@@ -575,9 +626,17 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
   }
 
   const [rowsRaw, countRows, neighbours, meta] = await Promise.all([
-    query<FeedRowRaw>(feedSql(orderBy(sort, dir)), [date, limit, confluenceOnly, headsOnly]),
+    query<FeedRowRaw>(feedSql(orderBy(sort, dir)), [
+      date,
+      limit,
+      confluenceOnly,
+      headsOnly,
+    ]),
     query<{ n: number }>(COUNT_SQL, [date, confluenceOnly, headsOnly]),
-    query<{ prev: Date | null; next: Date | null }>(NEIGHBOURS_SQL, [date, confluenceOnly]),
+    query<{ prev: Date | null; next: Date | null }>(NEIGHBOURS_SQL, [
+      date,
+      confluenceOnly,
+    ]),
     readMeta(),
   ]);
 
@@ -592,7 +651,9 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
     // fallback and is still tested: it is what a caller without the column
     // would need, and the two must agree.
     sector: r.sector,
-    side: (r.side === "short" || r.side === "long" ? r.side : sideFor(r.signal_type)) as Side,
+    side: (r.side === "short" || r.side === "long"
+      ? r.side
+      : sideFor(r.signal_type)) as Side,
     bbLower: num(r.bb_lower),
     bbMid: num(r.bb_mid),
     bbUpper: num(r.bb_upper),
@@ -622,6 +683,10 @@ export async function screen(options: ScreenOptions = {}): Promise<ScreenResult>
     ddBucket: r.dd_bucket,
     cellId: r.cell_id,
     isClusterHead: r.is_cluster_head,
+    // `=== true` rather than a cast: the column is nullable, and a NULL
+    // here means "not a watch row", never "unknown".
+    inWatch: r.in_watch === true,
+    watchReason: (r.watch_reason as WatchReason | null) ?? null,
     stats: null,
   }));
 
@@ -673,7 +738,11 @@ interface CellRowRaw {
  * fifty round trips for one answer.
  */
 async function attachStats(rows: ScreenRow[]): Promise<void> {
-  const ids = [...new Set(rows.map((r) => r.cellId).filter((v): v is string => Boolean(v)))];
+  const ids = [
+    ...new Set(
+      rows.map((r) => r.cellId).filter((v): v is string => Boolean(v)),
+    ),
+  ];
   if (ids.length === 0) return;
 
   const raw = await query<CellRowRaw>(CELL_SQL, [ids]);
@@ -773,9 +842,16 @@ const LAST_FIRE_SQL = `
  * case, and the reference is what stops an empty screen from being
  * indistinguishable from a broken one.
  */
-export async function lastFire(): Promise<{ ticker: string; signalDate: string } | null> {
-  const [row] = await query<{ ticker: string; signal_date: Date }>(LAST_FIRE_SQL);
-  return row ? { ticker: row.ticker, signalDate: isoDate(row.signal_date) } : null;
+export async function lastFire(): Promise<{
+  ticker: string;
+  signalDate: string;
+} | null> {
+  const [row] = await query<{ ticker: string; signal_date: Date }>(
+    LAST_FIRE_SQL,
+  );
+  return row
+    ? { ticker: row.ticker, signalDate: isoDate(row.signal_date) }
+    : null;
 }
 
 /**
@@ -837,8 +913,14 @@ export interface DayCount {
 }
 
 /** `month` is any date inside it; the query floors to the first. */
-export async function monthCounts(month: string, confluenceOnly = true): Promise<DayCount[]> {
-  const rows = await query<{ d: Date; n: number }>(MONTH_SQL, [month, confluenceOnly]);
+export async function monthCounts(
+  month: string,
+  confluenceOnly = true,
+): Promise<DayCount[]> {
+  const rows = await query<{ d: Date; n: number }>(MONTH_SQL, [
+    month,
+    confluenceOnly,
+  ]);
   return rows.map((r) => ({ date: isoDate(r.d), n: r.n }));
 }
 

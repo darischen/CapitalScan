@@ -196,6 +196,8 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 152 | Postgres on the Pi waits for the network rather than binding a wildcard | Pinned. Enforces PI_MIGRATION §2; boot-order drop-in on the cluster unit; no `config_hash` move |
 | 153 | The poller pushes to serving every tick | Pinned. Extends ADR 053 with a second sync path; gives ADR 150's sweep a serving target; no `config_hash` move |
 | 154 | An ETF is in the trade universe unconditionally | Pinned. Amends 149's `crit_mcap` requirement for funds; completes 147; ADR 112 wants re-measuring |
+| 155 | Quantile coverage fails and DESIGN §7.6 has no repair for it | **Decided 2026-08-26: option C**, conformalised, calibrated on normal years excluding 2022 |
+| 156 | ETF market cap: `netAssets` disagrees with `sharesOutstanding` | **Decided 2026-08-26: option B via (i)** — store `netAssets / close` with its own `source` |
 
 ---
 
@@ -6177,3 +6179,381 @@ Choosing it would make check 5 stricter and make the ADR 113 kill criterion
 more likely to fire. That is a reason to consider it, not a reason to avoid
 it -- but it is a change to a pre-registered criterion and so belongs to
 whoever set the criterion, not to the session that noticed the wording.
+
+
+---
+
+## 155. Quantile coverage fails and DESIGN §7.6 has no repair for it
+
+**Date:** 2026-08-25. **Status:** Provisional — **a decision is required and is not made here.** Four options with their costs. Blocks the Phase 6 gate.
+
+**Context.**
+
+Measured on validate 2026-08-25, realised fraction at or below
+$\hat{Q}_	au$:
+
+| | τ=0.05 | τ=0.25 | τ=0.50 | τ=0.75 | τ=0.95 |
+|---|---|---|---|---|---|
+| **target** | 0.05 | 0.25 | 0.50 | 0.75 | 0.95 |
+| `terminal_h5` | 0.087 | 0.328 | 0.553 | 0.760 | 0.935 |
+| `terminal_h10` | 0.090 | 0.335 | 0.544 | 0.761 | 0.937 |
+| `peak_h5` | 0.077 | 0.297 | 0.527 | 0.738 | 0.934 |
+| `peak_h10` | 0.073 | 0.285 | 0.503 | 0.724 | 0.925 |
+
+Both tails err **outward**: too much mass below $\hat{Q}_{0.05}$ and too
+little below $\hat{Q}_{0.95}$. A nominal 90% band covers about 85%. The
+lower half is worse — every head over-covers at τ=0.05 and τ=0.25 by 45–75%
+in relative terms.
+
+This is the failure DESIGN §7.6 names: *"The product **is** the
+probability, so calibration is the metric."* Pinball loss rewards being
+close on average; coverage asks whether the number means what it says.
+**Eighteen of twenty heads won check 5 while failing this.**
+
+**§7.6's repair does not apply.** It specifies isotonic regression fitted
+on validation, *"applied to every binary head"*, and says quantile heads
+are **"checked by coverage rather than recalibrated"**. ADR 113 retired
+every binary head. So the design prescribes a repair for heads that no
+longer exist and prescribes none for the heads that do — the same staleness
+class as DESIGN §7.4 and the Phase 6 gate's Brier-score item.
+
+**A likely cause, not yet tested.** DESIGN §7.5's hyperparameters are
+deliberately conservative for an effective sample near 8,000:
+`num_leaves=15`, `max_depth=4`, `min_child_samples=100`, `lambda_l2=5.0`.
+Every one of those shrinks predictions toward the centre of the training
+distribution. **Under-dispersion is the expected consequence of heavy
+regularisation on a quantile fit**, and the observed error is exactly
+under-dispersion. That makes "the fan is too narrow" a plausible artifact
+of the fit rather than a property of the data — and it is cheap to test.
+
+**The options.**
+
+**A. Test the cause before patching the symptom.** Relax regularisation
+(`lambda_l2` down, `num_leaves` up) and re-measure coverage. Costs one
+re-run — ~5 minutes for the fan, measured. Consumes no data split, and if
+it works the model is calibrated rather than corrected. Risk: relaxing
+regularisation on a thin effective sample is what the conservative
+parameters were chosen to prevent, so it may buy coverage at the cost of
+out-of-sample loss. Both are measurable in the same run.
+
+**B. Quantile recalibration.** Learn a monotone map $	au \mapsto 	au'$
+on a calibration split such that realised coverage at $	au'$ equals
+$	au$, then serve $\hat{Q}_{	au'}$. Cheap, standard, preserves the
+fitted shape. **Consumes a calibration split.**
+
+**C. Conformalised quantile regression.** Widen each interval by the
+empirical quantile of the conformity score on a calibration split. Gives a
+finite-sample marginal coverage guarantee, which is stronger than anything
+else here. **Consumes a calibration split**, and widens uniformly, so it
+repairs marginal coverage without fixing conditional coverage.
+
+**D. Ship nothing until the fit meets coverage unaided.** Strictest and
+most faithful to §7.6's stated position that quantile heads are checked
+rather than recalibrated. Costs whatever A takes, with no fallback if A
+fails.
+
+**The cost B and C share, and it is the real constraint.** Both need a
+calibration set that is neither train nor the thing coverage is verified
+on. Validate is **26,788 rows**. Splitting it gives ~13,400 to calibrate
+and ~13,400 to verify, halving the precision of both. The holdout is not
+available — it is evaluated once, at the end, and spending it here would
+end the study's only unbiased estimate on a calibration step.
+
+**Recommendation, which is not a decision.** Run **A** first. It is the
+only option that addresses the cause, it consumes no data, it takes
+minutes, and its result narrows the choice: if coverage comes right, B and
+C are unnecessary and D is satisfied. If it does not, the miss is a
+property of the data and **C** is the honest repair, with the validate
+split halved and that stated wherever the numbers appear.
+
+---
+
+### Measured 2026-08-25, after the options above were written
+
+**Option A was tested and is ruled out.** Four regularisation settings,
+coverage and validation loss measured together so a setting buying coverage
+by predicting worse could not hide:
+
+| variant | mean abs coverage error | sum loss |
+|---|---|---|
+| baseline (§7.5) | 0.0386 | 0.05497 |
+| `lambda_l2=1.0` | 0.0384 | 0.05497 |
+| `lambda_l2=0`, 31 leaves, depth 6 | 0.0394 | 0.05501 |
+| `lambda_l2=0`, 63 leaves, depth 8, `min_child=20` | **0.0399** | 0.05513 |
+
+Relaxation does not improve coverage. It degrades it slightly and degrades
+loss slightly. `peak_h5` worsens monotonically, 0.0258 → 0.0285. The
+regularisation hypothesis in this ADR was wrong.
+
+**The root cause is a regime shift, and the proof is a model with no
+features.** Applying the train-fitted *unconditional quantile* — a
+constant, no inputs at all — to validate reproduces almost exactly the same
+miss:
+
+| τ | fitted model | constant, no features |
+|---|---|---|
+| 0.05 | 0.087 | 0.087 |
+| 0.25 | 0.328 | 0.333 |
+| 0.50 | 0.553 | 0.536 |
+| 0.75 | 0.760 | 0.730 |
+| 0.95 | 0.935 | 0.926 |
+
+**So the coverage failure is not the fit, the regularisation, or the
+features.** The label distribution moved between the two splits:
+
+    fwd_ret_5d      train      validate      shift
+      q05         -0.05790    -0.07603     -0.01812
+      q95          0.05915     0.07049     +0.01133
+      sd           0.04156     0.04713     +13%
+
+Train is 2010–2021, validate is 2022–2023. Validate is 13% more volatile
+with both tails pushed outward. A fan fitted on the calmer era is too
+narrow in the more violent one, necessarily, and that accounts for the
+entire observed miss.
+
+**The uncomfortable part.** `vix_close`, `rv_pct_252d` and `bb_width_pct`
+are all features, so the model *can* see contemporaneous volatility and
+still under-disperses. It learned the map from those features to future
+dispersion during a low-volatility decade, and the map did not transfer.
+Conditioning on volatility is not the same as conditioning on the level of
+volatility being unprecedented in the training data.
+
+**Corrected 2026-08-25, later the same day.** Three further diagnostics
+show "entirely a regime shift" was too strong.
+
+Coverage measured **inside train**, on fold-validation years 2015–2021,
+gives mean absolute error **0.018** against **0.039** on validate. Half the
+miss exists within the training era. Split by validate year, **2023 scores
+0.018 and 2022 scores 0.047**: 2023 is as well calibrated as a normal
+in-train year and the failure is almost entirely 2022. And training saw VIX
+from 9.1 to 82.7 while validate spans 12.1 to 36.5, so nothing here is
+out-of-range volatility.
+
+So there are **two** components: a stable fit-induced under-dispersion of
+about 0.018 present every year, and a 2022-specific excess on top. The
+first is consistent and therefore correctable. The second is a mid-VIX
+grinding drawdown the features do not describe.
+
+**The options are re-cast by this.**
+
+**A is closed.** Measured, not argued.
+
+**B and C are stronger than the first correction suggested, if fitted on
+the right period.** The stable 0.018 component is consistent across 2015–
+2021 and 2023, so a calibration fitted on normal years repairs it and
+transfers. What must **not** happen is fitting on 2022: that absorbs a
+shock into the band and leaves it too wide for a year resembling 2023,
+where the model is already nearly right. The calibration period is now the
+decision, not the technique.
+
+**D means something different now.** "Wait for a fit that meets coverage
+unaided" is, given this finding, waiting for a model that anticipates
+volatility-regime change. That is a much larger claim than the one Phase 6
+set out to test, and nothing in ADR 112's evidence suggests it is
+available.
+
+**A fifth option this measurement creates.** Report coverage **as a
+property of the era** rather than repairing it: serve the fan with its
+measured train-era calibration stated, and treat a coverage miss on new
+data as a *regime signal* rather than a model defect. This is the only
+option that does not claim something untrue, and it is the least useful to
+a reader who wants a number. It should be considered precisely because it
+is the honest one.
+
+**Recommended sequencing, still not a decision.** The choice is now between
+C (marginal coverage, era-bound, useful, and requiring the validate split
+be halved) and E (honest, weaker, no data cost). B is dominated by C, which
+offers a finite-sample guarantee for the same data cost.
+
+---
+
+**What must not happen.** Serving any head at its current calibration. A
+reader told "5% chance of a move below X" who sees it 8.7% of the time has
+been handed a wrong number, and invariant 8 exists because that claim has
+to hold.
+
+---
+
+### Decided 2026-08-26 — **option C, calibrated on normal years, excluding 2022**
+
+**Status: pinned.** User decision, taken against the measurements above.
+
+Conformalised quantile regression. Each interval is widened by the
+empirical quantile of the conformity score, giving a finite-sample marginal
+coverage guarantee -- the only option here that guarantees anything.
+
+**The calibration period is part of the decision, not an implementation
+detail.** Fit on **2015-2021 and 2023**; **exclude 2022**.
+
+That follows from the decomposition: a stable fit-induced under-dispersion
+of ~0.018 is present in every ordinary year, and 2022 carries a further
+excess on top (2022 scores 0.047, 2023 scores 0.018, in-train years score
+0.018). Calibrating on the stable component repairs it and transfers.
+Calibrating on 2022 absorbs one regime's shock into the band permanently,
+leaving it too wide for a year resembling 2023 where the fan is already
+close to right.
+
+**What this costs and what must be said wherever the numbers appear.**
+
+- Validate is **26,788 rows** and gets split. Both the calibration estimate
+  and the coverage verification lose precision, and that halving is stated
+  beside any coverage figure derived from it.
+- The guarantee is **marginal, not conditional**. Coverage holds on
+  average across the fan; it does not promise coverage within any
+  particular cell, drawdown bucket or volatility regime.
+- The calibration is **era-bound by construction**. It repairs the
+  component that was stable across 2015-2021 and 2023. It does not
+  anticipate the next 2022, and nothing here claims it does.
+
+**Holdout is not touched.** It is evaluated once, at the end. Spending it
+on calibration would end the study's only unbiased estimate on a
+preprocessing step.
+
+**Option E is not adopted, and its point is kept.** Reporting coverage as
+an era property claims nothing untrue, and the reason to prefer C is that
+Phase 6 exists to produce a calibrated number rather than a caveat. The
+honest part of E survives as the disclosure requirements above: a coverage
+miss on new data is still evidence of regime change, and is to be read that
+way rather than as a bug.
+
+
+---
+
+## 156. ETF market cap: `netAssets` disagrees with `sharesOutstanding`
+
+**Date:** 2026-08-26. **Status:** Provisional — **a decision is required and is not made here.** Investigated in response to VOO and IBIT carrying no market cap.
+
+**Context.**
+
+ADR 154 admits ETFs to the trade universe unconditionally, because
+`crit_mcap` could not be judged for VOO and IBIT: `cscan shares` resolves
+neither, so `mcap_usd` is NULL. The obvious repair was to read `netAssets`
+instead, which Yahoo publishes for all four funds.
+
+Measured 2026-08-26:
+
+    SPY    sharesOutstanding 917,782,016   netAssets   $795.3B
+    QQQ    sharesOutstanding 393,100,000   netAssets   $452.8B
+    VOO    sharesOutstanding None          netAssets $1,686.9B
+    IBIT   sharesOutstanding None          netAssets    $46.5B
+
+**The two fields do not agree.** For a fund, price times shares *is* net
+assets by construction -- that identity is what a NAV means. It does not
+hold here:
+
+    SPY    netAssets/price = 1,038,381,651   vs shares   917,782,016   ratio 1.131
+    QQQ    netAssets/price =   637,101,310   vs shares   393,100,000   ratio 1.621
+
+Thirteen percent apart for SPY and **sixty-two percent** for QQQ. One of the
+two numbers is wrong, or they are measured at different times, or
+`netAssets` for QQQ counts something the share class does not.
+
+**This is what makes it a decision rather than a patch.** Switching to
+`netAssets` would not merely fill two NULLs. It would move QQQ's recorded
+market cap from **$289B to $453B**, a 57% change to a value that already
+exists, is stored across 66 quarters, and feeds `crit_mcap`.
+
+**What is not at stake.** Neither fund's membership changes: ADR 154 already
+admits all four regardless, and `max_mcap_usd` is $6T so nothing trips the
+plausibility guard. `mcap_rank` is NULL on all 51,950 universe rows, so no
+ranking is affected. The change is to a recorded quantity, not to who is
+in the study.
+
+**The options.**
+
+**A. Do nothing.** VOO and IBIT keep NULL market caps and stay admitted by
+exemption. Honest, and the exemption already exists precisely because the
+criteria ask a company-shaped question. Costs nothing and hides nothing.
+
+**B. Use `netAssets` for every ETF.** Fills the two NULLs and changes SPY
+and QQQ by 13% and 57%. Defensible only if `netAssets` is the more reliable
+of the two fields, which this measurement does not establish -- it
+establishes that they disagree.
+
+**C. Use `netAssets` only where `sharesOutstanding` is absent.** Fills VOO
+and IBIT, leaves SPY and QQQ untouched. Attractive, and wrong in a specific
+way: two funds would then carry market caps computed by different methods
+that demonstrably differ by up to 62%, with nothing in the row saying which
+was used. That is the `events.sector`-shaped problem again -- a column whose
+meaning varies by row.
+
+**D. Find out which field is right first.** The 62% gap on QQQ is large
+enough to be a data defect rather than a timing difference, and neither
+number has been checked against the issuer. Invesco publishes QQQ's shares
+outstanding daily; one comparison settles it.
+
+**Resolved the same day, from data already held.** Option D turned out not
+to need the issuer. `shares_outstanding` answers it:
+
+    SPY   917,782,016   on 2020-08-28, 2020-11-26 and 2021-03-17
+    QQQ   393,100,000   on 2020-08-28, 2020-11-26 and 2021-03-17
+          99 and 96 rows respectively, every one ending 2021-03-17
+
+**The number never changes.** The same value is stamped on every date, the
+series stops in March 2021, and it is the identical figure Yahoo's `info`
+returns today. That is not a time series; it is one stale constant repeated.
+
+An ETF's share count moves **daily** through creation and redemption -- that
+mechanism is what holds the price near NAV. A constant share count is
+therefore not a disagreeing measurement, it is a wrong one.
+
+So the 62% gap on QQQ is not ambiguity between two plausible figures. It is
+a current number against one frozen five years ago, and **QQQ's recorded
+$289B is computed from a 2020 share count**.
+
+**Recommendation: B, use `netAssets` for every ETF.** Not because it fills
+two NULLs, but because the alternative is provably stale for all four. The
+SPY and QQQ revisions are corrections rather than changes.
+
+**What implementing it still needs.** `mcap_usd` is `shares * close`, so
+`netAssets` cannot simply be stored in `shares_outstanding.shares` without
+that column meaning two different things. Either it carries the derived
+share count `netAssets / close` with a `source` that says so -- the
+identity is exact for a fund, which is what makes the derivation honest
+rather than a fabrication -- or `universe` learns to read an ETF's market
+cap from a different place. The first is smaller and keeps one code path;
+
+---
+
+### Decided 2026-08-26 — **option B, implemented as (i)**
+
+**Status: pinned.** User decision.
+
+`shares_outstanding` carries the **derived share count** `netAssets /
+close`, with `source` recording that it was derived rather than reported.
+For a fund the identity `price x shares = net assets` is exact by
+definition of NAV, so the division is a change of units and not an
+estimate. One code path; `mcap_usd = shares * close` keeps working
+unchanged and every consumer of it does too.
+
+Rejected: teaching `universe` to read an ETF's market cap from a second
+place. It is more explicit about the two being different quantities, and it
+adds a branch to a path that currently has none -- for a value that the
+identity makes equivalent anyway.
+
+**Consequences, and this is not a routine backfill.**
+
+- **QQQ's stored `mcap_usd` moves $289B -> $453B across 66 quarters, and
+  SPY's by 13%.** These are corrections, not revisions: the existing
+  figures are computed from a share count frozen at 2021-03-17 and repeated
+  identically on every one of 96-99 rows.
+- **VOO and IBIT stop being NULL**, which is what prompted the
+  investigation.
+- **No membership changes.** ADR 154 admits ETFs unconditionally,
+  `max_mcap_usd` is $6T, and `mcap_rank` is NULL on all 51,950 universe
+  rows.
+- **It wants its own migration and a `RESULTS.md` note**, not a ride along
+  in a nightly. Rewriting a recorded quantity across ten years of history
+  should be a dated, reversible act that a reader can find later.
+the second is cleaner and costs a migration.
+
+**Also worth recording:** this is why the ETF market caps stopped being
+trustworthy in 2021 without anything reporting it. `run_shares` kept
+succeeding, `crit_mcap` kept passing, and the number behind it had been
+constant for five years.
+
+**What must not happen.** Option C, or any variant where `mcap_usd` is
+derived one way for some rows and another way for others without the row
+recording which. `SharesPlausibility.source` exists on
+`shares_outstanding` for exactly this reason; whatever is decided, the
+provenance has to travel with the number.

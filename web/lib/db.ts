@@ -66,9 +66,30 @@ export function readOnlyRole(env: Env = process.env): boolean {
  * there is no second place to update when the config changes, and no way
  * for a URL and a dataset to disagree.
  */
+/**
+ * **And `TimeZone`, for the same reason and in the same round trip.**
+ *
+ * `bars.ts` is stored at UTC midnight, so every `timestamptz::date` in the
+ * serving queries renders one day early on any connection whose session
+ * timezone is west of Greenwich. Research runs `Etc/UTC` and the Pi runs
+ * `America/Los_Angeles`, so this was invisible locally and wrong in
+ * production -- `META_SQL` reported `as_of 2026-08-24, staleness 2` against
+ * a true `2026-08-25, staleness 1`, one session short of a false stale
+ * banner at `STALE_AFTER_DAYS = 2`.
+ *
+ * `META_SQL`'s own comment asserted "the database runs `Etc/UTC`". That is
+ * a property of one deployment, not of the schema, so it is set here rather
+ * than assumed. `isoDate` documents the same day-shift reached from the
+ * other direction; this is the upstream half of it.
+ *
+ * Both `set_config` calls are in one SELECT because the pin is awaited
+ * before the connection is handed to a caller, and a second round trip
+ * would be a second chance to race it.
+ */
 const PIN_CONFIG_HASH =
   "SELECT set_config('capitalscan.default_config_hash', " +
-  "(SELECT config_hash FROM serving_config LIMIT 1), false)";
+  "(SELECT config_hash FROM serving_config LIMIT 1), false), " +
+  "set_config('TimeZone', 'UTC', false)";
 
 export function getPool(): Pool {
   if (!pool) {

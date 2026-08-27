@@ -93,4 +93,4 @@ class TestItIsNotAConfigField:
         from capitalscan.core.config import Config
         from capitalscan.jobs.config import config_hash
 
-        assert config_hash(Config()) == "f66729c7eda212a4"
+        assert config_hash(Config()) == "a38d3ca6b58295e8"
