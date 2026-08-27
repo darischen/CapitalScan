@@ -62,15 +62,35 @@ output for one config, violating ADR 060.
 .\scripts\universe_backfill.ps1          # -StartFrom 2017Q3 to resume
 
 # b. backtest, split into phases so it is restartable
-uv run cscan backtest --workers 8 --phase compute
-uv run cscan backtest --workers 8 --phase finalize
-uv run cscan backtest --workers 8 --phase harness
+# --workers 14 on this 16-core machine, not 8: measured 2026-08-27, the
+# pool runs one ticker per worker and half the cores sat idle.
+uv run cscan backtest --workers 14 --phase compute --chunk-size 28
+uv run cscan backtest --workers 14 --phase finalize
+uv run cscan backtest --workers 14 --phase harness
 
-# c. statistics, so the arms are comparable
-uv run cscan stats rho
-uv run cscan stats cells
-uv run cscan stats benchmarks
+# c. statistics. Every command needs --config-hash; cells and benchmarks
+#    need both splits, and NEVER holdout.
+uv run cscan stats rho        --config-hash <hash>
+uv run cscan stats cells      --config-hash <hash> --split-key train
+uv run cscan stats cells      --config-hash <hash> --split-key validate
+uv run cscan stats benchmarks --config-hash <hash> --split-key train    --workers 8
+uv run cscan stats benchmarks --config-hash <hash> --split-key validate --workers 8
 ```
+
+**`--chunk-size` must be a multiple of `--workers`.** The pool submits one
+ticker per worker, so 25 tickers across 8 workers runs waves of 8, 8, 8 and
+then **1** -- the last wave leaves seven workers idle, once per chunk for 59
+chunks. 28 across 14 is exactly two full waves.
+
+**`stats benchmarks --workers 8` is the largest statistics win.** The 200
+random-entry replications are independent by construction, each seeded on
+`(config_hash, replication)`, and were running one at a time. Measured
+2026-08-27 on validate: **15.6 min serial, 3.99 at 8 workers, 4.39 at 4**,
+output verified byte-identical to serial on every arm and replication.
+
+It does **not** help below ~40 replications -- 24 measured 109.7 s serial
+against 109.5 s on eight workers, because the 35 s per-worker setup is the
+whole job there. Leave ADR 061's `--replications 50` sweeps serial.
 
 **Keep `--chunk-size` identical across restarts.** `_chunk_already_done`
 keys on `(config_hash, chunk, of)`, so changing it re-runs every chunk.
