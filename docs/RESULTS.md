@@ -4537,3 +4537,83 @@ still `a38d3ca6b58295e8`.
 **This arm ran on the workstation while the Pi polled a live session** —
 the first time that has been possible (ADR 158). Research had no live
 writer; the poller's ticks and the arm's 61 compute chunks did not contend.
+
+---
+
+## 2026-08-28 — Arm 3 complete, and the three-arm ablation closes null
+
+`config_hash = fda16796c6e82ee4`. Harness **passed** (10:53, 1,890,488
+events), so ADR 059's gate is satisfied and these numbers are readable.
+
+### All three arms: zero cells survive FDR
+
+| arm | in_trade @ 2026-06-30 | avg n_eff | max n_eff | survive FDR | min q |
+|---|---|---|---|---|---|
+| arm1 baseline | 246 | 128.1 | 927 | **0** | 0.6209 |
+| arm2 flat base | 253 | 126.8 | 917 | **0** | 0.6902 |
+| arm3 no median | **334** | **143.0** | **1026** | **0** | 0.7140 |
+
+*(train split; validate is the same answer at 16.6 / 16.5 / 18.5 n_eff.)*
+
+**This is not a power problem.** Arm 3 carries the most statistical power
+of the three — `n_eff` up 12% on the baseline, max up 11%, from a universe
+36% wider at the snapshot and 46% wider across all history — and its best
+q-value is **worse** than the baseline's. Every min q is 6-7x the 0.10
+threshold; nothing is near surviving.
+
+ADR 112 found nothing on the baseline population. Three different
+relaxations of the universe definition do not change that, and the one that
+admitted the most names moved it the wrong way.
+
+### The widest universe performed worst out of sample
+
+| arm | validate signal | validate null | signal Sharpe | null Sharpe |
+|---|---|---|---|---|
+| arm1 | +0.86% | −3.05% | −0.078 | −0.239 |
+| arm2 | +3.38% | −2.69% | +0.127 | −0.214 |
+| **arm3** | **−1.48%** | −1.98% | **−0.264** | −0.190 |
+
+Arm 3 is the only arm whose validate signal return is negative, and the
+only one whose signal Sharpe is **worse than its own null**. Ordering the
+arms by universe width gives arm3 > arm2 > arm1; ordering by validate
+return gives arm2 > arm1 > arm3.
+
+**Read this as a caution, not a finding.** Three arms is not a sample, the
+validate split's `n_eff` is ~18 against train's ~143, and all three
+intervals are wide. What it does rule out is the hypothesis that motivated
+the ablation — that the universe filters were excluding tradeable names and
+suppressing an edge. Removing the sector-median comparison admitted 88 more
+names and made out-of-sample results worse, not better.
+
+Train tells the opposite story in all three arms (signal beats null on both
+return and Sharpe), which is what an in-sample fit does and is why the
+split exists.
+
+### Phase wall clocks
+
+| phase | wall clock | output |
+|---|---|---|
+| universe (66 quarters) | 25:22 | 78,204 rows |
+| `backtest compute` (61 chunks) | 1:53:45 | 1,890,488 rows |
+| `backtest finalize` | 5:14 | 1,890,488 rows |
+| `backtest harness` | **10:53** | passed |
+| `path backfill` | 24:58 | 8,981,053 path rows |
+| `path peak-labels` | 2:13 | 710,710 rows |
+| `rho` + `cell_stats` x2 | 2:01 | 512 cells |
+| `benchmarks` x2 | 31:41 | 818 rows |
+| **total** | **~3h36m** | |
+
+**Run entirely while the Pi polled a live session** (ADR 158). The poller
+completed 47 ticks through the same window with no contention on research,
+which is the first time an arm and a session have overlapped.
+
+### The harness speedup, across all three arms
+
+| arm | events | harness checks |
+|---|---|---|
+| arm1 (pre-`scan_candidates`) | 1,384,963 | 4,472s |
+| arm2 | 1,266,516 | 546s |
+| arm3 | **1,890,488** | **654s** |
+
+Arm 3 processes 49% more events than arm 2 for 20% more check time, and
+under a sixth of arm 1's despite carrying 36% more events.
