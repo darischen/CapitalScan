@@ -318,11 +318,7 @@ class UniverseParams:
     # cannot tell them apart. Sweep it rather than argue it: ADR 112 found
     # nothing surviving FDR on the current population, so a 30% widening on
     # an untested thesis is the wrong direction to move first.
-    # **ARM 2, set 2026-08-27.** Baseline is 0.0; -0.01 admits a name whose
-    # 200-day average has fallen less than 1% over sixty sessions. Revert to
-    # 0.0 when the arm finishes -- `resolve_config()` reads this, so nightly
-    # and the poller adopt the new config hash while it stands.
-    sma200_slope_min: float = -0.01
+    sma200_slope_min: float = 0.0
     # Ordinary shares backing one ADR. An ADR's Form 20-F reports the
     # issuer's *ordinary* share count while the bar price is per *ADR*, so
     # market cap needs the ordinary count divided by this ratio first.
