@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import bisect
 import hashlib
+from collections.abc import Sequence
 from datetime import date
 from types import SimpleNamespace
 from typing import cast
@@ -64,6 +65,53 @@ _CANDIDATE_COLUMNS = [
     "side",
     "touch_level",
 ]
+
+
+def _close_confirmed_frame(ind_group: pd.DataFrame, bar_dates: Sequence[date]) -> pd.DataFrame:
+    """Bar `t`'s own close-confirmed flags, one row per requested date.
+
+    **ADR 108 lets exactly `CLOSE_CONFIRMED_FIELDS` cross from row `t` into
+    detection; everything else is read at `t-1` (invariant 3).** This
+    computes that crossing once per ticker instead of once per bar.
+
+    It replaces a per-bar expression that wrote into a freshly materialised
+    Series:
+
+        own_ind = ind_group.loc[bar_date] if bar_date in ind_group.index else None
+        for field in CLOSE_CONFIRMED_FIELDS:
+            value = None if own_ind is None else own_ind.get(field)
+            bar[field] = False if value is None or pd.isna(value) else bool(value)
+
+    That was 29,389 `Series.__setitem__` calls over 29,509 bars, 20.3s of a
+    56.8s pass -- see `test_candidates_close_confirmed.py` for the profile.
+
+    Three semantics are preserved exactly, and each has a test:
+
+    - **A date with no indicator row yields `False`**, never a neighbour's
+      value and never a raise. `reindex` gives NaN for a missing date, and
+      the fill below turns that into `False` -- the same answer the
+      `bar_date in ind_group.index` guard produced.
+    - **A null through warmup is `False`**, not NaN and not a dropped row:
+      "no band yet" is not "did not fire" (invariant 4).
+    - **The result is a real `bool`.** `core.signals._bear_close_flag`
+      re-checks the value and a NaN would read as truthy.
+
+    A field absent from `ind_group` entirely is `False` too, matching the
+    `.get` default the original relied on.
+    """
+    index = pd.Index(list(bar_dates), name=None)
+    out = pd.DataFrame(index=index)
+    for field in CLOSE_CONFIRMED_FIELDS:
+        if field in ind_group.columns:
+            # `~ind_group.index.duplicated()` because `reindex` refuses a
+            # non-unique index. The first row for a date is the one the
+            # original's `.loc` scalar lookup would have returned.
+            source = ind_group.loc[~ind_group.index.duplicated(keep="first"), field]
+            values = source.reindex(index)
+        else:
+            values = pd.Series(np.nan, index=index)
+        out[field] = values.fillna(False).astype(bool)
+    return out
 
 
 def scan_candidates(
@@ -119,6 +167,11 @@ def scan_candidates(
         # original expression as an oracle.
         ind_dates = ind_group.index.to_numpy()
 
+        # Bar `t`'s own close-confirmed flags, resolved once for this
+        # ticker rather than once per bar (`_close_confirmed_frame`).
+        bar_dates_all = [ts.date() for ts in bar_group["ts"]]
+        close_flags = _close_confirmed_frame(ind_group, bar_dates_all)
+
         for _, bar in bar_group.iterrows():
             bar_date = bar["ts"].date()
             prior_pos = int(np.searchsorted(ind_dates, bar_date, side="left")) - 1
@@ -143,14 +196,16 @@ def scan_candidates(
             # may cross. `own_ind` is looked up by date, so a ticker missing
             # its own indicator row yields the `.get` default of False
             # rather than raising or inheriting a neighbour's flag.
-            own_ind = ind_group.loc[bar_date] if bar_date in ind_group.index else None
+            # Read off the precomputed frame. The guards the per-bar
+            # version applied (absent date -> False, NULL through warmup ->
+            # False, real `bool` out) live in `_close_confirmed_frame` now
+            # and are pinned by `test_candidates_close_confirmed.py`.
+            # `core.signals._bear_close_flag` repeats the null guard
+            # regardless, deliberately -- neither layer may assume the
+            # other sanitized it.
+            flags = close_flags.loc[bar_date]
             for field in CLOSE_CONFIRMED_FIELDS:
-                value = None if own_ind is None else own_ind.get(field)
-                # NULL through warmup stays False (invariant 4): "no band
-                # yet" is not "did not fire". `core.signals._bear_close_flag`
-                # repeats this guard, deliberately — neither layer may
-                # assume the other sanitized it.
-                bar[field] = False if value is None or pd.isna(value) else bool(value)
+                bar[field] = bool(flags[field])
 
             for hit in core_signals.detect(bar, prior_ind, sp):
                 rows.append(
