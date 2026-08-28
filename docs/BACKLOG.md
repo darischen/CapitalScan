@@ -1152,6 +1152,38 @@ whether the filter costs anything.
 Pi's into its `pg_hba.conf`, and connection strings on both ends — so a DHCP
 reshuffle breaks the sync with an error that reads like an auth failure.
 
-**`cscan nightly` is still manual.** No Task Scheduler entry exists for
-`nightly`, `weekly` or the poller; every row in `runs` was hand-typed.
-Definitions sit unimported at `scripts/tasks/*.xml`.
+**`cscan weekly` is still manual.** `nightly` was registered with Task
+Scheduler on 2026-08-27 (13:15 daily, `scripts/run_nightly.ps1`, which
+refuses to run if the resolved config hash is not the serving one), and the
+poller runs from `capitalscan-poller.timer` on the Pi. `weekly` has no
+entry and every `runs` row for it was hand-typed.
+
+
+**`core.exits.resolve_exit` builds three pandas Series per forward bar.**
+Measured 2026-08-28 while profiling compute after the `path_metrics`
+vectorisation: `resolve_exit_for_entry` is 18.8s per ticker and is a thin
+slicer, so the cost is inside `resolve_exit`'s loop, which does
+
+    bar        = window.iloc[i]
+    prior_ind  = ind_window.iloc[i - 1] if i > 0 else ind_at_entry
+    own_ind    = ind_window.iloc[i]
+
+`max_hold_days` is 5, so that is up to 15 Series per entry and roughly
+111,000 per ticker at 7,428 entries. It is the same pattern
+`path_metrics` had, tripled.
+
+**The safe version keeps the logic untouched.** `_exit_on_bar` reads its
+rows by string key (`bar["open"]`, `high`, `low`, `close`), so plain dicts
+built once from numpy columns substitute exactly, at a fraction of the
+construction cost. That preserves the pinned DESIGN §5.5 evaluation order
+and the early `break`, which a fully vectorised rewrite would not.
+
+**Do not vectorise the loop itself.** It terminates on the first exit and
+the order of checks is the specification, not an implementation detail;
+`core/exits.py` is the single exit implementation (invariant 2) and is
+pinned by the property tests, including `mfe >= realized_return`. Any
+change here is test-first per CLAUDE.md.
+
+Expect less than the microbenchmark suggests: `path_metrics` was 11.5-27.5x
+faster in isolation and 1.14x end to end. At 18.8s of a ~36s per-ticker
+budget the ceiling is real but Amdahl-bounded.
