@@ -199,6 +199,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 155 | Quantile coverage fails and DESIGN §7.6 has no repair for it | **Decided 2026-08-26: option C**, conformalised, calibrated on normal years excluding 2022 |
 | 156 | ETF market cap: `netAssets` disagrees with `sharesOutstanding` | **Decided 2026-08-26: option B via (i)** — store `netAssets / close` with its own `source` |
 | 157 | `events.sector` is a current snapshot, and that is accepted look-ahead | **Decided 2026-08-28.** Moved out of `BACKLOG.md`; no point-in-time GICS source exists, `universe.mcap_usd` shows the shape a fix would take |
+| 158 | The poller should write serving directly, not research | **Proposed 2026-08-28, not implemented.** Removes research from the live write path; frees the workstation during market hours |
 
 ---
 
@@ -6607,3 +6608,111 @@ which have no GICS sector to begin with. This ADR is about the tickers that
 sector materially moves a result -- ADR 112 found nothing surviving FDR, so
 the feature is not currently carrying weight that would justify buying data
 for it.
+
+---
+
+## 158. The poller should write serving directly, not research
+
+**Status.** Proposed, 2026-08-28. Not implemented. Amends ADR 153's
+direction of travel; consistent with ADR 140's "poller rows were never
+authoritative".
+
+**The problem this solves is scheduling, not performance.** `cscan poll`
+runs on the workstation and writes the **research** store, so the
+workstation must be awake and free of conflicting writers for the whole
+session. That single fact decides when a rebuild can run, when the machine
+can be shut down, and when it can be updated. It is the binding constraint
+on the development day, and it exists for no reason the data requires.
+
+**Correction, 2026-08-28, before implementation.** The paragraph below
+originally read "every poller row is provisional". That is false, and the
+distinction is the hard part of this ADR.
+
+`_sweep_provisional_poll_rows` deletes only `events` rows whose `run_id`
+begins `poll`, same-day. It explicitly **preserves `signal_reports`** --
+nulling `event_id` while `ticker`, `fired_at` and `state_json` stay, so
+"the observation survives and says plainly that no event survived it". It
+does not touch `poller_sessions` at all.
+
+Those two tables are the durable record of what the poller saw: 1,656
+reports and 18 sessions spanning 2026-08-03 to 2026-08-27, and they are why
+a past date still shows fired-at timestamps. They currently live in
+research and are **synced research -> serving**, which is the opposite of
+the direction this ADR proposes.
+
+**So the poller has two kinds of output, not one**, and only the first can
+move:
+
+| output | nature | may be born on serving? |
+|---|---|---|
+| `events` (`run_id` like `poll%`) | provisional, swept nightly | yes |
+| `bars_live`, `quotes_live` | per-tick, rewritten | yes |
+| `signal_reports` | **permanent observation** | no -- research needs it |
+| `poller_sessions` | **permanent**, ADR 084 reads `coverage_pct` | no -- research needs it |
+
+**The fix is a reverse path, and it must be part of the change**: nightly
+gains a serving -> research pull for `signal_reports` and `poller_sessions`
+before its own sweep runs. Without it, moving the poller silently stops
+research accumulating the record Phase 6 is meant to analyse -- and the
+loss would be invisible until someone asked a question of data that was
+never there.
+
+The alternative -- have the poller write those two to research directly and
+everything else to serving -- reintroduces the research dependency and
+defeats the purpose, since the workstation would still need to be awake.
+
+**Why the `events` write is not load-bearing.** Every poller *event* row is
+provisional. `_sweep_provisional_poll_rows` deletes them from research on
+the next nightly, which then recomputes the authoritative version from
+bars. So research receives rows, uses them as the source for the serving
+push, and deletes them hours later. Nothing downstream depends on their
+having been in research.
+
+`_push_live`'s own docstring states the current direction: *"the research
+store is the source of truth and has already been written by the time this
+runs"*, and `run_live_sync(..., source=engine)` reads research to write
+serving. This ADR inverts that for live rows only.
+
+**Feasibility, checked rather than assumed.** The poller reads four things,
+and serving carries all four:
+
+| poller reads | on serving |
+|---|---|
+| `universe` — membership and `watch_reason` | yes, synced |
+| `indicators` — the t-1 row | yes |
+| `market_days` | yes |
+| `events` — existence and id checks for dedupe | yes |
+
+It writes `poller_sessions`, `bars_live`, `events`, `quotes_live`; serving
+holds all four, because `v_screen_live` already joins `bars_live` there.
+
+**What it removes.** The live push (ADR 153) and its failure path; the
+research sweep; the concurrent-writer conflict on research during market
+hours; and nightly's per-tick sync overhead. The serving sweep stays and
+gets simpler.
+
+**What it costs.**
+
+- **A staleness contract.** The poller would read `universe` and
+  `indicators` from serving, which is one sync behind. During a session
+  both stores hold the previous night's data, so it is equivalent *today* —
+  but a missed sync would silently poll a stale universe, and that must be
+  detected rather than assumed. The serving store already has a watermark;
+  the poller should refuse to start if it is older than the last trading
+  day.
+- **`events.run_id` references `runs`.** Serving carries a narrow subset
+  (ADR 053's note in `sync.py`), so the poller's own run row has to be
+  written there.
+- **Losing a session's live rows if the Pi dies.** Acceptable: they are
+  provisional by construction and nightly recomputes them.
+
+**What it does not buy, stated so it is not oversold.** Not CPU or heat —
+the poller sleeps five minutes between sub-second bursts. Not the ability
+to move the research database, which is 22 GB against 27 GB free on the
+Pi's SD card. The rebuilds remain the real load and remain on the
+workstation.
+
+**Not to be confused with running `wait_and_poll.ps1` on the Pi unchanged.**
+That variant still writes research over an SSH tunnel originating from the
+workstation, so it frees nothing. The value is entirely in removing
+research from the live write path.

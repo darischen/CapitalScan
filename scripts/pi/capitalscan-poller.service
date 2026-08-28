@@ -1,0 +1,27 @@
+[Unit]
+Description=CapitalScan live poller (waits for the open, writes serving)
+Documentation=https://github.com/darischen/CapitalScan docs/DECISIONS.md ADR 158
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=darischen
+WorkingDirectory=/home/darischen/CapitalScan
+ExecStart=/home/darischen/CapitalScan/scripts/pi/wait_and_poll.sh 300
+
+# The session ends at 13:00 and the wrapper exits 0. Restarting it would
+# start a second wait loop the same day, so only a *failure* restarts, and
+# not in a tight loop.
+Restart=on-failure
+RestartSec=120
+
+# journald is the terminal here: `journalctl -fu capitalscan-poller` gives
+# the live output, and `journalctl -u capitalscan-poller --since today`
+# gives the session after the fact.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=capscan-poll
+
+[Install]
+WantedBy=multi-user.target

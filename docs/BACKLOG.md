@@ -16,6 +16,55 @@ deleting the entry loses nothing.
 
 ## Open
 
+### Move the poller off research (ADR 158) — **the workstation's day is the payoff**
+
+Mechanism decided in ADR 158; not built. The work, in order:
+
+1. **`poll.py` takes a target engine.** Today `run_poll` calls
+   `db_io.get_engine()` at `poll.py:867` and everything downstream inherits
+   research. Thread the engine through instead, defaulting to serving.
+2. **Delete `_push_live` and its `run_live_sync` call.** Once the poller
+   writes serving natively there is nothing to push. This also removes the
+   failure path whose docstring says "never fails the poll".
+3. **Drop the research half of the sweep.** `_sweep_provisional_poll_rows`
+   against research becomes dead — research never receives provisional
+   rows. The serving half stays, and keeps the `sync_ok` guard added
+   2026-08-28.
+4. **Write the poller's `runs` row to serving.** `events.run_id` has a
+   foreign key and serving carries only a narrow `runs` subset.
+5. **A serving -> research pull for `signal_reports` and
+   `poller_sessions`,** added to nightly *before* its sweep. These two are
+   **not** provisional: the sweep preserves reports deliberately and never
+   touches sessions, and they are the durable record a past date's
+   fired-at timestamps come from (1,656 and 18 rows, 2026-08-03 onward).
+   They currently sync research -> serving, so this reverses their
+   direction. Omitting it silently stops research accumulating what ADR
+   084 has Phase 6 analysing, and the gap would be invisible until someone
+   queried data that was never written.
+6. **A staleness guard, which is the one new safety requirement.** The
+   poller would read `universe` and `indicators` from serving, one sync
+   behind. Equivalent during a session today, wrong after a missed sync,
+   and silent either way. It should refuse to start when serving's
+   watermark predates the last trading day.
+7. **`wait_and_poll.ps1` becomes a systemd timer.** The Pi is Linux and
+   already up 24/7.
+
+**Measured facts this rests on**, so a future reader does not re-derive
+them: the poller reads only `universe`, `indicators`, `market_days` and
+`events`, and serving carries all four; it writes `poller_sessions`,
+`bars_live`, `events`, `quotes_live`, and serving carries all four.
+
+**What it is not.** Not a heat or CPU fix — the poller sleeps five minutes
+between sub-second bursts. Not a route to moving the research database,
+which is 22 GB against 27 GB free on the Pi's SD card. Running
+`wait_and_poll.ps1` on the Pi *unchanged* buys nothing at all, because it
+would still write research over a tunnel originating from the workstation.
+
+The payoff is that the workstation stops being pinned open during market
+hours: it can be shut down, updated, developed on, or given a rebuild
+without a second writer on `events`.
+
+
 ### ~~`scan_candidates` spends 70% of its time on pandas row access~~
 
 **Closed 2026-08-27: 56.8s -> 31.0s on 29,509 bar rows, 1.83x, identical

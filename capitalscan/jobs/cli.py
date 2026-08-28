@@ -1397,6 +1397,11 @@ def sync(
 def poll(
     interval: int = typer.Option(300, help="Poll interval in seconds"),
     tickers: Optional[str] = typer.Option(None, help="Comma-separated ticker list"),
+    serving: bool = typer.Option(
+        False,
+        "--serving",
+        help="Write the serving store directly instead of research (ADR 158)",
+    ),
 ) -> None:
     """Run live band-touch poller until market close (DESIGN §4.8).
 
@@ -1414,9 +1419,58 @@ def poll(
 
     config = _resolve_config_or_exit()
     resolved = [t.strip().upper() for t in tickers.split(",")] if tickers else None
+
+    # **`--serving` writes the serving store directly (ADR 158).** Every
+    # poller row is provisional -- nightly sweeps them and recomputes the
+    # authoritative version from bars -- so research never needed them. The
+    # payoff is scheduling: without a live writer on research, the
+    # workstation can be shut down, updated, or given a rebuild during
+    # market hours.
+    #
+    # Two things change together and neither is optional. The push to
+    # serving is skipped, because copying serving to serving is a no-op
+    # that would corrupt the watermark. And the target is checked for
+    # staleness first: the poller resolves membership from `universe` and
+    # reads t-1 from `indicators`, and a store that missed a sync answers
+    # both queries with last week's data rather than failing.
+    engine = None
+    if serving:
+        from sqlalchemy import text
+
+        from capitalscan.jobs import sync as sync_job
+
+        engine = sync_job.serving_engine()
+        with engine.connect() as conn:
+            watermark = conn.execute(
+                text("SELECT max(ts)::date FROM bars WHERE interval = '1d'")
+            ).scalar_one_or_none()
+            # **`_now_et().date()`, never `CURRENT_DATE`** (ADR 119). The
+            # database runs `Etc/UTC`, so between 00:00 UTC and midnight ET
+            # -- 5pm to midnight Pacific -- `CURRENT_DATE` is a day ahead of
+            # the session that just closed, and this guard would compare the
+            # watermark against a trading day that has not happened.
+            last_day = conn.execute(
+                text("SELECT max(d) FROM trading_days WHERE d <= :today"),
+                {"today": poll_job._now_et().date()},
+            ).scalar_one_or_none()
+        if last_day is None:
+            console.print("[red]serving has no trading calendar[/red]; run `cscan sync`")
+            raise typer.Exit(code=1)
+        try:
+            poll_job.assert_target_is_current(watermark, last_day)
+        except RuntimeError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
+        console.print(
+            f"[bold]poll[/bold]: writing serving directly "
+            f"(newest bar {watermark}, last trading day {last_day})"
+        )
+
     report = poll_job.run_poll(
         interval=interval,
         tickers=resolved,
+        engine=engine,
+        push_live=not serving,
         sp=config.signals,
         ep=config.exits,
         stats=config.stats,

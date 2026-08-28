@@ -9,8 +9,9 @@
 # OVERWRITE each other, so there is no restore pass and no required order
 # -- not that the pass disappears.
 #
-# ~2h40m per arm: universe 20 + compute ~95 + finalize 4 + harness 36 +
-# stats 6.
+# ~2h40m per arm: universe 26 + compute ~95 + finalize 4 + harness 10 +
+# path/peak ? + stats 25. Harness was 36 in this note and measured 74m32s
+# on 2026-08-27 before the scan_candidates work, then 9m06s after it.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 log() { echo "[$(date -u -d '-7 hours' '+%H:%M:%S') PT] $*"; }
@@ -52,6 +53,22 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/universe_backfil
 run backtest --workers 8 --chunk-size 24 --phase compute
 run backtest --workers 8 --phase finalize
 run backtest --workers 8 --phase harness
+
+# **Both of these were missing until 2026-08-28, and their absence fails
+# silently three steps later.** `backtest --phase compute` writes
+# `fwd_ret_*d` but not `fwd_window_days`, and never writes `peak_ret_*d`.
+# `cell_stats` selects on `min_fwd_window_for(cfg)`, so with every
+# `fwd_window_days` NULL it selects *nothing* -- and then dies in
+# `build_baselines` on `int(years.min())` with "cannot convert float NaN to
+# integer", which names neither the missing column nor the missing step.
+#
+# Arm 2 hit exactly this: 722,104 train events, all with `fwd_ret_5d`, none
+# with `fwd_window_days`. They are nightly steps, so arm 1 had them by
+# accident of having been through nightly runs; an arm built from scratch
+# does not.
+run path backfill    --config-hash "$CH" --workers 8
+run path peak-labels --config-hash "$CH"
+
 run stats rho        --config-hash "$CH"
 run stats cells      --config-hash "$CH" --split-key train
 run stats cells      --config-hash "$CH" --split-key validate

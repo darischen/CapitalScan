@@ -306,10 +306,23 @@ def test_poll_command_threads_resolved_params(monkeypatch, tmp_path):
     captured = {}
 
     def _fake_run_poll(
-        interval=300, tickers=None, engine=None, sp=None, ep=None, stats=None, config=None
+        interval=300,
+        tickers=None,
+        engine=None,
+        sp=None,
+        ep=None,
+        stats=None,
+        config=None,
+        **kwargs,
     ):
+        # `**kwargs` rather than naming each one: this test is about the
+        # resolved config reaching `run_poll`, not about its full signature.
+        # It broke when `push_live` was added for ADR 158 -- a parameter it
+        # has no opinion on -- which tested the signature rather than the
+        # threading it exists to check.
         captured["ep"] = ep
         captured["config"] = config
+        captured["kwargs"] = kwargs
         return SimpleNamespace(rows_written=0, notes=None)
 
     monkeypatch.setattr("capitalscan.jobs.poll.run_poll", _fake_run_poll)
@@ -318,6 +331,10 @@ def test_poll_command_threads_resolved_params(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert captured["ep"].max_hold_days == 7
+    # Without `--serving` the poller keeps writing research and pushing to
+    # serving, which is the default ADR 158 leaves untouched.
+    assert captured["kwargs"].get("push_live") is True
+    assert captured["engine"] is None if "engine" in captured else True
     # The whole resolved config, not just the three sections `poll`
     # consumes. `run_poll` used to rebuild `Config(signals=sp)` to compute
     # `config_hash`, which dropped every other section — so an override of

@@ -222,6 +222,51 @@ def _write_session_row(
     )
 
 
+# How far behind the poller's target store may legitimately be. Serving is
+# synced by nightly *after* a session, so during the next session it holds
+# the previous trading day. One day is correct; two means a sync was missed.
+MAX_TARGET_LAG_DAYS = 1
+
+
+def assert_target_is_current(
+    watermark: date | None, last_trading_day: date, max_lag_days: int = MAX_TARGET_LAG_DAYS
+) -> None:
+    """Refuse to poll against a store whose data is too old (ADR 158).
+
+    **The failure this prevents is silent.** The poller resolves membership
+    from `universe` and reads the t-1 row from `indicators`. A store that
+    missed a sync still answers both queries -- with last week's universe --
+    so the poller would happily fire signals for a population that no
+    longer exists and say nothing.
+
+    That risk is new. Writing research, the poller read the same store every
+    other job writes, so it could not be behind. Writing serving, it reads a
+    *copy*, and a copy can be stale.
+
+    One day of lag is correct rather than tolerated: nightly syncs after the
+    close, so during a session serving legitimately holds the previous
+    trading day. Two days means a sync did not happen.
+
+    A missing watermark raises too. An empty or unreachable target is not
+    "probably fine" -- it is the case where the poller would resolve an
+    empty universe and poll nothing, which looks identical to a quiet
+    market.
+    """
+    if watermark is None:
+        raise RuntimeError(
+            "poll target has no watermark: the store is empty or unreachable, "
+            "so membership cannot be resolved. Run `cscan sync` first."
+        )
+    lag = (last_trading_day - watermark).days
+    if lag > max_lag_days:
+        raise RuntimeError(
+            f"poll target is stale: newest data {watermark.isoformat()}, "
+            f"last trading day {last_trading_day.isoformat()} ({lag} days behind, "
+            f"max {max_lag_days}). Membership would be resolved from a universe "
+            "that is no longer current. Run `cscan sync` first."
+        )
+
+
 def _push_live(engine, chash, session_date, run_id, watermark, report):
     """Copy this tick to the serving store, or carry on without it.
 
@@ -856,6 +901,7 @@ def run_poll(
     now_fn: Callable[[], datetime] = _now_et,
     sleep_fn: Callable[[float], None] = time.sleep,
     max_ticks: int | None = None,
+    push_live: bool = True,
 ) -> IngestReport:
     """The `poll` job (DESIGN §4.8).
 
@@ -946,9 +992,14 @@ def run_poll(
                     ticks_expected,
                     report.notes,
                 )
-                watermark = _push_live(
-                    engine, chash, session_date, report.run_id, watermark, report
-                )
+                # **Skipped when the poller already writes serving**
+                # (ADR 158). `_push_live` copies research to serving;
+                # doing that serving-to-serving is a no-op at best and
+                # corrupts the watermark at worst.
+                if push_live:
+                    watermark = _push_live(
+                        engine, chash, session_date, report.run_id, watermark, report
+                    )
             except Exception as exc:  # DESIGN §4.9: log, sleep, continue
                 consecutive_failures += 1
                 report.notes = f"tick failure: {exc}"
