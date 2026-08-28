@@ -948,7 +948,34 @@ the history — that, not correctness, is now the reason to do it.
 
 ---
 
-### 123 tickers still have no sector (29 of them active)
+### 123 tickers still have no sector — **mostly not equities; not a gap to close**
+
+**Measured 2026-08-27, because this reads like easy data-fetching work and
+is not.** Of the 123:
+
+    123   no sector
+    101   no CIK at all -- not SEC filers
+     29   is_active
+     27   appear in `universe` under the serving config
+      4   are `in_trade`
+
+**The active ones are preferred shares and baby bonds**, which is why the
+lookup fails: AQNB (Algonquin), BEPJ/BIPH/BIPJ (Brookfield), BNH/BNJ,
+CMSA/CMSC/CMSD (CMS Energy), DUKB (Duke). A preferred share **has no GICS
+sector** -- GICS classifies the issuer's equity, and these are fixed-income
+instruments wearing an equity ticker. They also have an empty `name`, so
+the ticker refresh never resolved them as securities either.
+
+Filling these means inventing a classification the instrument does not
+have, which invariant 4 forbids in the same breath as forward-filling a
+null. **The real question is scoping, not fetching**: whether preferreds
+and baby bonds belong in the universe at all. That is a decision, and it
+belongs in an ADR rather than in a backfill script.
+
+The remainder are the delisted and renamed names the original entry
+describes, and those genuinely 404.
+
+#### Original entry
 
 ADR 148's backfill resolved 254 of 352. The rest are delisted or renamed —
 YHOO, FB (now META), PCLN (now BKNG), TWTR, ATVI, CERN, FRC, SIVB — and
