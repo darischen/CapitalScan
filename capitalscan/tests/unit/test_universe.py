@@ -20,11 +20,17 @@ from capitalscan.core.config import UniverseParams
 
 UP = UniverseParams()
 
+# `crit_rel_return_history` joined these on 2026-08-28 (c93f4a1e77b2). It is
+# ADR 014's history gate without its sector-median test, always computed and
+# stored, and it decides membership only when `required_criteria` names it
+# instead of `crit_rel_return` -- which is how arm 3 is expressed without
+# adding a config field that would rehash every existing generation.
 CRITERIA = {
     "crit_mcap",
     "crit_above_sma200",
     "crit_sma200_slope",
     "crit_rel_return",
+    "crit_rel_return_history",
     "crit_rev_growth",
 }
 
@@ -57,7 +63,7 @@ def _healthy(**kw):
 # ---------------------------------------------------------------------------
 
 
-def test_returns_all_five_criteria_separately():
+def test_returns_every_criterion_separately():
     assert set(_healthy().keys()) == CRITERIA
 
 

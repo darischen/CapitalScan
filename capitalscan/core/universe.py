@@ -39,6 +39,12 @@ CRITERIA: tuple[str, ...] = (
     "crit_above_sma200",
     "crit_sma200_slope",
     "crit_rel_return",
+    # ADR 014's history gate without its sector-median test (arm 3,
+    # `_rel_return_history_only`). Always computed and stored; it decides
+    # membership only when `required_criteria` names it *instead of*
+    # `crit_rel_return`. Naming both would be redundant rather than
+    # stricter, since this one is implied by the other.
+    "crit_rel_return_history",
     "crit_rev_growth",
 )
 
@@ -249,6 +255,41 @@ def implausible_mcap_reason(mcap: float | None, bounds: McapPlausibility) -> str
     return None
 
 
+def _rel_return_history_only(rel_return: object) -> bool | None:
+    """ADR 014's relative-return criterion with its **median test removed**
+    and its **history gate kept** — arm 3 (REBUILD_ARMS.md).
+
+    ADR 014 defines `crit_rel_return` as two things at once: "trailing
+    3-year total return above the sector median" is a **history
+    requirement** (757 daily bars) *and* a **relative-performance test**.
+    This is the first half alone.
+
+    **A separate criterion rather than a flag on the existing one.**
+    `config_hash` is `sha256(asdict(Config))`, so *adding a config field*
+    moves the hash even at its default value — measured, it took the
+    default from `a38d3ca6b58295e8` to `be4e4702241ce90c` and orphaned an
+    entire built generation. Naming a second criterion instead means arm 3
+    is expressed by changing the **value** of the existing
+    `required_criteria` tuple: the hash moves for the arm, as ADR 060
+    requires, and does not move for anyone else.
+
+    It also matches what `REBUILD_ARMS.md` asks for — `crit_rel_return`
+    "stays computed and honest in the audit log; it simply stops deciding
+    membership". Both criteria are always evaluated and stored; only which
+    one `required_criteria` names changes.
+
+    **`None` when the return is missing, never `False`.** ADR 149's
+    `history` watch route admits on exactly `rel is None and bars < 757`,
+    so `False` for a new ticker would stop the route firing and silently
+    halve the watch universe's purpose. GE Vernova was spun out of GE in
+    April 2024 with 603 bars: its three-year return is *undefined*, not
+    bad.
+    """
+    if _isnan(rel_return):
+        return None
+    return True
+
+
 def evaluate_criteria(
     ind_row: pd.Series,
     mcap: float | None,
@@ -283,6 +324,10 @@ def evaluate_criteria(
         "crit_above_sma200": _cmp(ind_row.get("close"), ind_row.get("sma_200")),
         "crit_sma200_slope": _cmp(ind_row.get("sma200_slope_60"), up.sma200_slope_min),
         "crit_rel_return": _cmp(ind_row.get("rel_return_756d"), sector_median_return),
+        # Arm 3's alternative. Always computed and stored; it decides
+        # membership only when `required_criteria` names it instead of
+        # `crit_rel_return` (`_rel_return_history_only`).
+        "crit_rel_return_history": _rel_return_history_only(ind_row.get("rel_return_756d")),
         "crit_rev_growth": rev_growth_positive,
     }
 
