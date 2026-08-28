@@ -16,9 +16,46 @@ deleting the entry loses nothing.
 
 ## Open
 
-### Move the poller off research (ADR 158) — **the workstation's day is the payoff**
+### ~~Move the poller off research (ADR 158)~~ — **built and deployed 2026-08-28**
 
-Mechanism decided in ADR 158; not built. The work, in order:
+**Steps 1-6 are done and on the Pi.** `cscan poll --serving` writes the
+serving store, skips the research push, and refuses to start against a
+stale target. `sync.pull_live_records` brings `runs` (scoped `job='poll'`),
+`signal_reports` and `poller_sessions` back to research inside nightly,
+before its sweep. `capitalscan-poller.timer` fires at 00:00 PT and
+`scripts/pi/wait_and_poll.sh` waits until 06:45.
+
+**Verified before enabling**, because three of these would have failed
+silently:
+
+- `pull_live_records` against live data, run twice: 3 runs, 698 reports, 3
+  sessions, and research's counts unmoved the second time (1,656 / 18 / 34)
+  -- so it upserts rather than duplicating.
+- The staleness guard on real serving data: watermark 2026-08-27 against a
+  last trading day of 2026-08-28, one day of lag, passes. That is the
+  legitimate case, since nightly syncs after the close.
+- **The Pi was holding arm 3's config.** `cscan poll` resolves config, so
+  its poller would have written events under `fda16796c6e82ee4` and the
+  site -- which reads `serving_config`, pinned to `a38d3ca6b58295e8` --
+  would have shown nothing. Reverted and re-checked before the timer was
+  enabled.
+- The Pi's clock: `America/Los_Angeles`, PDT, matching the workstation to
+  the second. `06:45` in the wrapper is 06:45 PT, not UTC.
+
+**What is left**, and it is deliberately left until a live session proves
+the change:
+
+1. `_sweep_provisional_poll_rows` against **research** is now dead code.
+   Removing it before the migration is proven would make a rollback harder,
+   so it stays until a session has run.
+2. `wait_and_poll.ps1` is kept for reference and for its CSV export, which
+   is read-only against the database. **It must not be started while the Pi
+   polls** -- two pollers would double-write, one to research with a push
+   and one to serving directly.
+
+#### Original mechanism
+
+Mechanism decided in ADR 158. The work, in order:
 
 1. **`poll.py` takes a target engine.** Today `run_poll` calls
    `db_io.get_engine()` at `poll.py:867` and everything downstream inherits
