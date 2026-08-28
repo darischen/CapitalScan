@@ -4617,3 +4617,51 @@ which is the first time an arm and a session have overlapped.
 
 Arm 3 processes 49% more events than arm 2 for 20% more check time, and
 under a sixth of arm 1's despite carrying 36% more events.
+
+### Why the relaxed universe did worse: a cost threshold, not stock quality
+
+Prompted by the obvious objection to the section above — the backtest is
+side-symmetric, so if arm 3 simply admitted names that fell, the short side
+should have collected it. That objection is correct, and it rules out the
+first explanation.
+
+Classifying every arm-3 event by whether its ticker passed the sector-median
+test **at that event's own signal date** (validate split):
+
+| | events | gross | net | cost drag | ATR/price |
+|---|---|---|---|---|---|
+| passed median | 72,690 | **0.00097** | +0.00034 | 0.00063 | 0.0269 |
+| failed median | 23,875 | **0.00042** | −0.00021 | 0.00063 | 0.0241 |
+
+**Cost drag is identical to the basis point: 6.3 bp for both.** So costs do
+not discriminate. Volatility does not either — the failing names are
+slightly *less* volatile. What differs is the **gross** edge, 4.2 bp against
+9.7 bp, less than half, before anything is deducted. Mean MFE is smaller
+too (0.02284 against 0.02501), so the trades simply travel less far.
+
+Both groups clear zero gross. Only one clears costs:
+
+    passed:  9.7 gross - 6.3 cost = +3.4 bp net
+    failed:  4.2 gross - 6.3 cost = -2.1 bp net
+
+**The sector-median filter was selecting for edge-larger-than-fee, not for
+company quality.** That reading survives the symmetry objection: the short
+side shows the same halved gross edge rather than an inverted one, so it is
+not a directional-drift story. Broken out by side on validate, both sides
+are worse for the failing group (long −0.00034, short −0.00010) while both
+are better for the passing group (long +0.00006, short +0.00062).
+
+**Two things stop this from being a finding.** The passing group's +3.4 bp
+still produced zero FDR survivors, so this explains a difference between two
+populations that both fail. And with `mean_cofire` near 46 these event
+counts overstate independent evidence by roughly 10-20x, which is why no
+p-value is quoted here — a significance test on raw counts is the exact
+error `n_eff` exists to prevent (invariant 8).
+
+**Method note.** The first cut of this analysis was wrong and is recorded so
+the mistake is not repeated: it grouped tickers by whether they *ever*
+failed the median across 66 quarters, which made the comparison group
+"names that never failed once in sixteen years" — a survivor élite that
+would look better regardless. The 485-vs-98 ticker split was the tell. The
+table above is point-in-time, joining each event to the universe evaluation
+in force at its signal date.
