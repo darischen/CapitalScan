@@ -24,15 +24,18 @@ arm is a file this script writes and deletes. Three things that buys:
   nightly stops instead of writing events under an arm's hash. That guard is
   why a stray file is survivable rather than silent.
 
-**The universe is copied, not recomputed.** `core/universe.py` contains no
-reference to `ExitParams` -- membership cannot depend on target or stop -- so
-all nine arms would otherwise compute an identical `universe` at 25 minutes
-each. The first arm *that does work* proves this rather than trusting the
-grep: it runs one real quarter under the arm's hash and compares against the
-copy, aborting on any difference. "That does work" is load-bearing -- the
-first attempt tied it to list position, `t4_atr15` was correctly skipped as
-the baseline, and the verification was skipped along with it. See
-`_verify_universe_copy`.
+**The universe is copied, not recomputed** -- and that is a correctness
+choice, not only a saving. Arms must share arm 1's universe, or the
+difference between them is not only the exit parameters. Recomputing per arm
+today would hand arms 2-9 a *newer* universe than arm 1, including this
+morning's IESC split repair, and confound every comparison the sweep exists
+to make. It also saves 25 minutes an arm.
+
+The claim it rests on -- that `ExitParams` cannot reach `universe` -- is
+proven before any arm runs, by evaluating one quarter twice at the same
+moment under two configs differing only in exit parameters. See
+`verify_exit_params_do_not_affect_universe`, including what its first,
+wrong version measured instead.
 
 **`benchmarks` is deferred.** It is ~32 min per arm and answers "did this beat
 its null", which only matters for an arm that survives FDR at all. Run it
@@ -194,71 +197,113 @@ def copy_universe(chash: str) -> int:
         return int(res.rowcount or 0)
 
 
-def _verify_universe_copy(chash: str, quarter: str) -> None:
-    """Recompute one quarter for real and prove the copy matches it.
+def verify_exit_params_do_not_affect_universe(quarter: str) -> None:
+    """Prove `ExitParams` cannot change `universe`, by measurement.
 
-    The claim under test is that `universe` does not depend on `ExitParams`.
-    That was established by reading `core/universe.py`, which is an argument,
-    not a measurement. This is the measurement: delete one quarter of the
-    copy, run the real evaluation under the arm's hash, compare against
-    baseline, and abort on any difference.
+    **The first version of this test was wrong and aborted a good sweep.**
+    It compared the copied rows against a *fresh* evaluation and found two
+    differences on 2019Q2 — IESC, whose market cap had exactly halved, and
+    ALL, whose `in_trade` flipped on an unchanged market cap. Neither was
+    caused by `ExitParams`. IESC was the stock split repaired earlier the
+    same day, and ALL moved because that day's nightly rewrote `shares` and
+    `indicators`. The test conflated **config-dependence** with
+    **time-dependence**: any fresh evaluation differs from one computed
+    weeks earlier, whatever the config.
+
+    This version isolates the variable. It evaluates the same quarter twice,
+    at the same moment, from the same inputs, under two configs that differ
+    **only** in `ExitParams`. Identical output then means exit parameters
+    cannot reach the universe. Measured 2026-08-28: 0 differing rows across
+    1,217 tickers.
+
+    **Scratch hashes, deliberately outside the grid** (`target_pct` 0.041 and
+    0.042). An earlier run of this check used two real arms and left their
+    2019Q2 rows freshly computed while every other quarter was copied — one
+    quarter of an arm silently newer than the rest. Both scratch generations
+    are deleted afterwards.
+
+    **And this is why copying is right, not merely cheap.** Arms must share
+    arm 1's universe or the difference between them is not only the exit
+    parameters. Recomputing per arm now would hand arms 2-9 a *newer*
+    universe than arm 1 — including today's IESC repair — and quietly
+    confound every comparison the sweep exists to make.
     """
     from sqlalchemy import text
 
     # `--quarter` takes a label ('2019Q2'); `universe.as_of` is the
-    # quarter-end date. Passing a date to the CLI parses `quarter[5]` as the
-    # quarter number -- '2019-06-30'[5] is '0', giving `date(2019, 0, 1)` and
-    # "month must be in 1..12, not 0". Derived from the job's own function so
-    # the two cannot drift.
+    # quarter-end date. Passing a date parses `quarter[5]` as the quarter
+    # number -- '2019-06-30'[5] is '0', giving `date(2019, 0, 1)` and "month
+    # must be in 1..12, not 0". Derived from the job's own function.
     from capitalscan.jobs.compute import _quarter_end
 
     as_of = _quarter_end(quarter)
-    log(f"verifying the universe copy against a real evaluation of {quarter} ({as_of})")
-    with _engine().begin() as conn:
-        conn.execute(
-            text("DELETE FROM universe WHERE config_hash = :h AND as_of = :q"),
-            {"h": chash, "q": as_of},
+    log(f"proving ExitParams cannot affect the universe, on {quarter} ({as_of})")
+
+    hashes: list[str] = []
+    for probe in (0.041, 0.042):
+        CONFIG_TOML.write_text(
+            f'[exits]\ntarget_pct = {probe}\nstop_mode = "fixed"\nstop_fixed_pct = 0.02\n',
+            encoding="utf-8",
         )
-    run("universe", "--quarter", quarter)
-    with _engine().connect() as conn:
-        diff = conn.execute(
-            text(
-                "SELECT count(*) FROM universe a JOIN universe b "
-                "    ON a.ticker = b.ticker AND a.as_of = b.as_of "
-                " WHERE a.config_hash = :h AND b.config_hash = :base AND a.as_of = :q "
-                "   AND (a.in_trade IS DISTINCT FROM b.in_trade "
-                "     OR a.in_watch IS DISTINCT FROM b.in_watch "
-                "     OR a.mcap_usd IS DISTINCT FROM b.mcap_usd)"
-            ),
-            {"h": chash, "base": BASELINE_HASH, "q": as_of},
-        ).scalar_one()
-        missing = conn.execute(
-            text(
-                "SELECT abs(count(*) FILTER (WHERE config_hash = :h) "
-                "         - count(*) FILTER (WHERE config_hash = :base)) "
-                "  FROM universe WHERE as_of = :q AND config_hash IN (:h, :base)"
-            ),
-            {"h": chash, "base": BASELINE_HASH, "q": as_of},
-        ).scalar_one()
-    if int(diff) or int(missing):
-        raise SystemExit(
-            f"ABORT: universe under {chash} differs from baseline for {quarter} ({as_of}) "
-            f"({int(diff)} differing row(s), {int(missing)} row-count gap). The copy "
-            f"shortcut is invalid -- run a full universe pass per arm instead."
-        )
-    log(f"universe copy verified: 0 differing rows, 0 row-count gap in {quarter} ({as_of})")
+        h = resolved_hash()
+        if h == BASELINE_HASH or any(h == x for x in hashes):
+            raise SystemExit(f"ABORT: probe config {probe} produced an unusable hash {h}")
+        with _engine().begin() as conn:
+            conn.execute(
+                text("DELETE FROM universe WHERE config_hash = :h AND as_of = :q"),
+                {"h": h, "q": as_of},
+            )
+        run("universe", "--quarter", quarter)
+        hashes.append(h)
+
+    a, b = hashes
+    try:
+        with _engine().connect() as conn:
+            diff = conn.execute(
+                text(
+                    "SELECT count(*) FROM universe x JOIN universe y "
+                    "    ON x.ticker = y.ticker AND x.as_of = y.as_of "
+                    " WHERE x.config_hash = :a AND y.config_hash = :b AND x.as_of = :q "
+                    "   AND (x.in_trade IS DISTINCT FROM y.in_trade "
+                    "     OR x.in_watch IS DISTINCT FROM y.in_watch "
+                    "     OR x.mcap_usd IS DISTINCT FROM y.mcap_usd)"
+                ),
+                {"a": a, "b": b, "q": as_of},
+            ).scalar_one()
+            counts = conn.execute(
+                text(
+                    "SELECT count(*) FILTER (WHERE config_hash = :a), "
+                    "       count(*) FILTER (WHERE config_hash = :b) "
+                    "  FROM universe WHERE as_of = :q AND config_hash IN (:a, :b)"
+                ),
+                {"a": a, "b": b, "q": as_of},
+            ).one()
+        n_a, n_b = int(counts[0]), int(counts[1])
+        if int(diff) or n_a != n_b or n_a == 0:
+            raise SystemExit(
+                f"ABORT: two configs differing only in ExitParams produced different "
+                f"universes for {quarter} ({int(diff)} differing row(s), {n_a} vs {n_b} "
+                f"rows). Copying the universe across arms is invalid -- run a full "
+                f"universe pass per arm instead."
+            )
+        log(f"proven: 0 differing rows across {n_a} tickers; the copy is sound")
+    finally:
+        with _engine().begin() as conn:
+            conn.execute(
+                text("DELETE FROM universe WHERE config_hash IN (:a, :b)"),
+                {"a": a, "b": b},
+            )
+        if CONFIG_TOML.exists():
+            CONFIG_TOML.unlink()
 
 
-def run_arm(arm: Arm, verify: bool, verify_quarter: str) -> tuple[str, bool]:
-    """Run one arm. Returns `(config_hash, verification_ran)`.
+def run_arm(arm: Arm) -> str:
+    """Run one arm and return its config hash.
 
-    The second element exists because the verification must land on the
-    first arm that actually *does work*, not the first in the list. On the
-    first run `t4_atr15` came first, was correctly skipped as the baseline,
-    and took the verification with it -- so the universe copy went
-    unproven and the whole shortcut rested on having read
-    `core/universe.py`. Returning the flag lets `main` keep asking until
-    some arm performs it.
+    The universe proof used to live here, gated on the arm index, and that
+    was wrong twice over: `t4_atr15` is skipped as the baseline so the
+    check never fired, and the check itself needed no arm at all. It is now
+    `verify_exit_params_do_not_affect_universe`, run once by `main`.
     """
     CONFIG_TOML.write_text(arm.toml(), encoding="utf-8")
     chash = resolved_hash()
@@ -285,14 +330,10 @@ def run_arm(arm: Arm, verify: bool, verify_quarter: str) -> tuple[str, bool]:
 
     if already_done(chash):
         log(f"arm {arm.name} already has cell_stats for both splits -- skipping")
-        return chash, False
+        return chash
 
     copied = copy_universe(chash)
     log(f"universe: copied {copied} row(s) from {BASELINE_HASH}")
-    verified = False
-    if verify:
-        _verify_universe_copy(chash, verify_quarter)
-        verified = True
 
     run("backtest", "--workers", WORKERS, "--chunk-size", CHUNK_SIZE, "--phase", "compute")
     run("backtest", "--workers", WORKERS, "--phase", "finalize")
@@ -305,14 +346,14 @@ def run_arm(arm: Arm, verify: bool, verify_quarter: str) -> tuple[str, bool]:
     run("stats", "cells", "--config-hash", chash, "--split-key", "train")
     run("stats", "cells", "--config-hash", chash, "--split-key", "validate")
     log(f"=== arm {arm.name} complete ({chash}) ===")
-    return chash, verified
+    return chash
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Exit-parameter sweep (target x stop).")
     ap.add_argument("--start-from", default=None, help="arm name to resume at")
     ap.add_argument("--only", default=None, help="run a single arm by name")
-    ap.add_argument("--no-verify", action="store_true", help="skip the universe-copy proof")
+    ap.add_argument("--no-verify", action="store_true", help="skip the ExitParams/universe proof")
     ap.add_argument("--verify-quarter", default="2019Q2", help="quarter LABEL, e.g. 2019Q2")
     ap.add_argument("--list", action="store_true", help="print the grid and exit")
     args = ap.parse_args()
@@ -337,16 +378,10 @@ def main() -> None:
 
     done: list[tuple[str, str]] = []
     try:
-        verify_pending = not args.no_verify
+        if not args.no_verify:
+            verify_exit_params_do_not_affect_universe(args.verify_quarter)
         for arm in arms:
-            chash, verified = run_arm(
-                arm,
-                verify=verify_pending,
-                verify_quarter=args.verify_quarter,
-            )
-            if verified:
-                verify_pending = False
-            done.append((arm.name, chash))
+            done.append((arm.name, run_arm(arm)))
     finally:
         # Unconditional: an interrupt must not leave an arm resolving.
         if CONFIG_TOML.exists():
