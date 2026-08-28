@@ -780,6 +780,31 @@ def _lookahead_counts(
 ) -> LookaheadCounts:
     """The six detection passes over one slice, reduced to overlap counts.
 
+    **This is ~77% of the harness's runtime.** Profiled 2026-08-27 against
+    live data: one `_event_set` is **86.2s for 25 tickers / 105,343 bar
+    rows**, because it runs the full `scan_candidates` over every bar. Six
+    calls (four shift levels, plus base, plus control) is 517s per chunk,
+    which over 1,336 tickers on 8 workers is ~58 minutes of a measured
+    75-minute run. The four sanity checks together are 10.7s per chunk,
+    about 9.5 minutes scaled -- an order of magnitude less.
+
+    That also explains the growth nobody could account for: this scales
+    with **bar rows**, not events, so widening the universe from 590 to
+    1,336 tickers moved it directly. The recorded progression -- 35m42s,
+    then 55m32s after the NYSE expansion, then ~75m -- tracks bar count
+    while event count stayed within 1.5%. Two earlier theories (concurrent
+    load, a per-event hourly rescan) were measured and both were wrong; the
+    hourly one was optimized anyway and produced 74m26s against 74m58s.
+
+    **Not optimized here, deliberately.** This is the look-ahead ladder,
+    which CLAUDE.md calls the highest-risk silent failure in the system,
+    and the obvious speedups all weaken it: caching `base` across shift
+    levels, sampling tickers, or reusing a scan between levels each trade
+    the guarantee for wall clock. If it is worth speeding up, the
+    change belongs in `scan_candidates` itself, where a faster scan
+    benefits every caller and the ladder keeps running exactly six honest
+    passes.
+
     `shuffled` is supplied rather than computed here: `_shuffled_control`
     mixes indicator values *across* tickers on purpose, so it must be built
     once over the whole universe and only then sliced. Shuffling inside a
