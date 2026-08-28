@@ -58,6 +58,35 @@ fi
 
 say() { echo "[$1] $(date '+%H:%M:%S') - ${*:2}"; }
 
+# **Refuse a non-trading day, before the wait rather than after it.**
+#
+# Placed here deliberately: the unit starts at 00:00 and the countdown
+# below runs until 06:45, so checking after it would burn seven hours to
+# reach the same answer, and the log would say nothing until the morning.
+#
+# The timer fires `*-*-* 00:00:00` -- every day, weekends and holidays
+# included -- and nothing downstream stops it. `cscan poll` checks only the
+# *time* of day (`MARKET_OPEN <= now <= MARKET_CLOSE`), not the date, and
+# `assert_target_is_current` passes cleanly on a Saturday because Friday is
+# still the last trading day and the lag is zero. So an unguarded Saturday
+# would open a `poller_sessions` row, poll a closed market, and fire signals
+# off Friday's stale quotes into the store the site serves.
+#
+# `trading_days` rather than `date +%u`, so market holidays are covered too
+# and not just weekends -- the calendar is already in the database and is
+# what `cscan poll` itself resolves the last trading day from.
+#
+# The local date is the ET date for this whole window: the Pi runs Pacific,
+# the script lives between 00:00 and 13:00 local, and ET is three hours
+# ahead, so both clocks read the same calendar day throughout. That stops
+# being true after 21:00 local, which this never reaches.
+TODAY=$(date +%F)
+if ! sudo -n -u postgres psql -d capitalscan_serving -X -tA         -c "SELECT 1 FROM trading_days WHERE d = '$TODAY'" | grep -q 1; then
+  say SKIP "$TODAY is not a trading day. Nothing to poll; exiting cleanly."
+  exit 0
+fi
+
+
 now_s=$(date +%s); open_s=$(date -d "$OPEN" +%s); close_s=$(date -d "$CLOSE" +%s)
 
 if (( now_s > close_s )); then
