@@ -1187,3 +1187,19 @@ change here is test-first per CLAUDE.md.
 Expect less than the microbenchmark suggests: `path_metrics` was 11.5-27.5x
 faster in isolation and 1.14x end to end. At 18.8s of a ~36s per-ticker
 budget the ceiling is real but Amdahl-bounded.
+
+**`signal_reports` has no `signal_type`, so `v_screen_live` matches on
+`(ticker, signal_date)`.** Migration `d5e91a7c3b48` had to stop resolving
+`fired_at` through `event_id`, because ADR 150's nightly sweep nulls that
+column by design. The columns the sweep guarantees are `ticker`, `fired_at`
+and `state_json`, and `state_json` carries no signal type — only `ticker`.
+
+The consequence is small and real: a ticker firing two different signal
+types on the same day gives both events the **same** earliest `fired_at`.
+Exact today (all 157 linked events on 2026-08-28 had exactly one report),
+and far better than the NULL it replaced, but wrong in principle.
+
+**The fix is a `signal_type` column on `signal_reports`**, written by the
+poller and matched on in the view. It is a schema change plus a poller
+change plus a view change, which is why it is here rather than in that
+migration.
