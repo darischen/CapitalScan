@@ -4291,3 +4291,80 @@ Three separate things, not one:
 This changes the repair. Calibration fitted on a *normal* period would fix
 (1) and leave (2) as honest error. Fitting it on 2022 would overcorrect and
 produce bands too wide for a year resembling 2023.
+
+---
+
+## 2026-08-28 — Arm 2 (a flat base counts): no cell survives FDR
+
+`config_hash = 185bba9a239c18f4`, `sma200_slope_min = -0.01` against arm 1's
+`0.0`. Everything else identical.
+
+### The result
+
+**Zero cells survive FDR at q ≤ 0.10, on either split** — the same answer
+arm 1 gave. `n_eff` barely moves:
+
+| arm | split | cells | avg n_eff | max n_eff | survive FDR |
+|---|---|---|---|---|---|
+| arm1 `a38d3ca6b58295e8` | train | 256 | 128.1 | 927.0 | **0** |
+| arm1 | validate | 256 | 16.6 | 122.0 | **0** |
+| arm2 `185bba9a239c18f4` | train | 256 | 126.8 | 917.0 | **0** |
+| arm2 | validate | 256 | 16.5 | 123.0 | **0** |
+
+**The arm did what it was supposed to do at the universe level** and it
+made no statistical difference:
+
+| | arm1 | arm2 |
+|---|---|---|
+| `in_trade` at 2026-06-30 | 246 | **253** (+7) |
+| `in_watch` at 2026-06-30 | 45 | 48 |
+| `in_trade` ticker-quarters, all history | 8,163 | **8,431** (+268, +3.3%) |
+| events | 1,384,963 | 1,266,516 |
+
+The event counts are **not** comparable: arm 1's accumulated from weeks of
+nightly and poller runs across 1,336 tickers, while arm 2's come only from
+its own backtest over 674. Universe membership is the honest comparison and
+it moved in the expected direction.
+
+**Reading.** ADR 112 found nothing surviving FDR on the current population;
+widening the population by 3.3% does not change that. This is a null result
+about the *criterion*, not about statistical power — `n_eff` is essentially
+identical, so the extra names contributed events without concentrating them
+anywhere.
+
+### Phase wall clocks
+
+| phase | wall clock | note |
+|---|---|---|
+| universe (66 quarters) | 17:00 | 29 runs; 7 quarters re-run after an incident |
+| `backtest compute` (61 chunks) | 1:49:46 | 108.0s/chunk avg, 1,443,768 rows |
+| `backtest finalize` | 3:24 | 1,266,516 rows |
+| `backtest harness` | **9:06** | passed; see below |
+| `path backfill` | 22:18 | 549,477 events, 6,026,249 path rows |
+| `path peak-labels` | 1:01 | 443,496 rows |
+| `rho` | 0:46 | |
+| `cell_stats` (both splits) | 2:21 | |
+| `benchmarks` (both splits) | 26:00 | |
+
+**Two steps were missing from `scripts/rebuild_arms_2_3.sh` and are now
+added.** `backtest --phase compute` writes `fwd_ret_*d` but never
+`fwd_window_days` or `peak_ret_*d` — those are nightly steps, so arm 1 had
+them by accident of having been through nightlies and an arm built from
+scratch does not. `cell_stats` then selects on `min_fwd_window_for(cfg)`,
+selects nothing, and dies in `build_baselines` on `int(years.min())` with
+"cannot convert float NaN to integer", naming neither the missing column
+nor the missing step. Arm 2 hit exactly this: 722,104 train events, all
+with `fwd_ret_5d`, none with `fwd_window_days`.
+
+### The harness got 8x faster, measured
+
+| run | checks | bar rows | ms/bar |
+|---|---|---|---|
+| arm 1, before | 4,472s | 4,880,717 | 0.916 |
+| arm 2, after | **546s** | 2,628,123 | **0.208** |
+
+**4.4x per bar row**, from `scan_candidates` (56.8s → 5.1s on a fixed
+29,509-row sample, 11.25x, identical 16,218 events out). Confirmed on a
+clean re-run — an earlier run overlapped the edits and could not be
+attributed, so it was repeated on stable code before this number was
+recorded.
