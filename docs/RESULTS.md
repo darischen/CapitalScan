@@ -4405,3 +4405,80 @@ with `fwd_ret_5d`, none with `fwd_window_days`.
 clean re-run — an earlier run overlapped the edits and could not be
 attributed, so it was repeated on stable code before this number was
 recorded.
+
+---
+
+## 2026-08-28 — the poller moved to the Pi, and research went quiet during a session
+
+ADR 158, deployed and observed live rather than reasoned about.
+
+### The observation that proves it
+
+At 06:51, with the Pi polling and a full ablation arm running on the
+workstation:
+
+| store | `quotes_live` newest |
+|---|---|
+| **research** | 06:45:42 — frozen |
+| **serving** | **06:51:21** — advancing |
+
+Research's live tables stop dead at 06:45:42 and serving keeps moving.
+**Research has no live writer during market hours**, which is the whole
+change. The workstation ran arm 3 through the same window.
+
+### What 06:45:42 is, and why it is not the Pi
+
+A **second poller started on the workstation at 06:45:37**, 37 seconds
+after the Pi's, and opened a `poll` run against research. No scheduled task
+— a manually launched chain. Two pollers double-write: the Windows one
+writes research *and* pushes to serving, the Pi one writes serving
+natively.
+
+The arm-3 gate caught it and refused to start, which is what a gate is for.
+Killed at 06:50, its run row closed with the reason. The 06:45:42 rows are
+the five seconds it ran.
+
+**This is the failure mode to expect from the migration**, and it is silent
+from the frontend: both pollers write serving, so the site looks fine while
+two processes fight over the same rows. `CLAUDE.md` now says not to start
+`wait_and_poll.ps1`, and it is the first thing to check if live data ever
+looks doubled.
+
+### Verified before enabling
+
+Three of these would have failed quietly:
+
+- **`pull_live_records` is idempotent.** Run twice against live data: 3
+  runs, 698 reports, 3 sessions, and research's totals unmoved the second
+  time (1,656 / 18 / 34).
+- **The staleness guard passes on a real one-day lag** — watermark
+  2026-08-27 against a last trading day of 2026-08-28. That is the
+  legitimate case: nightly syncs after the close, so serving holds the
+  previous day during a session.
+- **The Pi was holding arm 3's config.** `cscan poll` resolves config, so
+  its poller would have written events under `fda16796c6e82ee4` while the
+  site reads `serving_config` at `a38d3ca6b58295e8` — and shown nothing.
+  Reverted before the timer was enabled.
+- The Pi's clock is `America/Los_Angeles`, matching the workstation to the
+  second, so `06:45` in the wrapper is 06:45 PT.
+- Yahoo is reachable from the Pi: a bare `curl` returns 429, but the real
+  `fetch_quotes` path returns live rows (AAPL 318.06, MSFT 507.80 at
+  06:36). `yfinance` establishes its own session; the 429 was a red
+  herring.
+
+### Pi vs workstation, measured
+
+Same commands, same data, differing only in machine:
+
+| step | workstation | Pi | ratio |
+|---|---|---|---|
+| `stats rho` | 0:40 | 3:28 | 5.2x |
+| `cell_stats` train | 1:03 | 5:02 | 4.8x |
+| `cell_stats` validate | 0:19 | 1:59 | 6.3x |
+| `universe`, one quarter | ~24s | ~99s | 4.1x |
+
+**~5x slower**, on 4 Cortex-A72 cores against 8 x86, with 1.3 GB free
+against 32. That is why compute and the harness stay on the workstation:
+they want 8 workers at ~820 MB each, which the Pi cannot give without
+swapping to its SD card. The poller is the opposite shape — I/O bound and
+rate-limited — so the 5x barely touches it.
