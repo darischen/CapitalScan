@@ -4482,3 +4482,58 @@ against 32. That is why compute and the harness stay on the workstation:
 they want 8 workers at ~820 MB each, which the Pi cannot give without
 swapping to its SD card. The poller is the opposite shape — I/O bound and
 rate-limited — so the 5x barely touches it.
+
+---
+
+## 2026-08-28 — Arm 3's universe: +36% trade, watch universe intact
+
+`config_hash = fda16796c6e82ee4`. `required_criteria` names
+`crit_rel_return_history` instead of `crit_rel_return` — ADR 014's 757-bar
+history gate **without** its sector-median test. Compute is still running;
+this records the universe pass, which is what the correction was about.
+
+| | in_trade @ 2026-06-30 | in_watch | in_trade ticker-quarters, all history |
+|---|---|---|---|
+| arm1 baseline | 246 | 45 | 8,163 |
+| arm2 flat base | 253 | 48 | 8,431 |
+| **arm3 no median test** | **334** | **46** | **11,891** |
+
+### Both halves of the correction are confirmed
+
+**+88 names, +36%.** `REBUILD_ARMS.md` predicted +35% (184 → 248) for the
+variant that dropped `crit_rel_return` *entirely*. Dropping only the
+sector-median test gets +36%, so **the median comparison was carrying
+essentially all of that filtering** — the history requirement was excluding
+almost nobody by itself. That is the measurement the original spec could
+not have produced, because it changed both halves at once.
+
+**`in_watch` is 46 against arm1's 45 — intact.** This is why the arm was
+respecified (user's correction, 2026-08-28). The original variant would
+have taken the watch universe 45 → 36 as all nine `history`-route names
+graduated to `in_trade` at once, since nothing would have been left to hold
+them. Keeping the 757-bar gate keeps ADR 149's route firing, and the
+measured 46 says it still is.
+
+The +1 over arm1 is not noise to explain away: a wider trade universe
+changes which names are *excluded* from it, and `watch_reason` returns
+`None` for anything already qualifying to trade.
+
+### Why this could not have been a config flag
+
+`config_hash` is `sha256(asdict(Config))`, so adding a config *field* moves
+the hash at its default value. Implemented that way first and measured: the
+default went `a38d3ca6b58295e8` -> `be4e4702241ce90c`, which orphans a
+built and harness-passed generation, leaves `serving_config` pinned to a
+hash the code no longer produces, and has nightly writing events the site
+cannot see.
+
+Naming a second criterion instead means arm 3 changes the **value** of the
+existing `required_criteria` tuple: the hash moves for the arm and for
+nobody else. `test_rel_return_median_flag.py` pins that the default is
+still `a38d3ca6b58295e8`.
+
+### Run context
+
+**This arm ran on the workstation while the Pi polled a live session** —
+the first time that has been possible (ADR 158). Research had no live
+writer; the poller's ticks and the arm's 61 compute chunks did not contend.
