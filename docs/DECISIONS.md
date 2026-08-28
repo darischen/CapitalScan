@@ -6716,3 +6716,54 @@ workstation.
 That variant still writes research over an SSH tunnel originating from the
 workstation, so it frees nothing. The value is entirely in removing
 research from the live write path.
+
+### Consequence discovered in production, 2026-08-28
+
+**A second writer makes a surrogate `id` ambiguous, and nothing announces
+it.** The first live session under this ADR died at 06:56, one tick after
+the open:
+
+    duplicate key value violates unique constraint "signal_reports_pkey"
+    DETAIL:  Key (id)=(21) already exists.
+
+Serving held **1,829 `signal_reports` with `signal_reports_id_seq` at 21**.
+The cause is mechanical and was invisible for as long as the design had one
+writer: `run_sync` copies every row with its own explicit id, and an INSERT
+that supplies an id **does not advance the sequence**. Serving had been
+copied into for months and never inserted into, so its sequences had never
+moved. `events_id_seq` sat at 21 against a max of 39,167,955 by the same
+route.
+
+**The crash is not the damage.** Before reaching the collision the poller
+wrote **18 real reports into ids 1-18** — rows whose ids say nothing about
+when they were written. They committed and survived. What kept that from
+destroying history was luck rather than design: research's own ids begin at
+**19**, because everything below had been purged, and `pull_live_records`
+upserts on `id`. One more fire before the collision would have silently
+replaced a real 2026-08-03 row on the next nightly.
+
+Three fixes, at three different distances from the cause:
+
+1. `run_sync` now resets every sequence on the target from the catalogue
+   after copying. This is the actual repair — a sequence fixed by hand
+   goes stale on the next sync, because the next sync copies the ids again.
+2. `poll.assert_sequences_are_ahead` refuses at startup, because (1) only
+   runs at night and a store can be wrong all day. It reads the catalogue
+   rather than a list of the poller's tables, so `events` was covered
+   without being named.
+3. The 18 rows' `event_id` values, which pointed at provisional events
+   present in neither store, were set NULL and backed up to
+   `reports/poller/signal_reports_id1_18_backup_20260828.csv`.
+
+**The 977 other dangling `event_id`s on serving were left alone, and the
+distinction matters.** They point at real ids in 7.6M–30M whose events were
+swept by nightly or purged by generation cleanup — a normal steady state,
+since `signal_reports` is durable and poller `events` are provisional.
+Those ids carry information. Ids 1-18 never identified anything.
+
+**A caution about the shape.** `pull_live_records` keying on `id` is safe
+only while the two stores' id spaces stay disjoint, which fix (1) maintains
+by construction: serving's sequence is set past research's max on every
+sync, so new poller rows land above anything research holds. If a future
+change ever lets research allocate `signal_reports` ids again, that
+assumption breaks and the key must become natural rather than surrogate.

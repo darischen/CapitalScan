@@ -149,6 +149,39 @@ SELECT relname, n_dead_tup, last_vacuum, last_analyze
 FROM pg_stat_user_tables WHERE relname = 'path';
 ```
 
+**A catalogue sweep over `pg_attribute` must exclude dropped columns.**
+`DROP COLUMN` does not delete the row — it renames the column to a
+`........pg.dropped.N........` placeholder and sets `attisdropped`, so the
+physical tuple layout is preserved. Worse, `pg_get_serial_sequence` **raises**
+on a name that is not a real column instead of returning NULL, so a
+`WHERE ... IS NOT NULL` filter meant to skip it never runs and the whole
+statement aborts:
+
+```
+ERROR: column "........pg.dropped.45........" of relation "cell_stats" does not exist
+```
+
+Always `JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT
+a.attisdropped`. Hit 2026-08-28 in both the sync sequence reset and the
+poller's preflight audit — serving has no dropped columns and passed,
+research's `cell_stats` has one and did not. **Eleven unit tests were green
+at the time.** The bug was only reachable by executing the SQL against a
+real database, which is the general lesson: a query pinned by tests that
+never run it is untested.
+
+**Sequences do not advance on an INSERT that supplies an explicit id.** So a
+store that is only ever *copied into* has sequences frozen wherever they
+started, and the defect is silent until something *inserts*. Serving held
+1,829 `signal_reports` with its sequence at 21. Audit any store you are
+about to write to:
+
+```sql
+SELECT last_value, (SELECT max(id) FROM signal_reports) FROM signal_reports_id_seq;
+```
+
+`cscan poll --serving` now refuses to start when any sequence is behind its
+table's max id. See ADR 158's consequence section.
+
 ## The fetch cache lies when you change what a key means
 
 `jobs/fetch/yahoo.py` caches every network result to
