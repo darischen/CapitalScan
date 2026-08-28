@@ -576,7 +576,8 @@ def run_sync(
                     SELECT c.oid::regclass AS tbl, a.attname AS col,
                            pg_get_serial_sequence(c.oid::regclass::text, a.attname) AS seq
                       FROM pg_class c
-                      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0
+                      JOIN pg_attribute a ON a.attrelid = c.oid
+                       AND a.attnum > 0 AND NOT a.attisdropped
                      WHERE c.relkind = 'r'
                        AND pg_get_serial_sequence(c.oid::regclass::text, a.attname) IS NOT NULL
                   LOOP

@@ -23,7 +23,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from datetime import time as dtime
-from typing import Callable, cast
+from typing import Any, Callable, Sequence, cast
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -265,6 +265,88 @@ def assert_target_is_current(
             f"max {max_lag_days}). Membership would be resolved from a universe "
             "that is no longer current. Run `cscan sync` first."
         )
+
+
+# Every table whose id comes from a sequence, with the sequence's position
+# and the largest id actually stored. `pg_sequence_last_value` returns NULL
+# for a sequence never drawn from, which coalesces to 0 and so reads as
+# "behind" for any non-empty table -- which is exactly right.
+#
+# `query_to_xml` is the standard way to aggregate over a table named at
+# runtime from inside plain SQL; the alternative is a Python loop issuing
+# dynamic `max()` per table, which is more code and more round trips for
+# the same answer.
+SEQUENCE_AUDIT_SQL = """
+WITH seqs AS (
+  SELECT c.oid::regclass::text AS tbl,
+         a.attname             AS col,
+         pg_get_serial_sequence(c.oid::regclass::text, a.attname) AS seq
+    FROM pg_class c
+    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+   WHERE c.relkind = 'r'
+     AND pg_get_serial_sequence(c.oid::regclass::text, a.attname) IS NOT NULL
+)
+SELECT s.tbl,
+       coalesce(pg_sequence_last_value(s.seq::regclass), 0) AS last_value,
+       coalesce((xpath('/row/m/text()',
+                       query_to_xml(format('SELECT max(%I) AS m FROM %s', s.col, s.tbl),
+                                    false, true, '')))[1]::text::bigint, 0) AS max_id
+  FROM seqs s
+"""
+
+
+def sequences_behind(conn: Any) -> list[tuple[str, int, int]]:
+    """Tables on the poll target whose sequence sits at or below their max id.
+
+    Returns `(table, sequence_position, max_id)` for each offender, empty
+    when the store is sound.
+    """
+    rows = conn.execute(text(SEQUENCE_AUDIT_SQL)).all()
+    return [(t, int(last), int(mx)) for t, last, mx in rows if int(mx) > 0 and int(last) < int(mx)]
+
+
+def assert_sequences_are_ahead(behind: Sequence[tuple[str, int, int]]) -> None:
+    """Refuse to poll a store whose sequences are behind its own rows.
+
+    **The failure this prevents happened, on 2026-08-28 at 06:56.** Serving
+    held 1,829 `signal_reports` with `signal_reports_id_seq` still at 21,
+    because `run_sync` copies every row with its own explicit id and an
+    INSERT that supplies an id does not advance the sequence. Nothing
+    noticed while research was the only writer -- serving was copied into,
+    never inserted into. The first live session under ADR 158 inserted, drew
+    id 1, and walked up through the gaps until id 21 collided with a real
+    row. The session died on the first tick after the open.
+
+    It is worth a preflight rather than a fix alone for two reasons.
+
+    **The damage is not the crash.** Before colliding, the poller wrote 18
+    reports into ids 1-18 -- real rows, at ids that say nothing about when
+    they were written. They survived, and only luck kept them from
+    overwriting history: research's own ids began at 19, because everything
+    below had been purged. One more fire before the collision would have
+    silently replaced a real row on the next `pull_live_records`, which
+    upserts on `id`.
+
+    **A crash mid-session is the expensive shape.** `Restart=on-failure`
+    brought the poller back 133 seconds later, so the day was not lost, but
+    a session that dies at 06:56 and returns at 06:58 leaves a hole no
+    coverage number explains. Refusing at startup costs one session and
+    names the cause; crashing costs the same session and names a duplicate
+    key.
+
+    Generic over the catalogue rather than a list of the poller's tables:
+    `events_id_seq` was at 21 against a max of 39,167,955 by the same
+    mechanism, and would have failed on the first live *event* rather than
+    the first report. A table added later inherits the check for free.
+    """
+    if not behind:
+        return
+    detail = ", ".join(f"{t} (sequence at {s}, max id {m})" for t, s, m in behind)
+    raise RuntimeError(
+        f"poll target has sequences behind its own rows: {detail}. "
+        "Inserting would reuse ids that already exist and can overwrite real "
+        "rows on the next pull. Run `cscan sync` to reset them."
+    )
 
 
 def _push_live(engine, chash, session_date, run_id, watermark, report):

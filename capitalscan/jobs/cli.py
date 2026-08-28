@@ -1453,11 +1453,18 @@ def poll(
                 text("SELECT max(d) FROM trading_days WHERE d <= :today"),
                 {"today": poll_job._now_et().date()},
             ).scalar_one_or_none()
+            # Inside the same connection as the staleness read: both are
+            # preflight questions about the same store, and a second connect
+            # would only add a failure mode. See
+            # `assert_sequences_are_ahead` for the 06:56 session this exists
+            # to prevent.
+            behind = poll_job.sequences_behind(conn)
         if last_day is None:
             console.print("[red]serving has no trading calendar[/red]; run `cscan sync`")
             raise typer.Exit(code=1)
         try:
             poll_job.assert_target_is_current(watermark, last_day)
+            poll_job.assert_sequences_are_ahead(behind)
         except RuntimeError as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1) from exc
