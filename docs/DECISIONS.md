@@ -5692,6 +5692,29 @@ in a sentence, which is what makes it checkable a year from now.
 
 ---
 
+### Consequence found in production, 2026-08-28
+
+**Nulling `event_id` is only safe if every reader stops using it, and one
+did not.** The sweep's justification is that `signal_reports` is
+self-contained — `ticker`, `fired_at` and `state_json` are NOT NULL — so
+clearing the link "preserves the observation". That is true of the table.
+It was false of `v_screen_live`, which resolved `fired_at` through
+`r.event_id = e.id` and therefore showed nothing for any swept report.
+
+The visible symptom was that **every intraday detection disappeared from the
+site after each nightly**, leaving only the opening burst, so the screener
+looked like the poller only ever fired at 06:45. Of 175 reports on
+2026-08-28: 90 resolved (all 06:45), 61 nulled by this sweep (06:45–12:52),
+24 dangling (07:04–12:37).
+
+Fixed in `d5e91a7c3b48` by matching on `(ticker, signal_date)` instead.
+
+**The general rule this earns:** a cleanup that deliberately breaks a
+reference must name the readers of that reference, because "the row still
+holds the information" and "the query can still find it" are different
+claims, and only the first was checked here. No error is raised on either
+side — the view simply returns NULL, which renders as a blank cell.
+
 ## 151. `run_events` does not tag clusters
 
 **Date:** 2026-08-24. **Status:** Pinned. Enforces Ruling C5, which already assigned the cluster columns to the backtest exclusively. Does not move `config_hash`.
