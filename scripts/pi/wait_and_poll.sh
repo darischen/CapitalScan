@@ -79,7 +79,12 @@ done
 # Written with a UTF-8 BOM because the .ps1's files carry one and a reader
 # that sniffs encoding should not see the two as different formats.
 CSV="reports/poller/poller_session_$(date +%Y_%m_%d_%H%M%S).csv"
-printf 'ï»¿' > "$CSV"
+# Escapes, not the literal characters. Writing the BOM as text encodes
+# it a second time -- U+00EF U+00BB U+00BF becomes the six bytes
+# c3 af c2 bb c2 bf, and Excel then shows a visible BOM in the first
+# header cell. The .ps1's files start with the three bytes ef bb bf,
+# and matching them is the whole point of this block.
+printf '\xef\xbb\xbf' > "$CSV"
 echo 'fired_at_pt,ticker,signal_type,entry_price,side,touch_level,k_full,d_full,k_fast,atr_14,vix_close,spx_ret_1d,channels_sent,day_open,reversal,open_gap_atr' >> "$CSV"
 say CSV "Writing $CSV"
 
