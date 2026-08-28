@@ -14,16 +14,24 @@ stopping*. A 30-second burst benchmark answers neither half.
 whole hot path can be driven from synthetic bars. The laptop needs the repo
 and `uv sync`, nothing else -- no Postgres, no 22 GB copy.
 
-**The number that decides it is `sustain`, not the mean.** Every laptop wins
-the first minute; the Flow X13 boosts to 4.6 GHz in a 13-inch chassis and
-then has to live inside 35W. This reports throughput per 30s bucket and the
-ratio of the last full minute to the first, so thermal decay is visible
-rather than averaged away:
+**The number that decides it is `sustain`, and the first version of it was
+wrong.** It compared the final minute against the *first* minute and
+reported 1.75 on a machine that was not throttling at all -- the run went
+0.800 -> 0.800 -> 1.067 -> 1.333 and then sat flat. That is a process pool
+filling up, not a chip speeding up: `ProcessPoolExecutor` uses **spawn** on
+Windows, so eight workers each pay a full interpreter start plus
+pandas/numpy imports, roughly 90 seconds of ramp, all of it inside the
+baseline.
 
-    sustain = (rate over final 60s) / (rate over first 60s)
+So the baseline excludes `--warmup` seconds (default 120):
 
-A desktop with real cooling sits near 1.00. A laptop that drops to 0.70 is
-30% slower than its own opening minute for the remaining 118 of 120.
+    steady  = units after warmup / seconds after warmup   <- compare machines
+    sustain = (rate over final 60s) / (rate at warmup..warmup+60s)
+
+`ramp60` is still printed, labelled as what it is: a property of Python's
+process pool, not of the hardware. A machine with no decay sits near 1.00 on
+`sustain`; one that drops to 0.70 is 30% slower than its own steady state
+for the rest of the run.
 
 **Deterministic inputs.** One seed, so both machines grind identical numbers
 and a difference is the machine rather than the data. The bars are random
@@ -131,6 +139,12 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=8, help="physical cores, not threads")
     ap.add_argument("--seconds", type=int, default=600, help="wall clock to sustain")
     ap.add_argument("--bucket", type=int, default=30, help="reporting bucket, seconds")
+    ap.add_argument(
+        "--warmup",
+        type=int,
+        default=120,
+        help="seconds excluded from the steady-state baseline (spawn + imports)",
+    )
     args = ap.parse_args()
 
     print(f"machine : {platform.processor() or platform.machine()}")
@@ -173,14 +187,20 @@ def main() -> None:
                 break
 
     total = time.perf_counter() - start
+    # `first` is the ramp, kept only to report it as such. `steady` is the
+    # comparable rate: everything after `--warmup`, by when the pool is full.
+    w = float(args.warmup)
     first = sum(1 for t in done_at if t < 60.0) / 60.0
+    steady = sum(1 for t in done_at if w <= t < w + 60.0) / 60.0
     last = sum(1 for t in done_at if total - 60.0 <= t < total) / 60.0
+    rate = len([t for t in done_at if t >= w]) / (total - w) if total > w else float("nan")
     print(f"\ntotal   : {len(done_at)} units in {total:.0f}s = {len(done_at) / total:.3f} units/s")
-    print(f"first60 : {first:.3f} units/s")
-    print(f"last60  : {last:.3f} units/s")
-    if first > 0:
-        print(f"sustain : {last / first:.3f}   (1.00 = no thermal decay)")
-    print("\nCompare `total` for raw speed and `sustain` for whether it holds up.")
+    print(f"ramp60  : {first:.3f} units/s   (spawn + imports; NOT a hardware number)")
+    print(f"steady  : {rate:.3f} units/s   <- compare THIS between machines")
+    print(f"  at {w:.0f}s: {steady:.3f}   last60: {last:.3f}")
+    if steady > 0:
+        print(f"sustain : {last / steady:.3f}   (1.00 = no thermal decay)")
+    print("\nCompare `steady` between machines, and `sustain` for whether it holds up.")
 
 
 if __name__ == "__main__":
