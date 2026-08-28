@@ -31,7 +31,6 @@ import inspect
 
 from capitalscan.jobs import sync as sync_job
 
-
 SRC = inspect.getsource(sync_job.pull_live_records)
 # The table list is a module constant, not inlined, so the checks below read
 # it directly rather than grepping the function body.
