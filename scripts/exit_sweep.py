@@ -378,6 +378,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Exit-parameter sweep (target x stop).")
     ap.add_argument("--start-from", default=None, help="arm name to resume at")
     ap.add_argument("--only", default=None, help="run a single arm by name")
+    ap.add_argument(
+        "--arms",
+        default=None,
+        help="comma-separated arm names, run in the order given. Used to split the "
+        "grid across machines; each box takes a disjoint subset and `already_done` "
+        "makes an overlap harmless rather than duplicated work.",
+    )
     ap.add_argument("--no-verify", action="store_true", help="skip the ExitParams/universe proof")
     ap.add_argument("--verify-quarter", default="2019Q2", help="quarter LABEL, e.g. 2019Q2")
     ap.add_argument("--list", action="store_true", help="print the grid and exit")
@@ -388,7 +395,14 @@ def main() -> None:
         for a in arms:
             print(f"{a.name:14s} target={a.target_pct}  stop={a.stop_mode}:{a.stop_value}")
         return
-    if args.only:
+    if args.arms:
+        wanted = [x.strip() for x in args.arms.split(",") if x.strip()]
+        by_name = {a.name: a for a in ARMS}
+        missing = [w for w in wanted if w not in by_name]
+        if missing:
+            sys.exit(f"no arm(s) named: {', '.join(missing)}. See --list.")
+        arms = [by_name[w] for w in wanted]
+    elif args.only:
         arms = [a for a in arms if a.name == args.only]
         if not arms:
             sys.exit(f"no arm named {args.only}")
