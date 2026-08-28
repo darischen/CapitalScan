@@ -30,3 +30,17 @@ if ($hash -ne "a38d3ca6b58295e8") {
 
 & .\.venv\Scripts\cscan.exe nightly 2>&1 | Tee-Object -FilePath $log -Append
 "=== nightly end $(Get-Date -Format 'HH:mm:ss') exit=$LASTEXITCODE ===" | Tee-Object -FilePath $log -Append
+
+# **Propagate the exit code, or Task Scheduler lies.**
+# `$ErrorActionPreference = "Stop"` governs PowerShell cmdlet errors and has
+# no effect on a native executable returning non-zero. Without this line the
+# script always ends 0, so `(Get-ScheduledTaskInfo).LastTaskResult` reports
+# success for a nightly that failed, and the log -- which nobody reads while
+# things look fine -- is the only record.
+#
+# Captured before it can be clobbered: `Tee-Object` above is a cmdlet, but
+# any native call added later between there and here would overwrite
+# $LASTEXITCODE.
+$code = $LASTEXITCODE
+if ($null -eq $code) { $code = 0 }
+exit $code
