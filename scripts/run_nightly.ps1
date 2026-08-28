@@ -14,7 +14,22 @@ $ErrorActionPreference = "Stop"
 Set-Location "C:\Users\daris\Desktop\School\CapitalScan"
 
 $log = "reports\nightly_$(Get-Date -Format 'yyyy_MM_dd').log"
-"=== nightly start $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===" | Tee-Object -FilePath $log
+
+# **UTF-8, not PowerShell 5.1's default.** `Tee-Object` has no -Encoding in
+# 5.1 and writes UTF-16LE, which unix tools read as NUL-separated gibberish
+# -- `tail` on this log returned nothing readable, which is precisely when
+# you most want to read it.
+function Write-Log {
+    param([Parameter(ValueFromPipeline = $true)] $Message)
+    process {
+        $line = "$Message"
+        Write-Host $line
+        Add-Content -Path $log -Value $line -Encoding utf8
+    }
+}
+
+if (Test-Path $log) { Remove-Item $log }
+"=== nightly start $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===" | Write-Log
 
 # **Refuse to run under an ablation arm's config.** `cscan nightly` resolves
 # config, so an arm left set would have nightly writing events under that
@@ -23,13 +38,28 @@ $log = "reports\nightly_$(Get-Date -Format 'yyyy_MM_dd').log"
 $hash = & .\.venv\Scripts\python.exe -c "from capitalscan.jobs.config import config_hash, resolve_config; print(config_hash(resolve_config()))"
 $hash = $hash.Trim()
 if ($hash -ne "a38d3ca6b58295e8") {
-    "REFUSING: config resolves to $hash, not the serving generation a38d3ca6b58295e8. An ablation arm is probably still set in core/config.py." | Tee-Object -FilePath $log -Append
+    "REFUSING: config resolves to $hash, not the serving generation a38d3ca6b58295e8. An ablation arm is probably still set in core/config.py." | Write-Log
     exit 1
 }
-"config ok: $hash" | Tee-Object -FilePath $log -Append
+"config ok: $hash" | Write-Log
 
-& .\.venv\Scripts\cscan.exe nightly 2>&1 | Tee-Object -FilePath $log -Append
-"=== nightly end $(Get-Date -Format 'HH:mm:ss') exit=$LASTEXITCODE ===" | Tee-Object -FilePath $log -Append
+# **`2>&1` on a native exe is terminating under ErrorActionPreference=Stop,
+# and it killed the first scheduled nightly (2026-08-28 13:15).** PowerShell
+# 5.1 wraps every stderr line from a native command in a NativeCommandError
+# ErrorRecord; with the preference at Stop, `cscan`'s first stderr line --
+# ordinary progress output, exit code irrelevant -- became a terminating
+# RemoteException. The script died before writing one line of cscan output,
+# leaving a `bars_daily` row stuck at 'running' and a log holding only the
+# two header lines. Now recorded in CLAUDE.md.
+#
+# Scoped to the call, not set for the file, so real cmdlet errors elsewhere
+# still stop the script.
+$prev = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+& .\.venv\Scripts\cscan.exe nightly 2>&1 | Write-Log
+$code = $LASTEXITCODE
+$ErrorActionPreference = $prev
+"=== nightly end $(Get-Date -Format 'HH:mm:ss') exit=$code ===" | Write-Log
 
 # **Propagate the exit code, or Task Scheduler lies.**
 # `$ErrorActionPreference = "Stop"` governs PowerShell cmdlet errors and has
@@ -38,9 +68,8 @@ if ($hash -ne "a38d3ca6b58295e8") {
 # success for a nightly that failed, and the log -- which nobody reads while
 # things look fine -- is the only record.
 #
-# Captured before it can be clobbered: `Tee-Object` above is a cmdlet, but
-# any native call added later between there and here would overwrite
-# $LASTEXITCODE.
-$code = $LASTEXITCODE
+# $code is captured on the line immediately after the call, because any
+# native command run between the two would overwrite $LASTEXITCODE before
+# it could be read.
 if ($null -eq $code) { $code = 0 }
 exit $code

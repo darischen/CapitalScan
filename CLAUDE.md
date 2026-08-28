@@ -233,6 +233,45 @@ complete in under a minute. A sub-second ingest is a cache read.
 `data/cache/yahoo_daily/` and `yahoo_hourly/` hold the pre-`_v2` entries and
 are unread; delete them freely.
 
+**`2>&1` on a native executable is *terminating* under
+`$ErrorActionPreference = "Stop"`, and it killed the first scheduled
+nightly.** PowerShell 5.1 wraps every stderr line from a native command in a
+`NativeCommandError` record. With the preference at `Stop`, the **first**
+stderr line becomes a terminating `RemoteException` — the exit code is
+irrelevant, and ordinary progress output is enough to do it.
+
+On 2026-08-28 at 13:15 `run_nightly.ps1` ran
+
+```powershell
+$ErrorActionPreference = "Stop"
+& .\.venv\Scripts\cscan.exe nightly 2>&1 | Tee-Object -FilePath $log -Append
+```
+
+and died before writing a single line of `cscan` output. The evidence was
+misleading in three directions at once: the log held only the wrapper's own
+two header lines, so it looked like `cscan` never started; a `bars_daily`
+row sat at `status='running'` with no process behind it, so it looked like a
+hang; and the row's age (18 minutes) invited the conclusion that the step
+was merely slow. It had been dead the whole time.
+
+Scope the preference to the call rather than the file, so genuine cmdlet
+errors still stop the script:
+
+```powershell
+$prev = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+& .\.venv\Scripts\cscan.exe nightly 2>&1 | Write-Log
+$code = $LASTEXITCODE     # capture immediately; any native call clobbers it
+$ErrorActionPreference = $prev
+```
+
+**Two related traps in the same file.** `$ErrorActionPreference = "Stop"`
+does **not** make a native exe's non-zero exit fail the script, so a wrapper
+must `exit $LASTEXITCODE` explicitly or Task Scheduler records success for a
+failed job. And `Tee-Object` has no `-Encoding` in 5.1 — it writes UTF-16LE,
+which `tail` and `grep` read as gibberish. Use
+`Add-Content -Encoding utf8`.
+
 **`npm run build` invalidates a running `next start`.** The server holds
 its chunk hashes in memory; a build rewrites `.next/` with new ones, so
 every asset 404s and the page renders as unstyled text. It looks exactly
