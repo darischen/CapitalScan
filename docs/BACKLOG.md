@@ -1203,3 +1203,41 @@ and far better than the NULL it replaced, but wrong in principle.
 poller and matched on in the view. It is a schema change plus a poller
 change plus a view change, which is why it is here rather than in that
 migration.
+
+**The workstation is 1.58x faster than the Flow X13 laptop, and the laptop
+does not throttle.** Measured 2026-08-28 with `scripts/cpu_bench.py`, which
+drives the real hot path (`bollinger`, `stochastic`, `atr`, `detect`,
+`resolve_exit`) on synthetic bars for ten minutes at 8 workers, both
+machines otherwise idle:
+
+| | workstation (3700X, 65W, DDR4-3600) | Flow X13 (5950HS, 35W, LPDDR4X-4266) |
+|---|---|---|
+| steady | **2.138 units/s** | 1.352 units/s |
+| sustain | 1.171 | **1.012** |
+| one unit, cold | 3.8s | 5.8s |
+
+Two independent measurements agree: the steady ratio is 1.58 and the cold
+single-unit ratio is 1.53.
+
+**The mechanism is power budget, not heat.** The prediction going in was
+thermal decay -- a 13-inch chassis giving back its 4.6 GHz boost over a
+two-hour arm. That did not happen: `sustain` 1.012 is flat across the whole
+run, flatter than the desktop's own 1.171. The laptop is simply slower from
+the first bucket, because 35W split eight ways cannot hold the all-core
+clocks a 65W desktop does. Zen 3's IPC advantage is real and the power
+envelope eats it.
+
+**What that means for splitting a sweep.** The laptop is worth ~63% of a
+workstation. Balancing 10 arms gives roughly 6 to the workstation and 4 to
+the laptop, for ~16h wall clock against ~27h on the workstation alone. It
+needs no Postgres and no data copy -- point `DATABASE_URL_RESEARCH` at the
+workstation over the LAN, since arms write disjoint `config_hash` rows and
+cannot collide.
+
+**`sustain` measured the wrong thing first, and the fix is the interesting
+part.** It compared the last minute against the *first* and reported 1.75 on
+a machine that was not throttling at all. `ProcessPoolExecutor` uses spawn
+on Windows, so eight workers each pay an interpreter start plus
+pandas/numpy imports -- about 90 seconds of ramp, all of it inside the
+baseline. Any machine looks like it accelerates against that. The baseline
+now excludes `--warmup` (default 120s).
