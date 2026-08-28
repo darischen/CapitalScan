@@ -51,3 +51,9 @@ web/*.tsbuildinfo
 
 # Playwright MCP scratch output (screenshots, console logs)
 .playwright-mcp/
+
+# Sweep/ablation arm overrides. resolve_config reads this ahead of the
+# dataclass defaults, so a committed copy would silently move every
+# config_hash in the repo -- the failure that put arm 2's -0.01 on main
+# in 77cb5ee. Arms are a local, temporary state.
+config.toml
