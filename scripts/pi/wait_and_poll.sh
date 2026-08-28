@@ -72,6 +72,17 @@ while (( $(date +%s) < open_s )); do
   sleep $(( left > 10 ? 10 : left ))
 done
 
+# **The session CSV, same name and columns as `wait_and_poll.ps1`.**
+# `reports/poller/poller_session_YYYY_MM_DD_HHMMSS.csv`, so the Pi's output
+# drops into the same directory and tooling as the Windows script's.
+#
+# Written with a UTF-8 BOM because the .ps1's files carry one and a reader
+# that sniffs encoding should not see the two as different formats.
+CSV="reports/poller/poller_session_$(date +%Y_%m_%d_%H%M%S).csv"
+printf 'ï»¿' > "$CSV"
+echo 'fired_at_pt,ticker,signal_type,entry_price,side,touch_level,k_full,d_full,k_fast,atr_14,vix_close,spx_ret_1d,channels_sent,day_open,reversal,open_gap_atr' >> "$CSV"
+say CSV "Writing $CSV"
+
 say START "Launching poller (--serving). Will run until ${CLOSE} PT"
 .venv/bin/cscan poll --interval "$INTERVAL" --serving &
 POLLER=$!
@@ -82,25 +93,46 @@ say MONITOR "Poller started (PID: $POLLER). Monitoring for confluence signals...
 # window: ids are monotonic, so nothing is missed or repeated if a query is
 # slow.
 PSQL=(sudo -u postgres psql -d capitalscan_serving -X -q -t -A -F'|')
+SESSION_DATE=$(date +%F)
 last=0; n=0
 while kill -0 "$POLLER" 2>/dev/null; do
+  # **Every signal of the session goes to the CSV; only confluence is
+  # narrated.** The .ps1 does the same, and the distinction matters -- the
+  # terminal is for watching, the CSV is the record.
+  #
+  # `signal_date = :d` with the session's own date, never CURRENT_DATE
+  # (ADR 119): the database runs UTC, and while the poll window happens to
+  # fall inside one UTC day, relying on that is how this bug keeps
+  # returning.
   rows=$("${PSQL[@]}" -c "
-    SELECT s.id, s.fired_at AT TIME ZONE 'America/Los_Angeles', e.ticker,
-           e.signal_type, e.entry_price::text, e.k_full::text, e.d_full::text,
-           e.vix_close::text
+    SELECT s.id,
+           s.fired_at AT TIME ZONE 'America/Los_Angeles', e.ticker,
+           e.signal_type, e.entry_price::text, e.side, e.touch_level::text,
+           e.k_full::text, e.d_full::text, e.k_fast::text, e.atr_14::text,
+           e.vix_close::text, e.spx_ret_1d::text,
+           array_to_string(s.channels_sent, ' '),
+           s.state_json->>'day_open',
+           s.state_json->'bear_reversal'->>'confirmed',
+           s.state_json->'bear_reversal'->>'open_gap_atr'
       FROM events e JOIN signal_reports s ON e.id = s.event_id
-     WHERE e.signal_type LIKE 'confluence_%' AND s.id > $last
+     WHERE e.signal_date = '$SESSION_DATE' AND s.id > $last
      ORDER BY s.id;" 2>/dev/null)
   if [ -n "$rows" ]; then
-    while IFS='|' read -r id fired tick sig px k d vix; do
+    while IFS='|' read -r id fired tick sig px side lvl k d kf atr vix spx ch dopen rev gap; do
       [ -z "$id" ] && continue
-      n=$((n+1)); last=$id
-      echo "[CONFLUENCE #$n] $fired"
-      echo "  $tick $sig | Price: $px | K: $k D: $d | VIX: $vix"
+      last=$id
+      echo "$fired,$tick,$sig,$px,$side,$lvl,$k,$d,$kf,$atr,$vix,$spx,{$ch},$dopen,$rev,$gap" >> "$CSV"
+      case "$sig" in
+        confluence_*)
+          n=$((n+1))
+          echo "[CONFLUENCE #$n] $fired"
+          echo "  $tick $sig | Price: $px | K: $k D: $d | VIX: $vix"
+          ;;
+      esac
     done <<< "$rows"
   fi
   sleep 20
 done
 
 wait "$POLLER"; rc=$?
-say STOP "Session ended (exit $rc). $n confluence signal(s) reported."
+say STOP "Session ended (exit $rc). $n confluence signal(s), $(( $(wc -l < "$CSV") - 1 )) row(s) in $CSV"
