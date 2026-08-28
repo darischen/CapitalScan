@@ -2495,23 +2495,7 @@ def nightly() -> None:
     # ingest as failed. It is reported and the next run retries.
     from capitalscan.jobs import sync as sync_job
 
-    # **The sweep has a second target (ADR 153).** `_sweep_provisional_poll_rows`
-    # above deleted this session's poller rows from research. The live sync
-    # has already pushed those same rows to serving, and `run_sync` never
-    # deletes -- so without this the serving store keeps every row the sweep
-    # rejected, accumulating a few a day, forever, and diverging from the
-    # source of truth in exactly the rows research judged unreliable.
-    #
-    # Runs before `run_sync` so the authoritative rows land after the
-    # provisional ones are gone, never the reverse.
-    try:
-        swept_serving = _sweep_provisional_poll_rows(
-            sync_job.serving_engine(), _config_hash(config), end
-        )
-        console.print(f"nightly: swept {swept_serving} provisional row(s) from serving")
-    except Exception as exc:  # noqa: BLE001 - serving is derived; research is unaffected
-        console.print(f"[yellow]warn[/yellow] serving sweep skipped: {exc}")
-
+    sync_ok = False
     try:
         # **Incremental here, full in `cscan sync`.** Nightly adds one
         # session; a full pass shipped 7,469,519 rows in 114.2 minutes on
@@ -2523,11 +2507,56 @@ def nightly() -> None:
         # Run `cscan sync` by hand after a rebuild, a reflash or a config
         # change -- that is what the unbounded form is for.
         sync_report = sync_job.run_sync(incremental=True)
+        sync_ok = True
         console.print(f"nightly: synced {sync_report.total:,} rows to serving")
     except RuntimeError as exc:
         console.print(f"[yellow]skip[/yellow] sync: {exc}")
     except Exception as exc:  # noqa: BLE001 - reported, chain still succeeded
         console.print(f"[yellow]warn[/yellow] sync failed, research store is unaffected: {exc}")
+
+    # **The sweep has a second target (ADR 153).** `_sweep_provisional_poll_rows`
+    # above deleted this session's poller rows from research. The live sync
+    # has already pushed those same rows to serving, and `run_sync` never
+    # deletes -- so without this the serving store keeps every row the sweep
+    # rejected, accumulating a few a day, forever, and diverging from the
+    # source of truth in exactly the rows research judged unreliable.
+    #
+    # **After the sync, and only if it succeeded (2026-08-26).** This ran
+    # *before* `run_sync` until then, on the reasoning that "the
+    # authoritative rows land after the provisional ones are gone, never the
+    # reverse". That is correct about the steady state and wrong about the
+    # failure: on 2026-08-26 the sweep removed the Pi's poller rows for the
+    # session, the sync died 53.8 minutes in, and serving held **zero**
+    # events for that day against research's 670. Not stale -- empty. The
+    # site showed nothing.
+    #
+    # Reversed, the worst case is superseded provisional rows surviving one
+    # night. They are stale rather than absent, ADR 140 is explicit that
+    # they were never authoritative, and the next successful sync clears
+    # them. Absent rows have no such recovery: nothing re-creates them
+    # until someone runs a full sync by hand.
+    #
+    # The `sync_ok` guard matters as much as the order. Sweeping after a
+    # *failed* sync is the original bug with extra steps.
+    #
+    # The trigger was physical rather than logical -- the Pi is on WiFi with
+    # `brcmf_cfg80211_set_power_mgmt: power save enabled` and was being
+    # handled at the time -- so this recurs by nature and cannot be argued
+    # away. `test_nightly_sweep_ordering.py` pins the order and the guard.
+    if sync_ok:
+        try:
+            swept_serving = _sweep_provisional_poll_rows(
+                sync_job.serving_engine(), _config_hash(config), end
+            )
+            console.print(f"nightly: swept {swept_serving} provisional row(s) from serving")
+        except Exception as exc:  # noqa: BLE001 - serving is derived; research is unaffected
+            console.print(f"[yellow]warn[/yellow] serving sweep skipped: {exc}")
+    else:
+        console.print(
+            "[yellow]skip[/yellow] serving sweep: the sync did not succeed, so the "
+            "provisional rows are left in place rather than deleted with nothing "
+            "to replace them"
+        )
 
     console.print("nightly: chain complete")
 

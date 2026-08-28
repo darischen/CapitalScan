@@ -16,7 +16,36 @@ deleting the entry loses nothing.
 
 ## Open
 
-### `scan_candidates` spends 70% of its time on pandas row access
+### ~~`scan_candidates` spends 70% of its time on pandas row access~~
+
+**Closed 2026-08-27: 56.8s -> 31.0s on 29,509 bar rows, 1.83x, identical
+16,218 events out.** Two changes, each with the test written first:
+
+- close-confirmed flags attached **once per ticker** instead of written into
+  a freshly materialised Series per bar (56.8 -> 32.7s, the bulk of it)
+- the t-1 indicator row narrowed from 28 columns to the **five** `detect`
+  actually reads (32.7 -> 31.0s)
+
+Narrowing bought far less than an isolated `iloc` microbenchmark predicted
+(1.85x there, ~5% in the real loop). Recorded as measured.
+
+**Its real value was a defect.** `test_candidates_indicator_columns.py`
+asserts the carried field list against `core/signals.py`'s own source, and
+it caught `k_fast` -- read only when `sp.require_fast_agreement` is set, a
+**sweepable flag**, so omitting it passes every default-config test and
+would have changed the event set only inside an ablation arm that enables
+it. Arms 2 and 3 were queued at the time. A hand-maintained list ships that
+bug.
+
+`core.signals.detect` is untouched and stays that way: its signature *is*
+the look-ahead guarantee (one row, never a frame), so vectorising it means
+passing frames, which defeats the signature probe.
+
+Both callers benefit -- `run_backtest`'s compute phase and the harness
+ladder, which runs it six times per chunk.
+
+#### Original entry
+
 
 Profiled 2026-08-27, with numbers, because this is the single largest
 remaining cost in the pipeline and the fix is mechanical rather than
@@ -180,7 +209,25 @@ quarterly and the lateral is bounded by `as_of <= signal_date`.
 
 ---
 
-### A long `cscan sync` is not atomic, and the source can move under it
+### ~~A long `cscan sync` is not atomic, and the source can move under it~~
+
+**Closed 2026-08-28.** Every read now runs inside one `REPEATABLE READ`,
+`READ ONLY` transaction on a single connection, so all fourteen tables see
+the same snapshot however long the sync takes. `READ COMMITTED` -- the
+default -- takes a fresh snapshot per *statement*, so sharing the
+connection alone would have fixed nothing.
+
+`READ ONLY` is belt-and-braces: a sync must never write to research, and
+declaring it makes an accidental write fail at the database instead of
+succeeding quietly. Postgres takes no locks for this (readers never block
+writers under MVCC), so the cost is one long-lived connection.
+
+`test_sync_snapshot.py` pins the mechanism. Proving isolation behaviourally
+needs two concurrent sessions against a live database, which the
+integration tier may not do here.
+
+#### Original entry
+
 
 Raised 2026-08-25, observed rather than reasoned about. A sync that ran
 **1h45m** copied its fourteen tables in foreign-key order while the research
@@ -578,7 +625,23 @@ to be full.
 
 ---
 
-### The nightly sweep deletes serving's rows before the sync can replace them
+### ~~The nightly sweep deletes serving's rows before the sync can replace them~~
+
+**Closed 2026-08-28.** The serving sweep runs **after** `run_sync` and only
+when it succeeded (`sync_ok`). The guard matters as much as the order:
+sweeping after a *failed* sync is the original bug with extra steps.
+
+The trade is explicit. Reversed, the worst case is superseded provisional
+rows surviving one night -- stale, not absent, and ADR 140 is explicit that
+they were never authoritative. The next successful sync clears them.
+Absent rows had no such recovery.
+
+`test_nightly_sweep_ordering.py` pins the order, the guard, and the fact
+that only the *serving* sweep moved -- research is the source of truth and
+its sweep still runs first.
+
+#### Original entry
+
 
 **Realised 2026-08-26**, first time the sync has failed inside the window.
 

@@ -425,29 +425,60 @@ def run_sync(
         )
 
         rows: dict[str, int] = {}
-        for table in _tables(cutoff, str(config_hash)):
-            # pandas-stubs types `params` values as non-optional; a NULL
-            # bound is exactly how "no incremental floor" is expressed and
-            # psycopg binds it fine. The mismatch is the stub, not the call
-            # -- same as `_read_corporate_actions`' list binding.
-            frame = pd.read_sql(
-                text(table.sql),
-                source,
-                params={"cutoff": cutoff, "config_hash": config_hash, **bounds},  # type: ignore[arg-type]
-            )
-            # **`COPY` into a staging table, not row dicts.** Profiled
-            # during a full sync on 2026-08-26: the Pi was 76% idle (load
-            # 1.11 of four cores, SD card 15% utilised) while this process
-            # held 894 MB and 53.8% of one core. The constraint was
-            # `to_dict("records")` building 7.4M Python dicts and SQLAlchemy
-            # re-binding each one -- three full representations of every row
-            # to move it between two databases.
-            #
-            # `_rows_per_batch` chunking is gone with it: `COPY` streams, so
-            # there are no bind parameters to stay under `MAX_BIND_PARAMS`,
-            # and the whole table lands in one transaction instead of one
-            # per 1,000 rows.
-            rows[table.name] = db_io.copy_upsert(target, table.name, frame, list(table.key))
+
+        # **One snapshot for every table (2026-08-25).** Each `read_sql`
+        # against the Engine used to open its own connection, so a sync
+        # that ran 1h45m read fourteen tables at fourteen different
+        # moments. Measured on the Pi right after one: VOO and IBIT had
+        # indicators, no bars, and no `in_trade` universe row -- `universe`
+        # was copied at ~03:05 before ADR 154 made ETFs eligible, `bars` at
+        # ~03:30 with an `EXISTS (... u.in_trade)` filter evaluated against
+        # the *source*, and `indicators` at ~04:12 after ADR 154 landed.
+        #
+        # **That state never existed in research.** The copy manufactured
+        # it, and a ticker with indicators but no bars is incoherent rather
+        # than merely stale -- no downstream query can tell.
+        #
+        # REPEATABLE READ, not the default READ COMMITTED, which takes a
+        # fresh snapshot per *statement*: sharing the connection alone
+        # would fix nothing. The snapshot is established by the first
+        # statement in the transaction and every later read sees it.
+        # Postgres needs no locks for this -- readers never block writers
+        # under MVCC -- so the cost is one long-lived connection.
+        #
+        # READ ONLY because a sync must never write to research; an
+        # accidental write then fails at the database instead of
+        # succeeding quietly. The target is written outside this
+        # transaction, which is the point of holding it open.
+        with source.connect().execution_options(isolation_level="REPEATABLE READ") as snapshot:
+            snapshot.execute(text("SET TRANSACTION READ ONLY"))
+            for table in _tables(cutoff, str(config_hash)):
+                # pandas-stubs types `params` values as non-optional; a NULL
+                # bound is exactly how "no incremental floor" is expressed and
+                # psycopg binds it fine. The mismatch is the stub, not the call
+                # -- same as `_read_corporate_actions`' list binding.
+                frame = pd.read_sql(
+                    text(table.sql),
+                    snapshot,
+                    params={"cutoff": cutoff, "config_hash": config_hash, **bounds},  # type: ignore[arg-type]
+                )
+                # **`COPY` into a staging table, not row dicts.** Profiled
+                # during a full sync on 2026-08-26: the Pi was 76% idle (load
+                # 1.11 of four cores, SD card 15% utilised) while this process
+                # held 894 MB and 53.8% of one core. The constraint was
+                # `to_dict("records")` building 7.4M Python dicts and SQLAlchemy
+                # re-binding each one -- three full representations of every row
+                # to move it between two databases.
+                #
+                # `_rows_per_batch` chunking is gone with it: `COPY` streams, so
+                # there are no bind parameters to stay under `MAX_BIND_PARAMS`,
+                # and the whole table lands in one transaction instead of one
+                # per 1,000 rows.
+                #
+                # Writes the *target* from inside the source's read
+                # transaction, deliberately: the snapshot must outlive
+                # every read, and serving is a different database.
+                rows[table.name] = db_io.copy_upsert(target, table.name, frame, list(table.key))
 
         # Assigned *before* the pin, which can raise. Measured 2026-08-21:
         # a pin failure discarded the count and recorded rows_written = 0
