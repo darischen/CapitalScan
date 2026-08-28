@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Exit-parameter sweep: target x stop, 9 arms (docs/BACKLOG.md).
+"""Exit-parameter sweep: target x stop, 12 arms (docs/BACKLOG.md).
 
 **Selection happens on `train` only.** Every arm's `validate` cells are
 computed and stored, but the arm to keep is chosen from `train` and then
@@ -41,9 +41,10 @@ wrong version measured instead.
 its null", which only matters for an arm that survives FDR at all. Run it
 afterwards on whatever is left standing.
 
-Roughly 2h40m per arm. `t4_atr15` is the baseline and already computed, so a
-full pass is 8 arms and ~21h. Resumable: an arm holding `cell_stats` for both
-splits is skipped.
+Roughly 2h40m per arm. The grid is 4 targets x 3 stops = 12, and `t4_atr15`
+is the baseline and already computed, so a full pass is 11 arms and ~29h.
+Resumable: an arm holding `cell_stats` for both splits is skipped, so a second
+invocation picks up only what is missing.
 """
 
 from __future__ import annotations
@@ -104,11 +105,18 @@ def _arm_name(target: float, mode: str, value: float) -> str:
 
 
 # target x stop. (0.04, ATR 1.5) is the current default and is included
-# deliberately: without it the sweep has no in-grid reference, and the
-# existing arm-1 numbers predate several engine changes.
+# deliberately: without it the sweep has no in-grid reference, and it costs
+# nothing because arm 1 already computed it.
+#
+# **0.07 added 2026-08-28 (user's decision), after the grid was already
+# running.** The upper end is where the question actually lives: 74.6% of
+# 4% exits go on to touch 5%, but only 18.0% reach 10%, so the decay is
+# somewhere between and 6-7% is inside it. Appending rather than restarting
+# costs nothing -- arms are independent and `already_done` skips whatever a
+# previous pass finished.
 ARMS = [
     Arm(_arm_name(t, m, v), t, m, v)
-    for t in (0.04, 0.05, 0.06)
+    for t in (0.04, 0.05, 0.06, 0.07)
     for m, v in (("atr", 1.5), ("fixed", 0.02), ("fixed", 0.03))
 ]
 
