@@ -546,6 +546,47 @@ def run_sync(
                 # every read, and serving is a different database.
                 rows[table.name] = db_io.copy_upsert(target, table.name, frame, list(table.key))
 
+        # **Reset the target's sequences (2026-08-28).** Every row above was
+        # copied with its own id, and an INSERT that supplies an explicit id
+        # does not advance the sequence -- so serving ends a sync holding
+        # rows its sequences have never seen.
+        #
+        # That was invisible until the poller moved to write serving (ADR
+        # 158), because until then nothing ever *inserted* there. On the
+        # first live session the Pi's poller inserted a `signal_reports`
+        # row, got id 21, and id 21 already existed: serving held 1,829 rows
+        # with its sequence still at 21. `events_id_seq` was at 21 too,
+        # against a max of 39,167,955 -- that one would have crashed on the
+        # first live event rather than the first report.
+        #
+        # Derived from the catalogue rather than a hardcoded list, which
+        # would go stale the moment a table gains a serial. Skipped for an
+        # empty table because `setval(seq, 0)` is an error in Postgres.
+        #
+        # Belongs here rather than in a one-off repair: every sync copies
+        # research's ids again, so a sequence fixed by hand goes stale on
+        # the next nightly.
+        with target.begin() as conn:
+            conn.execute(
+                text("""
+                DO $$
+                DECLARE r record; n bigint;
+                BEGIN
+                  FOR r IN
+                    SELECT c.oid::regclass AS tbl, a.attname AS col,
+                           pg_get_serial_sequence(c.oid::regclass::text, a.attname) AS seq
+                      FROM pg_class c
+                      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0
+                     WHERE c.relkind = 'r'
+                       AND pg_get_serial_sequence(c.oid::regclass::text, a.attname) IS NOT NULL
+                  LOOP
+                    EXECUTE format('SELECT coalesce(max(%I),0) FROM %s', r.col, r.tbl) INTO n;
+                    IF n > 0 THEN PERFORM setval(r.seq, n); END IF;
+                  END LOOP;
+                END $$;
+                """)
+            )
+
         # Assigned *before* the pin, which can raise. Measured 2026-08-21:
         # a pin failure discarded the count and recorded rows_written = 0
         # for a sync that had committed ~100,000 rows.

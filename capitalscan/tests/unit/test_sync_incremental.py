@@ -84,6 +84,17 @@ class _Engine:
             raise OperationalError("select 1", {}, Exception("target unreachable"))
         return _Conn(self._answers)
 
+    def begin(self):
+        """`run_sync` opens a transaction on the target to reset its
+        sequences (2026-08-28). Serving's rows arrive from the sync with
+        their own ids, and an insert with an explicit id does not advance
+        the sequence -- so without the reset the Pi's poller collides on
+        the next insert, which is how a live session died eleven minutes
+        in."""
+        if self._raises:
+            raise OperationalError("select 1", {}, Exception("target unreachable"))
+        return _Conn(self._answers)
+
 
 # ---------------------------------------------------------------------------
 # The watermark
