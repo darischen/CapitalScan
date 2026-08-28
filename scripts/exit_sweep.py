@@ -15,8 +15,10 @@ arm is a file this script writes and deletes. Three things that buys:
 - `core/config.py` is never touched, so the failure in 77cb5ee -- an arm's
   value committed to main by `git add -A` -- cannot recur. `config.toml` is
   gitignored.
-- The restore is one `unlink` in a `finally`, so Ctrl-C leaves the tree at
-  baseline rather than mid-arm.
+- The restore is one `unlink` in a `finally`, so an ordinary Ctrl-C leaves
+  the tree at baseline. A hard kill does **not** run it -- verified on
+  2026-08-28, where killing the runner left `config.toml` behind and the
+  tree resolving `f7b31c5443d30948`. That is what the next bullet is for.
 - `scripts/run_nightly.ps1` refuses to run when the resolved hash is not
   `a38d3ca6b58295e8`. If this script dies without cleaning up, the next
   nightly stops instead of writing events under an arm's hash. That guard is
@@ -25,16 +27,20 @@ arm is a file this script writes and deletes. Three things that buys:
 **The universe is copied, not recomputed.** `core/universe.py` contains no
 reference to `ExitParams` -- membership cannot depend on target or stop -- so
 all nine arms would otherwise compute an identical `universe` at 25 minutes
-each. The first arm *proves* this rather than trusting the grep: it runs one
-real quarter under the arm's hash and compares against the copy, aborting on
-any difference. See `_verify_universe_copy`.
+each. The first arm *that does work* proves this rather than trusting the
+grep: it runs one real quarter under the arm's hash and compares against the
+copy, aborting on any difference. "That does work" is load-bearing -- the
+first attempt tied it to list position, `t4_atr15` was correctly skipped as
+the baseline, and the verification was skipped along with it. See
+`_verify_universe_copy`.
 
 **`benchmarks` is deferred.** It is ~32 min per arm and answers "did this beat
 its null", which only matters for an arm that survives FDR at all. Run it
 afterwards on whatever is left standing.
 
-Roughly 2h40m per arm, ~24h for nine. Resumable: an arm holding `cell_stats`
-for both splits is skipped.
+Roughly 2h40m per arm. `t4_atr15` is the baseline and already computed, so a
+full pass is 8 arms and ~21h. Resumable: an arm holding `cell_stats` for both
+splits is skipped.
 """
 
 from __future__ import annotations
@@ -235,7 +241,17 @@ def _verify_universe_copy(chash: str, quarter: str) -> None:
     log(f"universe copy verified: 0 differing rows, 0 row-count gap in {quarter}")
 
 
-def run_arm(arm: Arm, verify: bool, verify_quarter: str) -> str:
+def run_arm(arm: Arm, verify: bool, verify_quarter: str) -> tuple[str, bool]:
+    """Run one arm. Returns `(config_hash, verification_ran)`.
+
+    The second element exists because the verification must land on the
+    first arm that actually *does work*, not the first in the list. On the
+    first run `t4_atr15` came first, was correctly skipped as the baseline,
+    and took the verification with it -- so the universe copy went
+    unproven and the whole shortcut rested on having read
+    `core/universe.py`. Returning the flag lets `main` keep asking until
+    some arm performs it.
+    """
     CONFIG_TOML.write_text(arm.toml(), encoding="utf-8")
     chash = resolved_hash()
     # **`t4_atr15` IS the baseline**, target 0.04 with an ATR stop at k=1.5
@@ -261,12 +277,14 @@ def run_arm(arm: Arm, verify: bool, verify_quarter: str) -> str:
 
     if already_done(chash):
         log(f"arm {arm.name} already has cell_stats for both splits -- skipping")
-        return chash
+        return chash, False
 
     copied = copy_universe(chash)
     log(f"universe: copied {copied} row(s) from {BASELINE_HASH}")
+    verified = False
     if verify:
         _verify_universe_copy(chash, verify_quarter)
+        verified = True
 
     run("backtest", "--workers", WORKERS, "--chunk-size", CHUNK_SIZE, "--phase", "compute")
     run("backtest", "--workers", WORKERS, "--phase", "finalize")
@@ -279,7 +297,7 @@ def run_arm(arm: Arm, verify: bool, verify_quarter: str) -> str:
     run("stats", "cells", "--config-hash", chash, "--split-key", "train")
     run("stats", "cells", "--config-hash", chash, "--split-key", "validate")
     log(f"=== arm {arm.name} complete ({chash}) ===")
-    return chash
+    return chash, verified
 
 
 def main() -> None:
@@ -311,12 +329,15 @@ def main() -> None:
 
     done: list[tuple[str, str]] = []
     try:
-        for i, arm in enumerate(arms):
-            chash = run_arm(
+        verify_pending = not args.no_verify
+        for arm in arms:
+            chash, verified = run_arm(
                 arm,
-                verify=(i == 0 and not args.no_verify),
+                verify=verify_pending,
                 verify_quarter=args.verify_quarter,
             )
+            if verified:
+                verify_pending = False
             done.append((arm.name, chash))
     finally:
         # Unconditional: an interrupt must not leave an arm resolving.
