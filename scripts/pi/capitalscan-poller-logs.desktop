@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=CapitalScan poller log
+Comment=Shows the most recent poller session; see docs/DECISIONS.md ADR 158
+Exec=/home/darischen/CapitalScan/scripts/pi/show_poller_logs.sh
+Terminal=false
+X-GNOME-Autostart-enabled=true
