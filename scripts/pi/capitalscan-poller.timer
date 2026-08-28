@@ -1,6 +1,6 @@
 [Unit]
 Description=Start the CapitalScan poller wrapper at midnight
-Documentation=docs/DECISIONS.md ADR 158
+# See docs/DECISIONS.md ADR 158 for why the poller writes serving.
 
 [Timer]
 # Midnight local, not 06:45. The wrapper does its own waiting, so the unit

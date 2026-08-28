@@ -1,6 +1,6 @@
 [Unit]
 Description=CapitalScan live poller (waits for the open, writes serving)
-Documentation=https://github.com/darischen/CapitalScan docs/DECISIONS.md ADR 158
+# See docs/DECISIONS.md ADR 158 for why the poller writes serving.
 After=network-online.target postgresql.service
 Wants=network-online.target
 
