@@ -51,6 +51,27 @@ from capitalscan.core.types import Side, SignalHit
 # missing one (invariant 4 — never fill, never partially trust).
 _REQUIRED_INDICATOR_FIELDS = ("bb_lower", "bb_upper", "k_full")
 
+# **The only indicator fields `detect` reads off the t-1 row.** Two are read
+# directly (`bb_pctb`, `k_full`), two through `_types_fired` and the
+# `level_field` branch (`bb_lower`, `bb_upper`).
+#
+# Carried so the row handed to `detect` can be narrowed to four columns
+# instead of twenty-eight. `iloc`'s cost scales with column count: measured
+# 1.89s -> 1.02s on AAPL's 5,252 bars, 1.85x, for values that were
+# materialised per bar and never read.
+#
+# **This narrows what `detect` can reach, which is the direction the
+# look-ahead guarantee wants** (TESTS.md §3.1b -- one row, never a frame).
+# The hazard runs the other way: a field read but not carried arrives as
+# NaN and the signal silently does not fire. `test_candidates_indicator_
+# columns.py` asserts this list against `core/signals.py`'s own source so
+# that cannot happen quietly.
+# `k_fast` is read only when `sp.require_fast_agreement` is set, which is a
+# sweepable flag -- so omitting it passed every default-config test and would
+# have changed the event set only in an arm that enables it. The test caught
+# it; that is the whole reason the list is asserted against the source.
+_DETECT_INDICATOR_FIELDS = ("bb_lower", "bb_upper", "bb_pctb", "k_full", "k_fast")
+
 # ADR 108's allowlist. Imported from `core/`, never restated: `jobs.compute
 # .run_events` runs detection too, and the two callers drifting apart on
 # which fields cross from row t is the failure the allowlist guards.
@@ -167,6 +188,14 @@ def scan_candidates(
         # original expression as an oracle.
         ind_dates = ind_group.index.to_numpy()
 
+        # Narrowed to what `detect` actually reads (`_DETECT_INDICATOR_FIELDS`).
+        # `iloc` materialises every column of the row it returns, so the
+        # width of this frame is a per-bar cost. Reindexed rather than
+        # subscripted so a frame missing one of the four yields NaN --
+        # which the null check below then rejects honestly -- instead of
+        # raising KeyError.
+        ind_narrow = ind_group.reindex(columns=list(_DETECT_INDICATOR_FIELDS))
+
         # Bar `t`'s own close-confirmed flags, resolved once for this
         # ticker rather than once per bar (`_close_confirmed_frame`).
         bar_dates_all = [ts.date() for ts in bar_group["ts"]]
@@ -177,7 +206,7 @@ def scan_candidates(
             prior_pos = int(np.searchsorted(ind_dates, bar_date, side="left")) - 1
             if prior_pos < 0:
                 continue
-            prior_ind = ind_group.iloc[prior_pos]
+            prior_ind = ind_narrow.iloc[prior_pos]
 
             missing = [f for f in _REQUIRED_INDICATOR_FIELDS if pd.isna(prior_ind.get(f))]
             if missing:
