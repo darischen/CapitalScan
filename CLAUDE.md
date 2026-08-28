@@ -497,8 +497,45 @@ not cron or systemd. **Nothing is registered today.** Checked 2026-08-21:
 `Get-ScheduledTask` returns no entry for `nightly`, `weekly` or the poller,
 and every row in `runs` got there from a hand-run command. This line asserted
 a live schedule until then, and that assertion was quoted back as fact in a
-session before anyone checked it. Treat `nightly` and `weekly` as manual, and
-`scripts/wait_and_poll.ps1` as something the user starts.
+session before anyone checked it. Treat `nightly` and `weekly` as manual.
+
+**The poller moved to the Pi on 2026-08-28 (ADR 158), and this changes what
+you may run during market hours.** It is the one genuinely scheduled thing
+in the system now: `capitalscan-poller.timer` fires at 00:00 PT and
+`scripts/pi/wait_and_poll.sh` waits until 06:45 before polling to the
+13:00 close. `journalctl -fu capitalscan-poller` on the Pi is the live
+view; `--since today` reads a finished session.
+
+`cscan poll --serving` writes the **serving** store, not research. That is
+the whole point: **research has no live writer during market hours**, so
+the workstation is free to rebuild, run nightly, be updated, or be shut
+down between 06:30 and 13:00. The old rule -- no second writer on `events`
+while the poller runs -- no longer binds, because the poller is not writing
+that database.
+
+Three consequences worth knowing before relying on it:
+
+- **Do not start `scripts/wait_and_poll.ps1` as well.** Two pollers would
+  double-write: the Windows one writes research and pushes to serving,
+  the Pi one writes serving directly. The `.ps1` is kept for reference and
+  for its CSV export, which is read-only against the database.
+- **The Pi's `core/config.py` must stay at baseline.** `cscan poll`
+  resolves config, so an ablation-arm config left on the Pi would have the
+  poller writing events under that arm's hash and the site would show
+  nothing. Verified before enabling: the Pi resolves
+  `a38d3ca6b58295e8`, which is what `serving_config` pins. Run arms on the
+  workstation.
+- **Nightly must still run on the workstation**, because
+  `sync.pull_live_records` brings the poller's durable rows back --
+  `runs` (scoped `job='poll'`), `signal_reports` and `poller_sessions`.
+  Those three are permanent and research is where analysis reads them
+  (ADR 084's `coverage_pct`). Skip nightly and research silently stops
+  accumulating them.
+
+**No SSH tunnel is involved.** `--serving` resolves `DATABASE_URL_SERVING`,
+which is localhost on the Pi, and `pull_live_records` runs inside nightly on
+the workstation. The reverse tunnel used for the arm-3 experiments is not
+part of this path.
 
 ## Conventions
 
