@@ -370,6 +370,40 @@ Long jobs, measured, so nobody starts one blind:
   | `bars_hourly` | 54.5 min | **5.4** — batched fetch, then three per-ticker scans removed |
   | `actions` | 21.3 min | **4.0** — batched, and the cache key now carries a date |
 
+  - **A second measured run, 2026-08-28 13:36 PT, totalling 36.8 minutes**
+    — the first one Task Scheduler ran rather than a hand-typed command,
+    on the same 1,470 tickers. Recorded beside the 08-26 column rather
+    than replacing it, because the two disagree on exactly two steps and
+    only one of them is understood:
+
+    | step | 08-26 | 08-28 | rows 08-28 |
+    |---|---|---|---|
+    | `bars_daily` | 5.0 | 3.4 | 7,192 |
+    | `bars_hourly` | 5.4 | 3.8 | 50,743 |
+    | `actions` | 4.0 | **13.0** | 348 |
+    | `market` | 0.0 | 0.0 | 5 |
+    | `shares` | **0.7** | **10.0** | 235,839 |
+    | `earnings` | 0.6 | 0.6 | 1,179 |
+    | `indicators` | 1.4 | 1.7 | 6,978 |
+    | `events` | 1.2 | 1.7 | 3,643 |
+    | `path_capture` | 1.2 | 1.0 | 20,693 |
+    | `peak_labels` | 1.0 | 1.0 | 490,436 |
+    | `sync` | 0.4 | 0.5 | 107,845 |
+    | **total** | **~21** | **36.8** | |
+
+    **`shares` at 0.7 min is a cache read, not a measurement.** 236,008 rows
+    at `RATE_LIMIT_PER_SEC = 0.5` cannot complete in 42 seconds — that is
+    this file's own test for a cache hit, applied to a row in this file's
+    own table. The 10.0 min figure agrees with the note further down that
+    `shares` went to ten minutes when the universe reached 1,470, so **10
+    minutes is the real cost and ~21 min was never a cold total.**
+
+    `actions` at 4.0 against 13.0 is *not* explained. Its recent history is
+    0.3 / 4.0 / 14.7 / 13.0, and 0.3 is the known dateless-cache-key bug.
+    Treat it as unresolved rather than quoting either end.
+
+    **Budget 35-40 minutes for a cold nightly**, not 21.
+
   - **This table has been wrong three separate ways, all on 2026-08-26.**
     Read the failure modes before trusting a figure in it.
     1. **The sum was never re-added.** `bars_hourly` was batched, the row
