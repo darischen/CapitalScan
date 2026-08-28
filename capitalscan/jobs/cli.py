@@ -2549,6 +2549,26 @@ def nightly() -> None:
     # ingest as failed. It is reported and the next run retries.
     from capitalscan.jobs import sync as sync_job
 
+    # **Pull the poller's durable rows back first (ADR 158).** With the
+    # poller writing serving directly, `runs`, `signal_reports` and
+    # `poller_sessions` are born there. Research is where analysis happens
+    # -- ADR 084 has Phase 6 reading `poller_sessions.coverage_pct` -- so
+    # without this it quietly stops accumulating them, and the gap is
+    # invisible until someone queries data that was never written.
+    #
+    # Before the sweep and before the outbound sync, so a night's records
+    # reach research whatever those two do afterwards. A failure is
+    # reported and does not fail the chain: research already holds
+    # everything the rest of nightly computed.
+    try:
+        pulled = sync_job.pull_live_records()
+        if any(pulled.values()):
+            console.print(
+                "nightly: pulled back " + ", ".join(f"{n} {c:,}" for n, c in pulled.items() if c)
+            )
+    except Exception as exc:  # noqa: BLE001 - reported; research is unaffected
+        console.print(f"[yellow]warn[/yellow] live-record pull skipped: {exc}")
+
     sync_ok = False
     try:
         # **Incremental here, full in `cscan sync`.** Nightly adds one

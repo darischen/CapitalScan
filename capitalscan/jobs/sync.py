@@ -365,6 +365,72 @@ def _incremental_bounds(
     return out
 
 
+# The poller's **durable** output, as opposed to its provisional output.
+# `_sweep_provisional_poll_rows` deletes only `events` rows whose `run_id`
+# begins `poll`, and explicitly preserves `signal_reports`; it never touches
+# `poller_sessions`. These two are the record a past date's fired-at
+# timestamps come from, and ADR 084 has Phase 6 reading
+# `poller_sessions.coverage_pct` to tell "no coverage" from "no signals".
+#
+# **`runs` is here because `events.run_id` is a foreign key.** A poller run
+# row is written on serving by `run_job` when the poller starts there, and
+# research needs it before any later job can reference that run. Audited
+# 2026-08-28: `poll.py` writes six tables, not the four first recorded --
+# `signal_reports` goes through `db_io.append` rather than `upsert`, and
+# `runs` through the `run_job` context manager rather than a direct call,
+# so a grep for `upsert` finds neither.
+_LIVE_DURABLE_TABLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("runs", "started_at >= :since AND job = 'poll'", ("run_id",)),
+    ("signal_reports", "fired_at >= :since", ("id",)),
+    ("poller_sessions", "session_date >= :since", ("session_date",)),
+)
+
+
+def pull_live_records(
+    source: Engine | None = None,
+    target: Engine | None = None,
+    since: date | None = None,
+    lookback_days: int = 7,
+) -> dict[str, int]:
+    """Copy the poller's durable rows **serving -> research** (ADR 158).
+
+    The reverse of `run_sync`, and deliberately narrow.
+
+    **Why it is needed.** With the poller writing serving directly, its two
+    permanent tables are *born* there. Research is where analysis happens,
+    so without this pull it quietly stops accumulating them -- and the gap
+    is invisible until someone queries data that was never written, which
+    is the worst shape a data defect can take.
+
+    **Only the durable two.** `events` rows from the poller are provisional
+    and the nightly sweep removes them; pulling those back would resurrect
+    exactly what nightly just judged unreliable. `bars_live` and
+    `quotes_live` are per-tick scratch that research has no reader for.
+
+    **Upsert, not replace.** Research may already hold rows for a date --
+    from before the poller moved, or from a re-run. An insert would raise on
+    the key and a delete-then-insert would lose anything the pull did not
+    cover.
+
+    Bounded to `lookback_days` because this runs nightly and the whole
+    history is neither needed nor cheap; the overlap absorbs a night that
+    failed. `since` overrides it for a manual catch-up.
+    """
+    source = source or serving_engine()
+    target = target or db_io.get_engine()
+    floor = since or (date.today() - timedelta(days=lookback_days))
+
+    pulled: dict[str, int] = {}
+    for name, predicate, key in _LIVE_DURABLE_TABLES:
+        frame = pd.read_sql(
+            text(f"SELECT * FROM {name} WHERE {predicate}"),  # noqa: S608 - fixed names
+            source,
+            params={"since": floor},
+        )
+        pulled[name] = db_io.copy_upsert(target, name, frame, list(key)) if not frame.empty else 0
+    return pulled
+
+
 def run_sync(
     source: Engine | None = None,
     target: Engine | None = None,
