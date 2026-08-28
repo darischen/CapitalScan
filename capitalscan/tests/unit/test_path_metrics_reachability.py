@@ -180,3 +180,71 @@ class TestNaNAndEmpty:
             capture_ratio_cap=EP.capture_ratio_cap,
         )
         assert not out["touched_3pct"]
+
+
+class TestVectorisedEquivalence:
+    """The replacement must agree with `core.signals._breach` exactly.
+
+    **`np.round` and Python's `round` are not the same function**, and this
+    was measured rather than assumed: over 4,000 random windows they agreed
+    on every case, and over a boundary sweep they disagreed on exactly three
+    -- prices sitting at `level - 5e-05`, the half-way point. `round()` does
+    correct decimal rounding; `np.round` scales, rounds and divides, picking
+    up different float error at the tie.
+
+    **That input cannot occur.** `bars.high`/`low`/`close` are
+    `numeric(12,4)` and a direct count found **0 of 5.9M daily rows** with
+    more than four decimals, so `np.round(price, 4)` is the identity on real
+    data. The tests below generate prices the way the schema does -- already
+    at 4dp -- because that is the contract, and a test on 6dp floats would
+    be testing a case the database forbids.
+
+    The *level* is different: `entry * (1 + target)` has full float
+    precision, so it is rounded with Python's `round` to match `_breach`
+    exactly rather than with `np.round`.
+    """
+
+    @staticmethod
+    def _loop(prices, level, bound):
+        from capitalscan.core.signals import _breach
+
+        for i, v in enumerate(prices, start=1):
+            if _breach(float(v), level, bound):
+                return True, i
+        return False, None
+
+    @staticmethod
+    def _vector(prices, level, bound):
+        from capitalscan.core.signals import Bound
+
+        level_r = round(float(level), 4)
+        arr = np.round(np.asarray(prices, dtype=float), 4)
+        mask = arr >= level_r if bound is Bound.UPPER else arr <= level_r
+        hits = np.flatnonzero(mask)
+        return (True, int(hits[0]) + 1) if hits.size else (False, None)
+
+    def test_they_agree_over_random_four_decimal_windows(self):
+        """4dp prices, as `numeric(12,4)` stores them."""
+        from capitalscan.core.signals import Bound
+
+        rng = np.random.default_rng(20260828)
+        for _ in range(2000):
+            n = int(rng.integers(1, 14))
+            prices = np.round(100.0 * (1 + rng.normal(0, 0.04, n)), 4)
+            bound = Bound.UPPER if rng.random() < 0.5 else Bound.LOWER
+            target = float(rng.choice([0.02, 0.03, 0.05, 0.10]))
+            level = 100.0 * (1 + target) if bound is Bound.UPPER else 100.0 * (1 - target)
+            assert self._loop(prices, level, bound) == self._vector(prices, level, bound)
+
+    def test_they_agree_on_the_boundary_for_four_decimal_prices(self):
+        """The half-way disagreement needs a 5th decimal to express, so at
+        4dp the boundary is exact in both."""
+        from capitalscan.core.signals import Bound
+
+        for target in (0.02, 0.03, 0.05, 0.10):
+            level = 100.0 * (1 + target)
+            for delta in (-0.0002, -0.0001, 0.0, 0.0001, 0.0002):
+                prices = [round(level + delta, 4)]
+                assert self._loop(prices, level, Bound.UPPER) == self._vector(
+                    prices, level, Bound.UPPER
+                )
