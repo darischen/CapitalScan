@@ -4332,6 +4332,43 @@ about the *criterion*, not about statistical power — `n_eff` is essentially
 identical, so the extra names contributed events without concentrating them
 anywhere.
 
+### Benchmarks: read the job's own verdict, not a derived percentile
+
+`cscan stats benchmarks` printed, for arm 2:
+
+    train    high-breadth subset: 5191 events -- signal arm is AT OR BELOW
+                                                 the null's 97.5th percentile
+    validate high-breadth subset: 1370 events -- signal arm is ABOVE
+                                                 the null's 97.5th percentile
+
+Validate clearing while train does not is the opposite of the usual
+direction and is the one interesting number in this arm.
+
+**A derived percentile disagrees, and the job is right.** Averaging
+`annualized_ret` over all 800 null replications and asking where the signal
+arm falls gives 82.5 (train) and 87.5 (validate) for arm 2 — neither
+clearing 97.5:
+
+| | signal ann_ret | null p97.5 | percentile |
+|---|---|---|---|
+| arm1 train | 0.1111 | 0.1378 | 86.1 |
+| arm1 validate | 0.0086 | 0.1020 | 78.4 |
+| arm2 train | 0.1095 | 0.1440 | 82.5 |
+| arm2 validate | 0.0338 | 0.1056 | 87.5 |
+
+Those figures are over the **whole** population; the job's verdict is over
+the **high-breadth subset** it names on the line above. They are answers to
+different questions and the table is kept only so nobody re-derives it and
+believes they have contradicted the job.
+
+What both agree on: the signal arm beats the null's *mean* on every split
+of both arms, and arm 2's validate is the strongest of the four (0.0338
+against a null mean of -0.0269, Sharpe 0.127 against -0.214).
+
+**This does not overturn the FDR result.** Zero cells survive at q <= 0.10.
+The benchmark is a portfolio-level test over a subset; the cell grid is the
+primary statistic and it is null.
+
 ### Phase wall clocks
 
 | phase | wall clock | note |
