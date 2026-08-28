@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""Exit-parameter sweep: target x stop, 12 arms (docs/BACKLOG.md).
+"""Exit-parameter sweep: target x stop, 11 arms (docs/BACKLOG.md).
 
 **Selection happens on `train` only.** Every arm's `validate` cells are
 computed and stored, but the arm to keep is chosen from `train` and then
-looked at once on `validate`. Choosing the best of nine by their validate
-numbers is nine comparisons kept at their luckiest, which is how a sweep
+looked at once on `validate`. Choosing the best of eleven by their validate
+numbers is eleven comparisons kept at their luckiest, which is how a sweep
 manufactures an edge that is not there. ADR 059 gates a sweep on the default
 config having passed the harness first; it has.
 
@@ -27,7 +27,7 @@ arm is a file this script writes and deletes. Three things that buys:
 **The universe is copied, not recomputed** -- and that is a correctness
 choice, not only a saving. Arms must share arm 1's universe, or the
 difference between them is not only the exit parameters. Recomputing per arm
-today would hand arms 2-9 a *newer* universe than arm 1, including this
+today would hand every later arm a *newer* universe than arm 1, including this
 morning's IESC split repair, and confound every comparison the sweep exists
 to make. It also saves 25 minutes an arm.
 
@@ -41,10 +41,10 @@ wrong version measured instead.
 its null", which only matters for an arm that survives FDR at all. Run it
 afterwards on whatever is left standing.
 
-Roughly 2h40m per arm. The grid is 4 targets x 3 stops = 12, and `t4_atr15`
-is the baseline and already computed, so a full pass is 11 arms and ~29h.
-Resumable: an arm holding `cell_stats` for both splits is skipped, so a second
-invocation picks up only what is missing.
+Roughly 2h40m per arm. Eleven arms, of which `t4_atr15` is the baseline and
+already computed, so a full pass is 10 and ~27h. Resumable: an arm holding
+`cell_stats` for both splits is skipped, so a second invocation picks up only
+what is missing.
 """
 
 from __future__ import annotations
@@ -104,20 +104,37 @@ def _arm_name(target: float, mode: str, value: float) -> str:
     return f"t{int(round(target * 100))}_{tag}"
 
 
-# target x stop. (0.04, ATR 1.5) is the current default and is included
-# deliberately: without it the sweep has no in-grid reference, and it costs
-# nothing because arm 1 already computed it.
+# **The grid is not a full factorial, deliberately** (user's decision,
+# 2026-08-28 after the restart).
 #
-# **0.07 added 2026-08-28 (user's decision), after the grid was already
-# running.** The upper end is where the question actually lives: 74.6% of
-# 4% exits go on to touch 5%, but only 18.0% reach 10%, so the decay is
-# somewhere between and 6-7% is inside it. Appending rather than restarting
-# costs nothing -- arms are independent and `already_done` skips whatever a
-# previous pass finished.
+# `t4_atr15` is the live config -- 4% target, ATR stop at k=1.5 -- so arm 1
+# already computed it and it costs nothing. It is the reference every other
+# arm is read against.
+#
+# `t4_fix2` is kept because it is the **only arm that changes exactly one
+# knob** from the live config: same target, a 2% stop instead of ATR. That
+# is the clean answer to "does a tighter stop help?", and every other arm
+# moves two things at once.
+#
+# `t4_fix3` is dropped. It would only refine the stop axis at a target we
+# are not proposing to keep, and the same axis is covered three times over
+# at 5/6/7%.
+#
+# The 5/6/7% rows are full 3x3, so stop x target interaction is still
+# measurable there, and the target axis reads along the ATR column against
+# arm 1.
+#
+# 0.07 was added on the user's decision: 74.6% of 4% exits go on to touch
+# 5% but only 18.0% reach 10%, so the decay sits between and 6-7% is inside
+# it.
 ARMS = [
-    Arm(_arm_name(t, m, v), t, m, v)
-    for t in (0.04, 0.05, 0.06, 0.07)
-    for m, v in (("atr", 1.5), ("fixed", 0.02), ("fixed", 0.03))
+    Arm("t4_atr15", 0.04, "atr", 1.5),  # = arm 1, already computed
+    Arm("t4_fix2", 0.04, "fixed", 0.02),  # the one-knob-changed arm
+    *(
+        Arm(_arm_name(t, m, v), t, m, v)
+        for t in (0.05, 0.06, 0.07)
+        for m, v in (("atr", 1.5), ("fixed", 0.02), ("fixed", 0.03))
+    ),
 ]
 
 
