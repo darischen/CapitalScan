@@ -16,6 +16,60 @@ deleting the entry loses nothing.
 
 ## Open
 
+### `scan_candidates` spends 70% of its time on pandas row access
+
+Profiled 2026-08-27, with numbers, because this is the single largest
+remaining cost in the pipeline and the fix is mechanical rather than
+clever.
+
+**The harness is 75 minutes and `_lookahead_counts` is ~77% of it.** The
+ladder calls `_event_set` six times per chunk -- four shift levels, base,
+and the shuffled control -- and each is a full `scan_candidates` over every
+bar. One call is **86.2s for 25 tickers / 105,343 bar rows**, so six is
+517s per chunk, ~58 minutes over 1,336 tickers on 8 workers. The four
+sanity checks together are 10.7s per chunk.
+
+**The six calls are not redundant.** Base, four shifted frames and one
+shuffled frame are genuinely different inputs; there is nothing to cache
+between them without weakening the test. The cost is one layer down.
+
+**`cProfile` on one `_event_set`, 29,509 bar rows / 6 tickers:**
+
+    82,667,988 function calls in 56.8s     -- 2,800 calls per bar
+
+    scan_candidates                56.8s
+      pandas Series.__setitem__    20.3s   (29,389 calls, one per bar)
+      pandas .iloc/.loc getitem    20.8s
+      core.signals.detect           9.5s   <- the actual work
+
+**Roughly 40 of 57 seconds is pandas row access, not detection.**
+`for _, bar in bar_group.iterrows()` materialises a Series per bar, and
+something performs a `Series.__setitem__` per bar on top of it. The inner
+t-1 lookup was already fixed (`searchsorted`, 125x on that line, 2026-08-21)
+-- the per-row loop around it was not.
+
+**Why this is the right target.** `scan_candidates` is the one detection
+implementation (invariant 2), so every caller gets the win, and unlike the
+ladder itself, making it faster costs nothing in guarantee. Speeding up the
+ladder directly -- caching `base`, sampling tickers, reusing scans between
+levels -- trades away the look-ahead test, which CLAUDE.md calls the
+highest-risk silent failure in the system.
+
+Rough ceiling: if row access becomes vectorised column work, 57s -> 15-20s
+would take the harness from ~75 min to ~30 min, the same order as the
+hourly-ingest win (54.5 -> 5.4 min).
+
+**Constraint that governs any rewrite.** `detect()` may read only `low`,
+`high`, `ts`, `ticker` from the bar and receives **one indicator row, never
+a frame**. The signature probe is what makes the look-ahead guarantee real
+(CLAUDE.md testing section). A vectorised version must preserve that
+boundary or it defeats the test it is speeding up.
+
+Not attempted yet. Write the test first, and measure before/after on the
+same data rather than reasoning about it -- three theories about harness
+timing were wrong today before this profile settled it.
+
+
 ### Site auth is deliberately off on the Pi (decided 2026-08-26)
 
 `SITE_AUTH_DISABLED=1`, turned off deliberately 2026-08-20 with the reason
@@ -73,7 +127,22 @@ the trap standing.
 
 ---
 
-### Three of DESIGN §7.3's twenty-two features are not built
+### ~~Three of DESIGN §7.3's twenty-two features are not built~~
+
+**Closed 2026-08-27.** `f1c8a260d94e` added the three columns and
+`a7d4e91c2b35` backfilled them; both databases are at `a7d4e91c2b35` and
+683,562 of 693,024 serving rows carry values. The 9,462 left NULL are
+`in_watch` or neither -- tickers whose bars and indicators serving does not
+carry, so NULL is correct under invariant 4.
+
+The split into two revisions was not cosmetic: the original combined the
+`ADD COLUMN`s with a 1.37M-row `UPDATE`, and Alembic holds a revision's
+locks until it commits, so the catalogue-only ALTER's ACCESS EXCLUSIVE was
+held for the whole twenty-minute update and the site stopped answering.
+**Never put DDL and a long DML in one revision.**
+
+#### Original entry
+
 
 Raised 2026-08-25. §7.3 says all twenty-two are "already on the event row".
 Three are not, measured against `information_schema`:
@@ -685,7 +754,29 @@ exactly like a hang. Two working runs were killed for that reason on
 
 ---
 
-### ORKA is flagged inactive while trading at $6.9B — **known, accepted, do not re-raise**
+### ~~ORKA is flagged inactive while trading at $6.9B~~ — purged 2026-08-27
+
+**Closed by deletion (user's decision, 2026-08-27):** 5,235 bars and the
+`tickers` row removed; the 92 `bar_rejects` rows are kept as the audit
+trail. It had no `universe` rows, no events and no indicators, so nothing
+consumed it.
+
+The entry below said "known, accepted, do not re-raise". What changed is
+that a second, worse defect surfaced: ORKA's price series runs from
+**$3,757,622 to $6.78** with **zero corporate actions** on file to
+reconcile the jumps -- a reverse-merger shell carrying a predecessor's
+history. It overflowed `numeric(12,4)` and killed a full-history
+`cscan indicators` run at 99 of 153 tickers.
+
+**Only a full-history recompute sees this.** Nightly's 5-day window never
+reaches the bad region, which is why it sat undetected. Assume other
+tickers hide the same shape.
+
+**No blocklist exists**, so `run_tickers_refresh` can re-add it. It was
+already `is_active = false` and that prevented none of this.
+
+#### Original entry
+
 
 Raised 2026-08-26. The row contradicts itself and the market:
 
@@ -791,7 +882,15 @@ capitalisations.
 
 ---
 
-### Superseded: VOO and IBIT have no share count
+### ~~Superseded: VOO and IBIT have no share count~~ — resolved 2026-08-27
+
+**Closed.** ADR 156's `netAssets` path is live: `cscan shares` on
+2026-08-27 wrote `yahoo_netassets` rows for **VOO (2,395,461,971), IBIT
+(1,046,421,772), SPY (1,038,151,224) and QQQ (636,519,171)**. Two universe
+tickers now lack shares entirely, down from 68.
+
+#### Original entry
+
 
 **Superseded 2026-08-26 by the `netAssets` entry above**, which is the chosen
 fix. Kept for the measurements it records. The framing below is wrong in one

@@ -1,5 +1,6 @@
 """CapitalScan command-line interface."""
 
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
@@ -896,11 +897,43 @@ def backtest(
             f"[bold]harness[/bold]: {len(events_for_harness)} event(s), "
             f"{len(harness_tickers)} ticker(s), config_hash={chash}"
         )
+        # **The loads sit outside `run_job` and always have**, so the six
+        # minutes they take are invisible in `finished_at - started_at`.
+        # Timed explicitly rather than moved: moving them would change what
+        # every historical `backtest_harness` row means.
+        _t0 = time.monotonic()
         bars_by_ticker = _load_bars_by_ticker(engine, harness_tickers, config)
+        _load_bars_s = time.monotonic() - _t0
+        _t0 = time.monotonic()
         hourly_by_ticker = _load_hourly_by_ticker(engine, harness_tickers, config)
+        _load_hourly_s = time.monotonic() - _t0
 
+        # **Recorded so the duration can be explained instead of guessed
+        # at.** This step went 35m42s -> 55m32s -> ~75m over four days
+        # while `notes` carried no dimension to correlate against, so every
+        # theory about the cause -- concurrency, CPU starvation, a hot-loop
+        # rescan -- had to be reconstructed from memory and two were wrong.
+        # `n_events`/`n_tickers` are what the console line already prints;
+        # `n_hourly_rows` is here because the hourly feed starts 2024-08-06
+        # and grows ~40k rows a night, which is the one input that changes
+        # shape between runs.
+        _n_hourly = int(sum(len(f) for f in (hourly_by_ticker or {}).values()))
+        _n_bars = int(sum(len(f) for f in bars_by_ticker.values()))
+        _t0 = time.monotonic()
         with ingest.run_job(
-            engine, "backtest_harness", {"config_hash": chash, "phase": "harness"}
+            engine,
+            "backtest_harness",
+            {
+                "config_hash": chash,
+                "phase": "harness",
+                "workers": workers,
+                "n_events": int(len(events_for_harness)),
+                "n_tickers": int(len(harness_tickers)),
+                "n_bar_rows": _n_bars,
+                "n_hourly_rows": _n_hourly,
+                "load_bars_s": round(_load_bars_s, 1),
+                "load_hourly_s": round(_load_hourly_s, 1),
+            },
         ) as report:
             harness_report = run_harness(
                 events_for_harness,
@@ -911,7 +944,13 @@ def backtest(
             )
             # `rows_written` stays 0 and that is the honest number. This
             # phase reads.
-            report.notes = "harness passed" if harness_report.all_passed else "harness FAILED"
+            _checks_s = time.monotonic() - _t0
+            report.notes = (
+                f"{'harness passed' if harness_report.all_passed else 'harness FAILED'} "
+                f"| load_bars={_load_bars_s:.0f}s load_hourly={_load_hourly_s:.0f}s "
+                f"checks={_checks_s:.0f}s events={len(events_for_harness)} "
+                f"hourly_rows={_n_hourly}"
+            )
         _print_harness_report(harness_report)
         if not harness_report.all_passed:
             raise typer.Exit(code=1)
