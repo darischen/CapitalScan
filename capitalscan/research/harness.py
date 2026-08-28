@@ -45,6 +45,7 @@ from datetime import date
 from pathlib import Path
 from typing import cast
 
+import numpy as np
 import pandas as pd
 
 from capitalscan.core.config import Config, CostParams
@@ -211,10 +212,55 @@ def _hourly_bar_for_entry(
     frame = hourly_by_ticker.get(ticker) if hourly_by_ticker else None
     if frame is None or frame.empty:
         return None
-    day_hourly = frame.loc[frame["ts"].dt.date == day].sort_values("ts")
+    day_hourly = _rows_on_day(frame, day)
     if day_hourly.empty:
         return None
     return _first_hourly_touch(day_hourly, float(touch_level), side)
+
+
+def _rows_on_day(frame: pd.DataFrame, day: date) -> pd.DataFrame:
+    """The rows of `frame` whose `ts` falls on `day`.
+
+    **This is the harness's hot loop and it was quadratic in disguise.**
+    The original was one line:
+
+        frame.loc[frame["ts"].dt.date == day].sort_values("ts")
+
+    correct, and called once per priced hourly event. Each call ran
+    `.dt.date` over the ticker's *entire* hourly frame -- which allocates a
+    Python `date` object per row, the expensive part -- then a full boolean
+    scan, then a sort. So the cost was `events x hourly_rows_per_ticker`.
+
+    Event counts are flat. **Hourly rows are not**: the feed starts
+    2024-08-06 and `cscan nightly` adds ~40k rows every night, so the frame
+    that inner loop rescans grows every single day. Measured harness
+    durations track exactly that and not the event count:
+
+        2026-08-26  35m42s     1,365,000 events
+        2026-08-27  55m32s
+        2026-08-27  71m10s
+        2026-08-27  74m58s     1,385,041 events  (+1.5%)
+
+    Twice the wall clock for 1.5% more events, at a steady 98% of
+    theoretical CPU across 8 workers the whole time -- so parallelism was
+    working and the *work itself* was growing.
+
+    `searchsorted` on the underlying datetime64 array makes it O(log n)
+    with no per-row Python objects. It needs `ts` ascending, which
+    `run_harness` now guarantees when it builds `hourly_by_ticker`; the
+    monotonic check is a cheap guard rather than trust, and falls back to
+    the original comparison if some other caller passes an unsorted frame.
+    """
+    ts = frame["ts"]
+    if not ts.is_monotonic_increasing:
+        fallback: pd.DataFrame = frame.loc[ts.dt.normalize() == pd.Timestamp(day)]
+        return fallback.sort_values("ts")
+    values = ts.to_numpy()
+    start = np.datetime64(pd.Timestamp(day).to_datetime64())
+    end = start + np.timedelta64(1, "D")
+    lo = int(np.searchsorted(values, start, side="left"))
+    hi = int(np.searchsorted(values, end, side="left"))
+    return frame.iloc[lo:hi]
 
 
 # ---------------------------------------------------------------------------
@@ -945,7 +991,13 @@ def _harness_chunk_worker(args: tuple) -> ChunkResult:
     hourly_by_ticker = None
     if hourly_p.exists():
         hourly = pd.read_parquet(hourly_p)
-        hourly_by_ticker = {str(t): g for t, g in hourly.groupby("ticker", sort=True)}
+        # Sorted once here so `_rows_on_day` can binary-search instead of
+        # rescanning. The groupby preserves source order, which is not
+        # guaranteed to be by `ts`.
+        hourly_by_ticker = {
+            str(t): g.sort_values("ts").reset_index(drop=True)
+            for t, g in hourly.groupby("ticker", sort=True)
+        }
 
     indicator_cols = [c for c in bars.columns if c not in _BAR_COLUMNS]
     counts = _lookahead_counts(bars, shuffled, indicator_cols, config)

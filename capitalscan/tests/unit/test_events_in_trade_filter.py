@@ -76,6 +76,17 @@ def _reads_events(path: Path) -> bool:
 # population — a single event id, a single run, or a single ticker the
 # caller already restricted.
 KNOWN_UNFILTERED: dict[str, str] = {
+    "jobs/db_io.py": (
+        "`purge_bars` deletes what a removed bar produced, keyed on one "
+        "ticker and an explicit list of that ticker's deleted bar dates -- "
+        "narrower than any population. The predicate would be actively "
+        "wrong here: an orphaned `in_watch` event is exactly as broken as "
+        "an orphaned `in_trade` one, and filtering would leave the watch "
+        "universe's rows pointing at bars that no longer exist. That is the "
+        "defect this function was written to prevent, on 2026-08-27, after "
+        "a purge of 29,242 fabricated bars left ~300 orphaned events that "
+        "surfaced only as three failing harness checks 75 minutes later."
+    ),
     "handlers/explain.py": (
         "Explains one event by id. The caller already has the event; "
         "filtering would turn a lookup into a NotFound for a row the "

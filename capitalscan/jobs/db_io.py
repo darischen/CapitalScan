@@ -14,6 +14,8 @@ place), and `append()` is theirs.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -489,3 +491,79 @@ def append(engine: Engine, table_name: str, data: list[dict] | pd.DataFrame) -> 
     with engine.begin() as conn:
         conn.execute(table.insert(), rows)
     return len(rows)
+
+
+def purge_bars(
+    engine: Engine, ticker: str, dates: Sequence[date] | None = None, *, all_dates: bool = False
+) -> dict[str, int]:
+    """Delete daily bars and everything computed from them.
+
+    Returns a count per table.
+
+    **A bar is not a leaf.** `indicators` is computed per bar, and `events`
+    reference bars three ways -- `signal_date` (the bar the signal fired
+    on), `entry_date` (the fill bar, which for `next_open` is t+1, a
+    *different* bar), and `exit_date`. None of those are foreign keys:
+    `events` has exactly one FK, to `runs`. So deleting from `bars` leaves
+    dependents pointing at nothing and the database raises nothing.
+
+    **This function exists because that happened.** On 2026-08-27 a purge
+    of 29,242 fabricated bars left ~300 orphaned events. Nothing complained
+    at delete time; it surfaced 75 minutes later as three failing harness
+    checks (`entry_sanity`, `exit_sanity`, `non_overlap`) and took two
+    rounds to clear, because the first cleanup matched `signal_date` only
+    and `next_open` fills a day later.
+
+    The ordering below is the lesson: **`entry_date` and `exit_date` are
+    separate references and each needs its own pass.** Matching one is
+    what made the first attempt look complete when it was not.
+
+    Every deletion is logged to `bar_rejects` by the caller, not here --
+    this is the mechanism, and the reason belongs to whoever invoked it.
+    """
+    if not all_dates and not dates:
+        return {}
+
+    where_bars = "ticker = :t AND interval = '1d'"
+    params: dict[str, object] = {"t": ticker}
+    if not all_dates:
+        where_bars += " AND ts = ANY(:dates)"
+        params["dates"] = list(dates or [])
+
+    counts: dict[str, int] = {}
+    with engine.begin() as conn:
+        # The bar dates being removed, captured before the delete so the
+        # dependent passes can match against them.
+        doomed = [
+            r[0]
+            for r in conn.execute(
+                text(f"SELECT ts FROM bars WHERE {where_bars}"), params
+            ).fetchall()
+        ]
+        if not doomed:
+            return {}
+
+        counts["bars"] = int(
+            conn.execute(text(f"DELETE FROM bars WHERE {where_bars}"), params).rowcount or 0
+        )
+        counts["indicators"] = int(
+            conn.execute(
+                text("DELETE FROM indicators WHERE ticker = :t AND ts = ANY(:d)"),
+                {"t": ticker, "d": doomed},
+            ).rowcount
+            or 0
+        )
+        # Three passes, deliberately. An event whose fill bar is gone is
+        # just as broken as one whose signal bar is gone, and they are
+        # different rows.
+        total_events = 0
+        for column in ("signal_date", "entry_date", "exit_date"):
+            total_events += int(
+                conn.execute(
+                    text(f"DELETE FROM events WHERE ticker = :t AND {column} = ANY(:d)"),
+                    {"t": ticker, "d": doomed},
+                ).rowcount
+                or 0
+            )
+        counts["events"] = total_events
+    return counts
