@@ -42,7 +42,11 @@ exec > >(tee -a "$LOG") 2>&1
 # displays as sessions come and go, so the display is discovered rather than
 # assumed, and a headless boot simply logs instead.
 if [ -z "${CAPSCAN_NO_TERM:-}" ] && command -v lxterminal >/dev/null 2>&1; then
-  for d in $(ls /tmp/.X11-unix/ 2>/dev/null | sed 's/^X/:/'); do
+  # **Highest display first, which means the xrdp session before the
+  # physical seat.** Both answer on this Pi -- `:0` is the console and `:10`
+  # is xrdp -- and a window opened on `:0` is invisible to anyone connecting
+  # over RDP, which is the only way this machine is ever looked at.
+  for d in $(ls /tmp/.X11-unix/ 2>/dev/null | sed 's/^X/:/' | sort -t: -k2 -rn); do
     if DISPLAY="$d" timeout 5 xset q >/dev/null 2>&1; then
       DISPLAY="$d" setsid lxterminal \
         --title="CapitalScan poller ${DAY}" \
