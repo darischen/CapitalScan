@@ -69,9 +69,10 @@ def make_bars(seed: int, n: int = BARS_PER_TICKER) -> pd.DataFrame:
     steps = rng.normal(0.0, 0.015, n)
     close = 100.0 * np.exp(np.cumsum(steps))
     spread = np.abs(rng.normal(0.0, 0.008, n)) * close
-    return pd.DataFrame(
+    ts = pd.date_range("2015-01-02", periods=n, freq="B")
+    frame = pd.DataFrame(
         {
-            "ts": pd.date_range("2015-01-02", periods=n, freq="B"),
+            "ts": ts,
             "ticker": "BENCH",
             "open": close + rng.normal(0.0, 0.004, n) * close,
             "high": close + spread,
@@ -81,6 +82,12 @@ def make_bars(seed: int, n: int = BARS_PER_TICKER) -> pd.DataFrame:
             "volume": rng.integers(1_000_000, 9_000_000, n).astype(float),
         }
     )
+    # **Indexed by `ts`, and the column is kept.** `resolve_exit` reads
+    # `window.index[exit_idx].date()` (core/exits.py:248), so a default
+    # RangeIndex raises `'int' object has no attribute 'date'` the first time
+    # an exit resolves through that branch. `detect` separately reads `ts`
+    # off the bar row, so the column has to survive as well.
+    return frame.set_index(pd.DatetimeIndex(ts), drop=False)
 
 
 def _one_unit(seed: int) -> int:
