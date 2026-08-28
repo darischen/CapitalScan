@@ -194,21 +194,6 @@ the same sequencing ADR 069 uses for breach depth.
 
 ---
 
-### Sector is a current snapshot applied to historical events
-
-Raised 2026-08-25. `tickers.sector` has no history, so a company GICS
-reclassified in 2018 carries its post-2018 sector on its 2010 events. Mild
-look-ahead of the kind ADR 135 names.
-
-Accepted for now and recorded rather than inherited silently:
-reclassifications are rare, the alternative is dropping the only
-categorical DESIGN §7.3 asks for, and point-in-time GICS history is a data
-source this project does not have. `universe.mcap_usd` has the same shape
-of problem and does **not** suffer it, because that table is evaluated
-quarterly and the lateral is bounded by `as_of <= signal_date`.
-
----
-
 ### ~~A long `cscan sync` is not atomic, and the source can move under it~~
 
 **Closed 2026-08-28.** Every read now runs inside one `REPEATABLE READ`,

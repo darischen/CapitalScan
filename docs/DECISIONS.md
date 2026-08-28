@@ -198,6 +198,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 154 | An ETF is in the trade universe unconditionally | Pinned. Amends 149's `crit_mcap` requirement for funds; completes 147; ADR 112 wants re-measuring |
 | 155 | Quantile coverage fails and DESIGN §7.6 has no repair for it | **Decided 2026-08-26: option C**, conformalised, calibrated on normal years excluding 2022 |
 | 156 | ETF market cap: `netAssets` disagrees with `sharesOutstanding` | **Decided 2026-08-26: option B via (i)** — store `netAssets / close` with its own `source` |
+| 157 | `events.sector` is a current snapshot, and that is accepted look-ahead | **Decided 2026-08-28.** Moved out of `BACKLOG.md`; no point-in-time GICS source exists, `universe.mcap_usd` shows the shape a fix would take |
 
 ---
 
@@ -6557,3 +6558,52 @@ derived one way for some rows and another way for others without the row
 recording which. `SharesPlausibility.source` exists on
 `shares_outstanding` for exactly this reason; whatever is decided, the
 provenance has to travel with the number.
+
+---
+
+## 157. `events.sector` is a current snapshot, and that is accepted look-ahead
+
+**Status.** Accepted, 2026-08-28. Amends ADR 135's look-ahead note; moved
+out of `BACKLOG.md` because it is a standing trade-off rather than work
+waiting to be done.
+
+`tickers.sector` holds **one current value per ticker with no history**. A
+company GICS-reclassified in 2018 therefore carries its post-2018 sector on
+its 2010 events, and a model conditioning on sector is reading a fact that
+did not exist at signal time. That is look-ahead, of the mild kind ADR 135
+names.
+
+**Accepted, for three reasons.** Reclassifications are rare; the
+alternative is dropping the only categorical feature DESIGN §7.3 asks for;
+and point-in-time GICS history is a paid data source this project does not
+have. Inventing one is worse than recording the limit.
+
+**`universe.mcap_usd` does not have this problem**, and the contrast is the
+useful part: that table is evaluated quarterly and every lookup is bounded
+`as_of <= signal_date`, so an event gets the market cap that was on file
+when it fired. Sector has no such table to read from. Any future fix looks
+like giving sector the same shape -- a dated table with an `as_of` bound --
+not like patching the lookup.
+
+**`c2b91e4a7d08` made it more visible, not worse.** That migration
+populated `events.sector` from the snapshot, so the value now sits on the
+event row where it reads as authoritative. The caveat is recorded in the
+database itself:
+
+    COMMENT ON COLUMN events.sector IS
+      'GICS sector from tickers.sector, which has NO history: a company
+       reclassified in 2018 carries its post-2018 sector on its 2010
+       events. Mild look-ahead, accepted (ADR 135, ADR 157).'
+
+so a reader who finds the column populated learns the limit from `\d+
+events`, not only from this file.
+
+**Not to be confused with the other sector entry.** "123 tickers have no
+sector" is a different thing: those are preferred shares and baby bonds,
+which have no GICS sector to begin with. This ADR is about the tickers that
+*do* have one.
+
+**What would reopen this.** A point-in-time GICS source, or evidence that
+sector materially moves a result -- ADR 112 found nothing surviving FDR, so
+the feature is not currently carrying weight that would justify buying data
+for it.

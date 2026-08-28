@@ -51,6 +51,15 @@ class _Conn:
     def __init__(self, answers: dict[str, object]):
         self._answers = answers
 
+    def execution_options(self, **kwargs):
+        """`run_sync` opens its read transaction with
+        `.execution_options(isolation_level="REPEATABLE READ")` so every
+        table sees one snapshot of the source (2026-08-28). The double
+        records the level rather than ignoring it, so a test can assert the
+        isolation actually asked for."""
+        self.isolation_level = kwargs.get("isolation_level")
+        return self
+
     def __enter__(self):
         return self
 

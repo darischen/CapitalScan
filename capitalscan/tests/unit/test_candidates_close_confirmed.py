@@ -132,3 +132,67 @@ class TestShape:
         ind = _ind([(DATES[0], True)])
         day = pd.Timestamp(DATES[0]).date()
         assert len(_close_confirmed_frame(ind, [day, day])) == 2
+
+
+class TestFlagsReachDetectAsColumns:
+    """The flags must arrive on the bar Series `detect` receives.
+
+    **Profiled 2026-08-28, after the per-ticker lookup fix.**
+    `Series.__setitem__` was still 19.3s of a 37s pass, 29,389 calls -- one
+    per bar -- and 16.7s of that was `_setitem_with_indexer_missing`. The
+    reason is that `bear_close_above_upper` is not a column of the bar
+    frame, so `bar[field] = ...` made pandas **grow the Series index** on
+    every single bar rather than replace a value.
+
+    Assigning the flags as real columns before `iterrows()` removes the
+    write entirely: the Series already carries them.
+
+    What must not change is that `detect` sees the same values. ADR 108
+    allows exactly `CLOSE_CONFIRMED_FIELDS` to cross from row `t`, and
+    `core.signals._close_flag` reads them off the bar -- so a column that
+    is absent, misaligned, or NaN silently turns a fired bar into an unfired
+    one.
+    """
+
+    def test_the_flag_columns_are_assigned_before_iterrows(self):
+        """Order is the whole optimisation. Assigning after the loop starts
+        would put the growth cost back."""
+        import inspect
+
+        from capitalscan.research import candidates
+
+        src = inspect.getsource(candidates.scan_candidates)
+        assign_at = src.index("_close_confirmed_frame(")
+        loop_at = src.index("for _, bar in bar_group.iterrows()")
+        assert assign_at < loop_at
+
+    def test_no_per_bar_setitem_remains(self):
+        """`bar[field] = ...` inside the loop is the pattern being removed."""
+        import inspect
+        import re
+
+        from capitalscan.research import candidates
+
+        src = inspect.getsource(candidates.scan_candidates)
+        loop = src[src.index("for _, bar in bar_group.iterrows()") :]
+        assert not re.search(r"^\s+bar\[[a-z_]+\]\s*=", loop, re.M), (
+            "a per-bar assignment into the bar Series is back; that grows the index on every row"
+        )
+
+    def test_the_flags_are_aligned_positionally_with_the_bars(self):
+        """`_close_confirmed_frame` is built from the bar frame's own dates
+        in order, so a positional assignment is correct -- but only while
+        that order is preserved. A sort between the two would misalign every
+        flag by an unknown offset and never raise."""
+        import inspect
+
+        from capitalscan.research import candidates
+
+        src = inspect.getsource(candidates.scan_candidates)
+        between = src[
+            src.index("_close_confirmed_frame(") : src.index("for _, bar in bar_group.iterrows()")
+        ]
+        assert "sort_values" not in between, (
+            "bar_group is re-sorted after the flag frame is built; the "
+            "positional assignment would misalign"
+        )

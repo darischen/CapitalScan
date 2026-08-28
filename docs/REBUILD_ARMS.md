@@ -209,42 +209,70 @@ nobody. Only a negative floor does anything.
 
 ---
 
-## Arm 3 — drop the relative-return criterion
+## Arm 3 — drop the sector-median test, keep the history gate
+
+**Corrected 2026-08-28 (user's decision). The previous version of this
+section specified dropping `crit_rel_return` entirely; that was wrong, and
+the reasoning below is why.**
 
 ```python
-# core/config.py, UniverseParams
-required_criteria: tuple[str, ...] = (
-    "crit_mcap",
-    "crit_above_sma200",
-    "crit_sma200_slope",
-)
+# core/universe.py, health_criteria
+"crit_rel_return": None if bars < 757 else True,
 ```
 
-`crit_rel_return` stays **computed** and honest in the audit log; it simply
-stops deciding membership. That is what `required_criteria` is for
-(DESIGN §3.10), and it is how `crit_rev_growth` is already handled.
+`required_criteria` is **unchanged** — all four stay. What changes is what
+the fourth one tests.
 
-Measured at 2026-06-30: **64 names pass everything else and fail on this
-alone**, including AAPL $4,250B, UNH $377B, MRK $317B, QCOM $195B, NEE
-$183B, UNP $161B. Trade universe **184 → 248, +35%**.
+**ADR 014 defines the criterion as two independent things**: "trailing
+3-year total return above the sector median". That is a **history
+requirement** (757 daily bars, roughly three years of sessions) *and* a
+**relative-performance test**. Dropping the whole criterion discards both.
+This arm drops only the second.
 
-**Two things make this arm the most interesting of the three.**
+**Why the median test is the part worth removing.** It compares against
+the sector median, so **roughly half of every sector fails it by
+construction** — measured 440 pass, 448 fail. And it is a *momentum filter
+inside a mean-reversion study*: requiring three-year outperformance selects
+recent winners while the signal hunts dips. Those pull against each other,
+and that tension has never been measured. That is the experiment.
 
-It compares against the **sector median**, so roughly half of every sector
-fails it by construction — measured 440 pass, 448 fail. That is a much
-heavier filter than its description suggests.
+**Why the history gate is worth keeping.** It is not a judgement about a
+company, it is a statement that there is not enough data to judge one. GE
+Vernova was spun out of GE in April 2024 with 603 bars: its three-year
+return is **undefined, not bad**. Relaxing that is a different change with
+a different justification, and mixing the two into one arm makes the result
+uninterpretable.
 
-And it is a **momentum filter inside a mean-reversion study**. Requiring
-three-year outperformance selects recent winners while the signal hunts
-dips. Those pull against each other and the tension has never been
-measured.
+**`None`, never `False`, below 757 bars.** This is the whole implementation
+risk. `core.universe._cmp` already returns `None` when either side is NaN,
+which is exactly why `crit_rel_return` is `None` for a new ticker today,
+and `watch_reason` keys on that at `universe.py:369`:
 
-**One consequence to decide with it.** The `history` watch route requires
-`crit_rel_return` to be `None`. Dropping the criterion from
-`required_criteria` leaves that route intact, but *replacing* it with a
-plain history check would make a new ticker return `False` instead, and the
-route would stop firing. The config change above does the first, not the
-second.
+```python
+if above is True and rel is None and bars < min_bars_for_rel_return:
+    return WATCH_HISTORY
+```
+
+Write the criterion as a plain `bars >= 757` boolean and a new ticker
+returns `False` instead of `None` — ADR 149's `history` watch route stops
+firing and the watch universe silently loses that half of its purpose.
+Returning `None` keeps the route intact. **A test must pin this**, because
+both spellings look correct and only one preserves the route.
+
+**What the superseded "drop everything" variant would have done**, measured
+at 2026-06-30 and kept because it is the comparison that makes the case:
+
+| | effect |
+|---|---|
+| +64 names failing on `crit_rel_return` alone | AAPL $4,250B, UNH $377B, MRK $317B, QCOM $195B, NEE $183B, UNP $161B |
+| trade universe | 184 → 248, +35% |
+| **watch universe** | **45 → 36** |
+
+That last row is the problem. All **9** `history`-route names graduate to
+`in_trade` at once, because nothing is left to hold them back — the watch
+universe loses a fifth of its population and the route loses its reason to
+exist. The 36 `pullback` names are unaffected either way; they fail
+`crit_above_sma200`, which no variant touches.
 
 ---
 

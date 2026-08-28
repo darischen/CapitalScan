@@ -194,11 +194,28 @@ def test_the_nightly_sweeps_serving_as_well_as_research():
     )
 
 
-def test_the_serving_sweep_precedes_the_full_sync():
-    """Delete the provisional rows, then write the authoritative ones.
+def test_the_serving_sweep_follows_a_successful_full_sync():
+    """Write the authoritative rows, *then* drop the provisional ones.
 
-    Reversed, a sync that failed halfway would leave serving holding
-    provisional rows it had just been told to drop.
+    **Reversed on 2026-08-28. This test previously asserted the opposite**,
+    with the reasoning "delete the provisional rows, then write the
+    authoritative ones -- reversed, a sync that failed halfway would leave
+    serving holding provisional rows it had just been told to drop."
+
+    That is right about the steady state and wrong about the failure. On
+    2026-08-26 the sweep removed the Pi's poller rows for the session, the
+    sync then died 53.8 minutes in, and serving held **zero** events for
+    that day against research's 670. Not stale -- empty. The site showed
+    nothing.
+
+    The trade is now explicit: superseded provisional rows may survive one
+    night. They are stale rather than absent, ADR 140 says they were never
+    authoritative, and the next successful sync clears them. Absent rows had
+    no such recovery.
+
+    The `sync_ok` guard matters as much as the order -- sweeping after a
+    *failed* sync is the original bug with extra steps. See
+    `test_nightly_sweep_ordering.py`, which pins both.
     """
     text = _source("cli.py")
     # Matched across a line break: `ruff format` wraps this call, and an
@@ -216,7 +233,11 @@ def test_the_serving_sweep_precedes_the_full_sync():
     # test's business.
     full_sync = re.search(r"sync_report = sync_job\.run_sync\(", text)
     assert full_sync is not None, "nightly no longer syncs"
-    assert sweep.start() < full_sync.start()
+    assert full_sync.start() < sweep.start(), (
+        "the serving sweep runs before run_sync again; a sync that fails "
+        "mid-way then deletes a session from serving with nothing to "
+        "replace it (2026-08-26)"
+    )
 
 
 # ---------------------------------------------------------------------------

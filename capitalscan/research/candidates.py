@@ -197,9 +197,26 @@ def scan_candidates(
         ind_narrow = ind_group.reindex(columns=list(_DETECT_INDICATOR_FIELDS))
 
         # Bar `t`'s own close-confirmed flags, resolved once for this
-        # ticker rather than once per bar (`_close_confirmed_frame`).
+        # ticker rather than once per bar (`_close_confirmed_frame`), then
+        # **attached as real columns** so the Series `iterrows` yields
+        # already carries them.
+        #
+        # Writing them per bar instead cost 19.3s of a 37s pass, 29,389
+        # calls -- one per bar -- of which 16.7s was
+        # `_setitem_with_indexer_missing`: `bear_close_above_upper` is not
+        # a column of this frame, so `bar[field] = ...` made pandas **grow
+        # the Series index** on every row rather than replace a value.
+        #
+        # Positional assignment is correct because `_close_confirmed_frame`
+        # is built from this frame's own dates in order. `bar_group` must
+        # not be re-sorted between the two -- a misalignment here would
+        # shift every flag by an unknown offset and never raise, which
+        # `test_candidates_close_confirmed.py` pins.
         bar_dates_all = [ts.date() for ts in bar_group["ts"]]
         close_flags = _close_confirmed_frame(ind_group, bar_dates_all)
+        bar_group = bar_group.assign(
+            **{f: close_flags[f].to_numpy() for f in CLOSE_CONFIRMED_FIELDS}
+        )
 
         for _, bar in bar_group.iterrows():
             bar_date = bar["ts"].date()
@@ -225,16 +242,13 @@ def scan_candidates(
             # may cross. `own_ind` is looked up by date, so a ticker missing
             # its own indicator row yields the `.get` default of False
             # rather than raising or inheriting a neighbour's flag.
-            # Read off the precomputed frame. The guards the per-bar
-            # version applied (absent date -> False, NULL through warmup ->
-            # False, real `bool` out) live in `_close_confirmed_frame` now
-            # and are pinned by `test_candidates_close_confirmed.py`.
+            # The close-confirmed flags are already on `bar`, attached as
+            # columns above. The guards the per-bar version applied (absent
+            # date -> False, NULL through warmup -> False, real `bool` out)
+            # live in `_close_confirmed_frame`.
             # `core.signals._bear_close_flag` repeats the null guard
             # regardless, deliberately -- neither layer may assume the
             # other sanitized it.
-            flags = close_flags.loc[bar_date]
-            for field in CLOSE_CONFIRMED_FIELDS:
-                bar[field] = bool(flags[field])
 
             for hit in core_signals.detect(bar, prior_ind, sp):
                 rows.append(
