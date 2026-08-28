@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from capitalscan.core.config import ExitParams, StatsParams
 from capitalscan.core.types import Side
@@ -146,24 +145,26 @@ class TestEveryTargetIsEvaluated:
 
 
 class TestNaNAndEmpty:
-    @pytest.mark.xfail(
-        reason=(
-            "The loop version RAISES here, and the vectorised one will not. "
-            "`iterrows()` on a frame mixing float and datetime columns yields "
-            "an object Series in which NaN is coerced to NaT, so "
-            "`float(bar['high'])` raises TypeError: float() argument must be "
-            "a string or a real number, not 'NaTType'. `_breach`'s own NaN "
-            "guard never gets a chance to run. Vectorising removes the "
-            "coercion -- np.round(nan) is nan and every comparison against it "
-            "is False -- which is the semantic `_breach` already intends. "
-            "Marked xfail rather than asserting the crash, so this test turns "
-            "green on the fix and records it as a deliberate behaviour change "
-            "rather than an accident. Probably unreachable today: "
-            "`validate_bars` rejects null OHLC to `bar_rejects`."
-        ),
-        strict=True,
-    )
     def test_a_nan_price_never_breaches(self):
+        """**This was a crash until the vectorisation landed**, and the test
+        was written `xfail(strict)` so the fix would turn it green rather
+        than the change being slipped in unnoticed.
+
+        The loop version called `float(bar[price_col])`, and `iterrows()` on
+        a frame mixing float and datetime columns yields an object Series in
+        which NaN is coerced to NaT -- so it raised `TypeError: float()
+        argument must be a string or a real number, not 'NaTType'` before
+        `_breach`'s own NaN guard could run.
+
+        Vectorising removes the coercion: `to_numeric(errors="coerce")`
+        gives NaN, `np.round(nan)` is nan, and every comparison against it
+        is False. A missing price simply does not breach, which is what
+        `_breach` intends.
+
+        Probably unreachable in production either way -- `validate_bars`
+        rejects null OHLC to `bar_rejects` -- but a latent crash in the
+        per-event path is worth closing.
+        """
         out = _run(_bars([np.nan, 100.0]))
         assert not out["touched_3pct"]
 

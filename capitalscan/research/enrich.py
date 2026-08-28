@@ -33,6 +33,7 @@ from __future__ import annotations
 from datetime import date
 from typing import cast
 
+import numpy as np
 import pandas as pd
 
 from capitalscan.core import costs as core_costs
@@ -486,18 +487,51 @@ def path_metrics(
         bound = Bound.UPPER if side is Side.LONG else Bound.LOWER
         price_col = "high" if side is Side.LONG else "low"
         entry = float(entry_price)
+
+        # **Extracted once, for all four targets.** This was a nested loop
+        # -- `for target: for bar in fwd_bars.iterrows()` -- so the window
+        # was re-scanned once per `reach_targets` entry, materialising a
+        # pandas Series per bar to read one column and make one comparison.
+        # Profiled 2026-08-28 during arm 3: `path_metrics` was **41.2s of a
+        # 110s** single-ticker compute, and the process built **193,469
+        # Series for 7,428 events**, about 26 each. Same defect
+        # `scan_candidates` had.
+        #
+        # `to_numeric(errors="coerce")` rather than `astype(float)`:
+        # `iterrows()` on a frame mixing float and datetime columns yields
+        # an object Series in which NaN becomes NaT, and the old
+        # `float(bar[price_col])` raised `TypeError` on it before
+        # `_breach`'s own NaN guard could run. Coercing to NaN here lets a
+        # missing price simply not breach, which is what `_breach` intends.
+        prices = np.round(
+            pd.to_numeric(fwd_bars[price_col], errors="coerce").to_numpy(dtype=float), 4
+        )
+
         for target in targets:
             suffix = _pct_suffix(target)
             level = entry * (1 + target) if side is Side.LONG else entry * (1 - target)
-            touched = False
-            day: int | None = None
-            for day_number, (_, bar) in enumerate(fwd_bars.iterrows(), start=1):
-                if _breach(float(bar[price_col]), level, bound):
-                    touched = True
-                    day = day_number
-                    break
+
+            # **`round`, not `np.round`, for the level.** They are not the
+            # same function: measured over a boundary sweep they disagree
+            # at exactly `level - 5e-05`, the half-way point, because
+            # `np.round` scales-rounds-divides and picks up different float
+            # error at the tie. The level carries full float precision from
+            # `entry * (1 + target)`, so it gets Python's `round` to match
+            # `core.signals._breach` exactly. The *prices* are safe under
+            # `np.round` because `bars.high`/`low` are `numeric(12,4)` --
+            # 0 of 5.9M daily rows carry more than four decimals -- so it
+            # is the identity there. `test_path_metrics_reachability.py`
+            # pins both halves.
+            level_r = round(float(level), 4)
+            mask = prices >= level_r if bound is Bound.UPPER else prices <= level_r
+            hits = np.flatnonzero(mask)
+
+            # First breach wins, and `day_number` is 1-based: the loop this
+            # replaces used `enumerate(..., start=1)` and broke on the first
+            # hit, and `day_touched_*pct` is written from it.
+            touched = bool(hits.size)
             out[f"touched_{suffix}"] = touched
-            out[f"day_touched_{suffix}"] = day
+            out[f"day_touched_{suffix}"] = int(hits[0]) + 1 if touched else None
 
     # Unconditional forward returns (DESIGN §5.6): independent of whether
     # this entry kind ever filled, so computed whenever a close window is
