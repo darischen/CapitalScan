@@ -205,11 +205,19 @@ def _verify_universe_copy(chash: str, quarter: str) -> None:
     """
     from sqlalchemy import text
 
-    log(f"verifying the universe copy against a real evaluation of {quarter}")
+    # `--quarter` takes a label ('2019Q2'); `universe.as_of` is the
+    # quarter-end date. Passing a date to the CLI parses `quarter[5]` as the
+    # quarter number -- '2019-06-30'[5] is '0', giving `date(2019, 0, 1)` and
+    # "month must be in 1..12, not 0". Derived from the job's own function so
+    # the two cannot drift.
+    from capitalscan.jobs.compute import _quarter_end
+
+    as_of = _quarter_end(quarter)
+    log(f"verifying the universe copy against a real evaluation of {quarter} ({as_of})")
     with _engine().begin() as conn:
         conn.execute(
             text("DELETE FROM universe WHERE config_hash = :h AND as_of = :q"),
-            {"h": chash, "q": quarter},
+            {"h": chash, "q": as_of},
         )
     run("universe", "--quarter", quarter)
     with _engine().connect() as conn:
@@ -222,7 +230,7 @@ def _verify_universe_copy(chash: str, quarter: str) -> None:
                 "     OR a.in_watch IS DISTINCT FROM b.in_watch "
                 "     OR a.mcap_usd IS DISTINCT FROM b.mcap_usd)"
             ),
-            {"h": chash, "base": BASELINE_HASH, "q": quarter},
+            {"h": chash, "base": BASELINE_HASH, "q": as_of},
         ).scalar_one()
         missing = conn.execute(
             text(
@@ -230,15 +238,15 @@ def _verify_universe_copy(chash: str, quarter: str) -> None:
                 "         - count(*) FILTER (WHERE config_hash = :base)) "
                 "  FROM universe WHERE as_of = :q AND config_hash IN (:h, :base)"
             ),
-            {"h": chash, "base": BASELINE_HASH, "q": quarter},
+            {"h": chash, "base": BASELINE_HASH, "q": as_of},
         ).scalar_one()
     if int(diff) or int(missing):
         raise SystemExit(
-            f"ABORT: universe under {chash} differs from baseline for {quarter} "
+            f"ABORT: universe under {chash} differs from baseline for {quarter} ({as_of}) "
             f"({int(diff)} differing row(s), {int(missing)} row-count gap). The copy "
             f"shortcut is invalid -- run a full universe pass per arm instead."
         )
-    log(f"universe copy verified: 0 differing rows, 0 row-count gap in {quarter}")
+    log(f"universe copy verified: 0 differing rows, 0 row-count gap in {quarter} ({as_of})")
 
 
 def run_arm(arm: Arm, verify: bool, verify_quarter: str) -> tuple[str, bool]:
@@ -305,7 +313,7 @@ def main() -> None:
     ap.add_argument("--start-from", default=None, help="arm name to resume at")
     ap.add_argument("--only", default=None, help="run a single arm by name")
     ap.add_argument("--no-verify", action="store_true", help="skip the universe-copy proof")
-    ap.add_argument("--verify-quarter", default="2019-06-30")
+    ap.add_argument("--verify-quarter", default="2019Q2", help="quarter LABEL, e.g. 2019Q2")
     ap.add_argument("--list", action="store_true", help="print the grid and exit")
     args = ap.parse_args()
 
