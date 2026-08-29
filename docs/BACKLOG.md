@@ -1260,3 +1260,74 @@ on Windows, so eight workers each pay an interpreter start plus
 pandas/numpy imports -- about 90 seconds of ramp, all of it inside the
 baseline. Any machine looks like it accelerates against that. The baseline
 now excludes `--warmup` (default 120s).
+
+---
+
+### Pi-only operation, after the workstation goes away
+
+The workstation is leaving (house move, planned). The Yoga 900 that was to
+replace it **will not power on and takes no charge**, so the fallback is the
+Raspberry Pi 4 running everything: nightly, weekly, the poller, and the site.
+By then Phase 6 should be finished and nothing else should need a rebuild.
+
+**CPU is not the problem.** Measured 2026-08-28 with `scripts/cpu_bench.py`
+(see the benchmark section above): the Pi steadies at 0.234 units/s against
+the workstation's 2.138, so **9.1x slower**. Applied to jobs measured on the
+workstation:
+
+| job | workstation | Pi, projected |
+|---|---|---|
+| `nightly` (mostly network-bound fetches) | 37 min | **~1.5-2h** |
+| `weekly` = `run_backtest` compute + finalize, no harness | ~2h | **~18h** |
+
+A weekly that takes a day is acceptable if it runs Saturday. Nightly at two
+hours is fine. **Neither of these is what blocks the migration.**
+
+**Storage is what blocks it.** Measured the same day:
+
+    research database        24 GB   (events 13 GB, path 6.3 GB,
+                                      indicators 2.3 GB, bars 1.7 GB)
+    Pi free space            27 GB   on the SD card
+    serving DB already there  5.4 GB
+    external storage         none attached
+
+24 GB into 27 GB leaves ~3 GB, before WAL, before vacuum's temp space, and
+before the growth every nightly adds. A weekly writing ~2M events plus path
+rows would fill it. And a write-heavy 24 GB database on an SD card is the
+wrong medium twice over: random-write IOPS and write endurance.
+
+**A USB SSD is a prerequisite, not an optimisation.** It fixes the capacity
+and the medium at once, for about the price of a takeaway.
+
+**Memory is the untested risk.** 3.8 GB total, ~2.4 GB available. `cpu_bench`
+ran 4 workers happily, but each of its units is one ticker of synthetic bars;
+a real compute chunk loads 24 tickers of full history plus indicators *per
+worker*. Expect to need `--workers 2` and a smaller `--chunk-size`, which
+pushes weekly past the 18h projection. This needs measuring, not predicting.
+
+**Do the migration test before the move, not after.** While the workstation
+still exists: attach the SSD, restore a dump onto the Pi, run one real
+`weekly` end to end, and watch memory and free space. If it OOMs or fills the
+disk, that is a fixable afternoon with a working machine in the room. After
+the move it is a dead system with no fallback.
+
+**Consider running weekly monthly instead.** `weekly` refreshes backtest
+labels on newly ingested events (`cli.py::weekly` docstring; the harness is
+deliberately skipped). With Phase 6 done and no active research, relabelling
+monthly costs a stale `exit_reason` on the most recent few weeks of events
+and nothing else — and it turns "a whole day, every week" into "a whole day,
+occasionally." Cheaper than any hardware.
+
+**Checklist, in order:**
+
+1. USB SSD attached, `PGDATA` moved onto it, `postgresql.conf` following it.
+2. `pg_dump`/restore of research to the Pi, and confirm 24 GB landed.
+3. One real `weekly`, timed, with `free -m` and `df -h` sampled throughout.
+4. Tune `--workers` / `--chunk-size` from what that run shows.
+5. Decide weekly-vs-monthly cadence from the measured duration.
+6. Register nightly and weekly as systemd timers, the way the poller already
+   is (`scripts/pi/capitalscan-poller.timer`), rather than Task Scheduler.
+7. Re-point `DATABASE_URL_RESEARCH` on the Pi at its own local database, and
+   delete the workstation's address from it. See ADR 158: the Pi once had
+   this pointing at its own *serving* store and a stats run wrote 512
+   `cell_stats` rows into the wrong database.
