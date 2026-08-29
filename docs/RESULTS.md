@@ -4928,3 +4928,66 @@ worst in the one that does not.
 **What this opens.** The era breakdown was one query against data that already
 existed, and it changed the reading of a 24-hour sweep. Any future parameter
 result should be checked per era before it is believed in aggregate.
+
+---
+
+## 2026-08-29 — Exit sweep complete: 11 arms, and the answer is the target, not the stop
+
+Eleven full backtests over the same universe, the same signals and the same
+dates. Only `ExitParams` changed, so every difference is the exit policy.
+Ranked on `train`, the selection split:
+
+| arm | train | validate | stopped out |
+|---|---|---|---|
+| **5% + ATR k=1.5** | **−4.1** | +4.4 | 33.5% |
+| 6% + ATR | −4.2 | +6.1 | 33.8% |
+| 7% + ATR | −4.3 | +7.0 | 33.9% |
+| 4% + ATR — **the live config** | −5.0 | +4.0 | 33.0% |
+| 5% + fixed 3% | −6.2 | −1.2 | 41.3% |
+| 6% + fixed 3% | −6.2 | +0.9 | 41.8% |
+| 7% + fixed 3% | −6.3 | +1.8 | 42.1% |
+| 5% + fixed 2% | −6.8 | −2.6 | 55.2% |
+| 6% + fixed 2% | −6.8 | −0.9 | 55.9% |
+| 7% + fixed 2% | −6.8 | −0.2 | 56.4% |
+| 4% + fixed 2% | −7.6 | −3.0 | 53.9% |
+
+**The grid separates into three tiers by stop, with no overlap at all.** Every
+ATR arm (−4.1 to −5.0) beats every fixed-3% arm (−6.2 to −6.3), which beats
+every fixed-2% arm (−6.8 to −7.6). The ordering tracks the stop-out rate
+exactly: 33%, 42%, 55%. **The stop is worth 2-3 bp; the target is worth
+about 1 bp.**
+
+### The decision
+
+**Change `target_pct` from 0.04 to 0.05. Leave the stop alone.**
+
+- 5% + ATR wins the train column outright.
+- Validate independently agrees it beats the incumbent (+4.4 against +4.0).
+- It improves on 4% in **all four eras** (see the era entry above), which 6%
+  and 7% do not.
+- It is the smallest change from the live configuration.
+
+**Not 7%, despite validate liking it most.** Validate is not the selection
+split, and 7% is best precisely in the periods that already work and worst in
+2020-2021, the one that does not. At a 7% target 47.5% of trades exit on the
+5-day timeout rather than the target, so `max_hold_days` would be doing the
+work — a parameter this sweep never varied.
+
+### What the sweep cannot say
+
+- **No significance test has been passed.** The whole grid lives inside 11
+  basis points, and `cell_stats` FDR is blind to exit policy by construction
+  (`hit_flags` reads `fwd_ret_5d`, a fixed-window market fact).
+- **Eleven arms is eleven comparisons.** Selecting on train and confirming
+  once on validate is the protection used here; it is not a p-value.
+- **`stop_atr_k` was never swept.** It carries `# swept 1.0-2.5 (ADR 008)` in
+  `core/config.py` and never has been. Given that looser stops won every
+  comparison here, **k=2.0 is the obvious next test** — three arms, not
+  eleven.
+
+### The finding nobody asked for
+
+**2020-2021 loses ~18 bp per trade under every one of the eleven arms.** No
+exit policy in this grid comes close to fixing it, and it is five times larger
+than any effect the sweep set out to measure. That belongs in its own
+investigation, and it matters more than the target.
