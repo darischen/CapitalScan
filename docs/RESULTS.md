@@ -4796,3 +4796,30 @@ had.
 `# swept 1.0-2.5 (ADR 008)` in `core/config.py` and that sweep has never
 run. If "looser is better" holds, **k=2.0 keeps the adaptiveness and just
 widens it** — three arms at targets 5/6/7, not another eleven.
+
+### 2026-08-29 — The target effect replicates across stop regimes
+
+The fixed-2% row finished, and it has the same shape as the ATR row at a
+different level:
+
+| target | ATR k=1.5 train / validate | fixed 2% train / validate |
+|---|---|---|
+| 4% | −5.0 / +4.0 | −7.6 / −3.0 |
+| 5% | **−4.1** / +4.4 | **−6.8** / −2.6 |
+| 7% | −4.3 / **+7.0** | **−6.8** / **−0.2** |
+
+In both regimes: **4% is the worst target on train, 5% and 7% tie ahead of
+it, and validate rises monotonically 4 → 5 → 7.** The two stop settings
+produce very different populations — 33% stopped out against 55% — so an
+effect that survives both is not an artifact of one exit path.
+
+**The level is set by the stop, the slope by the target.** Every fixed-2% arm
+is negative at every target; every ATR arm is positive. Raising the target
+lifts a row by roughly 3 bp on validate; changing the stop moves between rows
+by 7 bp.
+
+**What is still unresolved is where the target peaks.** Train puts 5% and 7%
+within 0.2 bp of each other in both rows, which is noise. Validate prefers 7%
+in both rows, but validate is not the selection split and preferring it there
+is the cherry-pick the split exists to prevent. `t6_atr15` and `t6_fix2` fill
+the 6% column and are the last evidence that can settle it.
