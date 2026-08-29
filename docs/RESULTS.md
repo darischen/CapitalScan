@@ -4383,8 +4383,9 @@ primary statistic and it is null.
 | `cell_stats` (both splits) | 2:21 | |
 | `benchmarks` (both splits) | 26:00 | |
 
-**Two steps were missing from `scripts/rebuild_arms_2_3.sh` and are now
-added.** `backtest --phase compute` writes `fwd_ret_*d` but never
+**Two steps were missing from the arm runner of the day
+(`scripts/rebuild_arms_2_3.sh`, deleted 2026-08-29 once `scripts/exit_sweep.py`
+superseded it; the lesson carried over and that runner has both steps).** `backtest --phase compute` writes `fwd_ret_*d` but never
 `fwd_window_days` or `peak_ret_*d` — those are nightly steps, so arm 1 had
 them by accident of having been through nightlies and an arm built from
 scratch does not. `cell_stats` then selects on `min_fwd_window_for(cfg)`,
