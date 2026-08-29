@@ -4756,3 +4756,43 @@ flat from 5% to 7%, the choice has to be made on a reason rather than on a
 ranking — a longer hold is more exposure per trade, and 47.5% of trades
 reaching the 5-day timeout at 7% means the policy increasingly depends on
 `max_hold_days` rather than on the target itself.
+
+### 2026-08-28 — Six arms: the stop dominates, and adaptiveness is worth more than width
+
+Ranked on `train`, which is the selection split:
+
+| arm | train | validate | stopped out |
+|---|---|---|---|
+| 5% + ATR k=1.5 | **−4.1** | +4.4 | 33.5% |
+| 7% + ATR k=1.5 | −4.3 | **+7.0** | 33.9% |
+| 4% + ATR k=1.5 *(live)* | −5.0 | +4.0 | 33.0% |
+| 6% + fixed 3% | −6.2 | +0.9 | 41.8% |
+| 5% + fixed 2% | −6.8 | −2.6 | 55.2% |
+| 4% + fixed 2% | −7.6 | −3.0 | 53.9% |
+
+**Every ATR arm beats every fixed-stop arm, on both splits.** Perfect
+separation with no overlap, and the ordering tracks the stop-out rate
+exactly: 33% for ATR, 42% for fixed 3%, 54% for fixed 2%. At 3-4 bp this is
+the largest effect in the grid.
+
+**What the live stop actually is.** `stop_mode="atr"`, `stop_atr_k=1.5` —
+adaptive, not a fixed percentage. Measured across validate events:
+
+    median 3.60%   mean 4.09%   p10 2.35%   p90 6.34%
+
+**So the fixed 3% arm sits close to the ATR median and still loses to it**
+(−6.2 against −4.1). That is the sharper finding: it is not merely that the
+ATR stop is wider on average, it is that **the adaptiveness itself pays.** A
+flat 3% is too tight on a volatile name and too loose on a calm one, while
+1.5 x ATR widens exactly where the noise is.
+
+**Raising the target replicates across stop regimes.** 5% beats 4% under ATR
+(−4.1 against −5.0) *and* under fixed 2% (−6.8 against −7.6). An effect that
+appears independently in two different stop regimes is much harder to
+dismiss as noise than a single comparison, which is all the earlier entry
+had.
+
+**Implied next test, and it is small.** `stop_atr_k` carries
+`# swept 1.0-2.5 (ADR 008)` in `core/config.py` and that sweep has never
+run. If "looser is better" holds, **k=2.0 keeps the adaptiveness and just
+widens it** — three arms at targets 5/6/7, not another eleven.
