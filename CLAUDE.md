@@ -126,6 +126,43 @@ is uniformly slower jobs rather than a failure.
 for h in localhost 127.0.0.1; do ... psql -h $h -c "SELECT 1" ... done
 ```
 
+**The research database ran on the default `max_wal_size` until 2026-08-29,
+and the Pi was better tuned than the workstation.** Under the exit sweep's
+write load its own log read:
+
+```
+LOG:  checkpoints are occurring too frequently (9 seconds apart)
+HINT: Consider increasing the configuration parameter "max_wal_size".
+```
+
+Checkpoints every 9-28 seconds, each flushing 48k-89k buffers and taking 6-27
+seconds — near-continuous. The setting was **1 GB, the stock default**, on the
+store that takes the heaviest writes in the system (2M events and 6.5M path
+rows per backtest arm), while `capitalscan_serving` on the Pi had been given
+4 GB deliberately.
+
+Raised to 4 GB. **`max_wal_size` is `sighup`**, so it applies without a
+restart and without dropping a connection, which matters when a multi-hour
+job is running:
+
+```
+psql -c "ALTER SYSTEM SET max_wal_size = '4GB'"   # its own invocation:
+psql -c "SELECT pg_reload_conf()"                 # ALTER SYSTEM cannot run
+                                                  # inside a transaction, and
+                                                  # psql wraps multiple -c in one
+```
+
+`synchronous_commit` was left `on`. The Pi can afford `off` because serving is
+a derived copy; research is the source of truth and losing the last few
+transactions to a crash is a different trade.
+
+**The diagnostic lesson is the bigger one.** A second machine writing over the
+network failed with `OperationalError: server closed the connection`, and the
+first explanation reached for was its Wi-Fi. The server's own log said
+otherwise. A client-side network symptom is not evidence of a client-side
+cause: the local writer rides out a stalled checkpoint that a remote one
+cannot. **Read `docker logs capitalscan-postgres` before blaming the link.**
+
 **A table can go stale forever without anything reporting it.** Found
 2026-08-25: `indicators` held **4,011,351 rows while the planner believed
 80,043** — a 50x underestimate on every plan touching it. The symptom was a
