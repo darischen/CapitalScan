@@ -1227,6 +1227,25 @@ the first bucket, because 35W split eight ways cannot hold the all-core
 clocks a 65W desktop does. Zen 3's IPC advantage is real and the power
 envelope eats it.
 
+**The Pi is 9.1x slower and cannot take even one arm.** Measured the same
+way, 2026-08-28, 4 workers (it has 4 cores):
+
+| machine | workers | steady |
+|---|---|---|
+| workstation 3700X | 8 | **2.138** units/s |
+| laptop 5950HS | 8 | 1.352 |
+| Raspberry Pi 4 Model B | 4 | **0.234** |
+
+One arm is ~2h40m on the workstation, so ~24h on the Pi -- longer than the
+whole rest of the sweep. Handing it a single arm moves the finish from ~17h
+to ~24h, because the sweep ends when the *slowest* machine does. Both 5/4/1
+and 6/3/1 are strictly worse than 6/4.
+
+The intuition that a third machine is free parallelism is right in general
+and wrong here: free only holds while the extra machine finishes inside the
+others' runtime. It has 2.4 GB free as well, against 24-ticker chunks that
+hold gigabytes on the workstation.
+
 **What that means for splitting a sweep.** The laptop is worth ~63% of a
 workstation. Balancing 10 arms gives roughly 6 to the workstation and 4 to
 the laptop, for ~16h wall clock against ~27h on the workstation alone. It
