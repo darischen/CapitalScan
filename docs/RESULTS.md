@@ -4717,3 +4717,42 @@ but it is not the selection metric.
 for the same reason: `cell_stats` is measuring the same forward returns each
 time. The exit sweep is a different question — how much of a fixed market
 move the policy captures — and it has to be read off returns.
+
+### 2026-08-28 — The target axis: raising it above 4% helps, and the splits disagree on where it peaks
+
+Three of the four ATR-stop arms are in. The stop is unchanged across them, so
+this is the target axis alone.
+
+| target (ATR k=1.5) | validate net | validate gross | hit target | timeout | hold |
+|---|---|---|---|---|---|
+| **4% — the live config** | +4.0 bp | 10.3 | 31.7% | 33.1% | 3.35 |
+| 5% | +4.4 bp | 10.7 | 23.1% | 39.8% | 3.58 |
+| 7% | **+7.0 bp** | **13.3** | 12.4% | 47.5% | 3.81 |
+
+**On validate the curve rises monotonically and 7% is 75% better than the
+live config.** It is a *gross* improvement, 10.3 to 13.3, so the policy is
+capturing more of the move rather than merely paying less cost. The stop-out
+rate barely moves (33.0 / 33.5 / 33.9), which is the control working: the ATR
+stop is doing the same job in all three, and only the target changed.
+
+That is the mechanism the pre-sweep path analysis predicted. **74.6% of
+trades that exit at 4% go on to touch 5%**, and the 4% target was banking a
+certain small win instead of them.
+
+**Train does not agree on the peak, and train is the selection split:**
+
+    4%   -5.0 bp
+    5%   -4.1 bp   <- best
+    7%   -4.3 bp
+
+5% and 7% are 0.2 bp apart on train, which is noise, and both beat 4%. So the
+claim the data supports is narrower than the validate column suggests:
+**raising the target above 4% helps on both splits; where it peaks is not
+resolved.** Taking 7% because validate prefers it is the exact cherry-pick
+the split exists to prevent.
+
+`t6_atr15` fills the gap at 6% and is queued. If the train curve really is
+flat from 5% to 7%, the choice has to be made on a reason rather than on a
+ranking — a longer hold is more exposure per trade, and 47.5% of trades
+reaching the 5-day timeout at 7% means the policy increasingly depends on
+`max_hold_days` rather than on the target itself.
