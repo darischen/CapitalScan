@@ -126,6 +126,43 @@ is uniformly slower jobs rather than a failure.
 for h in localhost 127.0.0.1; do ... psql -h $h -c "SELECT 1" ... done
 ```
 
+**A Windows firewall rule scoped to Private/Domain stops working the moment
+the network profile flips to Public, and the symptom is a remote machine that
+looks broken.** Exposing the research database to the LAN on 2026-08-28 used:
+
+```powershell
+New-NetFirewallRule -DisplayName 'CapitalScan Postgres (LAN)' -Direction Inbound `
+  -Protocol TCP -LocalPort 5432 -RemoteAddress 192.168.1.0/24 -Profile Private,Domain
+```
+
+The workstation is on Wi-Fi, and its profile was **Public**. The rule never
+applied, so 5432 was blocked from the LAN while `localhost` kept working
+perfectly — meaning **every local job was unaffected and only the second
+machine failed**, which is exactly the shape that makes you blame the second
+machine. It failed three different ways over four hours:
+`server closed the connection`, then a runner alive with zero output for 45
+minutes, then `ConnectionTimeout: connection timeout expired`.
+
+Fix the network category rather than widening the rule:
+
+```powershell
+Set-NetConnectionProfile -InterfaceAlias 'Wi-Fi 3' -NetworkCategory Private
+```
+
+`-Profile Any` also works and is wrong: it opens 5432 on every network the
+machine ever joins, including public Wi-Fi.
+
+**Check this first when a remote writer fails and the local one is fine:**
+
+```powershell
+Get-NetConnectionProfile | Select InterfaceAlias, NetworkCategory
+```
+
+**Three explanations were reached for before the right one** — the laptop's
+Wi-Fi, then the database's WAL settings, then the firewall. Only the third was
+the cause. The first two were guesses that fit the symptom; the third was
+found by checking configuration rather than by reasoning about behaviour.
+
 **The research database ran on the default `max_wal_size` until 2026-08-29,
 and the Pi was better tuned than the workstation.** Under the exit sweep's
 write load its own log read:
