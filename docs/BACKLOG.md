@@ -1364,3 +1364,21 @@ occasionally." Cheaper than any hardware.
    delete the workstation's address from it. See ADR 158: the Pi once had
    this pointing at its own *serving* store and a stats run wrote 512
    `cell_stats` rows into the wrong database.
+
+
+**An exit sweep could skip `path backfill`, `peak-labels` and the stats
+passes, and save ~30 min an arm.** `net_ret` is written by `compute` alone,
+through `research/enrich.py` — the phases after it exist to feed
+`cell_stats`, and `cell_stats` cannot respond to an exit-policy change
+(`hit_flags` reads `fwd_ret_{horizon}d`, a fixed-window market fact; see
+RESULTS 2026-08-28). At ~25 min for `path backfill` plus ~4 min for
+peak-labels and stats, that is roughly 5 hours across ten arms.
+
+**Not applied to the 2026-08-28 run, deliberately.** It was found with the
+sweep already three hours in and running unattended on two machines, and
+the day had already produced three failures caused by interrupting running
+work — a stray `config.toml`, a killed remote process, and an IPv6 binding
+regression. Five hours of machine time on a weekend was not worth a fourth.
+
+The saving is real for the next sweep. Take it there, with the phases made
+conditional on a flag rather than by editing the sequence.
