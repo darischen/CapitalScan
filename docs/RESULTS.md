@@ -5060,3 +5060,44 @@ The table that changed the reading. Net return, basis points:
 `ExitParams.target_pct` 0.04 → **0.05**. `stop_mode`, `stop_atr_k`,
 `max_hold_days` all unchanged. Not applied yet — changing it moves
 `config_hash` and requires a full rebuild plus `cscan db sync-config`.
+
+---
+
+## 2026-08-29 — Second sweep: the stop width matters more than the target
+
+The first sweep never varied `stop_atr_k`; it sat at 1.5 in all eleven arms.
+That default is a 4.09% mean stop. k=2.0 is 5.46%.
+
+| | k=1.5 train | k=2.0 train | k=1.5 val | k=2.0 val |
+|---|---|---|---|---|
+| 5% target | −4.1 | **−2.8** | +4.4 | **+7.5** |
+| 7% target | −4.3 | **−3.0** | +7.0 | **+10.2** |
+
+**+1.3 bp on train at both targets — identical to a tenth of a basis
+point** — and +3.1 / +3.2 on validate. Stop-out rate falls from ~33.5% to
+~21.4% in both. An effect that reproduces to that precision across two
+targets is the most solid result either sweep has produced.
+
+**It is larger than the target effect.** Against the live configuration
+(4% + k=1.5, train −5.0):
+
+    target 4% -> 5%      +0.9 bp
+    stop k=1.5 -> 2.0    +1.3 bp
+    both                 +2.2 bp   (train −5.0 -> −2.8)
+
+**The mechanism is avoided losses, not extra winners.** Target hits are flat
+(23.1% against 23.5%); stop-outs fall twelve points and become timeouts. The
+wider stop is not catching more upside, it is **not killing trades that would
+have recovered** — which is exactly what the pre-sweep MAE analysis predicted
+and what the first sweep's fixed-2% disaster showed from the other side.
+
+**Yesterday's selection is superseded.** 5% + k=1.5 was chosen because `k`
+had never been varied. Now that it has, **5% + k=2.0 dominates it on both
+splits**, and 7% + k=2.0 is better still on validate while marginally worse
+on train.
+
+**`t5_nostop` is the open question.** Every comparison in both sweeps has
+said looser is better, monotonically. If removing the stop entirely beats
+k=2.0, the finding is not "widen the stop" but "the stop is costing money",
+which is a materially different claim and would change what a return model
+should be built on top of.
