@@ -4853,3 +4853,38 @@ parameter than the one swept, and it is not evidence for a 7% target.
 whole grid lives inside a few basis points; and `cell_stats` FDR cannot speak
 to exit policy at all (see the entry above). The claim is a ranking on one
 metric, not a demonstration of edge.
+
+### 2026-08-29 — Train and validate disagree the same way in all three rows
+
+With the fixed-3% row finished, the target axis can be read in all three stop
+regimes at once:
+
+| stop | train, 5 → 6 → 7% | validate, 5 → 6 → 7% |
+|---|---|---|
+| ATR k=1.5 | −4.1 / −4.2 / −4.3 | +4.4 / +6.1 / +7.0 |
+| fixed 2% | −6.8 / — / −6.8 | −2.6 / — / −0.2 |
+| fixed 3% | −6.2 / −6.2 / −6.3 | −1.2 / +0.9 / +1.8 |
+
+**Train is flat above 5% in every row. Validate rises in every row.** Three
+independent stop regimes, producing populations that stop out at 33%, 42% and
+55%, and the two splits disagree the same way in all of them.
+
+**That consistency is the point.** Random noise does not disagree in the same
+direction three times. Either the validate period genuinely rewards letting
+winners run, or something systematic distinguishes the splits — a regime
+difference, or an interaction with `max_hold_days` that shows up in one era
+and not the other.
+
+**This sweep cannot resolve it**, and it should not be resolved by preferring
+the split that gives the nicer answer. Two things would:
+
+- **Split validate by era** and see whether the rise is concentrated in one
+  period. `events.era` already exists and `cell_stats` is computed per era, so
+  this costs a query rather than a rebuild.
+- **Sweep `max_hold_days`.** At a 7% target 47.5% of trades exit on the 5-day
+  timeout, so the target and the holding window are entangled; the rise on
+  validate may belong to the window rather than the target.
+
+Selection is unchanged and stays on train: **5% target, ATR stop unchanged.**
+The train column cannot separate 5/6/7, and 5% is both its nominal winner and
+the smallest change from the live configuration.
