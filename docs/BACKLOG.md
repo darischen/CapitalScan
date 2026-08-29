@@ -1313,8 +1313,21 @@ workstation:
 | `nightly` (mostly network-bound fetches) | 37 min | **~1.5-2h** |
 | `weekly` = `run_backtest` compute + finalize, no harness | ~2h | **~18h** |
 
-A weekly that takes a day is acceptable if it runs Saturday. Nightly at two
-hours is fine. **Neither of these is what blocks the migration.**
+**The budget is two days, not overnight** (user's decision, 2026-08-28), and
+under that budget neither figure is a constraint at all. An 18-hour weekly
+started Saturday morning is finished Saturday night with a day to spare.
+Speed was never what blocks this migration, and an earlier reading of this
+section that treated the Pi as marginal on time was wrong.
+
+A second candidate appeared the same evening: a Lenovo IdeaPad Flex 4-1580,
+i5-7200U (**2 cores / 4 threads**, 15W), 8 GB RAM, Samsung 850 EVO. Perhaps
+4-6x slower than the workstation rather than 9.1x, so a weekly around 8-12
+hours. **Unmeasured** — run `scripts/cpu_bench.py` on it before quoting that,
+because two of this session's hardware estimates were wrong until measured
+(the Flow X13's throttling, and `path_backfill` over the LAN).
+
+Its advantage over the Pi is not speed. It is 8 GB of RAM against 3.8, and an
+SSD instead of an SD card.
 
 **Storage is what blocks it.** Measured the same day:
 
@@ -1330,7 +1343,10 @@ rows would fill it. And a write-heavy 24 GB database on an SD card is the
 wrong medium twice over: random-write IOPS and write endurance.
 
 **A USB SSD is a prerequisite, not an optimisation.** It fixes the capacity
-and the medium at once, for about the price of a takeaway.
+and the medium at once. Being procured 2026-08-28: an 850 EVO salvaged from
+the dead Yoga plus a USB-C enclosure, about $10. **That single purchase
+unblocks either candidate**, which is what makes the machine choice a
+secondary question rather than the deciding one.
 
 **Memory is the untested risk.** 3.8 GB total, ~2.4 GB available. `cpu_bench`
 ran 4 workers happily, but each of its units is one ticker of synthetic bars;
