@@ -27,6 +27,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 BASELINE = "a38d3ca6b58295e8"
+# Chosen on train, per the pre-committed protocol. See RESULTS.md.
+SELECTED = "t5_atr15"
 PT = ZoneInfo("America/Los_Angeles")
 
 # name, target, stop label, config hash, which machine owns it
@@ -158,7 +160,7 @@ def fmt_bp(v: float | None) -> str:
 
 def build(data: dict) -> str:
     arms = data["arms"]
-    base_v = arms["t4_atr15"].get("validate")
+    base_t = arms["t4_atr15"].get("train")
     now = datetime.now(timezone.utc).astimezone(PT)
 
     done = sum(1 for a in arms.values() if state_of(a) == "done")
@@ -183,14 +185,19 @@ def build(data: dict) -> str:
             # read as one. Progress is shown instead, which is what is
             # actually known.
             v = a.get("validate") if st == "done" else None
+            tr = a.get("train") if st == "done" else None
             delta = ""
-            if v and base_v and a["name"] != "t4_atr15":
-                d = v["net"] - base_v["net"]
+            if tr and base_t and a["name"] != "t4_atr15":
+                d = tr["net"] - base_t["net"]
                 cls = "up" if d > 0 else "down"
                 delta = f'<span class="delta {cls}">{fmt_bp(d)}</span>'
             elif a["name"] == "t4_atr15":
                 delta = '<span class="delta ref">reference</span>'
-            net = f'<span class="net">{fmt_bp(v["net"])}</span>' if v else ""
+            # **Train is the headline, not validate.** Selection happens on
+            # train; showing validate as the big number made 7% look like the
+            # winner when 5% was chosen, which is exactly backwards.
+            net = f'<span class="net">{fmt_bp(tr["net"])}</span>' if tr else ""
+            valline = f'<span class="valrow">validate {fmt_bp(v["net"])}</span>' if v else ""
             sub = ""
             if st == "running":
                 sub = f'<span class="sub">{a["chunks"]}/{a["of_total"] or 61} chunks</span>'
@@ -198,10 +205,12 @@ def build(data: dict) -> str:
                 sub = f'<span class="sub">{a["owner"]}</span>'
             elif v:
                 sub = f'<span class="sub">{v["stop"]:.0f}% stopped</span>'
+            pick = " pick" if a["name"] == SELECTED else ""
+            badge = '<span class="badge">selected</span>' if a["name"] == SELECTED else ""
             rowcells.append(
-                f'<td class="cell {st}">'
-                f'<span class="armname">{html.escape(a["name"])}</span>'
-                f"{net}{delta}{sub}</td>"
+                f'<td class="cell {st}{pick}">'
+                f'<span class="armname">{html.escape(a["name"])}{badge}</span>'
+                f"{net}{delta}{valline}{sub}</td>"
             )
         cells.append(f'<tr><th scope="row">{html.escape(stop)}</th>{"".join(rowcells)}</tr>')
     matrix = "\n".join(cells)
@@ -289,6 +298,12 @@ table{{border-collapse:collapse;width:100%;font-size:13px}}
   font-variant-numeric:tabular-nums;margin-top:3px}}
 .cell .delta{{display:block;font-family:var(--mono);font-size:11px;margin-top:1px}}
 .cell .sub{{display:block;font-size:11px;color:var(--ink-3);margin-top:4px}}
+.cell .valrow{{display:block;font-family:var(--mono);font-size:11px;color:var(--ink-2);
+  margin-top:3px;font-variant-numeric:tabular-nums}}
+.cell.pick{{border-left:3px solid var(--up);background:var(--panel-2)}}
+.badge{{display:inline-block;margin-left:6px;font-family:var(--sans);font-size:9px;
+  letter-spacing:.08em;text-transform:uppercase;color:var(--up);border:1px solid var(--up);
+  border-radius:2px;padding:0 4px;vertical-align:1px}}
 .delta.up{{color:var(--up)}} .delta.down{{color:var(--down)}}
 .delta.ref{{color:var(--ink-3)}}
 .cell.running{{border-left:3px solid var(--run)}}
@@ -331,10 +346,12 @@ footer{{border-top:1px solid var(--line);padding-top:18px;font-family:var(--mono
 </div>
 
 <section>
-  <h2>The grid — validate net return, basis points</h2>
-  <p>Each cell is one full backtest. The number is mean net return per event
-  on the held-out split; the line under it is the gap from the live
-  configuration.</p>
+  <h2>The grid — train net return, basis points</h2>
+  <p>Each cell is one full backtest. The large number is mean net return per
+  event on <strong>train</strong>, which is the split the choice is made on,
+  and beneath it the gap from the live configuration and the held-out
+  validate figure. Validate is shown but not selected on: picking the arm
+  that looks best there would be eleven comparisons kept at their luckiest.</p>
   <div class="scroll">
     <table class="matrix">
       <thead><tr><th>stop \\ target</th>{"".join(f"<th>{t}</th>" for t in TARGETS)}</tr></thead>
