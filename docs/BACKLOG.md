@@ -1227,6 +1227,39 @@ the first bucket, because 35W split eight ways cannot hold the all-core
 clocks a 65W desktop does. Zen 3's IPC advantage is real and the power
 envelope eats it.
 
+**The laptop's first number was taken before its power plan was fixed, and
+the corrected picture is more interesting.** Re-run the same day:
+
+| | steady | plateau 150-480s | final 2 min | decay |
+|---|---|---|---|---|
+| laptop, before | 1.352 | 1.467 | 1.375 | 0.938 |
+| laptop, after | 1.971 | **2.267** | 1.650 | **0.728** |
+| workstation | 2.131 | **2.270** | 2.283 | 1.006 |
+
+**At its plateau the laptop equals the workstation exactly** -- 2.267 against
+2.270 -- and holds it for five or six minutes before falling 27%. The
+workstation never falls. So the thermal decay predicted at the start does
+exist; it was invisible in the first run only because the laptop was capped
+so low it never got warm. Fixing the power plan traded "slow and flat" for
+"fast then decaying", and for a 2h40m arm the floor is what matters. Ten
+minutes does not establish the floor -- it was still declining in the last
+bucket.
+
+**The benchmark predicted the real workload well, which is worth recording
+because it was not obvious it would.** `cpu_bench` deliberately drives
+`core/` only, which performs no IO (invariant 1), while a real compute chunk
+also reads bars and indicators from Postgres -- over the LAN, for the laptop.
+The prediction was 1.58x and the measured chunk times came in at 1.42-1.62x
+(workstation 90-97s, laptop 133-152s). The database reads did not dominate.
+
+**One caution learned the hard way.** A dead runner looks exactly like a slow
+one: the laptop's first launch was killed when its ssh session closed, and
+the stale `runs` row -- `status='running'`, no process behind it -- read as a
+chunk taking 361s and counting. That produced a confident "the laptop is 10x
+slower on the real workload" which was entirely wrong. Check for a live
+process before believing a duration, exactly as the `status='running'` note
+in CLAUDE.md says.
+
 **The Pi is 9.1x slower and cannot take even one arm.** Measured the same
 way, 2026-08-28, 4 workers (it has 4 cores):
 
