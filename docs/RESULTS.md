@@ -4665,3 +4665,55 @@ failed the median across 66 quarters, which made the comparison group
 would look better regardless. The 485-vs-98 ticker split was the tell. The
 table above is point-in-time, joining each event to the universe evaluation
 in force at its signal date.
+
+---
+
+## 2026-08-28 — Exit sweep, first arm: a tighter stop is worse
+
+`t4_fix2` = target 4%, **fixed 2% stop** instead of the default ATR k=1.5.
+Config `f7b31c5443d30948`. Harness passed (661s, all five checks). It is the
+only arm in the grid that changes exactly one knob from the live config, so
+it answers "does a tighter stop help" on its own.
+
+| | validate `net_ret` | stopped out | hit target |
+|---|---|---|---|
+| baseline, 4% + ATR 1.5 | **+0.00040** | 33.0% | 31.7% |
+| `t4_fix2`, 4% + fixed 2% | **−0.00030** | **53.9%** | 26.3% |
+
+**It flips a small positive into a small negative**, and the mechanism is
+visible in the exit mix rather than inferred: the stop fires on 54% of
+trades instead of 33%. That is what the pre-sweep MAE analysis predicted —
+44.8% of *timeout* trades dip past −2% while the position is open, so a 2%
+stop converts a population of harmless near-breakeven trades into realised
+2% losses. The extra winners it protects do not pay for that.
+
+Train agrees in direction: −0.00050 → −0.00076.
+
+### The sweep's original selection metric was wrong, and this arm proved it
+
+The runner was written to select on `q_value` from `cell_stats`. That cannot
+work for an exit-policy sweep. `research/cell_stats.py::hit_flags` computes
+`p_hit` from `fwd_ret_{horizon}d` — the raw forward return over a fixed
+window — which is a property of the market and carries no dependence on
+`ExitParams` at all.
+
+The first arm demonstrates it exactly:
+
+    avg(fwd_ret_5d)   baseline -0.00019   t4_fix2 -0.00019   identical
+    avg(net_ret)      baseline +0.00040   t4_fix2 -0.00030   moved
+    min q (validate)  baseline  0.6772    t4_fix2  0.6772    identical
+
+Eleven arms would have been compared on a number blind to the only variable
+being swept, and all eleven would have "tied".
+
+**The responsive metrics are `events.net_ret`, the `exit_reason` mix, and
+`benchmarks`** — the last being signal against its own null *under that exit
+policy*, which is the rigorous form of this comparison and is worth running
+on finalists rather than on all eleven at ~32 min each. `cell_stats` is
+still computed per arm at ~2 min because `n_eff` and `rho` are worth having,
+but it is not the selection metric.
+
+**Nothing about the FDR result changes.** Zero cells survive in every arm,
+for the same reason: `cell_stats` is measuring the same forward returns each
+time. The exit sweep is a different question — how much of a fixed market
+move the policy captures — and it has to be read off returns.

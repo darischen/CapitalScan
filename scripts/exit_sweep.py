@@ -1,12 +1,30 @@
 #!/usr/bin/env python
 """Exit-parameter sweep: target x stop, 11 arms (docs/BACKLOG.md).
 
-**Selection happens on `train` only.** Every arm's `validate` cells are
-computed and stored, but the arm to keep is chosen from `train` and then
+**Select on `net_ret`, NOT on `q_value` -- and this file said the wrong
+thing until 2026-08-28.** `cell_stats` cannot answer an exit-policy
+question. `hit_flags` computes `p_hit` from `fwd_ret_{horizon}d`, the raw
+forward return over a fixed window, which is a property of the market and
+not of the exit policy. Measured on the first swept arm: `avg(fwd_ret_5d)`
+was **-0.00019 on both** the baseline and `t4_fix2`, identical, while
+`net_ret` moved from +0.00040 to -0.00030 and the stop-out rate went from
+33.0% to 53.9%. Selecting on `q_value` would have compared eleven arms on a
+number blind to the only thing being swept.
+
+The responsive metrics are `events.net_ret`, the `exit_reason` mix, and
+`benchmarks` (signal against its own null *under that exit policy*), which
+is the rigorous version and is worth running on the finalists rather than on
+all eleven at ~32 min each.
+
+`cell_stats` is still computed per arm -- it is ~2 min and `n_eff`/`rho`
+remain worth having -- but it is not the selection metric.
+
+**Selection still happens on `train` only.** Each arm's `validate` numbers
+are computed and stored, and the arm to keep is chosen from `train`, then
 looked at once on `validate`. Choosing the best of eleven by their validate
 numbers is eleven comparisons kept at their luckiest, which is how a sweep
 manufactures an edge that is not there. ADR 059 gates a sweep on the default
-config having passed the harness first; it has.
+config having passed the harness first; it has, and `t4_fix2` passed it too.
 
 **Arms are driven by `config.toml`, not by editing `core/config.py`.**
 `resolve_config` layers CLI > env > `config.toml` > dataclass defaults, so an
