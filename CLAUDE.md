@@ -91,6 +91,41 @@ Prefix `SET max_parallel_workers_per_gather=0;` if a **query** hits a shared-mem
 could not resize shared memory segment ... No space left on device
 ```
 
+**Binding the container IPv4-only makes `localhost` cost 2.1 seconds.**
+Caused on 2026-08-28 by rebinding the Postgres container to `0.0.0.0:5432`
+so a second machine could reach it. The original bound **two** addresses:
+
+```
+127.0.0.1:5432->5432/tcp, [::1]:5432->5432/tcp
+```
+
+`0.0.0.0` is IPv4 only, so `localhost` resolves to `::1` first, waits for
+that to fail, and only then falls back. Measured immediately after:
+
+    localhost      2167 ms per connect
+    127.0.0.1       120 ms
+    192.168.1.31    117 ms
+
+`DATABASE_URL_RESEARCH` uses `localhost`, and every backtest worker opens
+its own connection, so **compute chunks went from 73-120s to 488-525s**, a
+4-5x regression with no error and nothing in any log. It was diagnosed only
+because `runs` held the before-and-after durations side by side.
+
+Bind both families when exposing the container:
+
+```
+-p 0.0.0.0:5432:5432 -p "[::]:5432:5432"
+```
+
+This is the same IPv6 trap recorded further down for a different cause, and
+the general rule is worth stating: **any change to how the database is
+reached must be followed by a connect-latency check**, because the symptom
+is uniformly slower jobs rather than a failure.
+
+```
+for h in localhost 127.0.0.1; do ... psql -h $h -c "SELECT 1" ... done
+```
+
 **A table can go stale forever without anything reporting it.** Found
 2026-08-25: `indicators` held **4,011,351 rows while the planner believed
 80,043** — a 50x underestimate on every plan touching it. The symptom was a
