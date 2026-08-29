@@ -4992,3 +4992,71 @@ work — a parameter this sweep never varied.
 exit policy in this grid comes close to fixing it, and it is five times larger
 than any effect the sweep set out to measure. That belongs in its own
 investigation, and it matters more than the target.
+
+---
+
+## Exit sweep — reference tables (2026-08-29)
+
+One place to find the numbers, since the discussion above is spread over
+several entries. Everything is mean net return per event in **basis points**
+(1 bp = 0.01%). Live report: the artifact published 2026-08-29.
+
+### The grid, ranked on train
+
+`train` is the selection split. `validate` is held out and shown, not chosen
+on.
+
+| arm | target | stop | train | validate | stopped out |
+|---|---|---|---|---|---|
+| **t5_atr15 — SELECTED** | 5% | ATR k=1.5 | **−4.1** | +4.4 | 33.5% |
+| t6_atr15 | 6% | ATR k=1.5 | −4.2 | +6.1 | 33.8% |
+| t7_atr15 | 7% | ATR k=1.5 | −4.3 | +7.0 | 33.9% |
+| t4_atr15 — **live config** | 4% | ATR k=1.5 | −5.0 | +4.0 | 33.0% |
+| t5_fix3 | 5% | fixed 3% | −6.2 | −1.2 | 41.3% |
+| t6_fix3 | 6% | fixed 3% | −6.2 | +0.9 | 41.8% |
+| t7_fix3 | 7% | fixed 3% | −6.3 | +1.8 | 42.1% |
+| t5_fix2 | 5% | fixed 2% | −6.8 | −2.6 | 55.2% |
+| t6_fix2 | 6% | fixed 2% | −6.8 | −0.9 | 55.9% |
+| t7_fix2 | 7% | fixed 2% | −6.8 | −0.2 | 56.4% |
+| t4_fix2 | 4% | fixed 2% | −7.6 | −3.0 | 53.9% |
+
+Three tiers by stop, **no overlap**: ATR (−4.1 to −5.0), fixed 3% (−6.2 to
+−6.3), fixed 2% (−6.8 to −7.6), ordered exactly by stop-out rate.
+`t4_fix3` was dropped from the grid and never run.
+
+### The target curve by era, ATR stop
+
+The table that changed the reading. Net return, basis points:
+
+| period | 4% | 5% | 6% | 7% | shape |
+|---|---|---|---|---|---|
+| 2010-2014 (train) | +3.3 | +5.8 | +6.3 | +6.9 | rises |
+| 2015-2019 (train) | −0.4 | 0.0 | +0.6 | +0.7 | rises |
+| **2020-2021 (train)** | **−17.7** | −17.2 | −18.9 | −19.6 | **falls** |
+| 2022-2023 (validate) | +4.0 | +4.4 | +6.1 | +7.0 | rises |
+
+### What is NOT true, stated plainly
+
+- **The selected arm still loses money on train.** −4.1 bp is the *least
+  negative* of eleven; every arm is negative on that split. The sweep
+  improved a losing configuration, it did not produce a winning one.
+- **Zero cells survive FDR, in every arm.** 0 of 256, min q ≈ 0.64 on train
+  and 0.6772 on validate, against a 0.10 threshold — and **identical across
+  arms**, because `cell_stats` derives `p_hit` from `fwd_ret_5d`, a
+  fixed-window market fact with no dependence on exit policy. The exit sweep
+  and the FDR question are measuring different things; neither answers the
+  other.
+- **Nothing here passed a significance test.** The whole grid lives inside 11
+  basis points and the ranking is a ranking, not evidence of edge.
+- **The stop was never widened.** `stop_atr_k` stayed at 1.5 throughout; it
+  carries `# swept 1.0-2.5 (ADR 008)` in `core/config.py` and still has never
+  been swept. Looser stops won every comparison here, so **k=2.0 is the
+  obvious next test.**
+- **2020-2021 loses ~18 bp per trade under all eleven arms.** Larger than
+  anything the sweep set out to measure, and untouched by any exit setting.
+
+### The decision
+
+`ExitParams.target_pct` 0.04 → **0.05**. `stop_mode`, `stop_atr_k`,
+`max_hold_days` all unchanged. Not applied yet — changing it moves
+`config_hash` and requires a full rebuild plus `cscan db sync-config`.
