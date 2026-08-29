@@ -416,7 +416,13 @@ The cost is a migration plus every reader learning to scope on it --
 
 ---
 
-### The three ablation arms, and the order they must run in
+### ~~The three ablation arms, and the order they must run in~~ — **all three run 2026-08-28**
+
+All three completed. **Zero cells survive FDR in any arm**, and arm 3 — the
+widest universe, with the most statistical power of the three — produced the
+*worst* min q. See RESULTS.md 2026-08-28. The hypothesis this was built to
+test (that the universe filters were excluding tradeable names and suppressing
+an edge) is closed.
 
 Decided 2026-08-25. Three rebuilds rather than one, so each change is
 attributable:
