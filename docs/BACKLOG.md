@@ -1371,8 +1371,17 @@ passes, and save ~30 min an arm.** `net_ret` is written by `compute` alone,
 through `research/enrich.py` — the phases after it exist to feed
 `cell_stats`, and `cell_stats` cannot respond to an exit-policy change
 (`hit_flags` reads `fwd_ret_{horizon}d`, a fixed-window market fact; see
-RESULTS 2026-08-28). At ~25 min for `path backfill` plus ~4 min for
-peak-labels and stats, that is roughly 5 hours across ten arms.
+RESULTS 2026-08-28). At ~21 min for `path backfill` plus ~4 min for
+peak-labels and stats, that is roughly 4 hours across ten arms on the
+workstation.
+
+**On a machine reading the database over the LAN the saving is far larger.**
+Measured 2026-08-28 with both machines running: the workstation writes path
+rows at **5,292/s** and the laptop at **2,146/s** — 2.47x slower, against
+only 1.38x on compute. All 25 of the database's connections sat
+`idle / ClientRead` with the laptop at 8.7% CPU, so the phase is bound by
+round-trips rather than by work. That is ~50 min an arm remotely, and it is
+being spent to feed a statistic that cannot move.
 
 **Not applied to the 2026-08-28 run, deliberately.** It was found with the
 sweep already three hours in and running unattended on two machines, and
