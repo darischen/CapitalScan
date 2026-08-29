@@ -58,6 +58,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_TOML = ROOT / "config.toml"
+
+# **Resolved from the running interpreter, not assumed to be `ROOT/.venv`.**
+# `uv` places the environment wherever `UV_PROJECT_ENVIRONMENT` says, and on
+# the laptop it had to go outside the user profile entirely: uv's own Python
+# had landed in `AppData\Roaming`, which an SSH session's restricted token
+# cannot traverse -- every call died with `os error 448`,
+# ERROR_UNTRUSTED_MOUNT_POINT. Hardcoding `.venv` made this script
+# unrunnable there while `uv run` worked fine, which is a confusing failure
+# to debug from the other end of an ssh pipe.
+#
+# `sys.executable` is the environment actually in use, and `cscan.exe` sits
+# beside it in both layouts.
+VENV_BIN = Path(sys.executable).parent
+CSCAN = VENV_BIN / "cscan.exe"
+PYTHON = Path(sys.executable)
 BASELINE_HASH = "a38d3ca6b58295e8"
 CHUNK_SIZE = "24"  # identical across restarts, or every chunk re-runs
 WORKERS = "8"
@@ -144,7 +159,7 @@ def log(msg: str) -> None:
 
 def run(*args: str) -> None:
     log("$ cscan " + " ".join(args))
-    proc = subprocess.run([str(ROOT / ".venv/Scripts/cscan.exe"), *args], cwd=ROOT)
+    proc = subprocess.run([str(CSCAN), *args], cwd=ROOT)
     if proc.returncode != 0:
         raise SystemExit(f"ABORT: cscan {' '.join(args)} exited {proc.returncode}")
 
@@ -152,7 +167,7 @@ def run(*args: str) -> None:
 def resolved_hash() -> str:
     out = subprocess.run(
         [
-            str(ROOT / ".venv/Scripts/python.exe"),
+            str(PYTHON),
             "-c",
             "from capitalscan.jobs.config import config_hash, resolve_config;"
             "print(config_hash(resolve_config()))",
