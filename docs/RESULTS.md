@@ -4888,3 +4888,43 @@ the split that gives the nicer answer. Two things would:
 Selection is unchanged and stays on train: **5% target, ATR stop unchanged.**
 The train column cannot separate 5/6/7, and 5% is both its nominal winner and
 the smallest change from the live configuration.
+
+### 2026-08-29 — The flat train curve was an averaging artifact, and 2020-2021 is a hole
+
+`events.era` splits the target curve by period, and the picture changes
+completely. Validate net return, basis points, ATR stop throughout:
+
+| period | 4% | 5% | 6% | 7% | shape |
+|---|---|---|---|---|---|
+| 2010-2014 (train) | +3.3 | +5.8 | +6.3 | **+6.9** | rises |
+| 2015-2019 (train) | −0.4 | 0.0 | +0.6 | **+0.7** | rises |
+| **2020-2021 (train)** | **−17.7** | −17.2 | −18.9 | **−19.6** | **falls** |
+| 2022-2023 (validate) | +4.0 | +4.4 | +6.1 | **+7.0** | rises |
+
+**Raising the target helps in three periods out of four.** The train
+aggregate looked flat only because it averages three rising periods against
+2020-2021, where the ordering inverts. The flatness was a property of the
+average, not of the strategy, and the earlier entry reporting it as "train is
+flat above 5%" should be read with this.
+
+**The train/validate disagreement was never a disagreement.** Validate is
+entirely 2022-2023 (193,772 events); train spans 2010-2014, 2015-2019 and
+2020-2021. Validate behaves like the two older eras. **2020-2021 is the
+outlier**, not the held-out split.
+
+**2020-2021 is a −17.7 bp hole and that is the larger finding here.** No
+other period is positive by even half that magnitude. Whatever the exit
+policy, this strategy lost heavily through the COVID crash and the recovery
+that followed, and a sweep of exit parameters cannot fix a period where every
+arm loses 17 to 20 basis points. That deserves its own investigation.
+
+**Selection is unchanged: 5% target, ATR stop.** Not because the train
+average said so — that average is now known to be a blend — but because it is
+the conservative common choice: it improves on 4% in all four periods, it is
+the smallest change from the live configuration, and choosing 7% would be
+selecting the value that is best in the three periods that already work and
+worst in the one that does not.
+
+**What this opens.** The era breakdown was one query against data that already
+existed, and it changed the reading of a 24-hour sweep. Any future parameter
+result should be checked per era before it is believed in aggregate.
