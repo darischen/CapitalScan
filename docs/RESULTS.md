@@ -4823,3 +4823,33 @@ within 0.2 bp of each other in both rows, which is noise. Validate prefers 7%
 in both rows, but validate is not the selection split and preferring it there
 is the cherry-pick the split exists to prevent. `t6_atr15` and `t6_fix2` fill
 the 6% column and are the last evidence that can settle it.
+
+### 2026-08-29 — The complete ATR target curve: 4% is too tight, and above that it is flat
+
+| target (ATR k=1.5) | train | validate | gross | hit target | timeout | hold |
+|---|---|---|---|---|---|---|
+| **4% — the live config** | **−5.0** | +4.0 | 10.3 | 31.7% | 33.1% | 3.35 |
+| **5%** | **−4.1** | +4.4 | 10.7 | 23.1% | 39.8% | 3.58 |
+| 6% | −4.2 | +6.1 | 12.4 | 17.0% | 44.3% | 3.72 |
+| 7% | −4.3 | +7.0 | 13.3 | 12.4% | 47.5% | 3.81 |
+
+**Train shows a step, not a slope.** Moving off 4% is worth 0.9 bp; after
+that 5%, 6% and 7% sit within **0.2 bp** of each other, which is noise. The
+supported claim is *"4% is too tight"*, not *"higher is better"*. Validate
+does rise monotonically to +7.0, and that is precisely the reading the split
+exists to stop us acting on.
+
+**Selection, on train as pre-committed: 5%.** It wins the train column, and
+validate independently agrees it beats the incumbent (+4.4 against +4.0).
+Gross rises with it (10.7 against 10.3), so it is capture rather than cost.
+
+**A mechanism argument points the same way.** At 7% only 12.4% of trades
+reach the target while **47.5% exit on the 5-day timeout** — the policy has
+quietly become "hold five days and take what is there", which is
+`max_hold_days` doing the work rather than `target_pct`. That is a different
+parameter than the one swept, and it is not evidence for a 7% target.
+
+**What this does not say.** Nothing here has passed a significance test; the
+whole grid lives inside a few basis points; and `cell_stats` FDR cannot speak
+to exit policy at all (see the entry above). The claim is a ranking on one
+metric, not a demonstration of edge.
