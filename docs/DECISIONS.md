@@ -6740,6 +6740,25 @@ That variant still writes research over an SSH tunnel originating from the
 workstation, so it frees nothing. The value is entirely in removing
 research from the live write path.
 
+### The trading-day guard, verified against a real firing 2026-08-29
+
+The timer fires `*-*-* 00:00:00`, every day, and `cscan poll` checks only the
+time of day rather than the date, so a weekend would otherwise have polled a
+closed market and written signals off Friday's stale quotes into the store
+the site serves.
+
+First real weekend under ADR 158, and it held:
+
+    00:00:05  Started capitalscan-poller.service
+    00:00:05  sudo ... psql -c 'SELECT 1 FROM trading_days WHERE d = '2026-08-29''
+    00:00:05  [SKIP] 2026-08-29 is not a trading day. Nothing to poll; exiting cleanly.
+    00:00:08  capitalscan-poller.service: Deactivated successfully.
+
+Three seconds, and `Deactivated successfully` rather than `Failed`, so
+`Restart=on-failure` did not retry it. **Zero `poller_sessions` rows exist
+for 2026-08-29**, which is the outcome that actually matters — a session row
+on a non-trading day would also have polluted ADR 084's `coverage_pct`.
+
 ### Consequence discovered in production, 2026-08-28
 
 **A second writer makes a surrogate `id` ambiguous, and nothing announces
