@@ -162,7 +162,12 @@ def build(data: dict) -> str:
                 rowcells.append('<td class="cell empty"></td>')
                 continue
             st = state_of(a)
-            v = a.get("validate")
+            # **A partial arm shows no number.** `net_ret` averaged over 6 of
+            # 61 chunks is a real average of an unreal population -- it
+            # renders identically to a finished result and invites being
+            # read as one. Progress is shown instead, which is what is
+            # actually known.
+            v = a.get("validate") if st == "done" else None
             delta = ""
             if v and base_v and a["name"] != "t4_atr15":
                 d = v["net"] - base_v["net"]
