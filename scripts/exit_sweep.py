@@ -127,13 +127,21 @@ class Arm:
         ]
         if self.stop_mode == "atr":
             lines.append(f"stop_atr_k = {self.stop_value}")
-        else:
+        elif self.stop_mode == "fixed":
             lines.append(f"stop_fixed_pct = {self.stop_value}")
+        # "none" carries no width: core/exits.py returns no stop level for it
+        # at all (line 45, "a control arm (ADR 008)"). Writing a width would
+        # move the config hash without changing behaviour.
         return "\n".join(lines) + "\n"
 
 
 def _arm_name(target: float, mode: str, value: float) -> str:
-    tag = "atr15" if mode == "atr" else f"fix{int(round(value * 100))}"
+    if mode == "none":
+        tag = "nostop"
+    elif mode == "atr":
+        tag = "atr" + str(value).replace(".", "")
+    else:
+        tag = f"fix{int(round(value * 100))}"
     return f"t{int(round(target * 100))}_{tag}"
 
 
@@ -160,6 +168,22 @@ def _arm_name(target: float, mode: str, value: float) -> str:
 # 0.07 was added on the user's decision: 74.6% of 4% exits go on to touch
 # 5% but only 18.0% reach 10%, so the decay sits between and 6-7% is inside
 # it.
+# **Second sweep, 2026-08-29: the stop width itself.** The first sweep never
+# varied `stop_atr_k` -- it carries `# swept 1.0-2.5 (ADR 008)` in
+# `core/config.py` and never had been -- yet looser stops won every comparison
+# it did make. k=1.5 is a 4.09% mean stop; k=2.0 is 5.46%.
+#
+# `t5_nostop` is the control `core/exits.py:45` already names as one ("a
+# control arm (ADR 008)"). It is here instead of k=2.5 because at k=2.5 the
+# stop sits at 6.82% against a 5% target and would almost never fire -- an
+# arm that is effectively stopless while pretending otherwise. Ask the
+# question directly.
+SWEEP2 = [
+    Arm("t5_atr20", 0.05, "atr", 2.0),  # wider stop vs the selected t5_atr15
+    Arm("t5_nostop", 0.05, "none", 0.0),  # does the stop help at all
+    Arm("t7_atr20", 0.07, "atr", 2.0),  # does the effect replicate
+]
+
 ARMS = [
     Arm("t4_atr15", 0.04, "atr", 1.5),  # = arm 1, already computed
     Arm("t4_fix2", 0.04, "fixed", 0.02),  # the one-knob-changed arm
@@ -168,6 +192,7 @@ ARMS = [
         for t in (0.05, 0.06, 0.07)
         for m, v in (("atr", 1.5), ("fixed", 0.02), ("fixed", 0.03))
     ),
+    *SWEEP2,
 ]
 
 
