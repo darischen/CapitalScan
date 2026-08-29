@@ -65,13 +65,17 @@ def collect() -> dict:
             n_cells = c.execute(
                 sa.text("SELECT count(*) FROM cell_stats WHERE config_hash=:h"), {"h": chash}
             ).scalar_one()
-            chunks = c.execute(
+            crow = c.execute(
                 sa.text(
-                    "SELECT count(*) FROM runs WHERE job='backtest_compute' AND status='ok' "
-                    "AND params->>'config_hash'=:h"
+                    "SELECT count(*) FILTER (WHERE status='ok') AS ok, "
+                    "       max((params->>'of')::int) AS of_total "
+                    "  FROM runs WHERE job='backtest_compute' "
+                    "   AND params->>'config_hash'=:h"
                 ),
                 {"h": chash},
-            ).scalar_one()
+            ).one()
+            chunks = int(crow.ok or 0)
+            of_total = int(crow.of_total or 0)
             row: dict = {
                 "name": name,
                 "target": target,
@@ -80,7 +84,8 @@ def collect() -> dict:
                 "owner": owner,
                 "events": int(n_events),
                 "cells": int(n_cells),
-                "chunks": int(chunks),
+                "chunks": chunks,
+                "of_total": of_total,
             }
             if n_events:
                 for split in ("train", "validate"):
@@ -125,7 +130,17 @@ def collect() -> dict:
 
 
 def state_of(a: dict) -> str:
+    """`done` means the arm's returns are final, not that every phase ran.
+
+    `net_ret` is written by the compute phase and never changes afterwards --
+    `finalize` corrects `cofire_count`, and the stats passes read the events
+    rather than rewriting them. Gating on `cell_stats` therefore hid a
+    finished result for the ~30 minutes those phases take, which is the
+    opposite of what a status page is for.
+    """
     if a["owner"] == "baseline":
+        return "done"
+    if a["of_total"] and a["chunks"] >= a["of_total"]:
         return "done"
     if a["cells"] >= 512:
         return "done"
@@ -178,7 +193,7 @@ def build(data: dict) -> str:
             net = f'<span class="net">{fmt_bp(v["net"])}</span>' if v else ""
             sub = ""
             if st == "running":
-                sub = f'<span class="sub">{a["chunks"]}/61 chunks</span>'
+                sub = f'<span class="sub">{a["chunks"]}/{a["of_total"] or 61} chunks</span>'
             elif st == "queued":
                 sub = f'<span class="sub">{a["owner"]}</span>'
             elif v:
