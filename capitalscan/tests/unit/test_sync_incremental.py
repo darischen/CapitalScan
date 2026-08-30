@@ -34,8 +34,9 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 from capitalscan.jobs import sync as sync_mod
+from capitalscan.tests.conftest import DEFAULT_CONFIG_HASH
 
-CONFIG = "a38d3ca6b58295e8"
+CONFIG = DEFAULT_CONFIG_HASH
 BOUND_KEYS = ("bars_from", "indicators_from", "events_from", "reports_from")
 
 

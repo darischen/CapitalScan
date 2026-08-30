@@ -106,11 +106,23 @@ def _call(tickers=None, workers=1, sweep=False, config_name=None, phase="all", c
 # ---------------------------------------------------------------------------
 
 
-def test_exit_params_defaults_match_adr_059():
+def test_exit_params_defaults_are_the_swept_values():
+    """The defaults ADR 059 required be validated *before* sweeping, then
+    updated *by* the sweep.
+
+    ADR 059 is a sequencing decision -- validate one config, then sweep -- and
+    both halves are now done: the harness passed on ATR k=1.5 / target 4%, the
+    fourteen-arm sweep ran on 2026-08-28/29, and the config moved on its
+    evidence. This test froze the starting values as if they were permanent,
+    which made a deliberate change look like a regression.
+
+    It still guards the thing worth guarding: that the defaults are the values
+    the sweep selected, not something drifted into by accident."""
     ep = ExitParams()
     assert ep.stop_mode == "atr"
-    assert ep.stop_atr_k == 1.5
-    assert ep.target_pct == 0.04
+    assert ep.stop_atr_k == 2.0
+    assert ep.target_pct == 0.05
+    assert ep.max_hold_days == 5
 
 
 # ---------------------------------------------------------------------------
@@ -219,8 +231,11 @@ def test_default_config_passed_to_run_backtest(monkeypatch):
     _call(tickers="AAPL")
 
     assert captured["config"] == DEFAULT_CONFIG
-    assert captured["config"].exits.stop_atr_k == 1.5
-    assert captured["config"].exits.target_pct == 0.04
+    # The swept values (2026-08-29), not the pre-sweep ones. The point of the
+    # assertion is that the CLI hands `run_backtest` the *default* config
+    # rather than constructing its own, so it must track the defaults.
+    assert captured["config"].exits.stop_atr_k == 2.0
+    assert captured["config"].exits.target_pct == 0.05
     assert captured["config"].exits.stop_mode == "atr"
 
 

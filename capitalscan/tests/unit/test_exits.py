@@ -19,7 +19,16 @@ from capitalscan.core import exits
 from capitalscan.core.config import ExitParams
 from capitalscan.core.types import ExitReason, Side
 
-EP = ExitParams()
+# **Pinned, not inherited.** These tests check the exit *mechanics* -- which
+# level fills, which side wins a tie, where a gap fills -- against hand-worked
+# arithmetic, so they must not move when the production defaults move. They
+# did on 2026-08-29, when the sweep set `stop_atr_k` 1.5 -> 2.0 and six tests
+# failed with the engine computing the right answer for the new default
+# (a short's stop went 100 + 1.5*2 = 103 to 100 + 2.0*2 = 104).
+#
+# `test_backtest_cli.py::test_exit_params_defaults_match_adr_059` is the test
+# that *should* track the production values; this file should not.
+EP = ExitParams(target_pct=0.04, stop_mode="atr", stop_atr_k=1.5)
 ATR = 2.0
 ENTRY = 100.0
 

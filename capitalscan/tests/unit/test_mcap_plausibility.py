@@ -28,6 +28,7 @@ import pytest
 
 from capitalscan.core.config import McapPlausibility
 from capitalscan.core.universe import implausible_mcap_reason
+from capitalscan.tests.conftest import DEFAULT_CONFIG_HASH
 
 BOUNDS = McapPlausibility()
 
@@ -93,4 +94,4 @@ class TestItIsNotAConfigField:
         from capitalscan.core.config import Config
         from capitalscan.jobs.config import config_hash
 
-        assert config_hash(Config()) == "a38d3ca6b58295e8"
+        assert config_hash(Config()) == DEFAULT_CONFIG_HASH

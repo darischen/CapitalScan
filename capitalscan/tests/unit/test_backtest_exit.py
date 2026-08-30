@@ -155,7 +155,13 @@ def test_entry_idx_offsets_the_forward_window():
             "k_full": [1.0, 1.0, 50.0, 50.0, 50.0, 50.0],
         }
     )
-    ep = ExitParams(stop_mode="none", max_hold_days=3)
+    # `target_pct` pinned with the rest: the 104.5 high above is hand-worked
+    # against a 4% target, and inheriting the production value silently
+    # re-anchored it when the sweep moved the default to 5% on 2026-08-29 --
+    # the bar stopped being a target hit and this failed with `timeout`.
+    # The test is about `entry_idx` offsetting the window, not about what
+    # the current production target happens to be.
+    ep = ExitParams(stop_mode="none", max_hold_days=3, target_pct=0.04)
     # Position 2 in this business-day-indexed frame is 2026-08-03 — the
     # entry's own entry_date must agree, or _assert_entry_idx_matches
     # rejects the call before any slicing happens.

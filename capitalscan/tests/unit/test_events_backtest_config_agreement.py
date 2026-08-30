@@ -33,6 +33,7 @@ from capitalscan.core.config import Config, SignalParams, SplitParams
 from capitalscan.jobs import compute, db_io
 from capitalscan.jobs.config import config_hash as jobs_config_hash
 from capitalscan.research import backtest
+from capitalscan.tests.conftest import DEFAULT_CONFIG_HASH
 
 TICKER = "TSM"
 SIGNAL_DATE = date(2026, 7, 30)
@@ -284,7 +285,7 @@ class TestRunEventsBackwardCompatibility:
 
         Moved again 2026-08-21 by `min_mcap_usd` 30e9 -> 20e9. New value:
         `a38d3ca6b58295e8`."""
-        assert jobs_config_hash(Config()) == "a38d3ca6b58295e8"
+        assert jobs_config_hash(Config()) == DEFAULT_CONFIG_HASH
 
     def test_sp_only_caller_still_works_and_matches_config_signals_default(
         self, stub_events_reads, captured_events_upsert
@@ -305,7 +306,7 @@ class TestRunEventsBackwardCompatibility:
         events_calls = [c for c in captured_events_upsert if c["table_name"] == "events"]
         row = events_calls[0]["data"][0]
         assert (
-            row["config_hash"] == "a38d3ca6b58295e8"
+            row["config_hash"] == DEFAULT_CONFIG_HASH
         )  # min_mcap_usd 30e9 -> 20e9 (was bbc99a02ebdc999f)
         assert row["split_key"] == "holdout"  # 2026-07-30 is past the default validate_end
 

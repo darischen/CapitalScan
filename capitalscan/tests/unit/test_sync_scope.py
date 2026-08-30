@@ -25,10 +25,11 @@ from __future__ import annotations
 from datetime import date
 
 from capitalscan.jobs.sync import _tables
+from capitalscan.tests.conftest import DEFAULT_CONFIG_HASH
 
 
 def _sql_for(name: str) -> str:
-    for table in _tables(date(2023, 8, 22), "a38d3ca6b58295e8"):
+    for table in _tables(date(2023, 8, 22), DEFAULT_CONFIG_HASH):
         if table.name == name:
             return " ".join(table.sql.split())
     raise AssertionError(f"{name} is not a synced table")

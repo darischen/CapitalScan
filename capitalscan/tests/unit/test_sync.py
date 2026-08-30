@@ -18,6 +18,7 @@ import pytest
 from capitalscan.core.config import Config, ServingParams
 from capitalscan.jobs import sync
 from capitalscan.jobs.config import config_hash
+from capitalscan.tests.conftest import DEFAULT_CONFIG_HASH
 
 CUTOFF = date(1996, 8, 27)
 TABLES = sync._tables(CUTOFF, "86e91448a65aa40b")
@@ -82,7 +83,7 @@ def test_serving_params_is_not_part_of_config():
     assert not hasattr(Config(), "serving")
     # Moves whenever a real `Config` field does -- ADR 142 last, 2026-08-20.
     # The point of the assertion is that `ServingParams` is *not* one of them.
-    assert config_hash(Config()) == "a38d3ca6b58295e8"
+    assert config_hash(Config()) == DEFAULT_CONFIG_HASH
 
 
 # ---------------------------------------------------------------------------

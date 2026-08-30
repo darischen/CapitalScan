@@ -41,6 +41,7 @@ import pandas as pd
 
 from capitalscan.core.config import UniverseParams
 from capitalscan.core.universe import evaluate_criteria
+from capitalscan.tests.conftest import DEFAULT_CONFIG_HASH
 
 
 def _crit(rel_return, median):
@@ -122,7 +123,7 @@ class TestTheHashIsUnmoved:
         from capitalscan.core.config import Config
         from capitalscan.jobs.config import config_hash
 
-        assert config_hash(Config()) == "a38d3ca6b58295e8"
+        assert config_hash(Config()) == DEFAULT_CONFIG_HASH
 
     def test_naming_it_in_required_criteria_does_move_the_hash(self):
         """ADR 060: changing what membership means must change the hash."""

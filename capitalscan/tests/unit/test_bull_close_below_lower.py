@@ -22,6 +22,7 @@ from capitalscan.core.config import Config, IndicatorParams, SignalParams
 from capitalscan.core.types import Bands, Side, SignalType
 from capitalscan.jobs.config import config_hash
 from capitalscan.jobs.poll import bull_reversal_state, is_bear_reversal, is_bull_reversal
+from capitalscan.tests.conftest import DEFAULT_CONFIG_HASH
 
 
 def _bars(rows: list[tuple[float, float, float, float]]) -> pd.DataFrame:
@@ -165,7 +166,7 @@ class TestItIsDefinedButDisabled:
         this land while a backtest was running under this exact hash.
         Enabling it is the deliberate act that moves it.
         """
-        assert config_hash(Config()) == "a38d3ca6b58295e8"
+        assert config_hash(Config()) == DEFAULT_CONFIG_HASH
 
 
 def _ind_row(**kw) -> pd.Series:

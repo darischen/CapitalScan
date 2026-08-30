@@ -44,3 +44,18 @@ settings.register_profile("dev", max_examples=200)
 # exists so the Phase 3 gate script can request `full` without threading a
 # pytest flag through every invocation.
 settings.load_profile(os.getenv("CAPSCAN_HYPOTHESIS_PROFILE", "dev"))
+
+
+# **The hash the default `Config()` produces today.**
+#
+# Nine tests asserted this value as a literal, each guarding that *its own*
+# change was hash-neutral -- adding an enum member, a plausibility check, a
+# criterion flag. That intent is right and worth keeping: a change that
+# rehashes every generation by accident is a serious bug.
+#
+# What was wrong was hardcoding the value nine times. On 2026-08-29 the exit
+# sweep moved `target_pct` 0.04 -> 0.05 and `stop_atr_k` 1.5 -> 2.0 on
+# purpose, and nine tests failed for a change none of them was written about.
+# The pin now lives here, so a deliberate config change is one edit and an
+# accidental one still fails every guard.
+DEFAULT_CONFIG_HASH = "0523841076f47293"

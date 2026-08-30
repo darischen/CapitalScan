@@ -178,9 +178,18 @@ class SignalParams:
 @dataclass(frozen=True)
 class ExitParams:
     max_hold_days: int = 5
-    target_pct: float = 0.04  # swept 0.03-0.05 (ADR 009)
+    # 0.04 -> 0.05 and k 1.5 -> 2.0 on 2026-08-29, from the fourteen-arm exit
+    # sweep (RESULTS.md). Worth +2.2 bp per event on train against the old
+    # pair, and the extreme tail is unchanged: k=2.0's worst trade is the same
+    # -39.55% as k=1.5's, the same trade gapping through both stops.
+    target_pct: float = 0.05  # swept 0.04-0.07 2026-08-29 (ADR 009)
     stop_mode: str = "atr"  # "atr" | "fixed" | "none"
-    stop_atr_k: float = 1.5  # swept 1.0-2.5 (ADR 008)
+    # **The dominant exit parameter, and it had never been varied.** Swept
+    # 2026-08-29: fixed 2% / fixed 3% / k=1.5 / k=2.0 / none run -6.8, -6.2,
+    # -4.1, -2.8, +2.2 bp on train -- monotonic, no turnover. `none` won and
+    # was NOT taken: it costs 11 points of worst case and leaves 72.6% of
+    # trades exiting on `max_hold_days`, which has never been swept.
+    stop_atr_k: float = 2.0  # swept 1.0-2.5 (ADR 008), set 2026-08-29
     stop_fixed_pct: float = 0.03
     exit_on_upper_band: bool = True
     exit_on_stoch_80: bool = True

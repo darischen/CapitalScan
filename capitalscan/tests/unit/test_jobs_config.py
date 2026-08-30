@@ -22,7 +22,7 @@ import json
 
 import pytest
 
-from capitalscan.core.config import Config
+from capitalscan.core.config import Config, ExitParams
 from capitalscan.jobs.config import ConfigError, resolve_config
 
 SECTIONS = ["indicators", "signals", "exits", "costs", "universe", "stats", "splits"]
@@ -99,9 +99,13 @@ def test_full_precedence_chain(tmp_path, monkeypatch):
 
 
 def test_a_partial_override_leaves_other_fields_at_defaults(missing):
-    cfg = resolve_config(cli_overrides={"exits": {"target_pct": 0.05}}, config_file=missing)
-    assert cfg.exits.target_pct == 0.05
-    assert cfg.exits.stop_atr_k == 1.5
+    # **The override must differ from the default or the test proves nothing.**
+    # This used 0.05, which became the default on 2026-08-29, so it would have
+    # passed whether or not the override was applied at all.
+    cfg = resolve_config(cli_overrides={"exits": {"target_pct": 0.09}}, config_file=missing)
+    assert cfg.exits.target_pct == 0.09
+    assert cfg.exits.target_pct != ExitParams().target_pct
+    assert cfg.exits.stop_atr_k == ExitParams().stop_atr_k
     assert cfg.indicators.bb_window == 20
 
 

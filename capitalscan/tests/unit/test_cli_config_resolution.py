@@ -35,6 +35,7 @@ from typer.testing import CliRunner
 from capitalscan.core.config import Config
 from capitalscan.jobs import cli, compute
 from capitalscan.jobs.config import config_hash
+from capitalscan.tests.conftest import DEFAULT_CONFIG_HASH
 
 SECTIONS = ["indicators", "signals", "exits", "costs", "universe", "stats", "splits"]
 
@@ -140,7 +141,7 @@ def test_default_config_hash_is_pinned():
     `capitalscan.default_config_hash`, and pointing them at a config with no
     rows yet returns an empty screener rather than an error (invariant 5b's
     deliberate behaviour). Set it after the backtest, not before."""
-    assert config_hash(Config()) == "a38d3ca6b58295e8"
+    assert config_hash(Config()) == DEFAULT_CONFIG_HASH
 
 
 # ---------------------------------------------------------------------------

@@ -19,8 +19,9 @@ from pathlib import Path
 import pytest
 
 from capitalscan.jobs import sync
+from capitalscan.tests.conftest import DEFAULT_CONFIG_HASH
 
-CHASH = "a38d3ca6b58295e8"
+CHASH = DEFAULT_CONFIG_HASH
 D = date(2026, 8, 25)
 RUN_ID = "poll_20260825T063000_abc123"
 ROOT = Path(__file__).resolve().parents[3] / "capitalscan"
