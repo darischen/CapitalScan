@@ -101,7 +101,8 @@ class Arm:
     name: str
     target_pct: float
     stop_mode: str
-    stop_value: float  # ATR k, or fixed pct
+    stop_value: float  # ATR k, or fixed pct; ignored when stop_mode is "none"
+    max_hold_days: int = 5  # only varied by the third sweep
 
     @property
     def is_default(self) -> bool:
@@ -125,6 +126,8 @@ class Arm:
             f"target_pct = {self.target_pct}",
             f'stop_mode = "{self.stop_mode}"',
         ]
+        if self.max_hold_days != 5:
+            lines.append(f"max_hold_days = {self.max_hold_days}")
         if self.stop_mode == "atr":
             lines.append(f"stop_atr_k = {self.stop_value}")
         elif self.stop_mode == "fixed":
@@ -193,6 +196,16 @@ ARMS = [
         for m, v in (("atr", 1.5), ("fixed", 0.02), ("fixed", 0.03))
     ),
     *SWEEP2,
+    # **Third sweep: the holding window.** The first two swept target and stop
+    # and left max_hold_days at 5 in every arm -- and loosening the stop
+    # pushed trades out of the stop and into the clock. 51.5% of trades now
+    # end because five days elapsed under the shipped config, 72.6% under the
+    # stopless arm. It is doing the most work of any exit parameter and has
+    # never been tested. It also disentangles the no-stop result: "the stop
+    # costs money" and "five days is the wrong window" are not separable until
+    # this runs. hold=5 is the shipped config and already built.
+    Arm("h3_t5_atr20", 0.05, "atr", 2.0, max_hold_days=3),
+    Arm("h10_t5_atr20", 0.05, "atr", 2.0, max_hold_days=10),
 ]
 
 
