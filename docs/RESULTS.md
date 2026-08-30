@@ -5366,3 +5366,48 @@ The stopless arm's timeout rate is not, on its own, a reason to reject it.
 
 `h10` decides whether 5 is a peak or whether the same pattern as the target
 and the stop holds: every exit in this strategy cutting trades short.
+
+### 2026-08-30 — The holding window: train peaks at 5, validate at 10, and the era split says why
+
+`max_hold_days` 3 / 5 / 10, everything else at the shipped config:
+
+| | train | validate | stopped | hit target | timed out | mean hold |
+|---|---|---|---|---|---|---|
+| hold 3 | −3.9 | +1.3 | 13.4% | 16.1% | 68.4% | 2.67 |
+| **hold 5 — shipped** | **−2.8** | +7.5 | 21.4% | 23.5% | 51.5% | 3.95 |
+| hold 10 | −3.0 | **+17.7** | 33.7% | **34.5%** | 23.9% | 5.90 |
+
+**+17.7 bp is the largest number in seventeen arms**, and it is on the split
+we do not select from. Train puts 5 and 10 within 0.2 bp — noise — so the
+shipped config stands.
+
+**By era, and this is the explanation rather than a shrug:**
+
+| era | hold 3 | hold 5 | hold 10 |
+|---|---|---|---|
+| 2010-2014 | +5.7 | **+7.3** | +4.8 |
+| 2015-2019 | +0.3 | +2.2 | **+2.6** |
+| **2020-2023** | −9.1 | −6.6 | **−1.9** |
+
+**The best window moves with the regime**: 5 days in the 2010s, 10 in the
+2020s. Train is 71% pre-2020 so it picks 5; validate is entirely 2022-2023 so
+it picks 10. Neither split is wrong and neither is noise — they are measuring
+different market regimes, and this is the third time tonight the two have
+disagreed in exactly this way.
+
+**Longer holds help most where the strategy bleeds.** 2020-2023 improves from
+−9.1 to −1.9, recovering 7.2 bp of the era that costs the most in every other
+result tonight.
+
+**What this changes.** The exit sweeps have been treating one number as
+correct for sixteen years of data. The era tables say the right target, the
+right stop width and now the right holding window all drift with the regime.
+A single static exit policy is leaving money in every era except the one it
+happens to fit — which is a stronger argument for the Phase 6 model than any
+individual parameter result, because a model can condition on regime and a
+constant cannot.
+
+**Not shipped**: `max_hold_days` stays 5. Changing it on validate's
+preference is the cherry-pick the split exists to prevent, and the honest
+version of "10 is better now" is a regime-conditional policy, not a new
+constant.
