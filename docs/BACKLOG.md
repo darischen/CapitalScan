@@ -1205,7 +1205,21 @@ types on the same day gives both events the **same** earliest `fired_at`.
 Exact today (all 157 linked events on 2026-08-28 had exactly one report),
 and far better than the NULL it replaced, but wrong in principle.
 
-**The fix is a `signal_type` column on `signal_reports`**, written by the
+~~**The fix is a `signal_type` column on `signal_reports`**~~ — **built
+2026-08-29** (`a4c8d19f6e02`). The column exists on both databases and the
+poller writes it from the next session. It is nullable and deliberately not
+backfilled: `state_json` carries indicator state but no signal type, and the
+events that would have supplied it are the ones ADR 150 deleted, so a guessed
+value would be fabrication where NULL is true.
+
+**One step remains**: `v_screen_live` still resolves `fired_at` by
+`(ticker, signal_date)`. It should prefer `signal_type` where the column is
+populated and fall back to the match where it is NULL. Deferred because no
+row carries the value yet — the view has nothing to prefer until the poller
+runs. Worth doing after Monday's session, when real rows exist to test
+against.
+
+Superseded text: the fix is a `signal_type` column on `signal_reports`, written by the
 poller and matched on in the view. It is a schema change plus a poller
 change plus a view change, which is why it is here rather than in that
 migration.

@@ -956,6 +956,15 @@ def _process_tick(
                     {
                         "event_id": event_id,
                         "ticker": ticker,
+                        # **Stored so the screener stops approximating.** ADR
+                        # 150's nightly sweep nulls `event_id`, so a report
+                        # otherwise carries nothing saying which event it was;
+                        # `v_screen_live` had to match on (ticker,
+                        # signal_date) and gave both of a ticker's fires the
+                        # same timestamp. The value was already in scope here
+                        # -- it goes into the notification subject -- and was
+                        # simply never written (a4c8d19f6e02).
+                        "signal_type": signal_type,
                         "fired_at": now,
                         "state_json": _state_json(band, ind_row, price, day_open),
                         "cell_id": None,
