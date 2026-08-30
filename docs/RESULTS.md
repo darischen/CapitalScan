@@ -5198,3 +5198,53 @@ case:
 The shipped config stays 5% + k=2.0. The `max_hold_days` sweep is what
 decides whether stopless is genuinely right or an artifact of an untested
 holding window.
+
+### 2026-08-29 — The cluster-head filter discards 74% of fires, and the discarded ones do better
+
+`cell_stats` filters `is_cluster_head`, keeping only the first fire of a
+cluster. Measured on the shipped config:
+
+| split | all fires | kept | discarded | % dropped |
+|---|---|---|---|---|
+| train | 791,524 | 205,184 | 586,340 | **74.1%** |
+| validate | 193,628 | 49,912 | 143,716 | **74.2%** |
+
+And the discarded ones are the better trades:
+
+| split | first fire (counted) | repeat fires (dropped) | gap |
+|---|---|---|---|
+| train | **−7.9 bp** | **−1.0 bp** | 6.9 |
+| validate | **+0.8 bp** | **+9.7 bp** | 8.9 |
+
+**Not a different kind of trade.** The exit mix is nearly identical — stop
+21.7% against 22.6%, target 16.5% against 15.5% — so this is the same
+behaviour producing better returns, not a population that exits differently.
+
+**The mechanism is the one the original design intended.** A repeat fire
+means the signal persisted or deepened while a position was already open: a
+second lower-band touch after a further drop is a better entry price for the
+same setup. Averaging down is working, and the filter throws it away.
+
+**The gap is larger than anything the exit sweep found.** The whole
+target × stop grid spans 11 bp; this is 7-9 bp from a filter nobody was
+treating as a parameter. Every number in both sweeps is measured on the
+*worse* quarter of fires.
+
+**ADR 151's statistical objection still stands, and the two are not in
+conflict.** Dropping the filter takes train `n` from 78k to 311k and narrows
+every interval by roughly 2x, while the added observations are serially
+dependent by construction — the direction that manufactures significance.
+But that is an argument about `cell_stats`, not about returns.
+
+**The resolution is that they are different uses of the same table:**
+
+- **Backtest returns should count every fire.** They are real trades with
+  real money attached, and excluding three quarters of them understates the
+  strategy by 7-9 bp.
+- **`cell_stats` should keep the filter** until a serial `n_eff` exists,
+  matching what `rho` already does cross-sectionally (ADR 098).
+
+**What is not yet known** is whether the repeat fires are *independently*
+profitable or whether they only look good because the first fire of a losing
+cluster is the one that gets counted. Splitting by position within cluster
+(2nd, 3rd, 4th fire) would separate those, and is one query.
