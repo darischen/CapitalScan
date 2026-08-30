@@ -91,7 +91,29 @@ CONFIG_TOML = ROOT / "config.toml"
 VENV_BIN = Path(sys.executable).parent
 CSCAN = VENV_BIN / "cscan.exe"
 PYTHON = Path(sys.executable)
-BASELINE_HASH = "a38d3ca6b58295e8"
+
+
+# **The generation arms are copied from and restored to.** Read from
+# `serving_config` rather than hardcoded: this was a literal, and when the
+# exit sweep moved the config on 2026-08-29 the runner's own restore check
+# warned "expected a38d3ca6b58295e8" about the correct new hash. A guard that
+# can be wrong about what it guards is worse than no guard.
+#
+# Falls back to the literal only if serving is unreachable, so the script
+# still runs on a machine that cannot see the Pi.
+def _baseline_hash() -> str:
+    try:
+        from sqlalchemy import text
+
+        from capitalscan.jobs import sync as sync_job
+
+        with sync_job.serving_engine().connect() as conn:
+            return str(conn.execute(text("SELECT config_hash FROM serving_config")).scalar_one())
+    except Exception:
+        return "0523841076f47293"
+
+
+BASELINE_HASH = _baseline_hash()
 CHUNK_SIZE = "24"  # identical across restarts, or every chunk re-runs
 WORKERS = "8"
 
