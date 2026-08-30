@@ -1503,3 +1503,84 @@ the honest way to separate the two before anyone acts on the stopless result.
   under every arm tested and is the period where a stop should matter most.
   One query against existing data, the same way the target curve's era split
   was done.
+
+---
+
+### Docker Desktop does not start after a reboot, and nightly fails silently into it
+
+Found 2026-08-30. The workstation rebooted at 12:38 PT. Docker Desktop did
+not come back, so the `capitalscan-postgres` container was not running when
+Task Scheduler fired nightly at 13:15. The run failed with:
+
+```
+OperationalError: (psycopg.errors.ConnectionTimeout) connection timeout expired
+```
+
+**The state that causes it**, all three checked at the time:
+
+```
+Get-Process 'Docker Desktop'    -> NOT RUNNING
+Get-Process com.docker.backend  -> NOT RUNNING
+Get-Service com.docker.service  -> Stopped / startup Manual
+```
+
+`com.docker.service` is set to **Manual** startup and Docker Desktop is not
+in the login startup set, so nothing brings the database back after a
+restart. Starting Docker Desktop by hand fixed it in 20 seconds and the
+container came up with both address families bound and normal connect
+latency (170 ms localhost / 150 ms 127.0.0.1), so there is no lasting damage
+— the failure is purely that nothing runs the starter.
+
+**Why it reads as something else.** `connection refused` on 5432 is
+documented in CLAUDE.md as "the container is down", which sends you to
+`docker ps` — and `docker ps` itself fails with
+`failed to connect to the docker API at npipe:...`, a different error naming
+a pipe rather than a container. The chain reboot → daemon down → container
+down → job failed is three hops from the symptom.
+
+**Deliberately not fixed 2026-08-30** (user's call: "doesn't really matter").
+Recorded so the next unexplained nightly failure after a restart is one
+lookup rather than a diagnosis.
+
+**When it is worth doing**, two independent options, either sufficient:
+
+- **`Set-Service com.docker.service -StartupType Automatic`** plus Docker
+  Desktop in startup. Fixes it for everything on the machine, needs admin,
+  and is a machine setting rather than a repo change.
+- **A preflight in `scripts/run_nightly.ps1`**: try research, and on failure
+  start Docker Desktop, wait for the daemon, retry, and refuse with a named
+  reason if it is still down. Slower but self-healing regardless of *why*
+  the daemon is missing, and it lives in the repo where it is testable.
+
+The second is the better fit for the actual failure mode, since it also
+covers a daemon that died rather than merely never started.
+
+### Nightly has no trading-day guard, unlike the poller
+
+Raised by the user 2026-08-30, after seeing a nightly terminal open at 13:15
+on a Sunday.
+
+**Correct observation.** `scripts/pi/wait_and_poll.sh` checks `trading_days`
+and exits with `[SKIP]` on a non-trading day (verified against a real firing
+2026-08-29). `scripts/run_nightly.ps1` has no such check and runs seven days
+a week.
+
+**It was poller-only on purpose, and the reason does not transfer.** The
+poller's guard is a *correctness* one: polling a closed market writes signals
+off the previous session's stale quotes into the store the site serves, and
+adds a `poller_sessions` row that pollutes ADR 084's `coverage_pct`. Nightly
+has no equivalent failure — its steps are idempotent, a weekend run fetches
+bars that do not exist yet and recomputes an unchanged 5-day window.
+
+**So the cost is waste, not wrongness**: roughly 35-40 minutes twice a week,
+plus the API rate limit it spends and ~100k rows it re-syncs for nothing.
+
+**And there is a real argument against adding one.** Nightly is the catch-up
+path. Its 7-day lookback means a Saturday run repairs a Friday failure, and
+a guard would leave that broken until Monday. Corporate actions and the
+earnings calendar also update on non-trading days.
+
+**Undecided rather than rejected.** If it is added, the honest version is a
+*reduced* weekend pass — skip the bar fetchers and the sync, keep the
+calendar fetchers and the catch-up — not a blanket skip that also disables
+the repair path.
