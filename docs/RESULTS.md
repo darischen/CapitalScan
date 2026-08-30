@@ -5292,9 +5292,27 @@ same trades by 300 bp and is not a parameter at all — it is a property of the
 signal, knowable at entry only in part (the *first* fire cannot know how long
 its cluster will run, though the 2nd through 5th increasingly can).
 
+**The 300 bp is partly hindsight, and that caps how usable it is.**
+Cluster *size* is known only after the cluster ends. What a live decision has
+is cluster *position*, and position alone does not reproduce the effect —
+it runs the other way and is nearly flat:
+
+| | by position (knowable at fire time) | by size (known only after) |
+|---|---|---|
+| first / singleton | −5.5 / +6.4 | **+170.9 / +240.6** |
+| last / 10+ | +2.6 / +30.1 | **−119.3 / −133.6** |
+
+At fire time you know you are the third fire; you do not know whether the
+cluster stops at three (good) or runs to fifteen (bad), and those are
+indistinguishable as they happen. So the separation is real as a description
+of what happened and **is not directly tradeable**.
+
 **This is a model feature, not a rule.** "Skip fires after the 9th" is
-tempting and would be fitted to this sample. The honest version is that
-cluster position and running cluster length belong in the Phase 6 feature
-set, where the model can weigh them against everything else and be validated
-out of sample. `events.cluster_id` already exists, so the feature is a window
-function rather than a rebuild.
+tempting, would be fitted to this sample, and the position table above shows
+it would not even work — late fires are the *better* ones by position. What
+belongs in the Phase 6 feature set is cluster position, running cluster
+length, and time since the cluster's first fire: all knowable at decision
+time, and the model can learn whatever relationship exists between them and
+eventual cluster length rather than being handed a rule derived from
+hindsight. `events.cluster_id` already exists, so these are window functions
+rather than a rebuild.
