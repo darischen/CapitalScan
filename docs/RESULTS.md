@@ -5141,9 +5141,19 @@ argue against acting on it directly:
   is barely an exit policy: it is "hold five days, take 5% if you get it".
   `max_hold_days` is doing the work, and it has never been swept. The honest
   next test is `max_hold_days` at 3 / 5 / 10, not shipping a stopless config.
-- **No stop means unbounded per-trade loss.** Mean net return improves, but
-  the sweep never measured the tail. Before removing a stop, look at worst
-  observed loss and the 1st percentile of `net_ret`, not the mean.
+- **No stop means unbounded per-trade loss, and the tail was measured after
+  the fact.** Validate, `net_ret`:
+
+  | stop | mean | p1 | p0.1 | worst | sd |
+  |---|---|---|---|---|---|
+  | k=1.5 | +4.4 bp | −9.11% | −15.33% | **−39.55%** | 4.01% |
+  | k=2.0 | +7.5 bp | −10.35% | −18.81% | **−39.55%** | 4.20% |
+  | none | +11.0 bp | −12.61% | **−22.62%** | **−50.34%** | 4.40% |
+
+  Going stopless buys 6.6 bp of mean and costs 11 points of worst case. **k=2.0's
+  worst trade is identical to k=1.5's** — the same trade gapped through both
+  stops, so widening 1.5 → 2.0 gains 3.1 bp of mean at no cost in the extreme
+  tail. That is a materially better trade than removing the stop.
 - **2020-2021 still loses ~18 bp under every arm** and is the period where a
   stop would matter most. The era breakdown for the no-stop arm has not been
   run.
