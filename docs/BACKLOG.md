@@ -1413,3 +1413,47 @@ regression. Five hours of machine time on a weekend was not worth a fourth.
 
 The saving is real for the next sweep. Take it there, with the phases made
 conditional on a flag rather than by editing the sequence.
+
+---
+
+### `max_hold_days` has never been swept, and the exit sweep made it the binding constraint
+
+Raised 2026-08-29, straight out of the fourteen-arm exit sweep.
+
+The sweep varied `target_pct` and the stop and found both matter, but it left
+`max_hold_days = 5` untouched in every arm. That is now the parameter doing
+the most work:
+
+| config | exits on timeout |
+|---|---|
+| 4% + k=1.5 (the old default) | 33.1% |
+| **5% + k=2.0 (shipped 2026-08-29)** | **51.5%** |
+| 5% + no stop (best arm, not shipped) | 72.6% |
+
+**Loosening the stop pushed trades out of the stop and into the clock.** At
+the shipped config more than half of all trades now end because five days
+elapsed, not because the policy decided anything. The exit rule is
+increasingly "hold a week and take what is there", and the length of that
+week has never been tested.
+
+**Three arms settle it**: `max_hold_days` 3 / 5 / 10 at the shipped target and
+stop. Cheap by the same argument as the stop sweep — one knob, same universe,
+and the runner already exists.
+
+**It also bears on the no-stop result.** `t5_nostop` won on mean return but
+72.6% of its trades hit the timeout, so what looked like "the stop is costing
+money" may partly be "five days is the wrong window". Sweeping the window is
+the honest way to separate the two before anyone acts on the stopless result.
+
+### The exit sweep's own leftovers
+
+- **`stop_atr_k` at 2.5 and 1.0 were never run.** The sweep tested 1.5, 2.0
+  and none. 2.5 was dropped deliberately — at a 5% target its 6.82% stop
+  almost never fires, so it duplicates the no-stop arm — but the *tighter*
+  side (k=1.0) was never tested at all, and the monotonic trend predicts it
+  should be worse. Cheap confirmation that the trend is real rather than an
+  artifact of where the grid happened to start.
+- **The no-stop arm's era breakdown was never run.** 2020-2021 loses ~18 bp
+  under every arm tested and is the period where a stop should matter most.
+  One query against existing data, the same way the target curve's era split
+  was done.
