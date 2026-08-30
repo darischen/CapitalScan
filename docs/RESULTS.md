@@ -5055,11 +5055,35 @@ The table that changed the reading. Net return, basis points:
 - **2020-2021 loses ~18 bp per trade under all eleven arms.** Larger than
   anything the sweep set out to measure, and untouched by any exit setting.
 
-### The decision
+### The stop-width ladder (second sweep, added below)
 
-`ExitParams.target_pct` 0.04 → **0.05**. `stop_mode`, `stop_atr_k`,
-`max_hold_days` all unchanged. Not applied yet — changing it moves
-`config_hash` and requires a full rebuild plus `cscan db sync-config`.
+The grid above holds `stop_atr_k` at 1.5 in every arm. A second sweep varied
+it, and it is the dominant parameter — **9 bp from tightest to none against
+about 1 bp for the target**. All at a 5% target:
+
+| stop | mean stop | train | validate | stopped | worst trade |
+|---|---|---|---|---|---|
+| none (control) | — | **+2.2** | +11.0 | 0.0% | −50.34% |
+| **ATR k=2.0 — SHIPPED** | 5.46% | **−2.8** | +7.5 | 21.4% | −39.55% |
+| ATR k=1.5 (was live) | 4.09% | −4.1 | +4.4 | 33.5% | −39.55% |
+| fixed 3% | 3.00% | −6.2 | −1.2 | 41.3% | — |
+| fixed 2% | 2.00% | −6.8 | −2.6 | 55.2% | — |
+
+### The decision, as applied 2026-08-29
+
+`ExitParams.target_pct` 0.04 → **0.05** and `stop_atr_k` 1.5 → **2.0**.
+`stop_mode` and `max_hold_days` unchanged. New hash **`0523841076f47293`**,
+which the sweep had already built as `t5_atr20`, so no rebuild was needed —
+config edit, `cscan db sync-config`, and a full `cscan sync`.
+
+Not the stopless control, despite it winning on mean in every era: it costs
+11 points of worst case and leaves 72.6% of trades exiting on the five-day
+timeout, making `max_hold_days` the real policy. That parameter is swept
+separately (third sweep, `h3` / `h10`).
+
+**The live report artifact was retired 2026-08-29** once every number it
+carried was recorded here. `scripts/sweep_report.py` regenerates it from the
+database if it is ever wanted again.
 
 ---
 
