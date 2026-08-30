@@ -605,6 +605,46 @@ a module the job has not reached yet.
     `universe` that changes mid-run produce different output for one config,
     violating ADR 060.
 
+**`cscan sync` picks its generation from the RESEARCH database's GUC, not
+from `core/config.py` and not from `serving_config`.** `run_sync` opens with:
+
+```python
+config_hash = conn.execute(
+    text("SELECT current_setting('capitalscan.default_config_hash', true)")
+).scalar_one()
+```
+
+on the **source** connection. So after a deliberate config change the order
+that works is:
+
+```
+1. edit core/config.py
+2. ALTER DATABASE capitalscan SET capitalscan.default_config_hash = '<new>'
+3. cscan db sync-config      # writes serving_config
+4. cscan sync                # now copies the right generation
+```
+
+Skipping step 2 cost 42.5 minutes on 2026-08-29: the sync ran, reported
+`synced 7,499,059 rows`, exited 0, and copied **zero rows of the new
+generation** — it faithfully re-copied the old one. Nothing in the output
+says which hash it used, and `rows_written` looks identical either way.
+
+**`capscan` IS superuser on research**, unlike on the Pi, so `ALTER DATABASE`
+works here without `sudo -u postgres`. That asymmetry is easy to forget after
+reading the Pi note below.
+
+**Check all three before trusting a sync:**
+
+```sql
+-- research
+SELECT current_setting('capitalscan.default_config_hash', true);
+-- serving, on the Pi
+SELECT config_hash FROM serving_config;
+```
+```
+uv run python -c "from capitalscan.jobs.config import config_hash, resolve_config; print(config_hash(resolve_config()))"
+```
+
 **A `psql` session on the Pi reads the WRONG config generation.**
 `run_sync` ends by pinning `capitalscan.default_config_hash` on the serving
 database and **cannot**: custom `capitalscan.*` parameters need superuser,
