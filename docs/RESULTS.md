@@ -5340,3 +5340,29 @@ time, and the model can learn whatever relationship exists between them and
 eventual cluster length rather than being handed a rule derived from
 hindsight. `events.cluster_id` already exists, so these are window functions
 rather than a rebuild.
+
+### 2026-08-30 — Shortening the holding window is worse, on both splits
+
+`max_hold_days` 5 → 3, everything else at the shipped config:
+
+| | train | validate | stopped | hit target | timed out | mean hold |
+|---|---|---|---|---|---|---|
+| **hold 3** | −3.9 | +1.3 | 13.4% | 16.1% | **68.4%** | 2.67 |
+| **hold 5 — shipped** | **−2.8** | **+7.5** | 21.4% | 23.5% | 51.5% | 3.95 |
+
+**The first parameter change in three sweeps to fail cleanly on both splits.**
+
+**Mechanism: a third of the winners never arrive.** Target hits fall from
+23.5% to 16.1% while timeouts rise to 68.4%. Trades that would have reached
+the target on day four or five are closed at whatever price is showing
+instead.
+
+**This corrects a worry from the second sweep.** The argument against the
+stopless arm was partly that 72.6% of its exits were timeouts, making
+`max_hold_days` the real policy. That framing treated a high timeout rate as
+inherently suspect. It is not — hold 3 has 68.4% timeouts and is *worse*, so
+the rate is a symptom of where the other exits sit, not a defect in itself.
+The stopless arm's timeout rate is not, on its own, a reason to reject it.
+
+`h10` decides whether 5 is a peak or whether the same pattern as the target
+and the stop holds: every exit in this strategy cutting trades short.
