@@ -1165,6 +1165,38 @@ poller runs from `capitalscan-poller.timer` on the Pi. `weekly` has no
 entry and every `runs` row for it was hand-typed.
 
 
+~~**`core.exits.resolve_exit` builds three pandas Series per forward bar**~~
+— **tried 2026-08-29, made it slower, reverted.**
+
+The reasoning was that `path_metrics` had the same pattern and vectorising it
+paid, so replacing `.iloc[i]` with `to_dict("records")` should too. Measured
+on 3,940 real `resolve_exit` calls: **7.24s before, 8.26s after**, with
+run-to-run noise around 0.6s. No improvement, possibly a small loss.
+
+**Why the analogy failed.** `path_metrics` scans the *entire* forward window
+every call, so building the rows once amortises. `resolve_exit` **breaks on
+the first exit** -- mean holding is 4.0 bars of a 5-bar window, and most exits
+land on bar 1 or 2. `to_dict("records")` materialises every row in the window
+up front, so it builds five dicts to use two. Six cheap `.iloc` calls beat
+that.
+
+**The general lesson, which is the part worth keeping:** an optimisation that
+pays in a full scan can lose in an early-exit loop, and "same pattern, same
+fix" is a hypothesis rather than a conclusion. The profile said
+`resolve_exit_for_entry` was 18.8s per ticker; it did not say the Series
+construction was the expensive part of it, and I did not check before
+rewriting.
+
+`capitalscan/tests/unit/test_exits_row_access.py` is kept: it pins that dicts
+and Series produce identical results across every branch of the DESIGN 5.5
+order, which is worth having whether or not anyone optimises here again.
+
+**If revisited**, profile inside `resolve_exit` first to find where the 18.8s
+actually goes -- `mfe_mae`, the slicing in `resolve_exit_for_entry`, and
+`_exit_on_bar`'s float conversions are all untested hypotheses.
+
+Superseded text follows.
+
 **`core.exits.resolve_exit` builds three pandas Series per forward bar.**
 Measured 2026-08-28 while profiling compute after the `path_metrics`
 vectorisation: `resolve_exit_for_entry` is 18.8s per ticker and is a thin
