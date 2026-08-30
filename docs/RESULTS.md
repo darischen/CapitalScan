@@ -5101,3 +5101,54 @@ said looser is better, monotonically. If removing the stop entirely beats
 k=2.0, the finding is not "widen the stop" but "the stop is costing money",
 which is a materially different claim and would change what a return model
 should be built on top of.
+
+---
+
+## 2026-08-29 — The control arm wins: the stop is costing money
+
+`t5_nostop` (`stop_mode="none"`, the control `core/exits.py:45` names as one
+per ADR 008) completed last. All five stop settings at a 5% target:
+
+| stop | train | validate | stopped out | hit target | timed out |
+|---|---|---|---|---|---|
+| **none** | **+2.2** | **+11.0** | 0.0% | 23.7% | 72.6% |
+| ATR k=2.0 | −2.8 | +7.5 | 21.4% | 23.5% | 51.5% |
+| ATR k=1.5 — **live** | −4.1 | +4.4 | 33.5% | 23.1% | 39.8% |
+| fixed 3% | −6.2 | −1.2 | 41.3% | 21.0% | 34.3% |
+| fixed 2% | −6.8 | −2.6 | 55.2% | 19.2% | 22.3% |
+
+**Monotonic across all five settings, on both splits, with no turnover.**
+Every loosening helps, and **no stop is the only configuration in fourteen
+arms that is positive on train.**
+
+**The mechanism is not ambiguous.** Target hits move only 19.2% → 23.7%
+across the entire range while stop-outs go 55% → 0% and become timeouts. The
+stop was never protecting winners from giving back gains — it was converting
+trades that would have recovered into realised losses. That is the same
+mechanism the pre-sweep MAE analysis predicted: 44.8% of *timeout* trades dip
+below −2% while open, so any stop inside that band harvests noise.
+
+**Scale: the stop is worth ~9 bp from tightest to none. The target was worth
+~1 bp.** It is the dominant exit parameter by an order of magnitude, and it
+had never been varied before 2026-08-29.
+
+### This should not be shipped as "remove the stop"
+
+The result is clean but the conclusion is uncomfortable, and three things
+argue against acting on it directly:
+
+- **72.6% of trades now exit on the 5-day timeout.** With no stop the policy
+  is barely an exit policy: it is "hold five days, take 5% if you get it".
+  `max_hold_days` is doing the work, and it has never been swept. The honest
+  next test is `max_hold_days` at 3 / 5 / 10, not shipping a stopless config.
+- **No stop means unbounded per-trade loss.** Mean net return improves, but
+  the sweep never measured the tail. Before removing a stop, look at worst
+  observed loss and the 1st percentile of `net_ret`, not the mean.
+- **2020-2021 still loses ~18 bp under every arm** and is the period where a
+  stop would matter most. The era breakdown for the no-stop arm has not been
+  run.
+
+**Recommended, and deliberately conservative: 5% target + ATR k=2.0.** It
+captures most of the available gain (train −5.0 → −2.8 from live), keeps a
+real stop, and does not rest on a limit case whose tail behaviour is
+unmeasured.
