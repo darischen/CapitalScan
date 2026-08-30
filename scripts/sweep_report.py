@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 
 BASELINE = "a38d3ca6b58295e8"
 # Chosen on train, per the pre-committed protocol. See RESULTS.md.
-SELECTED = "t5_atr15"
+SELECTED = "t5_atr20"
 PT = ZoneInfo("America/Los_Angeles")
 
 # name, target, stop label, config hash, which machine owns it
@@ -358,6 +358,48 @@ footer{{border-top:1px solid var(--line);padding-top:18px;font-family:var(--mono
       <tbody>{matrix}</tbody>
     </table>
   </div>
+</section>
+
+<section>
+  <h2>The stop width — the finding that matters</h2>
+  <p>A second sweep varied <code>stop_atr_k</code>, which the grid above holds
+  fixed at 1.5. It is the dominant exit parameter: <strong>9 bp from tightest
+  to none, against about 1 bp for the target.</strong> All at a 5% target,
+  train first.</p>
+  <div class="scroll">
+    <table class="detail">
+      <thead><tr><th>stop</th><th>mean stop</th><th>train bp</th><th>validate bp</th>
+      <th>stopped</th><th>hit target</th><th>worst trade</th></tr></thead>
+      <tbody>
+        <tr><td>none <em>(control)</em></td><td class="num">—</td><td class="num strong">+2.2</td>
+            <td class="num">+11.0</td><td class="num">0.0%</td><td class="num">23.7%</td>
+            <td class="num">−50.34%</td></tr>
+        <tr><td><strong>ATR k=2.0 — recommended</strong></td><td class="num">5.46%</td>
+            <td class="num strong">−2.8</td><td class="num">+7.5</td><td class="num">21.4%</td>
+            <td class="num">23.5%</td><td class="num">−39.55%</td></tr>
+        <tr><td>ATR k=1.5 <em>(live)</em></td><td class="num">4.09%</td><td class="num">−4.1</td>
+            <td class="num">+4.4</td><td class="num">33.5%</td><td class="num">23.1%</td>
+            <td class="num">−39.55%</td></tr>
+        <tr><td>fixed 3%</td><td class="num">3.00%</td><td class="num">−6.2</td>
+            <td class="num">−1.2</td><td class="num">41.3%</td><td class="num">21.0%</td>
+            <td class="num">—</td></tr>
+        <tr><td>fixed 2%</td><td class="num">2.00%</td><td class="num">−6.8</td>
+            <td class="num">−2.6</td><td class="num">55.2%</td><td class="num">19.2%</td>
+            <td class="num">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Monotonic on both splits, no turnover.</strong> Target hits barely
+  move across the whole range (19.2% to 23.7%) while stop-outs go 55% to 0% and
+  become timeouts — the stop was not protecting winners, it was converting
+  recoverable trades into realised losses.</p>
+  <p><strong>The control wins and is still not the recommendation.</strong> No
+  stop is the only one of fourteen arms positive on train, but it costs 11
+  points of worst case (−39.55% to −50.34%) and leaves 72.6% of trades exiting
+  on the five-day timeout, which makes <code>max_hold_days</code> the real
+  policy — a parameter never swept. k=2.0 takes most of the gain, keeps a real
+  stop, and its worst trade is identical to k=1.5's: the same trade gapped
+  through both.</p>
 </section>
 
 <section>
