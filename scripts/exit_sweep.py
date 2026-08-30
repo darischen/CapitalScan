@@ -230,10 +230,28 @@ def _engine():
     return db_io.get_engine()
 
 
-def already_done(chash: str) -> bool:
+def already_done(chash: str, stats: bool = True) -> bool:
+    """Has this arm finished everything it was asked to do?
+
+    **The definition follows `--no-stats`.** Under `--no-stats` an arm never
+    writes `cell_stats`, so the old check would call it unfinished forever and
+    a supervisor would restart it in a loop. With the flag set, compute
+    finishing is the whole job.
+    """
     from sqlalchemy import text
 
     with _engine().connect() as conn:
+        if not stats:
+            row = conn.execute(
+                text(
+                    "SELECT count(*) FILTER (WHERE status='ok'), max((params->>'of')::int) "
+                    "  FROM runs WHERE job='backtest_compute' "
+                    "   AND params->>'config_hash' = :h"
+                ),
+                {"h": chash},
+            ).one()
+            ok, of_total = int(row[0] or 0), int(row[1] or 0)
+            return bool(of_total) and ok >= of_total
         n = conn.execute(
             text(
                 "SELECT count(DISTINCT split_key) FROM cell_stats "
@@ -380,7 +398,7 @@ def verify_exit_params_do_not_affect_universe(quarter: str) -> None:
             CONFIG_TOML.unlink()
 
 
-def run_arm(arm: Arm) -> str:
+def run_arm(arm: Arm, stats: bool = True) -> str:
     """Run one arm and return its config hash.
 
     The universe proof used to live here, gated on the arm index, and that
@@ -411,7 +429,7 @@ def run_arm(arm: Arm) -> str:
         f"stop={arm.stop_mode}:{arm.stop_value} hash={chash} ==="
     )
 
-    if already_done(chash):
+    if already_done(chash, stats=stats):
         log(f"arm {arm.name} already has cell_stats for both splits -- skipping")
         return chash
 
@@ -421,13 +439,17 @@ def run_arm(arm: Arm) -> str:
     run("backtest", "--workers", WORKERS, "--chunk-size", CHUNK_SIZE, "--phase", "compute")
     run("backtest", "--workers", WORKERS, "--phase", "finalize")
     run("backtest", "--workers", WORKERS, "--phase", "harness")
-    # Both were missing from rebuild_arms_2_3.sh and fail three steps later
-    # with "cannot convert float NaN to integer", naming neither cause.
-    run("path", "backfill", "--config-hash", chash, "--workers", WORKERS)
-    run("path", "peak-labels", "--config-hash", chash)
-    run("stats", "rho", "--config-hash", chash)
-    run("stats", "cells", "--config-hash", chash, "--split-key", "train")
-    run("stats", "cells", "--config-hash", chash, "--split-key", "validate")
+    if stats:
+        # Both were missing from rebuild_arms_2_3.sh and fail three steps
+        # later with "cannot convert float NaN to integer", naming neither
+        # cause -- so they stay together and stay in this order.
+        run("path", "backfill", "--config-hash", chash, "--workers", WORKERS)
+        run("path", "peak-labels", "--config-hash", chash)
+        run("stats", "rho", "--config-hash", chash)
+        run("stats", "cells", "--config-hash", chash, "--split-key", "train")
+        run("stats", "cells", "--config-hash", chash, "--split-key", "validate")
+    else:
+        log(f"skipping path + stats for {arm.name} (--no-stats)")
     log(f"=== arm {arm.name} complete ({chash}) ===")
     return chash
 
@@ -444,6 +466,15 @@ def main() -> None:
         "makes an overlap harmless rather than duplicated work.",
     )
     ap.add_argument("--no-verify", action="store_true", help="skip the ExitParams/universe proof")
+    ap.add_argument(
+        "--no-stats",
+        action="store_true",
+        help="skip path backfill, peak-labels and the stats passes (~25 min "
+        "per arm locally, ~55 remote). Safe for an exit sweep: cell_stats "
+        "derives p_hit from fwd_ret_5d and cannot respond to an exit change. "
+        "NEVER for a rebuild whose generation will be served -- the ticker "
+        "page reads `path`.",
+    )
     ap.add_argument("--verify-quarter", default="2019Q2", help="quarter LABEL, e.g. 2019Q2")
     ap.add_argument("--list", action="store_true", help="print the grid and exit")
     args = ap.parse_args()
@@ -478,7 +509,7 @@ def main() -> None:
         if not args.no_verify:
             verify_exit_params_do_not_affect_universe(args.verify_quarter)
         for arm in arms:
-            done.append((arm.name, run_arm(arm)))
+            done.append((arm.name, run_arm(arm, stats=not args.no_stats)))
     finally:
         # Unconditional: an interrupt must not leave an arm resolving.
         if CONFIG_TOML.exists():
