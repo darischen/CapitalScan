@@ -5162,3 +5162,39 @@ argue against acting on it directly:
 captures most of the available gain (train −5.0 → −2.8 from live), keeps a
 real stop, and does not rest on a limit case whose tail behaviour is
 unmeasured.
+
+### 2026-08-29 — The no-stop arm by era: it wins everywhere, including the crash
+
+The open question after the second sweep was whether the stopless arm's win
+was concentrated in the calm periods, with 2020-2021 — where every arm loses
+~18 bp — being where a stop finally earns its keep. It is not.
+
+| period | k=1.5 | k=2.0 | no stop |
+|---|---|---|---|
+| 2010-2014 (train) | +5.8 | +7.3 | **+14.0** |
+| 2015-2019 (train) | 0.0 | +2.2 | **+8.7** |
+| **2020-2021 (train)** | −17.2 | −17.3 | **−15.6** |
+| 2022-2023 (validate) | +4.4 | +7.5 | **+11.0** |
+
+**No stop is best in all four periods, including the crash era**, where it is
+*less bad* rather than worse. The monotonic ordering holds inside every era,
+not only in aggregate.
+
+**This removes the main argument for keeping a stop.** The case made when the
+result first landed was that 2020-2021 is where a stop should matter and its
+era split had not been run. It has now, and the stop does not help there
+either.
+
+**What still argues against shipping stopless**, and it is now the whole
+case:
+
+- **Tail.** Worst trade −50.34% against −39.55%; p0.1 −22.62% against
+  −18.81%. The sweep optimised means.
+- **72.6% of exits become the 5-day timeout**, so the policy becomes
+  `max_hold_days` rather than an exit rule. That parameter has never been
+  swept, and until it is, "the stop is costing money" and "five days is the
+  wrong window" are not separable.
+
+The shipped config stays 5% + k=2.0. The `max_hold_days` sweep is what
+decides whether stopless is genuinely right or an artifact of an untested
+holding window.
