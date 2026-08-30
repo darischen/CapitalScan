@@ -5248,3 +5248,53 @@ But that is an argument about `cell_stats`, not about returns.
 profitable or whether they only look good because the first fire of a losing
 cluster is the one that gets counted. Splitting by position within cluster
 (2nd, 3rd, 4th fire) would separate those, and is one query.
+
+### 2026-08-29 — Cluster size separates trades by 300 bp, and it is not the exit
+
+Following the cluster-head finding above, two further breakdowns. The first
+**corrects** the reading in that entry.
+
+**By position within the cluster** (train / validate, bp):
+
+    1st   -5.5 / +6.4      3rd   -7.0 / -0.4
+    2nd  -10.1 / +7.5      4th   -4.7 / +2.9      5th+  +2.6 / +11.6
+
+The 2nd fire is the *worst* on train, not the best. So the "each successive
+entry gets a better price, averaging down is working" reading in the previous
+entry is wrong — positions 2-4 are no better than the first, and the whole
+advantage sits in the 5th-or-later bucket.
+
+**By cluster size**, which is what actually separates them:
+
+| cluster size | train | validate |
+|---|---|---|
+| 1 (singleton) | **+170.9** | **+240.6** |
+| 2-4 | **+164.8** | +212.3 |
+| 5-9 | +38.0 | +50.0 |
+| **10+** | **−119.3** | **−133.6** |
+
+**Monotonic on both splits, and the spread is ~300 bp** — roughly *thirty
+times* the 11 bp the entire target × stop grid spans.
+
+**Read it the right way round.** Inside a long cluster the late fires look
+good relative to the early ones, which is what produced the misreading above.
+But the cluster as a whole is a disaster. A signal that fires ten or more
+times is a stock in sustained decline being caught repeatedly on the way
+down.
+
+**Not a confound.** Side, era and drawdown bucket are flat across the four
+buckets (53-62% short, 30-33% in the 2020s era, 72-76% in the 0-10 dd
+bucket). The effect is cluster size itself.
+
+**What this implies is bigger than the exit sweep.** Two nights of backtests
+moved returns by 11 bp by changing when to sell. Cluster size separates the
+same trades by 300 bp and is not a parameter at all — it is a property of the
+signal, knowable at entry only in part (the *first* fire cannot know how long
+its cluster will run, though the 2nd through 5th increasingly can).
+
+**This is a model feature, not a rule.** "Skip fires after the 9th" is
+tempting and would be fitted to this sample. The honest version is that
+cluster position and running cluster length belong in the Phase 6 feature
+set, where the model can weigh them against everything else and be validated
+out of sample. `events.cluster_id` already exists, so the feature is a window
+function rather than a rebuild.
