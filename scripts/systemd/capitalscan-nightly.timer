@@ -1,0 +1,11 @@
+[Unit]
+Description=CapitalScan nightly, after the 13:00 PT close
+
+[Timer]
+OnCalendar=*-*-* 13:15:00
+# Fire a missed run at next boot (machine was off, laptop asleep).
+Persistent=true
+Unit=capitalscan-nightly.service
+
+[Install]
+WantedBy=timers.target

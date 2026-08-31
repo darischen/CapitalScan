@@ -1,0 +1,20 @@
+[Unit]
+Description=CapitalScan nightly (ingest chain, indicators, events, sync to serving)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# {{USER}} and {{REPO}} are filled in by scripts/systemd/install.sh.
+User={{USER}}
+WorkingDirectory={{REPO}}
+ExecStart={{REPO}}/scripts/run_job.sh nightly
+# run_job.sh already tees to reports/nightly/<date>.log; journal keeps the
+# summary line and the exit code.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=capscan-nightly
+TimeoutStartSec=4h
+
+[Install]
+WantedBy=multi-user.target

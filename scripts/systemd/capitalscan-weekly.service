@@ -1,0 +1,17 @@
+[Unit]
+Description=CapitalScan weekly (run_backtest, no harness)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User={{USER}}
+WorkingDirectory={{REPO}}
+ExecStart={{REPO}}/scripts/run_job.sh weekly
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=capscan-weekly
+TimeoutStartSec=6h
+
+[Install]
+WantedBy=multi-user.target

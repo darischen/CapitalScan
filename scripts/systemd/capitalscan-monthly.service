@@ -1,0 +1,17 @@
+[Unit]
+Description=CapitalScan monthly maintenance
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User={{USER}}
+WorkingDirectory={{REPO}}
+ExecStart={{REPO}}/scripts/run_job.sh monthly
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=capscan-monthly
+TimeoutStartSec=4h
+
+[Install]
+WantedBy=multi-user.target

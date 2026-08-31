@@ -2896,5 +2896,44 @@ def system_status() -> None:
         raise typer.Exit(code=1)
 
 
+@app.command()
+def preflight() -> None:
+    """Check this machine is set up to run the research jobs (docs/SETUP.md).
+
+    Read-only. Verifies `.env.local`, `psql`, both database connections, the
+    research schema against the repo's migration head, that config resolves
+    to the hash `serving_config` pins, and that the schedule is installed.
+    Exits 1 on any `fail`; a `warn` (schedule not yet installed, serving
+    unreachable on an ingest-only box) does not.
+    """
+    from rich.table import Table
+
+    from capitalscan.jobs import preflight as pf
+
+    checks = pf.run()
+    table = Table(title="preflight", header_style="bold")
+    for col in ("check", "", "detail", "fix"):
+        table.add_column(col)
+    colour = {"ok": "green", "warn": "yellow", "fail": "red"}
+    mark = {"ok": "OK", "warn": "warn", "fail": "FAIL"}
+    for c in checks:
+        table.add_row(
+            c.name,
+            f"[{colour[c.level]}]{mark[c.level]}[/{colour[c.level]}]",
+            c.detail,
+            c.fix,
+        )
+    console.print(table)
+
+    level = pf.worst(checks)
+    if level == "fail":
+        console.print("[red]preflight failed[/red] — fix the FAIL rows above")
+        raise typer.Exit(code=1)
+    if level == "warn":
+        console.print("[yellow]preflight passed with warnings[/yellow]")
+    else:
+        console.print("[green]preflight ok[/green]")
+
+
 if __name__ == "__main__":
     app()

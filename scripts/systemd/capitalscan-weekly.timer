@@ -1,0 +1,13 @@
+[Unit]
+Description=CapitalScan weekly (loose deadline: within ~2.5 days)
+
+[Timer]
+OnCalendar=Sun *-*-* 02:00:00
+Persistent=true
+# Deadline is loose, so a wide randomised spread is fine and avoids
+# colliding with a nightly if the machine was off for a while.
+RandomizedDelaySec=2h
+Unit=capitalscan-weekly.service
+
+[Install]
+WantedBy=timers.target

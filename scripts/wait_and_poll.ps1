@@ -15,8 +15,23 @@
 # The two must never run at once: both write serving directly and would
 # double-write. The Pi's systemd unit is a `oneshot` that has finished (or
 # failed) for the day by ~13:00, so a later manual run here is safe.
-$ServingHost = "192.168.1.30"
-$ServingDb   = "capitalscan_serving"
+
+# Nothing machine-specific is written in. The repo root comes from this
+# script's location; `psql` from PATH (override with $env:CAPSCAN_PSQL);
+# the serving host and database name are parsed out of
+# DATABASE_URL_SERVING in .env.local, the same string cscan itself uses.
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+
+$Psql = if ($env:CAPSCAN_PSQL) { $env:CAPSCAN_PSQL }
+        elseif (Get-Command psql -ErrorAction SilentlyContinue) { "psql" }
+        elseif (Test-Path "C:\Program Files\PostgreSQL\18\bin\psql.exe") { "C:\Program Files\PostgreSQL\18\bin\psql.exe" }
+        else { throw "psql not found on PATH; set `$env:CAPSCAN_PSQL to its full path" }
+
+$servingUrl = (Select-String -Path (Join-Path $RepoRoot ".env.local") -Pattern '^DATABASE_URL_SERVING=' -ErrorAction SilentlyContinue).Line
+if (-not $servingUrl) { throw "DATABASE_URL_SERVING not set in $RepoRoot\.env.local" }
+if ($servingUrl -notmatch '@([^:/]+):(\d+)/([^?\s]+)') { throw "cannot parse host/db from DATABASE_URL_SERVING" }
+$ServingHost = $Matches[1]
+$ServingDb   = $Matches[3]
 
 # Start 15 minutes after the bell (user's decision, 2026-08-24). The open
 # is still 06:30 PT; this is when we begin polling it.
@@ -53,7 +68,7 @@ function Is-Confluence {
 # day from. Queried on serving because that is the store this polls.
 $env:PGPASSWORD = "capscan"
 $today = Get-Date -Format 'yyyy-MM-dd'
-$isTradingDay = & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -h $ServingHost -U capscan -d $ServingDb -tA -c "SELECT 1 FROM trading_days WHERE d = '$today'"
+$isTradingDay = & $Psql -h $ServingHost -U capscan -d $ServingDb -tA -c "SELECT 1 FROM trading_days WHERE d = '$today'"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] $(Get-Date -Format 'HH:mm:ss') - cannot reach serving ($ServingHost/$ServingDb) to check the calendar. Not polling."
     exit 1
@@ -84,7 +99,7 @@ while ($true) {
     }
 
     # Check if we already ran the poller today
-    $todaysCsv = Get-ChildItem -Path "C:\Users\daris\Desktop\School\CapitalScan\reports\poller" -Filter "poller_session_$(Get-Date -Format 'yyyy_MM_dd')_*.csv" -ErrorAction SilentlyContinue
+    $todaysCsv = Get-ChildItem -Path (Join-Path $RepoRoot "reports\poller") -Filter "poller_session_$(Get-Date -Format 'yyyy_MM_dd')_*.csv" -ErrorAction SilentlyContinue
 
     if ($todaysCsv) {
         Write-Host "[OK] $(Get-Date -Format 'HH:mm:ss') - Poller already ran today. File: $($todaysCsv.Name)"
@@ -98,9 +113,9 @@ while ($true) {
     # about to write to, and Export-Csv fails on a missing directory rather
     # than creating one -- so a fresh clone would lose the entire session
     # log to a path that does not exist yet.
-    $pollerDir = "C:\Users\daris\Desktop\School\CapitalScan\reports\poller"
+    $pollerDir = Join-Path $RepoRoot "reports\poller"
     if (-not (Test-Path $pollerDir)) { New-Item -ItemType Directory -Force $pollerDir | Out-Null }
-    $csvPath = "C:\Users\daris\Desktop\School\CapitalScan\reports\poller\poller_session_$(Get-Date -Format 'yyyy_MM_dd_HHmmss').csv"
+    $csvPath = Join-Path $pollerDir "poller_session_$(Get-Date -Format 'yyyy_MM_dd_HHmmss').csv"
 
     # Start poller in background. `--serving` writes the serving store
     # directly, the same as the Pi -- no research write, no per-tick push.
@@ -185,7 +200,7 @@ while ($true) {
             # falling inside one server-day is how that bug keeps returning.
             $query = "SELECT s.event_id, (s.fired_at AT TIME ZONE 'America/Los_Angeles'), e.ticker, e.signal_type, e.entry_price::text, e.side, e.touch_level::text, e.k_full::text, e.d_full::text, e.k_fast::text, e.atr_14::text, e.vix_close::text, e.spx_ret_1d::text, s.channels_sent, s.state_json->>'day_open', s.state_json->'bear_reversal'->>'confirmed', s.state_json->'bear_reversal'->>'open_gap_atr' FROM events e JOIN signal_reports s ON e.id = s.event_id WHERE e.signal_date = '$today' AND e.id > $lastEventId ORDER BY s.fired_at ASC;"
 
-            $newEvents = & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -h $ServingHost -U capscan -d $ServingDb -t -c $query
+            $newEvents = & $Psql -h $ServingHost -U capscan -d $ServingDb -t -c $query
 
             if ($newEvents) {
                 $newEvents | ForEach-Object {

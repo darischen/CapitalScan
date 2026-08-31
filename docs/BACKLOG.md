@@ -1619,3 +1619,119 @@ Unblocked by hand with
 Low urgency: it only surfaces when the workstation poll path runs, which
 ADR 158 exists to retire. Worth doing before that path is deleted, so the
 deletion is not what "fixes" it by accident.
+
+### The research machine is not portable, and it is about to move
+
+**The desktop leaves and an old laptop takes its exact role** -- research
+database, `nightly`, `weekly`, `monthly`, `sync` to the Pi. The Pi is
+unchanged. The laptop may be Linux rather than Windows, so the wrappers
+have to work on both, not just carry a different path.
+
+**What is machine-specific today:**
+
+1. **Hardcoded repo path.** `scripts/run_nightly.ps1:27`
+   (`Set-Location "C:\Users\daris\Desktop\School\CapitalScan"`),
+   `scripts/wait_and_poll.ps1` (three `reports/poller` literals), and all
+   three `scripts/tasks/*.xml` (`<Command>`, `<WorkingDirectory>`).
+   `scripts/wip_snapshot.ps1` already derives `$RepoRoot` from
+   `$PSScriptRoot`; that is the pattern.
+2. **Hardcoded `psql.exe`.** `wait_and_poll.ps1:56,188` point at
+   `C:\Program Files\PostgreSQL\18\bin\`. The Pi has `psql` on PATH.
+3. **Two nightly wrappers that disagree.** The live scheduled task runs
+   `run_nightly.ps1` (config-hash guard, exit-code propagation, UTF-8
+   log); `tasks/nightly.xml` runs `nightly.bat` (none of that). Whichever
+   is imported on the laptop, one is stale.
+4. **No `.env.local` template.** `jobs/db.py::_load_env` reads
+   `REPO_ROOT/.env.local` correctly, but nothing committed lists the ~18
+   keys a fresh machine needs.
+5. **No task installer.** Setup means hand-editing Task Scheduler XML, or
+   on Linux writing systemd units from scratch.
+6. **`capscan` superuser asymmetry.** On the desktop `capscan` is a
+   superuser, so `run_nightly.ps1`'s `ALTER DATABASE ... SET
+   capitalscan.default_config_hash` succeeds; on the Pi it is not and the
+   pin is logged as skipped. The laptop must match the desktop or the
+   config pin silently stops working.
+7. **Docker vs native Postgres.** The desktop runs Postgres in the
+   `capitalscan-postgres` container, which does not restart after a reboot
+   -- that is what failed the 2026-08-30 nightly (`ConnectionTimeout`).
+   Native Postgres on the laptop removes that failure class and most of
+   `CLAUDE.md`'s container caveats.
+8. **`$ServingHost = "192.168.1.30"`** in `wait_and_poll.ps1:18`
+   duplicates the IP already in `DATABASE_URL_SERVING`.
+
+**Not in scope.** The Pi cannot be a `nightly` fallback -- research is
+19 GB and the Pi has ~27 GB free with serving already on it (see the Pi
+note in `CLAUDE.md`). "Redundancy" means a manual re-run on the research
+machine, not a second machine that can do the job. Making the Pi a real
+fallback would need the laptop to expose 5432 to the LAN and the Pi's
+`DATABASE_URL_RESEARCH` pointed at it -- the firewall/IPv6 setup CLAUDE.md
+already documents scars from -- and is a separate decision.
+
+---
+
+**Definition of done.** Each box is verifiable on both a clean Windows
+machine and a clean Linux machine unless it names one.
+
+**Progress, 2026-08-31.** The script pass, the setup artifacts, the
+installers, and `cscan preflight` are built and pass on the desktop. What
+is left: exercise the *new* `run_job` wrappers with a real scheduled run,
+confirm `cscan preflight` on the Pi, and label CLAUDE.md's
+machine-specific sections. The old `run_nightly.ps1` still ran the
+2026-08-31 nightly; the shim to `run_job.ps1` has not fired from Task
+Scheduler yet.
+
+Portability of the scripts:
+
+- [x] No script under `scripts/` contains an absolute path to the repo,
+      the venv, or `psql`. Repo root is derived from the script's own
+      location; `psql` comes from PATH with a `CAPSCAN_PSQL` override;
+      the serving host is parsed from `DATABASE_URL_SERVING`, never a
+      second literal. (One deliberate last-resort `psql` fallback path
+      remains in `wait_and_poll.ps1`, guarded behind PATH and the env
+      override.)
+- [x] One wrapper: `scripts/run_job.ps1 <nightly|weekly|monthly>` and
+      `scripts/run_job.sh`. `run_nightly.ps1` is a one-line shim.
+      `tasks/*.xml` are templates (`{{REPO}}`) that call `run_job.ps1`.
+      The `.bat` wrappers are deleted.
+- [x] A Linux wrapper exists for every Windows wrapper: `run_job.sh`
+      mirrors `run_job.ps1` (repo root, `reports/<job>/` log, config-hash
+      guard, exit-code propagation). `scripts/pi/wait_and_poll.sh` already
+      covered the poller.
+- [x] `grep` for absolute paths in `scripts/` returns only comments and
+      `scripts/pi/`.
+
+Setup artifacts:
+
+- [x] `.env.local.example` committed: the four required ingest keys with
+      comments, then optional notification / MCP / web blocks, no secrets.
+- [x] `docs/SETUP.md` is a from-scratch runbook for both OSes, ending in a
+      desktop -> laptop migration checklist.
+- [x] `scripts/install_schedule.ps1` registers the three tasks from its
+      own location; `scripts/systemd/` holds the three service+timer
+      template pairs and `install.sh` that fills `WorkingDirectory` and
+      `User` and enables the timers.
+- [x] Uninstall documented: `install_schedule.ps1 -Remove`,
+      `scripts/systemd/install.sh --remove`.
+
+Verification, the part that answers "does it work on this machine":
+
+- [x] `cscan preflight` exists (`jobs/preflight.py`) and checks
+      `.env.local`, `psql`, both DB connections, research schema vs the
+      repo's alembic head, config vs `serving_config`, and the schedule.
+      `fail` exits 1; `warn` (schedule not yet installed, serving
+      unreachable on an ingest-only box) does not. No writes.
+- [x] `cscan preflight` exits 0 on the desktop today.
+- [ ] `cscan preflight` exits 0 on the Pi.
+- [ ] The *new* `run_job` wrappers run a real scheduled `nightly` /
+      `weekly` end to end with no absolute-path or dependency error.
+      `wait_and_poll` (`.ps1` after the portability edit, and `.sh`)
+      starts and its guards fire on both machines.
+- [x] The migration is one section in `docs/SETUP.md` and depends on
+      nothing on the desktop afterward.
+
+Follow-through:
+
+- [ ] `CLAUDE.md`'s machine-specific sections say which machine each rule
+      is about, and the ones that were desktop-only are marked as such or
+      generalised.
+- [ ] This entry is struck through and dated when every box is checked.
