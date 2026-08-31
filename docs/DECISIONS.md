@@ -6869,6 +6869,21 @@ on the research path too, or to have `pull_live_records` bump research's
 sequences after it copies — tracked in `BACKLOG.md`. It only surfaces when
 the workstation poll path is used, which ADR 158 exists to retire.
 
+**Follow-up, same day: the workstation wrapper now uses `--serving` too.**
+The point of a manual `wait_and_poll.ps1` run is to stand in for the Pi on
+a day its timer skipped. It could not, because it ran `cscan poll` bare —
+research write plus per-tick push — a path with no staleness guard, no
+sequence guard, and a research->serving push that fails atomically on an
+orphan run row from a crashed-then-restarted session (all three hit on
+2026-08-31, in sequence). `scripts/wait_and_poll.ps1` now runs
+`cscan poll --serving` and reads serving for its monitor, matching
+`scripts/pi/wait_and_poll.sh` step for step, and gained the trading-day
+guard it never had. The two must never run concurrently — both write
+serving directly — but the Pi unit is a `oneshot` done by ~13:00, so a
+later manual run on the workstation is safe. This does not retire the
+research-path sequence gap above; it removes the only caller that reaches
+it.
+
 
 ## 159. Superseded sweep generations are archived out of the database, not kept in it
 
