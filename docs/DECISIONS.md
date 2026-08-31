@@ -6811,6 +6811,65 @@ sync, so new poller rows land above anything research holds. If a future
 change ever lets research allocate `signal_reports` ids again, that
 assumption breaks and the key must become natural rather than surrogate.
 
+### Consequence discovered in production, 2026-08-31
+
+**The staleness guard counted calendar days, so it refused every Monday.**
+The Pi timer fired, `wait_and_poll.sh` waited to 06:45, and `cscan poll
+--serving` aborted:
+
+```
+poll target is stale: newest data 2026-08-28, last trading day 2026-08-31
+(3 days behind, max 1). ... Run `cscan sync` first.
+```
+
+Nothing was wrong. Friday's data is the newest that can exist on a Monday
+morning, the universe is quarterly and had not changed, and no sync was
+missed. The guard did `lag = (last_trading_day - watermark).days`, which is
+three across a weekend, against a `max` of one. The docstring already said
+"one day" meaning one *session*; the code subtracted dates.
+
+Fixed by measuring lag in trading sessions. `assert_target_is_current` now
+takes the target's own trading calendar and counts the days in it that
+fall in `(watermark, last_trading_day]`. `MAX_TARGET_LAG_DAYS` ->
+`MAX_TARGET_LAG_SESSIONS`, still 1. Friday-watermark-on-Monday is one
+session and passes; Friday-watermark-on-Tuesday is two and still refuses,
+because a Monday-night sync really would have been missed. A Friday before
+Labor Day to the Tuesday after is also one session.
+
+The calendar is read in the same preflight connection as the watermark, so
+a weekend or an exchange holiday can never inflate the count and the guard
+stays a pure function testable with literal date lists.
+
+**The `2026-08-31` session was lost regardless.** The guard fired at 06:45;
+by the time it could have been made current the 13:00 close had passed. The
+authoritative Aug 31 events come from that night's nightly, as always for
+provisional poller rows.
+
+**Second finding, same session: the sequence bug is not serving-only.**
+Running `scripts/wait_and_poll.ps1` on the workstation as a fallback hit
+
+```
+duplicate key value violates unique constraint "signal_reports_pkey"
+DETAIL:  Key (id)=(1832) already exists.
+```
+
+against **research**. `sync.pull_live_records` copies `signal_reports`
+serving -> research with explicit ids, and an INSERT that supplies an id
+does not advance the sequence, so research's `signal_reports_id_seq` froze
+at 1832 while `max(id)` climbed to 1863 through the nightly pull. The
+fix from the 2026-08-28 consequence, `assert_sequences_are_ahead`, guards
+only the `--serving` path (`cli.py`, inside `if serving:`), so the
+research-writing path has no equivalent check. `run_sync`'s sequence reset
+also targets serving, not research.
+
+Unblocked by hand:
+`SELECT setval('signal_reports_id_seq', (SELECT max(id) FROM signal_reports), true)`
+(1832 -> 1863). The durable fix is either to run `assert_sequences_are_ahead`
+on the research path too, or to have `pull_live_records` bump research's
+sequences after it copies — tracked in `BACKLOG.md`. It only surfaces when
+the workstation poll path is used, which ADR 158 exists to retire.
+
+
 ## 159. Superseded sweep generations are archived out of the database, not kept in it
 
 **Status.** Decided 2026-08-31, applied the same day. Narrows ADR 096's

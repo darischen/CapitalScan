@@ -222,14 +222,22 @@ def _write_session_row(
     )
 
 
-# How far behind the poller's target store may legitimately be. Serving is
-# synced by nightly *after* a session, so during the next session it holds
-# the previous trading day. One day is correct; two means a sync was missed.
-MAX_TARGET_LAG_DAYS = 1
+# How far behind the poller's target store may legitimately be, counted in
+# *trading sessions* not calendar days. Serving is synced by nightly after
+# the close, so during the next session it holds the previous trading day:
+# one session of lag is correct, two means a sync was missed. Counting
+# calendar days instead made every Monday and every post-holiday morning
+# read as a missed sync (Friday's data is three calendar days but one
+# session behind), which is exactly the false positive that stopped the
+# 2026-08-31 poll.
+MAX_TARGET_LAG_SESSIONS = 1
 
 
 def assert_target_is_current(
-    watermark: date | None, last_trading_day: date, max_lag_days: int = MAX_TARGET_LAG_DAYS
+    watermark: date | None,
+    last_trading_day: date,
+    trading_days: Sequence[date],
+    max_lag_sessions: int = MAX_TARGET_LAG_SESSIONS,
 ) -> None:
     """Refuse to poll against a store whose data is too old (ADR 158).
 
@@ -243,9 +251,15 @@ def assert_target_is_current(
     other job writes, so it could not be behind. Writing serving, it reads a
     *copy*, and a copy can be stale.
 
-    One day of lag is correct rather than tolerated: nightly syncs after the
-    close, so during a session serving legitimately holds the previous
-    trading day. Two days means a sync did not happen.
+    Lag is measured in **trading sessions**: the number of days in
+    `trading_days` that fall after `watermark` and on or before
+    `last_trading_day`. One session of lag is correct rather than tolerated
+    -- nightly syncs after the close, so during a session serving
+    legitimately holds the previous session. Two means a sync did not
+    happen. `trading_days` must cover at least the interval
+    `(watermark, last_trading_day]`; the caller reads it from the target's
+    own calendar so a weekend or an exchange holiday never inflates the
+    count.
 
     A missing watermark raises too. An empty or unreachable target is not
     "probably fine" -- it is the case where the poller would resolve an
@@ -257,13 +271,14 @@ def assert_target_is_current(
             "poll target has no watermark: the store is empty or unreachable, "
             "so membership cannot be resolved. Run `cscan sync` first."
         )
-    lag = (last_trading_day - watermark).days
-    if lag > max_lag_days:
+    sessions_behind = sum(1 for d in trading_days if watermark < d <= last_trading_day)
+    if sessions_behind > max_lag_sessions:
         raise RuntimeError(
             f"poll target is stale: newest data {watermark.isoformat()}, "
-            f"last trading day {last_trading_day.isoformat()} ({lag} days behind, "
-            f"max {max_lag_days}). Membership would be resolved from a universe "
-            "that is no longer current. Run `cscan sync` first."
+            f"last trading day {last_trading_day.isoformat()} "
+            f"({sessions_behind} trading day(s) behind, max {max_lag_sessions}). "
+            "Membership would be resolved from a universe that is no longer "
+            "current. Run `cscan sync` first."
         )
 
 

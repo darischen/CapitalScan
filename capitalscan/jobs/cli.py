@@ -1453,6 +1453,20 @@ def poll(
                 text("SELECT max(d) FROM trading_days WHERE d <= :today"),
                 {"today": poll_job._now_et().date()},
             ).scalar_one_or_none()
+            # The sessions between the watermark and today, read from the
+            # target's own calendar so a weekend or an exchange holiday
+            # cannot inflate the lag. `d > NULL` yields no rows, so a
+            # missing watermark hands the guard an empty list and its own
+            # None check fires first.
+            sessions = list(
+                conn.execute(
+                    text(
+                        "SELECT d FROM trading_days "
+                        "WHERE d > :watermark AND d <= :last_day ORDER BY d"
+                    ),
+                    {"watermark": watermark, "last_day": last_day},
+                ).scalars()
+            )
             # Inside the same connection as the staleness read: both are
             # preflight questions about the same store, and a second connect
             # would only add a failure mode. See
@@ -1463,7 +1477,7 @@ def poll(
             console.print("[red]serving has no trading calendar[/red]; run `cscan sync`")
             raise typer.Exit(code=1)
         try:
-            poll_job.assert_target_is_current(watermark, last_day)
+            poll_job.assert_target_is_current(watermark, last_day, sessions)
             poll_job.assert_sequences_are_ahead(behind)
         except RuntimeError as exc:
             console.print(f"[red]{exc}[/red]")

@@ -1584,3 +1584,38 @@ earnings calendar also update on non-trading days.
 *reduced* weekend pass — skip the bar fetchers and the sync, keep the
 calendar fetchers and the catch-up — not a blanket skip that also disables
 the repair path.
+
+### The research poll path has no sequence guard, and it bit on 2026-08-31
+
+`assert_sequences_are_ahead` (ADR 158's 2026-08-28 consequence) refuses to
+start the poller when any target sequence sits at or below its table's max
+id. It runs only inside `cli.py`'s `if serving:` block, so
+`scripts/wait_and_poll.ps1` — the workstation fallback that writes research
+— skips it.
+
+Hit for real: a fallback poll on 2026-08-31 failed mid-session with
+
+```
+duplicate key value violates unique constraint "signal_reports_pkey"
+DETAIL:  Key (id)=(1832) already exists.
+```
+
+`sync.pull_live_records` copies `signal_reports` serving -> research with
+explicit ids, which does not advance research's sequence, so
+`signal_reports_id_seq` froze at 1832 while `max(id)` reached 1863 through
+the nightly pull. `run_sync`'s sequence reset targets serving only.
+
+Unblocked by hand with
+`SELECT setval('signal_reports_id_seq', (SELECT max(id) FROM signal_reports), true)`.
+
+**Two ways to fix, neither done:**
+
+1. Call `assert_sequences_are_ahead` on the research path too — move it out
+   of the `if serving:` block and run it against whichever engine the
+   poller is about to write.
+2. Have `pull_live_records` reset research's sequences for every table it
+   copies into, the way `run_sync` already does for serving.
+
+Low urgency: it only surfaces when the workstation poll path runs, which
+ADR 158 exists to retire. Worth doing before that path is deleted, so the
+deletion is not what "fixes" it by accident.

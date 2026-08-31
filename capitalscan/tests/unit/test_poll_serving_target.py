@@ -65,20 +65,71 @@ class TestNoSelfPush:
         )
 
 
+# A real slice of the US exchange calendar. 2026-08-22/23 and 08-29/30 are
+# weekends; 2026-09-07 is Labor Day. Weekdays only, holiday dropped.
+_CALENDAR = [
+    date(2026, 8, 20),
+    date(2026, 8, 21),
+    date(2026, 8, 24),
+    date(2026, 8, 25),
+    date(2026, 8, 26),
+    date(2026, 8, 27),
+    date(2026, 8, 28),
+    date(2026, 8, 31),
+    date(2026, 9, 1),
+    date(2026, 9, 2),
+    date(2026, 9, 3),
+    date(2026, 9, 4),
+    date(2026, 9, 8),
+]
+
+
 class TestTheStalenessGuard:
     def test_it_exists(self):
         assert hasattr(poll_job, "assert_target_is_current")
 
     def test_a_current_watermark_passes(self):
         poll_job.assert_target_is_current(
-            watermark=date(2026, 8, 27), last_trading_day=date(2026, 8, 27)
+            watermark=date(2026, 8, 27),
+            last_trading_day=date(2026, 8, 27),
+            trading_days=_CALENDAR,
         )
 
-    def test_a_watermark_one_day_behind_passes(self):
+    def test_a_watermark_one_session_behind_passes(self):
         """Serving is synced by nightly *after* the session, so during a
-        session it legitimately holds the previous day."""
+        session it legitimately holds the previous session."""
         poll_job.assert_target_is_current(
-            watermark=date(2026, 8, 26), last_trading_day=date(2026, 8, 27)
+            watermark=date(2026, 8, 26),
+            last_trading_day=date(2026, 8, 27),
+            trading_days=_CALENDAR,
+        )
+
+    def test_a_friday_watermark_on_monday_passes(self):
+        """The 2026-08-31 false positive. Friday to Monday is three calendar
+        days but one trading session, and the guard counts sessions."""
+        poll_job.assert_target_is_current(
+            watermark=date(2026, 8, 28),
+            last_trading_day=date(2026, 8, 31),
+            trading_days=_CALENDAR,
+        )
+
+    def test_a_friday_watermark_on_tuesday_raises(self):
+        """Monday's sync really was missed: two sessions (08-31, 09-01)
+        stand between Friday's data and Tuesday."""
+        with pytest.raises(RuntimeError, match="stale"):
+            poll_job.assert_target_is_current(
+                watermark=date(2026, 8, 28),
+                last_trading_day=date(2026, 9, 1),
+                trading_days=_CALENDAR,
+            )
+
+    def test_a_watermark_across_a_holiday_weekend_passes(self):
+        """Friday 09-04 to Tuesday 09-08 spans a weekend and Labor Day:
+        four calendar days, one session."""
+        poll_job.assert_target_is_current(
+            watermark=date(2026, 9, 4),
+            last_trading_day=date(2026, 9, 8),
+            trading_days=_CALENDAR,
         )
 
     def test_an_older_watermark_raises(self):
@@ -86,19 +137,25 @@ class TestTheStalenessGuard:
         from a stale universe and never say so."""
         with pytest.raises(RuntimeError, match="stale"):
             poll_job.assert_target_is_current(
-                watermark=date(2026, 8, 20), last_trading_day=date(2026, 8, 27)
+                watermark=date(2026, 8, 20),
+                last_trading_day=date(2026, 8, 27),
+                trading_days=_CALENDAR,
             )
 
     def test_a_missing_watermark_raises(self):
         """An empty or unreachable target is not 'probably fine'."""
         with pytest.raises(RuntimeError, match="stale|no watermark"):
-            poll_job.assert_target_is_current(watermark=None, last_trading_day=date(2026, 8, 27))
+            poll_job.assert_target_is_current(
+                watermark=None, last_trading_day=date(2026, 8, 27), trading_days=[]
+            )
 
     def test_the_message_names_both_dates(self):
         """An operator has to know how far behind it is to decide what to
         do about it."""
         with pytest.raises(RuntimeError) as exc:
             poll_job.assert_target_is_current(
-                watermark=date(2026, 8, 20), last_trading_day=date(2026, 8, 27)
+                watermark=date(2026, 8, 20),
+                last_trading_day=date(2026, 8, 27),
+                trading_days=_CALENDAR,
             )
         assert "2026-08-20" in str(exc.value) and "2026-08-27" in str(exc.value)
