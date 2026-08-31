@@ -1723,10 +1723,15 @@ Verification, the part that answers "does it work on this machine":
 - [x] `cscan preflight` exits 0 on the desktop and on the Pi (the Pi
       infers `role: serving` from a localhost `DATABASE_URL_SERVING` and
       skips the research checks).
-- [ ] The *new* `run_job` wrappers run a real scheduled `nightly` /
-      `weekly` end to end with no absolute-path or dependency error.
-      `wait_and_poll` (`.ps1` after the portability edit, and `.sh`)
-      starts and its guards fire on both machines.
+- [~] The *new* `run_job` wrappers run with no absolute-path or dependency
+      error. Verified 2026-08-31 in a throwaway `debian:trixie-slim`
+      container: fresh `git clone`, `uv sync`, `cscan db migrate`, `cscan
+      preflight` exit 0, `bash scripts/run_job.sh nightly` derived the repo
+      root, found the venv, wrote `reports/nightly/<date>.log`, ran the
+      config-hash guard against the real Pi, and invoked `cscan nightly`
+      (which then failed on empty-DB data, not on the wrapper). Still
+      pending: a real Task Scheduler / systemd firing, and `wait_and_poll`
+      (`.ps1` post-edit, `.sh`) exercised on both machines.
 - [x] The migration is one section in `docs/SETUP.md` and depends on
       nothing on the desktop afterward.
 
