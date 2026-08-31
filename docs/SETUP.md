@@ -1,183 +1,294 @@
 # Setting up the research machine
 
-The research machine holds the research database and runs `nightly`,
-`weekly`, `monthly`, and the manual `sync` to the Pi. The Pi is unchanged
-and has its own runbook (`docs/PI_MIGRATION.md`).
+This machine holds the **research** database and runs `nightly`, `weekly`,
+`monthly`, and the `sync` that pushes results to the Pi. The Pi is
+unchanged and has its own runbook (`docs/PI_MIGRATION.md`).
 
-This works on Windows or Linux. Where a step differs, both are given.
+**Recommended OS: Debian** (headless). Reasons in `docs/BACKLOG.md` under
+"The research machine is not portable". Windows works too and is Part B.
 
----
-
-## 0. What you need
-
-- Python 3.14 and [uv](https://docs.astral.sh/uv/)
-- PostgreSQL 18, **native** (not Docker). The desktop ran Postgres in a
-  container that did not restart after a reboot, which failed a nightly;
-  native removes that whole class of problem.
-- `psql` on `PATH` (or set `CAPSCAN_PSQL` to its full path)
-- LAN reachability to the Pi's Postgres (`192.168.1.30:5432` by default)
-- A dump of the research database from the outgoing machine (step 3)
+Follow the numbered steps. Each block is copy-paste. Where a value is
+yours to choose it is written `<like-this>`.
 
 ---
 
-## 1. Clone and install
+## Before you start
 
-```
-git clone https://github.com/darischen/CapitalScan.git
-cd CapitalScan
-uv sync
-```
-
-`uv sync` creates `.venv/` with the locked dependencies. Every wrapper
-script finds its interpreter and CLI there; nothing uses a global install.
-
----
-
-## 2. PostgreSQL
-
-Install PostgreSQL 18 natively.
-
-**`capscan` must be a superuser here** (it is on the desktop, is not on the
-Pi). `run_job` pins `capitalscan.default_config_hash` with `ALTER
-DATABASE`, which needs superuser; without it the pin is silently skipped.
-
-```
-# as the postgres superuser
-CREATE ROLE capscan LOGIN SUPERUSER PASSWORD 'capscan';
-CREATE DATABASE capitalscan OWNER capscan;
-```
-
-`capitalscan_serving` lives on the Pi, not here.
-
-**Bind both address families** if you ever expose this Postgres to the LAN
-(so the Pi could be a fallback). An IPv4-only bind makes `localhost`
-resolve to `::1`, wait for it to fail, and only then fall back -- ~2s per
-connect, which multiplies across every backtest worker. In
-`postgresql.conf`:
-
-```
-listen_addresses = 'localhost'          # or '*' plus a matching pg_hba rule
-```
-
-and if `'*'`, publish both in the service, never `0.0.0.0` alone.
+- The research database is ~20 GB. Budget **60 GB free** for the restore
+  plus room for rebuilds and WAL.
+- The repo is private on GitHub. Have an SSH key or a personal access
+  token ready for `git clone`.
+- The scheduled times are **Pacific**. Set the machine's clock to
+  `America/Los_Angeles` (step A2 / B2) or every job fires at the wrong
+  hour.
+- You need shell access to the **old** machine once, for the database
+  dump (step C1).
 
 ---
 
-## 3. Load the data
+# Part A — Debian
 
-On the **outgoing** machine:
-
-```
-pg_dump -Fc -U capscan -d capitalscan -f capitalscan.dump
-```
-
-Copy `capitalscan.dump` over, then here:
+### A1. Packages
 
 ```
-pg_restore -U capscan -d capitalscan --no-owner --clean --if-exists capitalscan.dump
-cscan db status          # confirm alembic head matches the repo
+sudo apt update
+sudo apt install -y git curl ca-certificates postgresql postgresql-client
 ```
 
-If `cscan db status` reports a revision behind the repo, run
-`cscan db migrate --target research`.
+### A2. Timezone
 
----
+```
+sudo timedatectl set-timezone America/Los_Angeles
+timedatectl        # confirm
+```
 
-## 4. Environment
+### A3. PostgreSQL role and database
+
+`capscan` must be a **superuser** here (it is on the old desktop, is not
+on the Pi). `run_job` pins `capitalscan.default_config_hash` with
+`ALTER DATABASE`, which needs superuser; without it the pin is silently
+skipped.
+
+```
+sudo -u postgres createuser --superuser --pwprompt capscan   # set password: capscan
+sudo -u postgres createdb -O capscan capitalscan
+```
+
+Allow password login on localhost. Edit `pg_hba.conf` (path from
+`sudo -u postgres psql -c 'SHOW hba_file'`), make the local IPv4/IPv6
+lines use `scram-sha-256`:
+
+```
+host    all    all    127.0.0.1/32    scram-sha-256
+host    all    all    ::1/128         scram-sha-256
+```
+
+```
+sudo systemctl restart postgresql
+PGPASSWORD=capscan psql -h localhost -U capscan -d capitalscan -c 'SELECT 1'   # must succeed
+```
+
+**Bind both address families only if** you later want the Pi to reach
+this database as a fallback. `listen_addresses = '*'` in
+`postgresql.conf` plus a `pg_hba.conf` rule for the LAN subnet. An
+IPv4-only bind makes `localhost` resolve to `::1` first, wait, then fall
+back — ~2s per connect, which multiplies across backtest workers.
+
+### A4. uv
+
+```
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env      # or restart the shell
+uv --version
+```
+
+### A5. Clone and install
+
+```
+git clone git@github.com:darischen/CapitalScan.git ~/CapitalScan
+cd ~/CapitalScan
+uv sync          # creates .venv/ with the locked deps and Python 3.14
+```
+
+### A6. Load the data
+
+Get `capitalscan.dump` from the old machine (step C1), then:
+
+```
+pg_restore -h localhost -U capscan -d capitalscan --no-owner --clean --if-exists capitalscan.dump
+.venv/bin/cscan db status                       # note the revision
+.venv/bin/cscan db migrate --target research    # only if it is behind the repo
+```
+
+### A7. Environment
 
 ```
 cp .env.local.example .env.local
 ```
 
-Fill in at least the first block: `DATABASE_URL_RESEARCH` (usually the
-default `localhost` line), `DATABASE_URL_SERVING` (the Pi), `SEC_USER_AGENT`
-(a real UA with contact info, or EDGAR 403s), `FINNHUB_API_KEY`. The rest
-are for notifications, MCP, and the web app -- leave blank on this machine
-if it does not run those.
+Edit `.env.local`. Fill the first block:
 
----
+- `DATABASE_URL_RESEARCH` — the default `localhost` line is correct
+- `DATABASE_URL_SERVING` — `postgresql+psycopg://capscan:<pw>@<pi-ip>:5432/capitalscan_serving`
+- `SEC_USER_AGENT` — a real string with contact info, e.g.
+  `"Your Name your@email"`; EDGAR 403s without it
+- `FINNHUB_API_KEY` — from finnhub.io, free tier is enough
 
-## 5. Verify
+Leave the notification / MCP / web blocks blank on this machine.
+
+### A8. Verify
 
 ```
-cscan preflight
+.venv/bin/cscan preflight
 ```
 
-Checks `.env.local`, `psql`, both database connections, that config
-resolves to the hash `serving_config` pins, the venv, and that the
-schedule is installed. Exits non-zero with a fix for each failure. It
-writes nothing.
+Expect `role: research` and exit 0. `schedule` warns until step A9 —
+that is fine. Any **FAIL** row: fix it (the row names the command) before
+continuing.
 
 Then a real dry run:
 
 ```
-cscan sync           # ~30-45 min, pushes research -> serving
+.venv/bin/cscan sync        # ~30-45 min, research -> serving
 ```
+
+### A9. Install the schedule
+
+```
+sudo scripts/systemd/install.sh
+```
+
+Fills `User` and `WorkingDirectory` into the unit templates in
+`scripts/systemd/`, installs them to `/etc/systemd/system`, and enables
+`capitalscan-nightly.timer` (13:15), `capitalscan-weekly.timer`
+(Sun 02:00), `capitalscan-monthly.timer` (1st, 03:00).
+
+```
+systemctl list-timers 'capitalscan-*'
+sudo systemctl start capitalscan-nightly.service     # run once now
+journalctl -fu capitalscan-nightly                   # watch it
+```
+
+Confirm it exits 0 and the Pi's serving data advances. `cscan preflight`
+should now show `schedule: OK`.
+
+Uninstall: `sudo scripts/systemd/install.sh --remove`.
 
 ---
 
-## 6. Install the schedule
+# Part B — Windows
 
-### Windows
+### B1. Packages
+
+- Git for Windows
+- PostgreSQL 18 (native installer; **not** Docker). Put its `bin\` on
+  `PATH`, or set `CAPSCAN_PSQL` to `...\PostgreSQL\18\bin\psql.exe`.
+- uv: `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`
+
+### B2. Timezone
+
+Settings → Time & language → set to Pacific.
+
+### B3. PostgreSQL role and database
+
+In `psql` as the `postgres` superuser:
+
+```
+CREATE ROLE capscan LOGIN SUPERUSER PASSWORD 'capscan';
+CREATE DATABASE capitalscan OWNER capscan;
+```
+
+### B4. Clone and install
+
+```
+git clone git@github.com:darischen/CapitalScan.git C:\CapitalScan
+cd C:\CapitalScan
+uv sync
+```
+
+### B5. Data — as A6, using the native `pg_restore`.
+
+### B6. Environment — as A7 (`copy .env.local.example .env.local`).
+
+### B7. Verify
+
+```
+.venv\Scripts\cscan preflight
+.venv\Scripts\cscan sync
+```
+
+### B8. Install the schedule
 
 ```
 powershell -ExecutionPolicy Bypass -File scripts\install_schedule.ps1
 ```
 
-Registers `CapitalScan nightly` (daily 13:15), `CapitalScan weekly`
-(Sunday 02:00), `CapitalScan monthly` (1st, 03:00) from the templates in
-`scripts\tasks\`, substituting this repo's path. Idempotent -- re-run to
-update. `-Remove` unregisters all three.
-
-Verify / run now:
+Registers `CapitalScan nightly` / `weekly` / `monthly` from the templates
+in `scripts\tasks\`, substituting this repo's path.
 
 ```
 Get-ScheduledTask -TaskName 'CapitalScan *' | Select TaskName, State
 Start-ScheduledTask -TaskName 'CapitalScan nightly'
 ```
 
-### Linux
+**Task Scheduler caveat:** the tasks run as `InteractiveToken`, so they
+only fire while a user is logged in. For an unattended box, either keep a
+user logged in, or change each task to "Run whether user is logged on or
+not" (needs the account password stored) — or use Debian.
 
-```
-sudo scripts/systemd/install.sh
-```
-
-Fills `WorkingDirectory` and `User` into the unit templates in
-`scripts/systemd/`, installs them to `/etc/systemd/system`, and enables
-`capitalscan-nightly.timer`, `capitalscan-weekly.timer`,
-`capitalscan-monthly.timer`. `--remove` reverses it.
-
-Verify / run now:
-
-```
-systemctl list-timers 'capitalscan-*'
-sudo systemctl start capitalscan-nightly.service
-journalctl -fu capitalscan-nightly
-```
+Uninstall: `powershell -File scripts\install_schedule.ps1 -Remove`.
 
 ---
 
-## 7. Logs
+# Part C — Migrating from the old machine
 
-Each run writes `reports/<job>/<job>_YYYY_MM_DD.log` (UTF-8), overwriting a
-same-day rerun. `reports/nightly/` etc. are gitignored -- per-machine
-artifacts.
+Do this in order. Nothing on the new machine depends on the old one
+afterward.
 
-- Windows: `(Get-ScheduledTaskInfo -TaskName 'CapitalScan nightly').LastTaskResult`
-  -- `0` is success, anything else means read the log.
-- Linux: `systemctl status capitalscan-nightly.service` and `journalctl -u
-  capitalscan-nightly --since today`.
+1. **Old machine — dump research:**
+   ```
+   pg_dump -Fc -h localhost -U capscan -d capitalscan -f capitalscan.dump
+   ```
+   Copy `capitalscan.dump` to the new machine (scp, USB, whatever).
+
+2. **New machine — do Part A (or B)** steps 1–8. Step A6 restores the
+   dump.
+
+3. **New machine — `cscan preflight` exits 0.**
+
+4. **New machine — `cscan sync` completes.**
+
+5. **New machine — install the schedule** (A9 / B8), run `nightly` once
+   by hand, confirm exit 0 and that `serving` advances.
+
+6. **Old machine — remove its schedule** so two machines do not both run
+   nightly:
+   - Windows: `powershell -File scripts\install_schedule.ps1 -Remove`
+     (or delete "CapitalScan nightly" in Task Scheduler)
+
+7. **Update `CLAUDE.md`** — the machine-specific notes that said
+   "desktop" / a `C:\Users\daris\...` path now describe the new machine.
+
+8. The old machine can be wiped.
 
 ---
 
-## Migration checklist (desktop -> laptop)
+# Reference
 
-1. Desktop: `pg_dump -Fc` the research database (step 3).
-2. Laptop: steps 1, 2, 3, 4.
-3. Laptop: `cscan preflight` exits 0.
-4. Laptop: `cscan sync` completes.
-5. Laptop: install the schedule (step 6), `Start` / `systemctl start` nightly
-   once, confirm it exits 0 and serving advances.
-6. Desktop: `install_schedule.ps1 -Remove` so two machines do not both run
-   nightly.
-7. Nothing on the laptop depends on the desktop after this.
+### The scheduled jobs
+
+| job | when (PT) | does | ~time |
+|---|---|---|---|
+| `nightly` | daily 13:15 | `pull_live_records` from the Pi, ingest chain, indicators, events, `sync` to serving | 35-40 min |
+| `weekly` | Sun 02:00 | `run_backtest` (no harness) | ~36 min |
+| `monthly` | 1st, 03:00 | maintenance | short |
+
+Deadlines are loose — `weekly` only has to land within ~2.5 days, and
+every job self-heals on the next run (7-day lookback).
+
+### Wrappers
+
+- `scripts/run_job.{ps1,sh} <nightly|weekly|monthly>` — the real wrapper.
+  Derives the repo root from its own location, uses `.venv`, runs a
+  config-hash guard against `serving_config`, logs to
+  `reports/<job>/<job>_YYYY_MM_DD.log`, propagates the exit code.
+- `scripts/run_nightly.ps1` — a one-line shim to `run_job.ps1 nightly`,
+  kept for older references.
+- `scripts/install_schedule.ps1` / `scripts/systemd/install.sh` — install
+  or `--remove` the schedule.
+
+### Health check
+
+`cscan preflight` — run it any time. It checks `.env.local`, `psql`, both
+database connections, the research schema against the repo's migration
+head, that config resolves to the hash `serving_config` pins, and that
+the schedule is installed. Read-only. `FAIL` exits 1; `warn` does not.
+It infers `role` from `DATABASE_URL_SERVING` (localhost host = this *is*
+the serving box), override with `CAPSCAN_ROLE=research|serving`.
+
+### Logs
+
+`reports/<job>/` (gitignored). Windows:
+`(Get-ScheduledTaskInfo -TaskName 'CapitalScan nightly').LastTaskResult`
+— `0` is success. Linux: `systemctl status capitalscan-nightly.service`,
+`journalctl -u capitalscan-nightly --since today`.
