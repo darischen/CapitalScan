@@ -44,6 +44,32 @@ class TestRequiredEnv:
         }
 
 
+class TestRole:
+    def test_localhost_serving_url_means_this_is_the_serving_box(self, monkeypatch):
+        monkeypatch.setenv(
+            "DATABASE_URL_SERVING",
+            "postgresql+psycopg://capscan:x@localhost:5432/capitalscan_serving",
+        )
+        monkeypatch.delenv("CAPSCAN_ROLE", raising=False)
+        assert pf._role() == "serving"
+
+    def test_remote_serving_url_means_research_machine(self, monkeypatch):
+        monkeypatch.setenv(
+            "DATABASE_URL_SERVING",
+            "postgresql+psycopg://capscan:x@192.168.1.30:5432/capitalscan_serving",
+        )
+        monkeypatch.delenv("CAPSCAN_ROLE", raising=False)
+        assert pf._role() == "research"
+
+    def test_explicit_capscan_role_wins(self, monkeypatch):
+        monkeypatch.setenv(
+            "DATABASE_URL_SERVING",
+            "postgresql+psycopg://capscan:x@localhost:5432/capitalscan_serving",
+        )
+        monkeypatch.setenv("CAPSCAN_ROLE", "research")
+        assert pf._role() == "research"
+
+
 class TestWiredIntoCli:
     def test_preflight_is_a_command(self):
         from typer.testing import CliRunner

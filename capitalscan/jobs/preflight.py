@@ -40,7 +40,7 @@ class Check:
     fix: str = ""
 
 
-def _env_check() -> list[Check]:
+def _env_check(role: str) -> list[Check]:
     envf = REPO_ROOT / ".env.local"
     if not envf.exists():
         return [
@@ -54,7 +54,8 @@ def _env_check() -> list[Check]:
     from dotenv import dotenv_values
 
     vals = dotenv_values(envf)
-    missing = [k for k in REQUIRED_ENV if not (vals.get(k) or os.environ.get(k))]
+    required = REQUIRED_ENV if role == "research" else ("DATABASE_URL_SERVING",)
+    missing = [k for k in required if not (vals.get(k) or os.environ.get(k))]
     if missing:
         return [
             Check(
@@ -64,7 +65,8 @@ def _env_check() -> list[Check]:
                 "fill them in .env.local (see .env.local.example)",
             )
         ]
-    return [Check(".env.local", "ok", f"{len(REQUIRED_ENV)} required keys set")]
+    n = len(REQUIRED_ENV) if role == "research" else 1
+    return [Check(".env.local", "ok", f"{n} required key(s) set")]
 
 
 def _psql_check() -> Check:
@@ -181,52 +183,74 @@ def _serving_checks() -> list[Check]:
     return out
 
 
-def _schedule_check() -> Check:
-    win = platform.system() == "Windows"
+def _schedule_check(role: str) -> Check:
     try:
-        if win:
+        if platform.system() == "Windows":
+            task = "CapitalScan nightly"  # research machine only runs on Windows here
             r = subprocess.run(
-                ["schtasks", "/query", "/tn", "CapitalScan nightly"],
+                ["schtasks", "/query", "/tn", task],
                 capture_output=True,
                 text=True,
                 timeout=15,
             )
             if r.returncode == 0:
-                return Check("schedule", "ok", "CapitalScan nightly registered")
+                return Check("schedule", "ok", f"{task} registered")
             return Check(
-                "schedule",
-                "warn",
-                "CapitalScan nightly not registered",
-                "scripts\\install_schedule.ps1",
+                "schedule", "warn", f"{task} not registered", "scripts\\install_schedule.ps1"
             )
+        timer = "capitalscan-nightly.timer" if role == "research" else "capitalscan-poller.timer"
+        fix = (
+            "sudo scripts/systemd/install.sh"
+            if role == "research"
+            else "sudo scripts/pi/install (see docs/PI_MIGRATION.md)"
+        )
         r = subprocess.run(
-            ["systemctl", "list-unit-files", "capitalscan-nightly.timer"],
+            ["systemctl", "list-unit-files", timer],
             capture_output=True,
             text=True,
             timeout=15,
         )
-        if "capitalscan-nightly.timer" in r.stdout:
-            return Check("schedule", "ok", "capitalscan-nightly.timer installed")
-        return Check(
-            "schedule",
-            "warn",
-            "capitalscan-nightly.timer not installed",
-            "sudo scripts/systemd/install.sh",
-        )
+        if timer in r.stdout:
+            return Check("schedule", "ok", f"{timer} installed")
+        return Check("schedule", "warn", f"{timer} not installed", fix)
     except Exception as exc:  # noqa: BLE001
         return Check("schedule", "warn", f"could not check: {str(exc).splitlines()[0][:80]}")
+
+
+def _role() -> str:
+    """`research` or `serving`, from CAPSCAN_ROLE or inferred.
+
+    A machine whose DATABASE_URL_SERVING points at localhost *is* the
+    serving store (the Pi); it has no research database and never runs
+    nightly. Anything else reaches serving over the network and is the
+    research machine.
+    """
+    explicit = os.environ.get("CAPSCAN_ROLE", "").strip().lower()
+    if explicit in ("research", "serving"):
+        return explicit
+    url = os.environ.get("DATABASE_URL_SERVING", "")
+    host = url.rsplit("@", 1)[-1].split("/")[0].split(":")[0] if "@" in url else ""
+    return "serving" if host in ("localhost", "127.0.0.1", "::1", "[::1]") else "research"
 
 
 def run() -> list[Check]:
     from capitalscan.jobs.db import _load_env
 
     _load_env()
-    checks: list[Check] = []
-    checks += _env_check()
+    role = _role()
+    checks: list[Check] = [Check("role", "ok", role)]
+    checks += _env_check(role)
     checks.append(_psql_check())
-    checks += _research_checks()
-    checks += _serving_checks()
-    checks.append(_schedule_check())
+    if role == "research":
+        checks += _research_checks()
+        checks += _serving_checks()
+    else:
+        # The serving machine (the Pi): no research db, poller not nightly.
+        ok, detail = _db_connects("DATABASE_URL_SERVING")
+        checks.append(
+            Check("serving db", "ok" if ok else "fail", detail, "" if ok else "start Postgres")
+        )
+    checks.append(_schedule_check(role))
     return checks
 
 
