@@ -5411,3 +5411,50 @@ constant cannot.
 preference is the cherry-pick the split exists to prevent, and the honest
 version of "10 is better now" is a regime-conditional policy, not a new
 constant.
+
+---
+
+## 2026-08-31 — Storage reclamation: 12 sweep arms archived and deleted
+
+The research database was 48 GB, `capitalscan-data` 55.6 GB. `events` and
+`path` held 44 GB across 23 `config_hash` generations. See ADR 159 for the
+decision and the rule.
+
+**Done in one no-writer window** (Sunday, market closed, poller idle, no
+nightly, `pg_stat_activity` clean):
+
+| action | detail |
+|---|---|
+| dropped backup tables | `events_pre_adr145`, `universe_pre_adr145`, `universe_pre_adr_fix`, `run_ids_pre_adr145` |
+| dropped unused indexes | `events_feed_latest`, `events_feed_watch`, `events_cluster` (`idx_scan = 0`; recreatable from their migrations) |
+| archived 12 sweep arms | `reports/archive/sweep_arms_2026-08-31/` — `events` 16,546,848 rows, `path` 78,679,504, `cell_stats` 6,144, `rho_era` 48; 2.7 GB gzip, `gzip -t` clean, line counts match pre-delete `count(*)` |
+| deleted 12 sweep arms | `events` (cascaded `path`), `cell_stats`, `rho_era`; `runs` rows kept |
+| `VACUUM (FULL, ANALYZE)` | `events`, `path`, `indicators` — twice, once after the drops and once after the deletes |
+
+**Result: database 48 GB -> 19 GB, volume 55.6 GB -> 24.2 GB.** `events`
+7.9 GB, `path` 7.1 GB. Bloat recovered by the first VACUUM was ~7 GB on its
+own.
+
+**Deleted hashes** (all exit / holding-window sweep grid arms, 2026-08-28
+to 08-30):
+
+    753813ea1b7bb09f  a56d05a752a217ee  f2a56c9e8aa5c810  fcc6df7649798127
+    6e7b11fc1c6ee599  0fdd15e962436b72  f7b31c5443d30948  0bdf21eba0ff2e34
+    8dcdc265a0509005  ccfde27281981436  49fc87114751f32a  c74e355184fea7bb
+
+The reference tables in the 2026-08-29 and 2026-08-30 entries above still
+cite these. The numbers stand; the event populations behind them are now in
+the archive, not in Postgres. Reload with `\copy ... FROM` in FK order to
+audit one.
+
+**11 generations kept resident**: live `0523841076f47293`; the ADR configs
+of record (`1835688bf7d760ba`, `86e91448a65aa40b`, `697f3ae71428d392`,
+`f66729c7eda212a4`, `bbc99a02ebdc999f`); prior serving `a38d3ca6b58295e8`;
+`fda16796c6e82ee4` and `185bba9a239c18f4` (full Phase 4); and
+`d750336f30551cab` + `f7d7bcd52ec48c22`, the two 2026-08-30 holding-window
+arms, held until that sweep is closed out.
+
+**Open item.** The archive is a single 2.7 GB copy on the workstation and
+is in `.gitignore`. It needs its own backup, or the reproducibility
+guarantee for those 12 arms is only as good as one disk. WAL was left at
+`max_wal_size = 4GB` deliberately.

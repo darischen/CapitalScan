@@ -200,6 +200,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 156 | ETF market cap: `netAssets` disagrees with `sharesOutstanding` | **Decided 2026-08-26: option B via (i)** — store `netAssets / close` with its own `source` |
 | 157 | `events.sector` is a current snapshot, and that is accepted look-ahead | **Decided 2026-08-28.** Moved out of `BACKLOG.md`; no point-in-time GICS source exists, `universe.mcap_usd` shows the shape a fix would take |
 | 158 | The poller should write serving directly, not research | **Proposed 2026-08-28, not implemented.** Removes research from the live write path; frees the workstation during market hours |
+| 159 | Superseded sweep generations are archived out of the database, not kept in it | **Decided 2026-08-31, applied.** Narrows ADR 096; 12 arms moved to gzipped CSV, DB 48 GB -> 19 GB; no `config_hash` move |
 
 ---
 
@@ -6809,3 +6810,83 @@ by construction: serving's sequence is set past research's max on every
 sync, so new poller rows land above anything research holds. If a future
 change ever lets research allocate `signal_reports` ids again, that
 assumption breaks and the key must become natural rather than surrogate.
+
+## 159. Superseded sweep generations are archived out of the database, not kept in it
+
+**Status.** Decided 2026-08-31, applied the same day. Narrows ADR 096's
+"sweep results coexist in one table" to "coexist until the question they
+answered is settled, then move to cold storage". Does not move
+`config_hash`.
+
+**The problem is storage, and it had a specific size.** The research
+database reached 48 GB, `capitalscan-data` 55.6 GB. `events` and `path`
+were 44 GB of that across **23 `config_hash` generations**, and only about
+nine were load-bearing: the live config, the earlier configs of record
+each pinned by an ADR, and the prior serving generation. The rest were the
+2026-08-28 to 2026-08-30 exit and holding-window sweep grid. They back the
+reference tables in `RESULTS.md`, but nothing recomputes from them on any
+schedule, and `cell_stats` / `rho_era` for those arms are equally static.
+
+**The tension with ADR 034 and ADR 096.** Both require every published
+number to trace to a reproducible event population. Deleting a generation
+outright breaks that silently: the `RESULTS.md` row keeps its
+`config_hash`, the rows it names are gone, and nothing detects the gap.
+
+**Resolution: preserve the population, move it off Postgres.** Before any
+delete, each arm's `events`, `path`, `cell_stats` and `rho_era` rows are
+written to gzipped CSV under `reports/archive/sweep_arms_<date>/`, with a
+`config_hashes.txt` manifest. `gzip -t` verifies each file and the line
+counts are checked against the pre-delete `count(*)`. Restore is a manual
+`\copy ... FROM` in FK order (`events`, then `path`, then the stats
+tables) followed by `VACUUM (FULL, ANALYZE)`. ADR 096's composite key
+still governs what stays resident.
+
+**First application, 2026-08-31.** Twelve arms removed:
+
+    753813ea1b7bb09f  a56d05a752a217ee  f2a56c9e8aa5c810  fcc6df7649798127
+    6e7b11fc1c6ee599  0fdd15e962436b72  f7b31c5443d30948  0bdf21eba0ff2e34
+    8dcdc265a0509005  ccfde27281981436  49fc87114751f32a  c74e355184fea7bb
+
+16,546,848 `events` rows, 78,679,504 cascaded `path` rows, 6,144
+`cell_stats`, 48 `rho_era`. Archive is 2.7 GB. Database 48 GB -> 19 GB,
+volume 55.6 GB -> 24.2 GB. The same pass dropped three unused `events`
+indexes (`events_feed_latest`, `events_feed_watch`, `events_cluster`) and
+four stale pre-migration backup tables.
+
+**Kept resident:**
+
+| generation | why |
+|---|---|
+| `0523841076f47293` | live config (`serving_config`, arm `t5_atr20`) |
+| `1835688bf7d760ba` | RESULTS Sessions 12-14, `rho_era`, ADRs 096/098/109 |
+| `86e91448a65aa40b` | ADR 110, live config 2026-08-16 to 08-29 |
+| `697f3ae71428d392` | ADR 111 |
+| `f66729c7eda212a4` | ADR 143 |
+| `bbc99a02ebdc999f` | ADR 145 |
+| `a38d3ca6b58295e8` | prior serving generation, 81 runs |
+| `fda16796c6e82ee4`, `185bba9a239c18f4` | full Phase 4 with benchmarks |
+| `d750336f30551cab`, `f7d7bcd52ec48c22` | 2026-08-30 holding-window arms; hold until that sweep closes |
+
+**Not touched.** `runs` keeps every job row, including the deleted arms'
+`backtest_compute` / `harness` provenance. `benchmarks` had no rows for
+these hashes. `universe` is keyed by `config_hash` but shared in spirit
+and small; left alone.
+
+**What it costs.**
+
+- **A restore is an operation, not a query.** Auditing a `RESULTS.md`
+  number whose generation was archived means reloading the archive first.
+  The `config_hash` in the doc still identifies it; the rows are just not
+  online.
+- **The archive is one copy on one disk.** Until it is backed up
+  elsewhere, the reproducibility guarantee for those arms is exactly as
+  durable as the workstation's filesystem. `reports/archive/` is in
+  `.gitignore` deliberately (2.7 GB), so git is not that backup.
+- **`VACUUM FULL` took an ACCESS EXCLUSIVE lock** on `events` and `path`
+  for the duration. Run only in a no-writer window: market closed, no
+  nightly, no backtest, poller idle on the Pi.
+
+**The rule going forward.** A sweep generation may be archived and deleted
+once the decision it informed is recorded in `RESULTS.md` and any config
+change it produced is shipped. Until then it stays resident. The live
+generation and every ADR's config of record are never archived.

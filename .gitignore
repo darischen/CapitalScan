@@ -57,3 +57,6 @@ web/*.tsbuildinfo
 # config_hash in the repo -- the failure that put arm 2's -0.01 on main
 # in 77cb5ee. Arms are a local, temporary state.
 config.toml
+
+# large provenance archives - keep out of git, back up separately
+reports/archive/

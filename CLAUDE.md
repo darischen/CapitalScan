@@ -777,9 +777,16 @@ Three consequences worth knowing before relying on it:
 - **The Pi's `core/config.py` must stay at baseline.** `cscan poll`
   resolves config, so an ablation-arm config left on the Pi would have the
   poller writing events under that arm's hash and the site would show
-  nothing. Verified before enabling: the Pi resolves
-  `a38d3ca6b58295e8`, which is what `serving_config` pins. Run arms on the
-  workstation.
+  nothing. Verified before enabling: the Pi resolves the live hash, which
+  is what `serving_config` pins. Run arms on the workstation.
+
+  **The live hash is `0523841076f47293` as of 2026-08-29** (arm `t5_atr20`:
+  `target_pct` 0.05, `stop_atr_k` 2.0; commit `42ae20a`, RESULTS
+  2026-08-29). It moved from `a38d3ca6b58295e8`, which this file still
+  names in the two 2026-08-26 anecdotes above and which stays resident as
+  the prior serving generation. Confirm against all three before trusting a
+  manual query: `serving_config`, the research GUC, and
+  `config_hash(resolve_config())`.
 - **Nightly must still run on the workstation**, because
   `sync.pull_live_records` brings the poller's durable rows back --
   `runs` (scoped `job='poll'`), `signal_reports` and `poller_sessions`.
