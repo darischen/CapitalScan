@@ -60,3 +60,4 @@ config.toml
 
 # large provenance archives - keep out of git, back up separately
 reports/archive/
+reports/nightly/
