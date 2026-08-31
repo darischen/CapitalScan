@@ -1,3 +1,9 @@
 capitalscan/models/**/*.txt filter=lfs diff=lfs merge=lfs -text
 capitalscan/models/**/*.pkl filter=lfs diff=lfs merge=lfs -text
 capitalscan/models/**/*.parquet filter=lfs diff=lfs merge=lfs -text
+
+# Line endings pinned so scripts work on the OS that runs them, regardless
+# of the committer's platform (the research machine may be Linux).
+*.sh              text eol=lf
+scripts/systemd/* text eol=lf
+*.ps1             text eol=crlf
