@@ -770,10 +770,15 @@ that database.
 
 Three consequences worth knowing before relying on it:
 
-- **Do not start `scripts/wait_and_poll.ps1` as well.** Two pollers would
-  double-write: the Windows one writes research and pushes to serving,
-  the Pi one writes serving directly. The `.ps1` is kept for reference and
-  for its CSV export, which is read-only against the database.
+- **Never run `scripts/wait_and_poll.ps1` and the Pi timer at the same
+  time.** As of 2026-08-31 the `.ps1` also runs `cscan poll --serving` and
+  writes serving directly -- a true drop-in for the Pi when it skips a day,
+  same guards, same target, same one-run-id-per-day. That is exactly why
+  the two must not overlap: both write serving and would double-write. The
+  Pi's unit is a `oneshot` done by ~13:00, so a later manual `.ps1` run is
+  safe; a concurrent one is not. Before 2026-08-31 the `.ps1` wrote
+  research and pushed per tick, a different path with no staleness or
+  sequence guard -- that is the version that broke on 2026-08-31.
 - **The Pi's `core/config.py` must stay at baseline.** `cscan poll`
   resolves config, so an ablation-arm config left on the Pi would have the
   poller writing events under that arm's hash and the site would show

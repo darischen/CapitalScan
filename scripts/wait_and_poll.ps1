@@ -2,6 +2,22 @@
     [int]$PollIntervalSeconds = 300
 )
 
+# **This writes the serving store, exactly like the Pi (ADR 158).** It used
+# to run `cscan poll` bare -- writing research and pushing to serving per
+# tick -- which is a different code path with different failure modes: no
+# staleness guard, no sequence guard, and a research->serving push that
+# breaks on an orphaned run row from a crashed-then-restarted session (hit
+# 2026-08-31). Passing `--serving` makes a manual run here byte-for-byte the
+# same operation the Pi's `wait_and_poll.sh` performs, so a workstation
+# fallback for a day the Pi skipped behaves identically -- including
+# refusing for the same reasons.
+#
+# The two must never run at once: both write serving directly and would
+# double-write. The Pi's systemd unit is a `oneshot` that has finished (or
+# failed) for the day by ~13:00, so a later manual run here is safe.
+$ServingHost = "192.168.1.30"
+$ServingDb   = "capitalscan_serving"
+
 # Start 15 minutes after the bell (user's decision, 2026-08-24). The open
 # is still 06:30 PT; this is when we begin polling it.
 #
@@ -27,6 +43,24 @@ function Is-Confluence {
         return $true
     }
     return $false
+}
+
+# **Refuse a non-trading day, before the wait (mirrors the Pi script).**
+# `cscan poll` checks only the time of day, not the date, so an unguarded
+# weekend or holiday run would open a `poller_sessions` row and fire signals
+# off the previous session's stale quotes into the store the site serves.
+# `trading_days` is the same calendar `cscan poll` resolves the last trading
+# day from. Queried on serving because that is the store this polls.
+$env:PGPASSWORD = "capscan"
+$today = Get-Date -Format 'yyyy-MM-dd'
+$isTradingDay = & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -h $ServingHost -U capscan -d $ServingDb -tA -c "SELECT 1 FROM trading_days WHERE d = '$today'"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] $(Get-Date -Format 'HH:mm:ss') - cannot reach serving ($ServingHost/$ServingDb) to check the calendar. Not polling."
+    exit 1
+}
+if ("$isTradingDay".Trim() -ne "1") {
+    Write-Host "[SKIP] $(Get-Date -Format 'HH:mm:ss') - $today is not a trading day. Nothing to poll; exiting cleanly."
+    exit 0
 }
 
 # Main loop: keep checking until market opens, run poller, export results
@@ -68,8 +102,9 @@ while ($true) {
     if (-not (Test-Path $pollerDir)) { New-Item -ItemType Directory -Force $pollerDir | Out-Null }
     $csvPath = "C:\Users\daris\Desktop\School\CapitalScan\reports\poller\poller_session_$(Get-Date -Format 'yyyy_MM_dd_HHmmss').csv"
 
-    # Start poller in background
-    $pollerProcess = Start-Process -FilePath "uv" -ArgumentList "run", "cscan", "poll", "--interval", $PollIntervalSeconds -PassThru -NoNewWindow
+    # Start poller in background. `--serving` writes the serving store
+    # directly, the same as the Pi -- no research write, no per-tick push.
+    $pollerProcess = Start-Process -FilePath "uv" -ArgumentList "run", "cscan", "poll", "--interval", $PollIntervalSeconds, "--serving" -PassThru -NoNewWindow
     Write-Host "[MONITOR] Poller started (PID: $($pollerProcess.Id)). Monitoring for confluence signals..."
 
     $env:PGPASSWORD = "capscan"
@@ -144,9 +179,13 @@ while ($true) {
             #
             # Named zone, not a fixed offset, so DST comes from Postgres
             # tzdata. ORDER BY stays on the raw `timestamptz`.
-            $query = "SELECT s.event_id, (s.fired_at AT TIME ZONE 'America/Los_Angeles'), e.ticker, e.signal_type, e.entry_price::text, e.side, e.touch_level::text, e.k_full::text, e.d_full::text, e.k_fast::text, e.atr_14::text, e.vix_close::text, e.spx_ret_1d::text, s.channels_sent, s.state_json->>'day_open', s.state_json->'bear_reversal'->>'confirmed', s.state_json->'bear_reversal'->>'open_gap_atr' FROM events e JOIN signal_reports s ON e.id = s.event_id WHERE DATE(e.signal_date) = CURRENT_DATE AND e.id > $lastEventId ORDER BY s.fired_at ASC;"
+            # `signal_date = '$today'` with the session's own date, never
+            # CURRENT_DATE (ADR 119): the store's server timezone is not
+            # guaranteed to be the session's, and relying on the window
+            # falling inside one server-day is how that bug keeps returning.
+            $query = "SELECT s.event_id, (s.fired_at AT TIME ZONE 'America/Los_Angeles'), e.ticker, e.signal_type, e.entry_price::text, e.side, e.touch_level::text, e.k_full::text, e.d_full::text, e.k_fast::text, e.atr_14::text, e.vix_close::text, e.spx_ret_1d::text, s.channels_sent, s.state_json->>'day_open', s.state_json->'bear_reversal'->>'confirmed', s.state_json->'bear_reversal'->>'open_gap_atr' FROM events e JOIN signal_reports s ON e.id = s.event_id WHERE e.signal_date = '$today' AND e.id > $lastEventId ORDER BY s.fired_at ASC;"
 
-            $newEvents = & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -h localhost -U capscan -d capitalscan -t -c $query
+            $newEvents = & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -h $ServingHost -U capscan -d $ServingDb -t -c $query
 
             if ($newEvents) {
                 $newEvents | ForEach-Object {
