@@ -1720,8 +1720,9 @@ Verification, the part that answers "does it work on this machine":
       repo's alembic head, config vs `serving_config`, and the schedule.
       `fail` exits 1; `warn` (schedule not yet installed, serving
       unreachable on an ingest-only box) does not. No writes.
-- [x] `cscan preflight` exits 0 on the desktop today.
-- [ ] `cscan preflight` exits 0 on the Pi.
+- [x] `cscan preflight` exits 0 on the desktop and on the Pi (the Pi
+      infers `role: serving` from a localhost `DATABASE_URL_SERVING` and
+      skips the research checks).
 - [ ] The *new* `run_job` wrappers run a real scheduled `nightly` /
       `weekly` end to end with no absolute-path or dependency error.
       `wait_and_poll` (`.ps1` after the portability edit, and `.sh`)
