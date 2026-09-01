@@ -1040,6 +1040,49 @@ counts. That understates nothing dramatically today but is a silent staleness.
 
 ---
 
+### 81 tickers are inactive with no date, so "retired" and "flagged" are indistinguishable
+
+**The class ORKA was a thread of.** That entry was closed by deleting the
+one ticker; the class underneath it was never touched, and the ORKA
+writeup says so explicitly ("The class is the real item").
+
+Re-measured 2026-09-01, and it has not moved:
+
+    81   is_active = false, delisted_on IS NULL     <- no record of when
+    18   is_active = false, delisted_on set         <- properly retired
+     2   of the 81 still have bars in the last 30 days
+
+`is_active = false` with `delisted_on = NULL` is internally inconsistent:
+nothing recorded *when* the ticker stopped being active, so a deliberate
+retirement is indistinguishable from something having set a flag. For 82%
+of inactive tickers there is no such record.
+
+**The consequence is silent.** `_resolve_tickers(None)` returns active
+tickers only, so every one of the 81 is excluded from every job invoked
+without an explicit ticker list -- and nothing reports the exclusion. ORKA
+was found only by comparing `last_indicator` against `last_bar`, not by any
+check that exists.
+
+**The two with recent bars are both legitimate**, which is what makes the
+class undetectable by inspection:
+
+    FISV   Fiserv          bars to 2026-08-17   renamed to FI in 2024
+    UA     (no name)       bars to 2026-08-17   Under Armour's second class
+
+Both are correctly inactive. So "has recent bars" does not separate a
+wrongly-flagged ticker from a rightly-flagged one, and neither does any
+other column on the row.
+
+**The work is finding what writes the flag without a date**, not auditing
+the 81. A writer that sets `is_active = false` and leaves `delisted_on`
+NULL will keep producing them, and each one silently leaves the universe.
+Until that is found, the count is the only symptom.
+
+Raised 2026-08-26 inside the ORKA entry, promoted to its own on 2026-09-01
+because it survived the fix it was attached to.
+
+---
+
 ### Depositary listings have no pre-2018 history
 
 Not a wrong number — a missing one, and the distinction matters when
@@ -1514,7 +1557,7 @@ lookup rather than a diagnosis.
 The second is the better fit for the actual failure mode, since it also
 covers a daemon that died rather than merely never started.
 
-### Nightly has no trading-day guard, unlike the poller
+### ~~Nightly has no trading-day guard, unlike the poller~~ — **added 2026-09-01 as a reduced pass**
 
 Raised by the user 2026-08-30, after seeing a nightly terminal open at 13:15
 on a Sunday.
@@ -1538,6 +1581,25 @@ plus the API rate limit it spends and ~100k rows it re-syncs for nothing.
 path. Its 7-day lookback means a Saturday run repairs a Friday failure, and
 a guard would leave that broken until Monday. Corporate actions and the
 earnings calendar also update on non-trading days.
+
+**Decided 2026-09-01 (user): add it, in the honest form this entry
+describes.** `_is_trading_day` gates the three price fetchers
+(`run_bars_daily`, `run_bars_hourly`, `run_market`) and nothing else --
+they are the only steps that provably have nothing to fetch when there was
+no session.
+
+`run_actions` and `run_earnings` still run, because corporate actions and
+calendar revisions land on non-trading days. The recompute and the sync
+still run, because they are the catch-up path this entry warned a blanket
+skip would break.
+
+Reads `trading_days` rather than the weekday, so a holiday counts, and the
+same table backs the poller's guard so the two agree by construction.
+**Fails open**: an empty or unreachable calendar runs the full pass, since
+a guard whose purpose is avoiding waste must cost waste when it breaks
+rather than skipping a night.
+
+#### Original reasoning
 
 **Undecided rather than rejected.** If it is added, the honest version is a
 *reduced* weekend pass — skip the bar fetchers and the sync, keep the
@@ -1602,7 +1664,7 @@ Low urgency: it only surfaces when the workstation poll path runs, which
 ADR 158 exists to retire. Worth doing before that path is deleted, so the
 deletion is not what "fixes" it by accident.
 
-### `run_sync` overwrites serving's `events.id`, and the two id spaces have diverged
+### ~~`run_sync` overwrites serving's `events.id`, and the two id spaces have diverged~~ — **fixed 2026-09-01, ADR 163**
 
 **Broke the 2026-09-01 nightly sync. It recurs every day the poller
 fires.** Nightly itself exited 0; the sync inside it failed with
@@ -1640,6 +1702,22 @@ nothing to replace them. The site keeps showing the poller's rows for the
 day; it shows provisional rather than reconciled data, not blanks. That
 guard was written for a torn WiFi connection and paid for itself against an
 unrelated bug.
+
+**Fixed by option 2 (user's call), recorded as ADR 163.** `events.id` is
+now declared local to its store, with the natural key as the identity.
+Three changes in `sync.py`: a surrogate `id` is excluded from any upsert
+whose conflict key does not name it (both push paths),
+`pull_live_records` nulls `signal_reports.event_id` on arrival, and it now
+resets research's sequences the way `run_sync` has reset serving's since
+2026-08-28.
+
+The alternatives the entry did not consider are in the ADR: disjoint id
+ranges fight `run_sync`'s own nightly sequence reset, UUID keys are a type
+change on a 61.8M-row table, and copy-only serving is the design ADR 158
+removed. The chosen fix is smaller because it stops asking two id spaces to
+agree rather than making them agree.
+
+#### Original entry
 
 **Two fixes, and the second is preferred.**
 
