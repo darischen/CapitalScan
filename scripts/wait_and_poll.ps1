@@ -31,6 +31,19 @@ $servingUrl = (Select-String -Path (Join-Path $RepoRoot ".env.local") -Pattern '
 if (-not $servingUrl) { throw "DATABASE_URL_SERVING not set in $RepoRoot\.env.local" }
 if ($servingUrl -notmatch '@([^:/]+):(\d+)/([^?\s]+)') { throw "cannot parse host/db from DATABASE_URL_SERVING" }
 $ServingHost = $Matches[1]
+# **The port is part of the address, and omitting it was a real bug.**
+# Until 2026-09-01 this regex captured the port and the script then never
+# used it, so both `psql` calls below fell back to the default 5432. That
+# worked only because serving happens to listen there. On the workstation
+# 5432 is the *research* container, so a serving store on any other port
+# would have had the calendar guard silently querying a different database
+# server than `cscan poll --serving` writes to -- a guard reading one
+# machine to authorise writes to another.
+#
+# Found by `scripts/test_wait_and_poll.ps1` on its first real run: the
+# harness pointed the script at a scratch Postgres on 55432 and the script
+# connected to 5432 and reported the scratch database missing.
+$ServingPort = $Matches[2]
 $ServingDb   = $Matches[3]
 
 # Start 15 minutes after the bell (user's decision, 2026-08-24). The open
@@ -68,7 +81,7 @@ function Is-Confluence {
 # day from. Queried on serving because that is the store this polls.
 $env:PGPASSWORD = "capscan"
 $today = Get-Date -Format 'yyyy-MM-dd'
-$isTradingDay = & $Psql -h $ServingHost -U capscan -d $ServingDb -tA -c "SELECT 1 FROM trading_days WHERE d = '$today'"
+$isTradingDay = & $Psql -h $ServingHost -p $ServingPort -U capscan -d $ServingDb -tA -c "SELECT 1 FROM trading_days WHERE d = '$today'"
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] $(Get-Date -Format 'HH:mm:ss') - cannot reach serving ($ServingHost/$ServingDb) to check the calendar. Not polling."
     exit 1
@@ -200,7 +213,7 @@ while ($true) {
             # falling inside one server-day is how that bug keeps returning.
             $query = "SELECT s.event_id, (s.fired_at AT TIME ZONE 'America/Los_Angeles'), e.ticker, e.signal_type, e.entry_price::text, e.side, e.touch_level::text, e.k_full::text, e.d_full::text, e.k_fast::text, e.atr_14::text, e.vix_close::text, e.spx_ret_1d::text, s.channels_sent, s.state_json->>'day_open', s.state_json->'bear_reversal'->>'confirmed', s.state_json->'bear_reversal'->>'open_gap_atr' FROM events e JOIN signal_reports s ON e.id = s.event_id WHERE e.signal_date = '$today' AND e.id > $lastEventId ORDER BY s.fired_at ASC;"
 
-            $newEvents = & $Psql -h $ServingHost -U capscan -d $ServingDb -t -c $query
+            $newEvents = & $Psql -h $ServingHost -p $ServingPort -U capscan -d $ServingDb -t -c $query
 
             if ($newEvents) {
                 $newEvents | ForEach-Object {

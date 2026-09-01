@@ -1977,12 +1977,54 @@ Small and self-contained. Scheduled rather than urgent because ADR 154
 already admits all four ETFs regardless of market cap, so nothing is
 blocked meanwhile.
 
-### An isolated harness for `wait_and_poll`'s guards
+### ~~An isolated harness for `wait_and_poll`'s guards~~ — **built 2026-09-01, and it found a bug**
 
 The poller wrappers are the least-tested code in the system and the most
 recently changed: `wait_and_poll.ps1` switched to `cscan poll --serving` on
 2026-08-31, and the guards it depends on are exactly the ones that failed
 that day.
+
+**Built as `scripts/test_wait_and_poll.ps1`. 14 assertions, all passing,
+nothing touched outside a throwaway container.**
+
+**It found a real defect on its first run**, which is the entry paying for
+itself. `wait_and_poll.ps1` captured the port out of
+`DATABASE_URL_SERVING` and then never used it -- both `psql` calls omitted
+`-p` and fell back to the default 5432. That worked only because serving
+happens to listen there. **On the workstation 5432 is the research
+container**, so a serving store on any other port would have had the
+calendar guard querying a different database server than `cscan poll
+--serving` writes to: a guard reading one machine to authorise writes to
+another. Fixed in the same commit.
+
+**The mechanism is a fake repo root, so the shipped file runs unmodified.**
+The script derives `$RepoRoot` from `$PSScriptRoot` and reads
+`$RepoRoot\.env.local`; copying it into `<tmp>\scripts\` with a scratch
+`.env.local` redirects every path it resolves. No test hook, no `-WhatIf`,
+no branch that exists only under test.
+
+Two harness bugs worth recording, because both are documented traps that
+still caught a fresh script:
+
+- **`$ErrorActionPreference = 'Stop'` spanning a native call.** `docker
+  run` writes "Unable to find image locally" to stderr as ordinary
+  progress, and PowerShell 5.1 wrapped it in a terminating
+  `RemoteException`. Exactly the `cscan nightly 2>&1` trap in `CLAUDE.md`,
+  hit again in new code.
+- **`Start-Process -PassThru` with redirected streams reports an empty
+  `ExitCode`.** Three assertions failed against a script that was
+  behaving correctly. Replaced with `System.Diagnostics.Process`, reading
+  both streams asynchronously so a full pipe buffer cannot hang in a way
+  that looks like the wait loop.
+
+**Still out of scope, deliberately.** The staleness and sequence guards
+live inside `cscan poll --serving`, not in this script, so the harness
+does not reach them; they have unit tests and both fired against
+production on 2026-08-31 and 2026-09-01. The polling loop itself needs
+live quotes and a real clock. `scripts/pi/wait_and_poll.sh` has no
+equivalent harness yet -- the same fake-root trick would work.
+
+#### Original entry
 
 **The container test for `run_job.sh` is the pattern.** A throwaway
 `debian:trixie-slim` proved the wrapper's mechanics — repo-root derivation,
