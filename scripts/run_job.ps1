@@ -24,6 +24,13 @@
 # Sooner after the close is a smaller gap. Nightly has a seven-day
 # lookback, so a missed night self-heals; missing them indefinitely does
 # not, because research stops accumulating what ADR 084 has Phase 6 reading.
+#
+# **Two guards before the job (ADR 160).** An exclusive lock file -- a
+# second trigger while a run is in flight exits 0 rather than starting a
+# concurrent writer. Then `cscan resume-check`, which exits 3 when this
+# period's run already finished: a systemd Persistent=true timer re-fires a
+# missed run and OnBootSec= a crashed one, and neither knows the chain has
+# since completed.
 
 param(
     [Parameter(Mandatory)]
@@ -45,6 +52,20 @@ $logDir = Join-Path $RepoRoot "reports\$Job"
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force $logDir | Out-Null }
 $log = Join-Path $logDir "${Job}_$(Get-Date -Format 'yyyy_MM_dd').log"
 
+# --- single-instance lock (before touching the log) --------------------
+# FileShare.None makes a second invocation's Open throw. The handle is
+# held for the process lifetime; Windows releases it on exit, so no
+# finally block is needed. Done before the log is truncated so a losing
+# invocation cannot blank the winner's log.
+$lockPath = Join-Path $logDir "$Job.lock"
+try {
+    $script:jobLock = [System.IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None')
+}
+catch {
+    Write-Host "[$Job] $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') another run holds $lockPath; exiting 0"
+    exit 0
+}
+
 # UTF-8, not PowerShell 5.1's default. Tee-Object has no -Encoding in 5.1
 # and writes UTF-16LE, which unix tools read as gibberish -- and this log
 # is read precisely when something has gone wrong.
@@ -59,6 +80,21 @@ function Write-Log {
 
 if (Test-Path $log) { Remove-Item $log }
 "=== $Job start $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===" | Write-Log
+
+# --- resume check -----------------------------------------------------
+# exit 3 -> this period's run is already status='ok', nothing to do.
+# exit 0 -> run. Any other exit is an error resolving the decision and is
+# treated as run. Scoped to 'Continue' because it is a native call and a
+# stray stderr line is terminating under 'Stop' (see the run block below).
+$prev = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+& $cscan resume-check $Job 2>&1 | Write-Log
+$rc = $LASTEXITCODE
+$ErrorActionPreference = $prev
+if ($rc -eq 3) {
+    "=== $Job skip $(Get-Date -Format 'HH:mm:ss'): resume-check reports this period already done ===" | Write-Log
+    exit 0
+}
 
 # --- config-hash guard --------------------------------------------------
 $resolved = "$(& $py -c 'from capitalscan.jobs.config import config_hash, resolve_config; print(config_hash(resolve_config()))')".Trim()
@@ -109,7 +145,13 @@ $ErrorActionPreference = 'Continue'
 & $cscan $Job 2>&1 | Write-Log
 $code = $LASTEXITCODE
 $ErrorActionPreference = $prev
-"=== $Job end $(Get-Date -Format 'HH:mm:ss') exit=$code ===" | Write-Log
+if ($code -ne 0) {
+    "=== $Job FAILED $(Get-Date -Format 'HH:mm:ss') exit=$code ===" | Write-Log
+    "    per-step output is above in $log; the failing step is the last one to print" | Write-Log
+}
+else {
+    "=== $Job end $(Get-Date -Format 'HH:mm:ss') exit=$code ===" | Write-Log
+}
 
 # Propagate the exit code, or Task Scheduler records success for a failed
 # job. $ErrorActionPreference does not touch a native non-zero exit.
