@@ -134,15 +134,18 @@ def complete(engine: Engine, job: str, status: str, run_id: str | None = None) -
 
 
 def _period_start(job: str, now: datetime) -> datetime:
-    """Start of the window `job` is meant to run once inside.
+    """Start of the window `job` is meant to run once inside, as a *naive*
+    wall-clock datetime.
 
-    daily -> local midnight today; weekly -> the most recent Sunday 00:00
+    daily -> midnight today; weekly -> the most recent Sunday 00:00
     (matching `_scheduled_for`'s weekday arithmetic); monthly -> the 1st at
-    00:00. Carries `now`'s tzinfo so the boundary is the machine's local
-    midnight, not UTC's.
+    00:00. `now`'s tzinfo is dropped: the only value compared against this
+    is `scheduled_runs.actual_start`, whose stored digits are a Pacific
+    wall clock regardless of what tzinfo they read back with (see
+    `resume_decision`).
     """
     _, cadence = SCHEDULE[job]
-    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
     if cadence == "daily":
         return midnight
     if cadence == "weekly":
@@ -163,7 +166,7 @@ def resume_decision(
     machine was off, and `OnBootSec=` re-fires one that *crashed* mid-run --
     but neither knows whether the chain has since completed. This does:
 
-    - ``("already_complete", detail)`` only when `scheduled_runs` holds an
+    - ``("already_complete", detail)`` only when `scheduled_runs` holds a
       `status='ok'` run whose `actual_start` is inside the current period
       (today for nightly, since Sunday for weekly, since the 1st for
       monthly).
@@ -175,8 +178,15 @@ def resume_decision(
     "run", because redoing an idempotent chain costs time and skipping a
     needed one costs a day of staleness on the served site.
 
-    Pass a timezone-aware `now` so the period boundary is local midnight. A
-    naive `now` is compared naively against a naive-cast `actual_start`.
+    **All comparison is on naive wall-clock digits.** `record` writes
+    `actual_start` as `datetime.now()` -- a naive local timestamp on a
+    machine whose clock is Pacific (SETUP.md). It lands in a `timestamptz`
+    column under a UTC session, so it reads back tz-aware UTC with the
+    Pacific wall-clock digits intact: the tzinfo is wrong, the digits are
+    right. Trusting the tzinfo would shift a Sunday-02:00 weekly run onto
+    the wrong side of the period boundary. So `now`'s tzinfo is dropped
+    too, and both sides are compared as Pacific wall clocks. Pass a
+    Pacific `now` (aware or naive); the machine clock is already Pacific.
     """
     now = now or datetime.now()
     if job not in SCHEDULE:
@@ -195,14 +205,11 @@ def resume_decision(
     if row is None:
         return "run", f"{job}: no prior run on record, running"
 
-    status, actual_start = row[0], row[1]
-    if now.tzinfo is None and actual_start.tzinfo is not None:
-        actual_start = actual_start.replace(tzinfo=None)
-    elif now.tzinfo is not None and actual_start.tzinfo is None:
-        actual_start = actual_start.replace(tzinfo=now.tzinfo)
+    status = row[0]
+    actual_start = row[1].replace(tzinfo=None)
 
     in_period = actual_start >= _period_start(job, now)
-    stamp = actual_start.strftime("%Y-%m-%d %H:%M %Z").rstrip()
+    stamp = actual_start.strftime("%Y-%m-%d %H:%M")
     if status == "ok" and in_period:
         return "already_complete", f"{job}: completed {stamp} this period, nothing to do"
 

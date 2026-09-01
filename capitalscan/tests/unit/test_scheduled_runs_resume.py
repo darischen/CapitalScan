@@ -132,25 +132,39 @@ def test_monthly_ok_last_month_means_run() -> None:
 # --- boundaries and tz handling -----------------------------------------
 
 
+def test_period_start_is_naive_wall_clock() -> None:
+    """`_period_start` drops tzinfo: the only thing compared against it is
+    `actual_start`, whose stored digits are a Pacific wall clock whatever
+    tzinfo they read back with."""
+    assert scheduled_runs._period_start("nightly", WED) == datetime(2026, 9, 2, 0, 0)
+    assert scheduled_runs._period_start("nightly", WED).tzinfo is None
+
+
 def test_period_start_weekly_lands_on_the_preceding_sunday() -> None:
     # Wednesday -> the Sunday three days back.
-    assert scheduled_runs._period_start("weekly", WED) == datetime(2026, 8, 30, tzinfo=LA)
+    assert scheduled_runs._period_start("weekly", WED) == datetime(2026, 8, 30, 0, 0)
     # A Sunday afternoon -> that same day's midnight, not seven days back.
     sunday_pm = datetime(2026, 8, 30, 14, 0, tzinfo=LA)
-    assert scheduled_runs._period_start("weekly", sunday_pm) == datetime(2026, 8, 30, tzinfo=LA)
+    assert scheduled_runs._period_start("weekly", sunday_pm) == datetime(2026, 8, 30, 0, 0)
 
 
-def test_period_start_daily_is_local_midnight() -> None:
-    assert scheduled_runs._period_start("nightly", WED) == datetime(2026, 9, 2, tzinfo=LA)
-
-
-def test_naive_now_does_not_raise_against_tzaware_actual_start() -> None:
-    naive_now = datetime(2026, 9, 2, 15, 0)
-    aware_start = datetime(2026, 9, 2, 13, 20, tzinfo=LA)
-    decision, _ = scheduled_runs.resume_decision(
-        _FakeEngine(("ok", aware_start)), "nightly", naive_now
-    )
+def test_weekly_sunday_0200_run_counts_this_week() -> None:
+    """The tz-skew bug: a Sunday 02:00 run stored as tz-aware UTC digits,
+    compared naively, must still land inside this week's period. Trusting
+    the (wrong) UTC tzinfo would push it before the boundary and re-run a
+    completed weekly."""
+    sunday_0200 = datetime(2026, 8, 30, 2, 0, tzinfo=ZoneInfo("UTC"))
+    decision, _ = _decide("weekly", ("ok", sunday_0200), now=WED)
     assert decision == "already_complete"
+
+
+def test_naive_and_aware_now_agree() -> None:
+    aware_start = datetime(2026, 9, 2, 13, 20, tzinfo=LA)
+    naive = scheduled_runs.resume_decision(
+        _FakeEngine(("ok", aware_start)), "nightly", datetime(2026, 9, 2, 15, 0)
+    )
+    aware = scheduled_runs.resume_decision(_FakeEngine(("ok", aware_start)), "nightly", WED)
+    assert naive[0] == aware[0] == "already_complete"
 
 
 def test_run_when_ok_row_sits_exactly_on_the_period_boundary() -> None:
