@@ -3,8 +3,17 @@ Description=CapitalScan nightly, after the 13:00 PT close
 
 [Timer]
 OnCalendar=*-*-* 13:15:00
-# Fire a missed run at next boot (machine was off, laptop asleep).
+# A second full attempt the same evening. If the 13:15 batch exhausted its
+# retry burst (see the .service), this gives it a fresh one. resume-check
+# in run_job.sh makes it a no-op when 13:15 (or a retry) already succeeded.
+OnCalendar=*-*-* 19:00:00
+# Fire a run that was missed entirely because the machine was off at 13:15.
 Persistent=true
+# Persistent only covers a MISSED fire. A crash mid-run leaves the timer
+# already triggered for the day, so a reboot at 13:40 gets no catch-up.
+# OnBootSec re-fires the service; run_job.sh's resume-check then decides
+# whether the chain still needs to run (ADR 160).
+OnBootSec=3min
 Unit=capitalscan-nightly.service
 
 [Install]

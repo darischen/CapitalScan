@@ -10,10 +10,13 @@ it rather than leaving the gap to be inferred.
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta
+from typing import Literal
 
 from sqlalchemy import Engine, text
 
 from capitalscan.jobs import db_io
+
+ResumeDecision = Literal["run", "already_complete"]
 
 # DESIGN §4.12 / ADR 080's schedule. Local (ET) time-of-day per job; the
 # nightly/weekly/monthly cadence, not the poller's intraday loop.
@@ -128,3 +131,91 @@ def complete(engine: Engine, job: str, status: str, run_id: str | None = None) -
             {"job": job, "status": status, "run_id": run_id},
         )
     return int(result.rowcount)
+
+
+def _period_start(job: str, now: datetime) -> datetime:
+    """Start of the window `job` is meant to run once inside, as a *naive*
+    wall-clock datetime.
+
+    daily -> midnight today; weekly -> the most recent Sunday 00:00
+    (matching `_scheduled_for`'s weekday arithmetic); monthly -> the 1st at
+    00:00. `now`'s tzinfo is dropped: the only value compared against this
+    is `scheduled_runs.actual_start`, whose stored digits are a Pacific
+    wall clock regardless of what tzinfo they read back with (see
+    `resume_decision`).
+    """
+    _, cadence = SCHEDULE[job]
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+    if cadence == "daily":
+        return midnight
+    if cadence == "weekly":
+        days_since_sunday = (now.weekday() + 1) % 7  # Monday=0 -> Sunday=6, so Sunday -> 0
+        return midnight - timedelta(days=days_since_sunday)
+    if cadence == "monthly":
+        return midnight.replace(day=1)
+    raise ValueError(cadence)  # pragma: no cover - SCHEDULE is closed above
+
+
+def resume_decision(
+    engine: Engine, job: str, now: datetime | None = None
+) -> tuple[ResumeDecision, str]:
+    """Whether a timer/boot-triggered `job` still needs to run this period.
+
+    The `run_job` wrappers call this before doing any work.
+    `systemd`'s `Persistent=true` re-fires a run that was *missed* while the
+    machine was off, and `OnBootSec=` re-fires one that *crashed* mid-run --
+    but neither knows whether the chain has since completed. This does:
+
+    - ``("already_complete", detail)`` only when `scheduled_runs` holds a
+      `status='ok'` run whose `actual_start` is inside the current period
+      (today for nightly, since Sunday for weekly, since the 1st for
+      monthly).
+    - ``("run", detail)`` for every other state -- `status='failed'`, a
+      `status='started'` row with no terminal write (the job crashed or was
+      killed), or no row at all.
+
+    Fails toward ``"run"``: the callers treat any error resolving this as
+    "run", because redoing an idempotent chain costs time and skipping a
+    needed one costs a day of staleness on the served site.
+
+    **All comparison is on naive wall-clock digits.** `record` writes
+    `actual_start` as `datetime.now()` -- a naive local timestamp on a
+    machine whose clock is Pacific (SETUP.md). It lands in a `timestamptz`
+    column under a UTC session, so it reads back tz-aware UTC with the
+    Pacific wall-clock digits intact: the tzinfo is wrong, the digits are
+    right. Trusting the tzinfo would shift a Sunday-02:00 weekly run onto
+    the wrong side of the period boundary. So `now`'s tzinfo is dropped
+    too, and both sides are compared as Pacific wall clocks. Pass a
+    Pacific `now` (aware or naive); the machine clock is already Pacific.
+    """
+    now = now or datetime.now()
+    if job not in SCHEDULE:
+        raise ValueError(f"unknown job {job!r}")
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "SELECT status, actual_start FROM scheduled_runs "
+                "WHERE job = :job AND actual_start IS NOT NULL "
+                "ORDER BY actual_start DESC LIMIT 1"
+            ),
+            {"job": job},
+        ).first()
+
+    if row is None:
+        return "run", f"{job}: no prior run on record, running"
+
+    status = row[0]
+    actual_start = row[1].replace(tzinfo=None)
+
+    in_period = actual_start >= _period_start(job, now)
+    stamp = actual_start.strftime("%Y-%m-%d %H:%M")
+    if status == "ok" and in_period:
+        return "already_complete", f"{job}: completed {stamp} this period, nothing to do"
+
+    reason = {
+        "ok": f"last ok run ({stamp}) was a previous period",
+        "failed": f"last run ({stamp}) failed",
+        "started": f"last run ({stamp}) never finished (crash or kill)",
+    }.get(status or "", f"last run status is {status!r}")
+    return "run", f"{job}: {reason}, running"

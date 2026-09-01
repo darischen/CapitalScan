@@ -529,3 +529,41 @@ Nothing was corrupted, and the failure was loud. But the rule is wider than
 already imported and picks up the rest from disk as it reaches them.** Edit
 freely during a job whose remaining steps you are not touching; do not edit
 a module the job has not reached yet.
+
+## `Persistent=true` catches a missed run, not a crashed one
+
+A systemd timer with `Persistent=true` re-fires a run that was **missed**
+while the timer was inactive (machine off, laptop asleep). It does **not**
+re-fire one that started and then died: the timer writes its elapse stamp
+when it fires, so a power loss at 13:40 and a reboot at 13:50 leave the
+stamp saying "already fired today" and the next elapse is tomorrow.
+
+This is why `capitalscan-nightly.timer`, `capitalscan-weekly.timer` and
+`capitalscan-poller.timer` also carry `OnBootSec=` (ADR 160). On every
+boot the service re-fires, and `run_job.sh` calls `cscan resume-check`
+(the poller wrapper does its own trading-day + close-time checks) to
+decide whether the period's chain still needs to run. Without the boot
+trigger a crash between a timer's fire and its work completing costs the
+whole period silently.
+
+Verify after a reboot: `systemctl list-timers 'capitalscan-*'` shows the
+next elapse, and `journalctl -u capitalscan-nightly --since "$(uptime -s)"`
+shows whether the boot fire ran or `skip`ped.
+
+## resume-check compares wall-clock digits, and here is why the tzinfo lies
+
+`scheduled_runs.record` writes `actual_start = datetime.now()` — a naive
+Pacific timestamp on a Pacific-clocked machine — into a `timestamptz`
+column. It reads back tz-aware, with the Pacific digits intact but a
+tzinfo set by the **reading** session: `Etc/UTC` on the old Docker
+Postgres, Pacific on wivie's native cluster. So the same row's
+`actual_start` prints as `13:15+00` on one machine and `13:15-07` on
+another, for a run that happened at 13:15 Pacific both times.
+
+`resume_decision` (ADR 160) strips tzinfo from both `actual_start` and
+`now` and compares Pacific wall clocks, which both values are by
+construction. Trusting the tzinfo shifted a Sunday-02:00 weekly run to the
+previous Saturday evening under a UTC session, reading as "previous
+period" and re-running a completed weekly on every boot. If you ever make
+`record` write a correct instant, revisit this — the strip becomes wrong
+the moment the digits stop being Pacific.

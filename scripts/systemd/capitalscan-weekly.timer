@@ -7,6 +7,9 @@ Persistent=true
 # Deadline is loose, so a wide randomised spread is fine and avoids
 # colliding with a nightly if the machine was off for a while.
 RandomizedDelaySec=2h
+# Re-fire after a boot for the crash-mid-run case; resume-check gates it to
+# "only if this week's run is not already ok" (ADR 160).
+OnBootSec=5min
 Unit=capitalscan-weekly.service
 
 [Install]

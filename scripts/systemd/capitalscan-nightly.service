@@ -2,19 +2,35 @@
 Description=CapitalScan nightly (ingest chain, indicators, events, sync to serving)
 After=network-online.target postgresql.service
 Wants=network-online.target
+# Bounded retry (ADR 160). On a non-zero exit systemd restarts after
+# RestartSec, up to StartLimitBurst starts per StartLimitIntervalSec, then
+# gives up until the next timer fire. A whole day dark is not acceptable --
+# this chain feeds the served site -- and a transient cause (Pi asleep for
+# the sync step, a Yahoo 5xx) usually clears within the hour. The 19:00
+# entry in the .timer is the fresh full attempt if this burst is exhausted.
+# The interval is wider than any two real triggers (13:15, 19:00, a boot)
+# are apart, so only a restart storm ever accumulates toward the limit.
+StartLimitIntervalSec=90min
+StartLimitBurst=5
 
 [Service]
-Type=oneshot
+# Type=simple, not oneshot: Restart= is only honoured for a non-oneshot
+# service. run_job.sh runs to completion and exits, which is fine as a
+# simple service; nothing orders on this unit reaching "started".
+Type=simple
 # {{USER}} and {{REPO}} are filled in by scripts/systemd/install.sh.
 User={{USER}}
 WorkingDirectory={{REPO}}
 ExecStart={{REPO}}/scripts/run_job.sh nightly
+Restart=on-failure
+RestartSec=15min
+# TimeoutStartSec does not bound total runtime for Type=simple; RuntimeMaxSec does.
+RuntimeMaxSec=4h
 # run_job.sh already tees to reports/nightly/<date>.log; journal keeps the
 # summary line and the exit code.
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=capscan-nightly
-TimeoutStartSec=4h
 
 [Install]
 WantedBy=multi-user.target
