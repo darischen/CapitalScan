@@ -239,8 +239,18 @@ untouched throughout.
 
 "Staged" means Part A is done, `cscan preflight` exits 0, and the systemd
 units are installed with their **timers disabled** (`systemctl is-enabled
-capitalscan-nightly.timer` -> `disabled`). This is the state `wivie` was
-left in on 2026-08-31. If that holds, the switch is four steps:
+capitalscan-nightly.timer` -> `disabled`).
+
+**`wivie` state as of 2026-09-01.** Part A done, `cscan preflight` all-OK,
+research schema at head but **no data** (the `pg_restore` in step 2 has not
+run). The `capitalscan-{nightly,weekly}.{service,timer}` units in
+`/etc/systemd/system` carry the ADR 160 changes (`Type=simple`,
+`Restart=on-failure`, `OnBootSec`, the 19:00 nightly retry), rendered from
+the repo and `daemon-reload`ed. **All three timers are `disabled`** —
+enabling them is step 3 below, the point of cutover. Nothing fires on
+`wivie` until then.
+
+If that holds, the switch is four steps:
 
 1. **Old machine — dump research** (during a market-closed window, no
    nightly running):
@@ -255,7 +265,8 @@ left in on 2026-08-31. If that holds, the switch is four steps:
    cscan preflight        # must exit 0; research schema at head, config hash matches serving
    ```
 
-3. **New machine — go live:**
+3. **New machine — go live** (this is the cutover: the timers were
+   deliberately left `disabled` while staged):
    ```
    sudo systemctl enable --now capitalscan-nightly.timer \
         capitalscan-weekly.timer capitalscan-monthly.timer
@@ -263,6 +274,11 @@ left in on 2026-08-31. If that holds, the switch is four steps:
    sudo systemctl start capitalscan-nightly.service   # one manual run
    journalctl -fu capitalscan-nightly                 # exit 0, serving advances
    ```
+   `capitalscan-nightly.service` is `Type=simple` (ADR 160), so the manual
+   `start` returns immediately — watch it in `journalctl`, not by waiting
+   on the command. If `scripts/systemd/install.sh` was re-run at any point
+   it also enables the timers, so on `wivie` skip it and enable by hand as
+   above.
 
 4. **Old machine — stand its schedule down** so two boxes never both run
    nightly:

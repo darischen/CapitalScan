@@ -1692,17 +1692,21 @@ machine-specific sections. The old `run_nightly.ps1` still ran the
 Scheduler yet.
 
 **Progress, 2026-09-01.** `wivie` (192.168.1.12, Debian 13) is staged:
-native PostgreSQL 17, repo + `.env.local`, `cscan preflight` all-OK,
-systemd units installed but timers disabled. Research DB has the schema at
-head but no data yet — the `pg_dump`/`pg_restore` is the remaining
-one-time step. All three LAN addresses are now DHCP-reserved (Pi
-`192.168.1.30`, wivie `192.168.1.12`, the workstation `192.168.1.14`),
-closing item 8 and the ADR 152 lease-drift consequence — but the Pi keeps
-`listen_addresses = '*'` because that is a boot-ordering race (wlan0 not
-yet associated when Postgres binds), independent of whether the address is
-reserved. ADR 160 added boot/failure resume to `run_job.{sh,ps1}` and the
-nightly/weekly systemd units. `run_job.sh`'s new lock + `resume-check`
-guards are verified on wivie against a real firing.
+native PostgreSQL 17, repo on `main`, `.env.local`, `cscan preflight`
+all-OK. Research DB has the schema at head but **no data** yet — the
+`pg_dump`/`pg_restore` is the remaining one-time step. The ADR 160
+systemd units (`Type=simple`, `Restart=on-failure`, `OnBootSec`, the 19:00
+nightly retry) are rendered into `/etc/systemd/system` and
+`daemon-reload`ed, **timers still `disabled`** — `systemctl enable --now`
+is the cutover step (SETUP.md C1 step 3), gated on the restore. Nothing
+fires on `wivie` until then. `run_job.sh`'s lock + `resume-check` guards
+are verified there against a real firing.
+
+All three LAN addresses are now DHCP-reserved (Pi `192.168.1.30`, wivie
+`192.168.1.12`, the workstation `192.168.1.14`), closing item 8 and the
+ADR 152 lease-drift consequence — but the Pi keeps `listen_addresses =
+'*'` because that is a boot-ordering race (wlan0 not yet associated when
+Postgres binds), independent of whether the address is reserved.
 
 Portability of the scripts:
 
