@@ -5223,6 +5223,11 @@ The shipped config stays 5% + k=2.0. The `max_hold_days` sweep is what
 decides whether stopless is genuinely right or an artifact of an untested
 holding window.
 
+**Recorded as ADR 161** (2026-09-01), because the shipped exit policy is a
+decision and this was only ever a results entry. The ADR carries the tail
+table, the reason k=2.0 is where the trade is free, and the two arms
+deliberately not run.
+
 ### 2026-08-29 — The cluster-head filter discards 74% of fires, and the discarded ones do better
 
 `cell_stats` filters `is_cluster_head`, keeping only the first fire of a

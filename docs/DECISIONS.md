@@ -179,7 +179,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 135 | A universe evaluation must rest on data from inside the period it describes | Pinned. First consumer for `UniverseParams.rebalance_freq`; no `config_hash` move |
 | 136 | No edge interval is stored, and the rate interval answers the question | Pinned. Rejects DESIGN 11.2's edge bar as specified |
 | 137 | The served subset is three years, and ADR 053's sizing predates the chart | Pinned. Amends ADR 053's estimate, not its decision; implements `cscan sync` |
-| 138 | The deployment authenticates itself, and opening it is an explicit act | Pinned. Currently disabled by request — `SITE_AUTH_DISABLED=1`, open in `BACKLOG.md` |
+| 138 | The deployment authenticates itself, and opening it is an explicit act | Pinned. Disabled by request — `SITE_AUTH_DISABLED=1`; **narrowed by ADR 162**, which decides it stays off while the site is LAN-only |
 | 139 | The screener links out to a stored chart, and the indicators live on someone else's server | Pinned |
 | 140 | The nightly is authoritative for every grain, and the poller's observation is not an entry price | Pinned |
 | 141 | The screener sorts in SQL over the whole day, and shows all of it | Pinned |
@@ -202,6 +202,8 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 158 | The poller should write serving directly, not research | **Proposed 2026-08-28, not implemented.** Removes research from the live write path; frees the workstation during market hours |
 | 159 | Superseded sweep generations are archived out of the database, not kept in it | **Decided 2026-08-31, applied.** Narrows ADR 096; 12 arms moved to gzipped CSV, DB 48 GB -> 19 GB; no `config_hash` move |
 | 160 | Scheduled jobs resume on boot and retry on failure | **Implemented 2026-09-01.** `OnBootSec` + bounded `Restart=on-failure` + a 19:00 nightly retry + `cscan resume-check`; no `config_hash` move |
+| 161 | The shipped exit policy is 5% + ATR k=2.0, chosen against the sweep winner | **Decided 2026-08-29, recorded 2026-09-01.** Stopless won on mean in every era and costs 11 points of worst case; k=2.0 gains 3.1 bp over k=1.5 at no tail cost. Config of record `0523841076f47293` |
+| 162 | Site auth stays off while the deployment is LAN-only | **Decided 2026-09-01.** Narrows ADR 138's pin; revisit only if the site is reachable off-LAN |
 
 ---
 
@@ -7054,3 +7056,144 @@ immediately instead of blocking until the job finishes.
   writes its own weekly row. "Run" is the safe direction anyway.
 - `cscan resume-check` is read-only. It queries one `scheduled_runs` row
   and never writes.
+
+---
+
+## 161. The shipped exit policy is 5% + ATR k=2.0, chosen against the sweep winner
+
+**Status.** Decided 2026-08-29, shipped, recorded here 2026-09-01. Config
+of record `0523841076f47293` (arm `t5_atr20`, commit `42ae20a`). Moves
+`config_hash`; it already moved on 2026-08-29 and this ADR is the record,
+not the change.
+
+**Context.**
+
+Fourteen arms swept `target_pct` and `stop_atr_k` over 2026-08-28 and
+2026-08-29. The stop turned out to be the dominant exit parameter by an
+order of magnitude: **~9 bp from tightest to none, against ~1 bp for the
+target**, and it had never been varied before. All five stop settings at a
+5% target, validate `net_ret`:
+
+| stop | train | validate | stopped out | hit target | timed out |
+|---|---|---|---|---|---|
+| **none** | **+2.2** | **+11.0** | 0.0% | 23.7% | 72.6% |
+| ATR k=2.0 | −2.8 | +7.5 | 21.4% | 23.5% | 51.5% |
+| ATR k=1.5 (prior live) | −4.1 | +4.4 | 33.5% | 23.1% | 39.8% |
+| fixed 3% | −6.2 | −1.2 | 41.3% | 21.0% | 34.3% |
+| fixed 2% | −6.8 | −2.6 | 55.2% | 19.2% | 22.3% |
+
+**Monotonic on both splits with no turnover**, and no stop is the only one
+of fourteen arms positive on train. The era split, run afterwards, did not
+rescue the stop either: no stop wins in all four periods including
+2020-2021, where it is *less bad* (−15.6 against k=2.0's −17.3) rather than
+worse.
+
+So the sweep's answer was "remove the stop", and that is not what shipped.
+
+**Decision.**
+
+**Ship 5% target + ATR k=2.0. Do not ship the stopless arm**, despite it
+winning on mean in aggregate and in every era.
+
+**Consequences.**
+
+**The mean was not the only thing measured, and the tail decides it.**
+Validate `net_ret`:
+
+| stop | mean | p1 | p0.1 | worst | sd |
+|---|---|---|---|---|---|
+| k=1.5 | +4.4 bp | −9.11% | −15.33% | **−39.55%** | 4.01% |
+| k=2.0 | +7.5 bp | −10.35% | −18.81% | **−39.55%** | 4.20% |
+| none | +11.0 bp | −12.61% | **−22.62%** | **−50.34%** | 4.40% |
+
+Going stopless buys 6.6 bp of mean and costs **11 points of worst case**
+and 3.8 points at p0.1. The sweep optimised means and the arms were never
+ranked on tail risk, so its winner is the winner of a question narrower
+than the one being decided.
+
+**k=2.0 is where that trade is free.** Its worst trade is *identical* to
+k=1.5's — the same trade gapped through both stops — so widening 1.5 → 2.0
+gains 3.1 bp of mean at **no cost in the extreme tail**. That is the whole
+case for this config: it takes most of the available gain and pays nothing
+measurable for it. Every looser setting starts charging.
+
+**The stopless result is not rejected, it is unresolved.** 72.6% of its
+trades exit on the five-day timeout, so at that setting the policy is
+barely an exit policy — it is "hold five days and take 5% if you get it",
+and `max_hold_days` is doing the work. **That parameter has never been
+swept.** Until it is, "the stop is costing money" and "five days is the
+wrong window" are not separable, and shipping stopless would be acting on
+a limit case whose behaviour is attributed to the wrong knob. The
+`max_hold_days` sweep at 3 / 5 / 10 is what settles it and is scheduled in
+`BACKLOG.md`.
+
+**Two arms were deliberately not run, and neither is a gap.** `stop_atr_k`
+at 2.5 duplicates the no-stop arm — at a 5% target its 6.82% stop almost
+never fires. k=1.0 was never tested, and is predicted worse by a slope with
+five points on it; confirming a monotonic trend is not worth an arm
+(decided 2026-09-01).
+
+**Every figure above is measured on cluster heads only**, which is 26% of
+fires (ADR 151, and the 2026-08-29 cluster measurement). The discarded
+fires are better by 7-9 bp, so the whole sweep ran on the worse quarter of
+the population. That does not change the *ordering* of the arms, which is
+what this decision rests on, but it means the absolute numbers here are not
+the strategy's returns. See `BACKLOG.md`, "Scheduled later".
+
+**The exit thresholds are config, not literals** (invariant 9), and
+`v_positions` reads its policy from `serving_config` rather than SQL
+literals (ADR 115). So this change required `cscan db sync-config` to reach
+the position page, and `test_v_positions_config.py` fails when the stored
+row and the live config disagree.
+
+---
+
+## 162. Site auth stays off while the deployment is LAN-only
+
+**Status.** Decided 2026-09-01 (user). Narrows ADR 138, which stays pinned
+as the mechanism. No `config_hash` move, no code change.
+
+**Context.**
+
+ADR 138 built the auth and made opening the site an explicit act:
+`SITE_AUTH_DISABLED=1`, and only that exact string. It has been set since
+2026-08-20, and the reason recorded then was that a Vercel deployment URL
+is hard to discover, the content is public market data plus one operator's
+analysis, and there is no user model at all — no PII, no credentials, no
+accounts.
+
+`BACKLOG.md` then argued the Pi migration invalidated that reasoning: a LAN
+service is not obscure to anything on the LAN, and `/api/chat` spends
+Anthropic tokens per request, so an open page becomes an open wallet.
+
+**Decision.**
+
+**Leave `SITE_AUTH_DISABLED=1` in place.** The backlog entry is rejected,
+not deferred.
+
+**Consequences.**
+
+**The premise the entry attacked was not the operative one.** Its argument
+was "obscurity stops working on a LAN". The actual protection is that the
+deployment is **not reachable from outside the LAN at all** — there is no
+port forward, no tunnel and no public hostname. Obscurity was never
+load-bearing; reachability is, and reachability did not change when the
+site moved to the Pi. A LAN-only service protects against the internet by
+not being on it.
+
+**The `/api/chat` wallet argument survives but does not bite.** It is real
+that the route spends tokens per request and that MCP is now local. It
+needs an attacker already on the LAN, which is the same trust boundary
+every other unauthenticated service on this network sits behind, including
+Postgres on 5432.
+
+**What would reverse this**, and it is a single condition: **the site
+becoming reachable off-LAN.** A port forward, a tunnel, a VPS proxy, or a
+Vercel deployment pointed at the Pi all qualify. Any of them makes this ADR
+stale immediately, and the correct move then is to delete the key rather
+than set it to `0` — ADR 138's middleware opens only on the exact string
+`"1"`, so `=0` is already refused, but a key lying about is a decision
+waiting to be flipped by accident.
+
+**The fail-safe direction is unchanged.** With `SITE_PASSWORD` unset the
+site returns 503 rather than falling open. Nothing here weakens that.

@@ -185,35 +185,6 @@ same data rather than reasoning about it -- three theories about harness
 timing were wrong today before this profile settled it.
 
 
-### Site auth is deliberately off on the Pi (decided 2026-08-26)
-
-`SITE_AUTH_DISABLED=1`, turned off deliberately 2026-08-20 with the reason
-recorded: a Vercel deployment URL is hard to discover, the content is public
-market data plus one operator's analysis, and there is no user model at all —
-no PII, no credentials, no accounts.
-
-The argument was that there is no edge to protect. Bollinger Bands and the
-stochastic oscillator have been studied exhaustively by people paid to do
-it, and ADR 112 is the house result that no cell survives correction. What
-an observer would learn is already public, and the part that is not — that
-the measured edge is absent — is published on purpose.
-
-**Moving to a Raspberry Pi changes the premise, and the flag should go with
-it.** That reasoning rests on the URL being obscure; a LAN service is not
-obscure to anything on the LAN. And `/api/chat` spends Anthropic tokens per
-request — harmless today only because the route reaches MCP on `127.0.0.1`
-and dies before any model call. On the Pi, with MCP local, an open page
-becomes an open wallet.
-
-`docs/PI_MIGRATION.md` makes deleting the flag part of the migration rather
-than a follow-up. **Delete the key; do not set it to `0`.** The middleware
-opens only on the exact string `"1"`, so `=0` is already refused, but a key
-left lying about is a decision waiting to be flipped by accident. With
-`SITE_PASSWORD` unset the site returns 503 rather than falling open, which
-is the correct direction to fail.
-
----
-
 ### ~~`events.sector` and `events.mcap_usd` are NULL on every row~~
 
 **CLOSED 2026-08-27.** Both halves. Migration `c2b91e4a7d08` backfilled the serving generation on both databases; `db_io.fill_event_sector_and_mcap` (`1151db7`) populates them on write as a post-pass, the same shape as `add_cofire_count`, so neither writer carries the lookup into its per-ticker workers. Verified live: the rebuild running that night wrote 482,568 rows with **99.9%** carrying both. The ~0.1% that stay NULL are the 123 tickers with no sector on file and events predating their first `universe` evaluation -- absent, not wrong (invariant 4). The asymmetry the entry warned about is now stated in the database itself via column comments: `mcap_usd` is point-in-time, `sector` is the accepted snapshot.
@@ -1128,67 +1099,6 @@ whoever hits it should find this rather than rediscover it.
 
 ---
 
-### ~~Every fire as its own observation, measured both ways~~ — **measured 2026-08-29**
-
-**The measurement this entry asked for was run, and it found something
-larger than the question.** RESULTS 2026-08-29, two entries, the second
-correcting the first.
-
-The filter discards **74.1% of train fires and 74.2% of validate**, and the
-discarded ones are the better trades — train −7.9 bp kept against −1.0 bp
-dropped, validate +0.8 against +9.7. A 7-9 bp gap, against the 11 bp the
-entire target × stop grid spans. **Every number in both exit sweeps is
-measured on the worse quarter of fires.**
-
-The first reading was that averaging down works and the filter throws it
-away. **That reading is wrong**, and the follow-up says so: by position
-within cluster the 2nd fire is the *worst* on train (−10.1), not the best,
-and the whole advantage sits in the 5th-or-later bucket. What actually
-separates them is **cluster size**, monotonic on both splits:
-
-| cluster size | train | validate |
-|---|---|---|
-| 1 (singleton) | **+170.9** | **+240.6** |
-| 2-4 | +164.8 | +212.3 |
-| 5-9 | +38.0 | +50.0 |
-| **10+** | **−119.3** | **−133.6** |
-
-~300 bp of spread, roughly thirty times the exit grid, and not a parameter
-at all — a property of the signal. Side, era and drawdown bucket are flat
-across the four buckets, so it is not a confound. A signal firing ten or
-more times is a stock in sustained decline being caught repeatedly on the
-way down.
-
-**ADR 151's objection stands and does not conflict with any of this**,
-because the two are different uses of one table: backtest *returns* should
-count every fire, since they are real trades; `cell_stats` should keep the
-filter until a serial `n_eff` exists. That split is what stays open, and it
-is under "Scheduled later" at the end of this file rather than here — it is
-a change to what gets counted, not another measurement.
-
-#### Original entry
-
-Raised 2026-08-24. The original intent for `events` was that each fire is a
-separate observation — averaging down is real, bleeding out of a long is
-real, and different entries against a shared exit produce genuinely
-different returns. `cell_stats` filters `is_cluster_head`, which quietly
-encodes the opposite.
-
-Kept as-is by ADR 151, because dropping the filter is not free.
-`n_eff = n / (1 + rho(c_bar - 1))` already corrects **cross-sectional**
-dependence, when many tickers fire on one market move. Cluster-head
-filtering corrects **serial** dependence, one ticker firing repeatedly
-inside a holding window. Removing it without building the serial equivalent
-raises `n` and narrows every interval — the direction that manufactures
-significance, with no way afterwards to separate a real edge from one move
-counted four times.
-
-**What would settle it:** measure both arms and publish the gap. That number
-*is* what the overlap is worth, and it is the only honest way to find out
-whether the filter costs anything.
-
----
-
 ### Operational, small
 
 **Reserve DHCP leases** for the workstation (192.168.1.14) and the Pi
@@ -1386,7 +1296,34 @@ now excludes `--warmup` (default 120s).
 
 ---
 
-### Pi-only operation, after the workstation goes away
+### ~~Pi-only operation, after the workstation goes away~~ — **obsolete 2026-09-01, the premise is gone**
+
+**This entry was contingency planning for a scenario that did not
+happen**, and it is kept only for the hardware measurements, which are
+still good.
+
+Two things killed the premise:
+
+- **A working replacement was found and staged.** `wivie` (Debian 13,
+  native PostgreSQL 17.11, SSD, DHCP-reserved at 192.168.1.12) takes the
+  scheduled research role. The Pi never has to run `nightly` or `weekly`.
+- **The workstation is not going away.** It leaves the *scheduled* role at
+  the cutover and stays the heavy-research box — backtests, sweeps,
+  rebuilds — because it is the faster machine. The move relocates the
+  house, not the hardware.
+
+So the USB SSD, the `PGDATA` relocation, the memory tuning and the
+weekly-vs-monthly cadence question are all moot: **research never lands on
+the Pi.** The Pi keeps exactly the role it has, serving plus the poller,
+and its 27 GB free is no longer a constraint on anything.
+
+**The measurements below stay useful** and are the reason this is not
+simply deleted: the Pi is 9.1x slower than the workstation on the real hot
+path, which is what proves it could never have taken a sweep arm, and the
+`sustain`-measured-the-wrong-thing lesson applies to any future benchmark
+here.
+
+#### Original entry
 
 The workstation is leaving (house move, planned). The Yoga 900 that was to
 replace it **will not power on and takes no charge**, so the fallback is the
@@ -1500,78 +1437,33 @@ conditional on a flag rather than by editing the sequence.
 
 ---
 
-### `max_hold_days` has never been swept, and the exit sweep made it the binding constraint
-
-Raised 2026-08-29, straight out of the fourteen-arm exit sweep.
-
-The sweep varied `target_pct` and the stop and found both matter, but it left
-`max_hold_days = 5` untouched in every arm. That is now the parameter doing
-the most work:
-
-| config | exits on timeout |
-|---|---|
-| 4% + k=1.5 (the old default) | 33.1% |
-| **5% + k=2.0 (shipped 2026-08-29)** | **51.5%** |
-| 5% + no stop (best arm, not shipped) | 72.6% |
-
-**Loosening the stop pushed trades out of the stop and into the clock.** At
-the shipped config more than half of all trades now end because five days
-elapsed, not because the policy decided anything. The exit rule is
-increasingly "hold a week and take what is there", and the length of that
-week has never been tested.
-
-**Three arms settle it**: `max_hold_days` 3 / 5 / 10 at the shipped target and
-stop. Cheap by the same argument as the stop sweep — one knob, same universe,
-and the runner already exists.
-
-**It also bears on the no-stop result.** `t5_nostop` won on mean return but
-72.6% of its trades hit the timeout, so what looked like "the stop is costing
-money" may partly be "five days is the wrong window". Sweeping the window is
-the honest way to separate the two before anyone acts on the stopless result.
-
-### ~~The exit sweep's own leftovers~~ — **closed 2026-09-01, both were already done**
-
-Audited 2026-09-01. Both bullets below were stale: the work was run on
-2026-08-29 and recorded in RESULTS, and this entry was never updated. Kept
-so a future reader does not re-run either.
-
-- ~~**`stop_atr_k` at 2.5 and 1.0 were never run.**~~ **Closed as not worth
-  running** (user's call, 2026-09-01). Correct that k=1.0 was never tested,
-  but the ordering is monotonic across all five settings on both splits, so
-  a tighter stop is predicted worse by a slope that already has five points
-  on it. Confirming a trend is not worth an arm. 2.5 stays dropped for the
-  original reason: at a 5% target its 6.82% stop almost never fires, so it
-  duplicates the no-stop arm.
-- ~~**The no-stop arm's era breakdown was never run.**~~ **Run 2026-08-29**
-  — RESULTS, "The no-stop arm by era: it wins everywhere, including the
-  crash". No stop is best in all four periods, and in 2020-2021 it is *less
-  bad* (−15.6 against −17.3 for k=2.0) rather than worse. The monotonic
-  ordering holds inside every era, not only in aggregate.
-
-  **This removed the main argument for keeping a stop**, and the case that
-  remains is entirely the tail: worst trade −50.34% against k=2.0's
-  −39.55%, p0.1 −22.62% against −18.81%. The sweep optimised means. **5% +
-  ATR k=2.0 shipped as a deliberate compromise** on that basis — most of
-  the available gain, a real stop kept, no reliance on a limit case whose
-  tail is unmeasured.
-
-**What those two entries actually leave open** is listed under "Scheduled
-later" at the end of this file: the `max_hold_days` sweep, which is the
-test that decides whether stopless is right or an artifact of an untested
-holding window.
-
----
-
 ### Docker Desktop does not start after a reboot, and nightly fails silently into it
 
-**Resolved by the wivie migration, 2026-09-01 (ADR 160).** The research
-role moves to `wivie`, a Debian box running **native** PostgreSQL 17 as a
-systemd service (`enabled`, `After=network-online.target`). No Docker, no
-Docker Desktop, no `com.docker.service`, so the whole failure class is
-gone: Postgres is up before the timer, and the nightly service itself now
-retries on failure and re-fires `OnBootSec` (ADR 160). Kept below as the
-record of why the Windows setup was fragile; not worth fixing on the
-Windows box, which is being retired from this role.
+**Not resolved. The 2026-09-01 note claiming otherwise was wrong and is
+corrected here.**
+
+That note said the wivie migration closed this, because the research role
+moves to a Debian box with **native** PostgreSQL 17 under systemd — no
+Docker, no `com.docker.service`, Postgres up before the timer. All true,
+and it closes the failure class **on `wivie`**.
+
+**It does not close it here, and the plan changed under it.** The
+workstation is not being retired: it keeps the heavy-research role
+permanently (backtests, sweeps, rebuilds) because it is the faster
+machine, and its research database stays in the `capitalscan-postgres`
+container. So a reboot still leaves Docker Desktop down, and anything
+started against research on this box still fails with
+`ConnectionTimeout`. The exposure shrinks from "the scheduled nightly" to
+"whatever is run by hand", which is a smaller blast radius and not a fix.
+
+**What actually changed** is that the *scheduled* path stops depending on
+it after the cutover. The manual path never did depend on a scheduler and
+is unchanged.
+
+Still deliberately not fixed (user's call 2026-08-30: "doesn't really
+matter"). The two options below both remain valid for the workstation, and
+the first is now the better one — it fixes every use of the container, not
+just a job wrapper that is moving to another machine anyway.
 
 ---
 
@@ -1850,6 +1742,8 @@ blocks the move or the daily chain. Ordered by what each one would change
 if it were run.
 
 ### The `max_hold_days` sweep — 3 / 5 / 10
+
+**ADR 161 names this as the open question behind the shipped exit policy.**
 
 **This is the one that decides a live parameter**, and RESULTS 2026-08-29
 names it as the test that settles the stop question. At the shipped config

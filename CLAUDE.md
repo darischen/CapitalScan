@@ -21,7 +21,7 @@ expansion to other markets and more ETFs is in `BACKLOG.md`.
 
 ## Before writing any code
 
-Read `docs/DECISIONS.md`. It holds 160 ADRs. They are decisions, not suggestions.
+Read `docs/DECISIONS.md`. It holds 162 ADRs. They are decisions, not suggestions.
 
 If a task appears to require contradicting one, **stop and ask.** Do not work around it.
 
@@ -70,10 +70,16 @@ laptop on the real hot path (`scripts/cpu_bench.py`, 2026-08-28) and that
 gap is a power budget, not tuning. So this file is a **two-machine
 document, permanently**, not a handoff. Expect both to be live.
 
-**The migration is one change, by design.** `wivie` is staged to be
-identical to the desktop in versions and setup; the only edit required to
-move the scheduled role is **what the Pi's `.env.local` points at**. See
-`docs/SETUP.md` Part C1. Everything else is already in place there.
+**The migration is one change, by design.** The only edit required to move
+the scheduled role is **what the Pi's `.env.local` points at**, plus the
+one-time `pg_dump`/`pg_restore` of research. See `docs/SETUP.md` Part C1;
+everything else is already staged on `wivie`.
+
+**"Identical" is the goal, not yet the state.** Two gaps measured
+2026-09-01: Postgres 16.14 against 17.11 (fine in the cutover direction,
+not reversible) and Python 3.14.3 against 3.13.5 (see Platform below).
+Both are tracked in `BACKLOG.md`. Do not assume a version matches because
+the setup was scripted — `pyproject.toml` pins only `>=3.11`.
 
 **The two places they genuinely cannot be identical**, and therefore the
 only labels that carry weight below:
