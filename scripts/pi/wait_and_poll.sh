@@ -80,8 +80,30 @@ say() { echo "[$1] $(date '+%H:%M:%S') - ${*:2}"; }
 # the script lives between 00:00 and 13:00 local, and ET is three hours
 # ahead, so both clocks read the same calendar day throughout. That stops
 # being true after 21:00 local, which this never reaches.
+#
+# **"Closed" and "cannot tell" are different answers, and this conflated
+# them until 2026-09-01.** The original was a single pipeline --
+# `psql ... | grep -q 1` -- so *any* psql failure printed nothing, the grep
+# found nothing, and the script announced "not a trading day" and exited
+# **0**. A database that was down, still starting, or refusing the role read
+# as a market holiday, and systemd recorded success.
+#
+# That is not hypothetical here: the timer fires at 00:00, and Postgres on
+# this Pi is on the same SD card and the same boot as everything else. A
+# poller that loses a whole session to a slow start, silently, in a log that
+# says `[SKIP] ... exiting cleanly`, is the worst available failure. The
+# `.ps1` had always distinguished the two; this had not.
+#
+# Proven by `scripts/test_wait_and_poll_pi.sh`, which denies the role login
+# and asserts the script refuses rather than skipping.
 TODAY=$(date +%F)
-if ! sudo -n -u postgres psql -d capitalscan_serving -X -tA         -c "SELECT 1 FROM trading_days WHERE d = '$TODAY'" | grep -q 1; then
+CAL=$(sudo -n -u postgres psql -d capitalscan_serving -X -tA \
+        -c "SELECT 1 FROM trading_days WHERE d = '$TODAY'" 2>&1)
+if [ $? -ne 0 ]; then
+  say ERROR "cannot reach the serving database to check the calendar. Not polling. ${CAL}"
+  exit 1
+fi
+if ! printf '%s' "$CAL" | grep -q '^1$'; then
   say SKIP "$TODAY is not a trading day. Nothing to poll; exiting cleanly."
   exit 0
 fi
