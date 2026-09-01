@@ -21,7 +21,7 @@ expansion to other markets and more ETFs is in `BACKLOG.md`.
 
 ## Before writing any code
 
-Read `docs/DECISIONS.md`. It holds 159 ADRs. They are decisions, not suggestions.
+Read `docs/DECISIONS.md`. It holds 160 ADRs. They are decisions, not suggestions.
 
 If a task appears to require contradicting one, **stop and ask.** Do not work around it.
 
@@ -38,6 +38,55 @@ If a task appears to require contradicting one, **stop and ask.** Do not work ar
 
 `docs/OPERATIONS.md` and `docs/TIMINGS.md` hold the full incident writeups and
 measured durations. This file keeps the one-line rule for each and points there.
+
+---
+
+## The three machines
+
+**Read this before any rule below that names a path, a service or a
+scheduler.** Much of this file was written when there was one machine, and
+a rule that was true everywhere in August is now true on one box.
+
+| | workstation (`DESKTOP-3MBOCAU`) | laptop (`wivie`) | the Pi |
+|---|---|---|---|
+| address | 192.168.1.14 | 192.168.1.12 | 192.168.1.30 |
+| OS | Windows 11 | Debian 13 | Raspberry Pi OS |
+| role | heavy research | scheduled research | serving |
+| Postgres | **16.14 in Docker**, `capitalscan-postgres` | **17.11 native**, systemd | 17.11 native, systemd |
+| scheduler | Task Scheduler | systemd timers | systemd timers |
+| runs | backtests, sweeps, rebuilds, `nightly` today | `nightly`/`weekly`/`monthly` after cutover | poller, serving DB, web app |
+
+**The research database is 16.14 and both Debian boxes are 17.11**, so the
+cutover crosses a major version. `pg_restore` in that direction is fine;
+the reverse is not, so a dump taken on `wivie` cannot be loaded back onto
+the container without a downgrade path. Verified 2026-09-01.
+
+All three addresses are DHCP-reserved (2026-09-01), so an address in a
+config file stays valid.
+
+**The desktop is not being retired.** It leaves the *scheduled* role at the
+cutover and stays the heavy-research box — it is 1.58x faster than the
+laptop on the real hot path (`scripts/cpu_bench.py`, 2026-08-28) and that
+gap is a power budget, not tuning. So this file is a **two-machine
+document, permanently**, not a handoff. Expect both to be live.
+
+**The migration is one change, by design.** `wivie` is staged to be
+identical to the desktop in versions and setup; the only edit required to
+move the scheduled role is **what the Pi's `.env.local` points at**. See
+`docs/SETUP.md` Part C1. Everything else is already in place there.
+
+**The two places they genuinely cannot be identical**, and therefore the
+only labels that carry weight below:
+
+1. **Docker Postgres against native Postgres.** The container does not
+   restart after a reboot and has failed a nightly for exactly that reason
+   (2026-08-30). Native systemd Postgres removes the whole failure class.
+2. **Task Scheduler against systemd.** Task Scheduler needs an interactive
+   logon and records success for a failed job unless the wrapper propagates
+   `$LASTEXITCODE`. systemd does neither.
+
+Where a rule applies to one machine it now says so. Where it says nothing,
+it applies everywhere.
 
 ---
 
@@ -63,7 +112,7 @@ Three traps, all hit for real on 2026-08-09:
 - **`ruff format --check` is a separate gate from `ruff check`.** A file can pass lint and still fail formatting, and nothing warns you.
 - **`uv run mypy` bare is wider than any explicit path list.** It reads `pyproject.toml` and covers 137 files including tests; `mypy capitalscan/core capitalscan/jobs` covers 43 and proves much less.
 
-**No `cscan db migrate` or `uv sync`/`uv add` while a job is running.** Migrate takes an ACCESS EXCLUSIVE lock against a live writer; `uv sync`/`uv add` on Windows locks `.venv` files a running process holds open.
+**No `cscan db migrate` or `uv sync`/`uv add` while a job is running.** Migrate takes an ACCESS EXCLUSIVE lock against a live writer — true everywhere. The `uv` half is Windows-specific: `uv sync`/`uv add` locks `.venv` files a running process holds open. On Linux the same command silently swaps a file the running job still has mapped, which fails later and further away, so the rule stands on both for different reasons.
 
 **Editing a module mid-job gives it a split brain.** A long-running job holds whichever modules it has already imported and picks up the rest from disk as it reaches them. Edit freely during a job whose remaining steps you are not touching; do not edit a module the job has not reached yet. → `OPERATIONS.md`
 
@@ -71,15 +120,21 @@ Three traps, all hit for real on 2026-08-09:
 
 ## Reaching the database
 
-**Bash on this machine does not see user or system environment variables.**
-Anything not on the default PATH needs its full path -- `psql`, `docker.exe`,
-`node`. This is why every command below is written out in full.
+**Everything in this section is about the workstation.** On `wivie` and the
+Pi, `psql` is on PATH, there is no container, and `sudo systemctl status
+postgresql` answers the "is it up" question. The commands below are written
+out in full because of a Windows-specific shell limitation, not because
+long paths are the house style.
 
-**Postgres runs in Docker** as container `capitalscan-postgres`, mapped to
-5432. A *separate* native PostgreSQL 18 service listens on **15432** and
-rejects the `capscan` password. So `connection refused` on 5432 means the
-container is down, not that the server moved. `docker` is not on PATH in
-agent shells:
+**Bash on the workstation does not see user or system environment
+variables.** Anything not on the default PATH needs its full path --
+`psql`, `docker.exe`, `node`.
+
+**Postgres runs in Docker on the workstation** as container
+`capitalscan-postgres`, mapped to 5432. A *separate* native PostgreSQL 18
+service listens on **15432** and rejects the `capscan` password. So
+`connection refused` on 5432 means the container is down, not that the
+server moved. `docker` is not on PATH in agent shells:
 
 ```
 "C:\Program Files\Docker\Docker\resources\bin\docker.exe" ps -a
@@ -99,9 +154,9 @@ command's own option, `VACUUM (PARALLEL 0, ANALYZE) tablename`.
 
 Rules from past incidents (full writeups in `OPERATIONS.md`):
 
-- **Any change to how the database is reached needs a connect-latency check.** Binding the container IPv4-only (`0.0.0.0:5432`) made `localhost` resolve to `::1` first and cost 2 s per connect, a 4-5x backtest regression with no error in any log. Bind both families: `-p 0.0.0.0:5432:5432 -p "[::]:5432:5432"`. Every timing measured 2026-08-24 to 2026-08-26 is inflated by this.
-- **A firewall rule scoped `-Profile Private,Domain` stops applying when the network profile flips to Public**, and only the remote writer fails. Check `Get-NetConnectionProfile` first; fix with `Set-NetConnectionProfile -NetworkCategory Private`, not `-Profile Any`.
-- **A client-side network symptom is not evidence of a client-side cause.** `server closed the connection` from a remote writer was a stalled checkpoint (research ran the 1 GB default `max_wal_size` until 2026-08-29, now 4 GB, `synchronous_commit=on`). Read `docker logs capitalscan-postgres` before blaming the link. WAL and autovacuum tuning live on the server, not in a migration.
+- **Any change to how the database is reached needs a connect-latency check.** *(Workstation; the mechanism is general, the fix is container-specific.)* Binding the container IPv4-only (`0.0.0.0:5432`) made `localhost` resolve to `::1` first and cost 2 s per connect, a 4-5x backtest regression with no error in any log. Bind both families: `-p 0.0.0.0:5432:5432 -p "[::]:5432:5432"`. Every timing measured 2026-08-24 to 2026-08-26 is inflated by this.
+- **A firewall rule scoped `-Profile Private,Domain` stops applying when the network profile flips to Public**, and only the remote writer fails. *(Workstation only — Windows Firewall has no equivalent on the Debian boxes.)* Check `Get-NetConnectionProfile` first; fix with `Set-NetConnectionProfile -NetworkCategory Private`, not `-Profile Any`.
+- **A client-side network symptom is not evidence of a client-side cause.** `server closed the connection` from a remote writer was a stalled checkpoint (research ran the 1 GB default `max_wal_size` until 2026-08-29, now 4 GB, `synchronous_commit=on`). Read `docker logs capitalscan-postgres` before blaming the link (`journalctl -u postgresql` on the Debian boxes). WAL and autovacuum tuning live on the server, not in a migration — which is why they must be re-applied by hand on `wivie` rather than arriving with a `pg_restore`.
 - **Run `VACUUM (PARALLEL 0, ANALYZE)` after any bulk write**, and check `n_live_tup` against a real `count(*)` when a job is inexplicably slow. `indicators` once held 4M rows while the planner believed 80k (never autoanalyzed after the 2026-08-21 crash); `indicators` and `events` now carry absolute autovacuum thresholds.
 - **`psql` exits 0 on the shared-memory error** (it goes to stderr). Verify maintenance via `pg_stat_user_tables.last_vacuum` / `last_analyze`, never the exit code.
 - **A `pg_attribute` sweep must exclude dropped columns** (`AND a.attnum > 0 AND NOT a.attisdropped`); `pg_get_serial_sequence` raises on a `........pg.dropped.N........` placeholder and aborts the statement.
@@ -117,7 +172,7 @@ Rules from past incidents (full writeups in `OPERATIONS.md`):
 
 ---
 
-## Windows and PowerShell
+## Windows and PowerShell — *workstation only*
 
 **`2>&1` on a native exe is terminating under `$ErrorActionPreference = "Stop"`.** PowerShell 5.1 wraps the first stderr line in a `RemoteException`; ordinary progress output is enough, and the exit code is irrelevant. It killed the first scheduled nightly before a line of output. Scope the preference to the call:
 
@@ -138,6 +193,14 @@ $ErrorActionPreference = $prev
 ## Long jobs
 
 Budgets, so nobody starts one blind. Per-step tables, regimes, and the history of every figure that was wrong are in `docs/TIMINGS.md` -- **a step has regimes, and one measurement is one regime; check `runs` for the distribution.**
+
+**Every figure below was measured on the workstation.** `wivie` is slower on
+CPU-bound phases and the multiplier is **unmeasured** — the 1.58x in
+BACKLOG.md is for a different laptop (the Flow X13), not this one. Run
+`scripts/cpu_bench.py` on `wivie` before quoting a budget there. Two of this
+project's hardware estimates were wrong until measured, so predict nothing.
+Network-bound steps (the fetchers, most of `nightly`) should be close to
+parity.
 
 | job | budget |
 |---|---|
@@ -228,19 +291,57 @@ Zero backends and no `cscan` process means the row is stale. Mark it `failed`, b
 
 ## Platform
 
-Native Windows. The only Linux is inside the Postgres container, and that is transparent.
+**Two platforms, not one.** The workstation is native Windows; `wivie` and
+the Pi are Debian. Code must run on both — that is what `scripts/run_job.ps1`
+and `scripts/run_job.sh` exist for, and why no script under `scripts/` may
+contain an absolute path to the repo, the venv or `psql`.
 
-`ProcessPoolExecutor` uses **spawn**, not fork. Every job module must be importable with no side effects, every entry point needs `if __name__ == "__main__":`, and workers open their own database connections because connections are not picklable. Getting this wrong causes recursive process creation, which looks like a hang.
+**The two boxes are not on the same Python**, measured 2026-09-01:
 
-Scheduling is Windows Task Scheduler with catch-up enabled, not cron or
-systemd. **`CapitalScan nightly` is registered and `Ready`** (checked
-2026-09-01); the 2026-08-28 run was the first Task Scheduler fired rather
-than a hand-typed command. `weekly` has no task and stays manual. The poller
-runs on the Pi (see below).
+| | workstation | `wivie` |
+|---|---|---|
+| Python | **3.14.3** | **3.13.5** |
+| `mp.get_start_method()` | `spawn` | `fork` |
 
-On 2026-08-21 nothing was registered and this line still claimed a live
+`pyproject.toml` only says `requires-python = ">=3.11"`, so `uv` resolved
+whatever each machine had. **Close this before the cutover** — the point of
+staging `wivie` was that the two look identical, and a minor-version gap is
+exactly the kind of difference that shows up as one machine's test failure.
+Note that 3.14 changes the Linux default start method to `forkserver`, so
+upgrading `wivie` also changes its start method.
+
+`ProcessPoolExecutor` therefore uses **spawn on the workstation and fork on
+`wivie` today.** Write for spawn: it is the stricter of the two, and code
+that quietly depends on fork breaks only on Windows. Every job module must
+be importable with no side effects, every entry point needs
+`if __name__ == "__main__":`, and workers open their own database
+connections because connections are not picklable. Getting this wrong causes
+recursive process creation, which looks like a hang.
+
+### Scheduling
+
+| machine | mechanism | state |
+|---|---|---|
+| workstation | Task Scheduler, catch-up enabled | `CapitalScan nightly` registered and `Ready`. `weekly`/`monthly` **not registered** — `install_schedule.ps1` would do it and has never been run here. |
+| `wivie` | systemd timers, `Persistent=true` | All three rendered into `/etc/systemd/system` and `daemon-reload`ed, **timers `disabled`.** `systemctl enable --now` is the cutover step. |
+| Pi | systemd timer | `capitalscan-poller.timer`, live, fires 00:00 PT. |
+
+The workstation task runs `scripts/run_nightly.ps1`, now a one-line shim to
+`run_job.ps1`. **First real Task Scheduler firing of the new wrapper was
+2026-09-01 13:15**, and `resume-check` correctly decided to run.
+
+**Two Windows-only scheduler traps**, neither of which exists under systemd:
+
+- Task Scheduler **records success for a failed job** unless the wrapper
+  ends with `exit $LASTEXITCODE`. `$ErrorActionPreference = "Stop"` does not
+  make a native exe's non-zero exit fail the script.
+- It needs an **interactive logon** to run as the user, which is why a
+  headless box wants systemd rather than a ported XML.
+
+On 2026-08-21 nothing was registered and this section still claimed a live
 schedule; the false claim was quoted back as fact in a session before anyone
-ran `Get-ScheduledTask`. Run it rather than trusting this paragraph.
+ran `Get-ScheduledTask`. Run it, or `systemctl list-timers`, rather than
+trusting this table.
 
 **The poller moved to the Pi on 2026-08-28 (ADR 158), and this changes what
 you may run during market hours.** It is the one genuinely scheduled thing
@@ -251,10 +352,14 @@ view; `--since today` reads a finished session.
 
 `cscan poll --serving` writes the **serving** store, not research. That is
 the whole point: **research has no live writer during market hours**, so
-the workstation is free to rebuild, run nightly, be updated, or be shut
-down between 06:30 and 13:00. The old rule -- no second writer on `events`
-while the poller runs -- no longer binds, because the poller is not writing
-that database.
+the research machine is free to rebuild, run nightly, be updated, or be
+shut down between 06:30 and 13:00. The old rule -- no second writer on
+`events` while the poller runs -- no longer binds, because the poller is
+not writing that database.
+
+**"The research machine" means whichever box holds the research database**,
+the workstation today and `wivie` after the cutover. Nothing in this
+section depends on which one it is.
 
 Three consequences worth knowing before relying on it:
 
@@ -271,7 +376,9 @@ Three consequences worth knowing before relying on it:
   resolves config, so an ablation-arm config left on the Pi would have the
   poller writing events under that arm's hash and the site would show
   nothing. Verified before enabling: the Pi resolves the live hash, which
-  is what `serving_config` pins. Run arms on the workstation.
+  is what `serving_config` pins. **Run arms on the workstation** — that is
+  the one job that stays there permanently, because it is the fastest box
+  and arms are the longest thing the project runs.
 
   **The live hash is `0523841076f47293` as of 2026-08-29** (arm `t5_atr20`:
   `target_pct` 0.05, `stop_atr_k` 2.0; commit `42ae20a`, RESULTS
@@ -280,7 +387,7 @@ Three consequences worth knowing before relying on it:
   prior serving generation. Confirm against all three before trusting a
   manual query: `serving_config`, the research GUC, and
   `config_hash(resolve_config())`.
-- **Nightly must still run on the workstation**, because
+- **Nightly must still run on the research machine**, because
   `sync.pull_live_records` brings the poller's durable rows back --
   `runs` (scoped `job='poll'`), `signal_reports` and `poller_sessions`.
   Those three are permanent and research is where analysis reads them

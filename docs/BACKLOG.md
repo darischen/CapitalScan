@@ -1128,7 +1128,45 @@ whoever hits it should find this rather than rediscover it.
 
 ---
 
-### Every fire as its own observation, measured both ways
+### ~~Every fire as its own observation, measured both ways~~ — **measured 2026-08-29**
+
+**The measurement this entry asked for was run, and it found something
+larger than the question.** RESULTS 2026-08-29, two entries, the second
+correcting the first.
+
+The filter discards **74.1% of train fires and 74.2% of validate**, and the
+discarded ones are the better trades — train −7.9 bp kept against −1.0 bp
+dropped, validate +0.8 against +9.7. A 7-9 bp gap, against the 11 bp the
+entire target × stop grid spans. **Every number in both exit sweeps is
+measured on the worse quarter of fires.**
+
+The first reading was that averaging down works and the filter throws it
+away. **That reading is wrong**, and the follow-up says so: by position
+within cluster the 2nd fire is the *worst* on train (−10.1), not the best,
+and the whole advantage sits in the 5th-or-later bucket. What actually
+separates them is **cluster size**, monotonic on both splits:
+
+| cluster size | train | validate |
+|---|---|---|
+| 1 (singleton) | **+170.9** | **+240.6** |
+| 2-4 | +164.8 | +212.3 |
+| 5-9 | +38.0 | +50.0 |
+| **10+** | **−119.3** | **−133.6** |
+
+~300 bp of spread, roughly thirty times the exit grid, and not a parameter
+at all — a property of the signal. Side, era and drawdown bucket are flat
+across the four buckets, so it is not a confound. A signal firing ten or
+more times is a stock in sustained decline being caught repeatedly on the
+way down.
+
+**ADR 151's objection stands and does not conflict with any of this**,
+because the two are different uses of one table: backtest *returns* should
+count every fire, since they are real trades; `cell_stats` should keep the
+filter until a serial `n_eff` exists. That split is what stays open, and it
+is under "Scheduled later" at the end of this file rather than here — it is
+a change to what gets counted, not another measurement.
+
+#### Original entry
 
 Raised 2026-08-24. The original intent for `events` was that each fire is a
 separate observation — averaging down is real, bleeding out of a long is
@@ -1491,18 +1529,36 @@ and the runner already exists.
 money" may partly be "five days is the wrong window". Sweeping the window is
 the honest way to separate the two before anyone acts on the stopless result.
 
-### The exit sweep's own leftovers
+### ~~The exit sweep's own leftovers~~ — **closed 2026-09-01, both were already done**
 
-- **`stop_atr_k` at 2.5 and 1.0 were never run.** The sweep tested 1.5, 2.0
-  and none. 2.5 was dropped deliberately — at a 5% target its 6.82% stop
-  almost never fires, so it duplicates the no-stop arm — but the *tighter*
-  side (k=1.0) was never tested at all, and the monotonic trend predicts it
-  should be worse. Cheap confirmation that the trend is real rather than an
-  artifact of where the grid happened to start.
-- **The no-stop arm's era breakdown was never run.** 2020-2021 loses ~18 bp
-  under every arm tested and is the period where a stop should matter most.
-  One query against existing data, the same way the target curve's era split
-  was done.
+Audited 2026-09-01. Both bullets below were stale: the work was run on
+2026-08-29 and recorded in RESULTS, and this entry was never updated. Kept
+so a future reader does not re-run either.
+
+- ~~**`stop_atr_k` at 2.5 and 1.0 were never run.**~~ **Closed as not worth
+  running** (user's call, 2026-09-01). Correct that k=1.0 was never tested,
+  but the ordering is monotonic across all five settings on both splits, so
+  a tighter stop is predicted worse by a slope that already has five points
+  on it. Confirming a trend is not worth an arm. 2.5 stays dropped for the
+  original reason: at a 5% target its 6.82% stop almost never fires, so it
+  duplicates the no-stop arm.
+- ~~**The no-stop arm's era breakdown was never run.**~~ **Run 2026-08-29**
+  — RESULTS, "The no-stop arm by era: it wins everywhere, including the
+  crash". No stop is best in all four periods, and in 2020-2021 it is *less
+  bad* (−15.6 against −17.3 for k=2.0) rather than worse. The monotonic
+  ordering holds inside every era, not only in aggregate.
+
+  **This removed the main argument for keeping a stop**, and the case that
+  remains is entirely the tail: worst trade −50.34% against k=2.0's
+  −39.55%, p0.1 −22.62% against −18.81%. The sweep optimised means. **5% +
+  ATR k=2.0 shipped as a deliberate compromise** on that basis — most of
+  the available gain, a real stop kept, no reliance on a limit case whose
+  tail is unmeasured.
+
+**What those two entries actually leave open** is listed under "Scheduled
+later" at the end of this file: the `max_hold_days` sweep, which is the
+test that decides whether stopless is right or an artifact of an untested
+holding window.
 
 ---
 
@@ -1765,7 +1821,88 @@ Verification, the part that answers "does it work on this machine":
 
 Follow-through:
 
-- [ ] `CLAUDE.md`'s machine-specific sections say which machine each rule
+- [ ] **`wivie` and the workstation are not on the same Python.** Measured
+      2026-09-01: workstation **3.14.3** (`spawn`), `wivie` **3.13.5**
+      (`fork`). `pyproject.toml` says only `requires-python = ">=3.11"`, so
+      `uv` resolved whatever each machine had. The whole premise of the
+      staging is that the two are identical, and a minor-version gap is
+      what turns "works here" into a one-machine test failure. Pin the
+      version in `pyproject.toml` and re-sync `wivie`. Note 3.14 moves the
+      Linux default start method to `forkserver`, so the upgrade changes
+      `wivie`'s process model too — worth one real `weekly` afterwards.
+- [x] `CLAUDE.md`'s machine-specific sections say which machine each rule
       is about, and the ones that were desktop-only are marked as such or
-      generalised.
+      generalised. Done 2026-09-01. **Framed as a two-machine document
+      rather than a handoff**, because the desktop is not going away: it
+      stays the heavy-research box after the move (backtests, sweeps,
+      rebuilds) and `wivie` takes the scheduled chain. The labels that
+      matter are therefore not "desktop vs laptop" but the two places the
+      machines genuinely cannot be identical -- Docker Postgres against
+      native Postgres, and Task Scheduler against systemd.
 - [ ] This entry is struck through and dated when every box is checked.
+
+---
+
+## Scheduled later
+
+Work that is decided, understood and deliberately not next. Nothing here
+blocks the move or the daily chain. Ordered by what each one would change
+if it were run.
+
+### The `max_hold_days` sweep — 3 / 5 / 10
+
+**This is the one that decides a live parameter**, and RESULTS 2026-08-29
+names it as the test that settles the stop question. At the shipped config
+**51.5% of trades exit on the five-day timeout**, against 33.1% under the
+old default and 72.6% with no stop. Loosening the stop pushed trades out of
+the stop and into the clock, so the exit rule is increasingly "hold a week
+and take what is there" — and the length of that week has never been
+tested.
+
+Until it is, **"the stop is costing money" and "five days is the wrong
+window" are not separable**, which is exactly why 5% + k=2.0 shipped
+instead of the stopless arm that beat it on mean.
+
+Three arms, one knob, same universe, and the runner already exists. ~2h40m
+per arm on the workstation, so one evening.
+
+### Count every fire in backtest returns, keep the filter in `cell_stats`
+
+Decided in substance by the 2026-08-29 cluster measurement, not yet built.
+The two uses of `events` want opposite things and the current code applies
+one rule to both:
+
+- **Returns** should count every fire. They are real trades with real money
+  attached, and excluding 74% of them understates the strategy by 7-9 bp.
+- **`cell_stats`** should keep `is_cluster_head` until a serial `n_eff`
+  exists, because the added observations are serially dependent by
+  construction and dropping the filter would take train `n` from 78k to
+  311k and narrow every interval ~2x — the direction that manufactures
+  significance.
+
+The work is separating the two paths, not choosing between them. It
+changes published return figures, so it needs an ADR.
+
+### A serial `n_eff`, to match what `rho` does cross-sectionally
+
+The precondition for ever dropping the cluster-head filter from
+`cell_stats`. ADR 098's `n_eff = n / (1 + rho(c_bar - 1))` corrects
+**cross-sectional** dependence — many tickers firing on one market move.
+There is no equivalent for **serial** dependence — one ticker firing
+repeatedly inside a holding window — and the filter is currently standing
+in for one.
+
+Blocked on nothing but effort, and it is statistics work rather than
+plumbing.
+
+### Cluster size as a feature, not a discovery
+
+The ~300 bp spread by cluster size is the largest effect measured anywhere
+in this system, and it is **partly hindsight**: cluster size is known only
+after the cluster ends. The first fire cannot know how long its cluster
+will run, though the 2nd through 5th increasingly can.
+
+What a live decision can use is therefore a *prefix* of the cluster, not
+its size. Turning this into something actionable means measuring what is
+knowable at each position — and that is a modelling question for Phase 6,
+not a sweep.
