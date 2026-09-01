@@ -201,6 +201,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 157 | `events.sector` is a current snapshot, and that is accepted look-ahead | **Decided 2026-08-28.** Moved out of `BACKLOG.md`; no point-in-time GICS source exists, `universe.mcap_usd` shows the shape a fix would take |
 | 158 | The poller should write serving directly, not research | **Proposed 2026-08-28, not implemented.** Removes research from the live write path; frees the workstation during market hours |
 | 159 | Superseded sweep generations are archived out of the database, not kept in it | **Decided 2026-08-31, applied.** Narrows ADR 096; 12 arms moved to gzipped CSV, DB 48 GB -> 19 GB; no `config_hash` move |
+| 160 | Scheduled jobs resume on boot and retry on failure | **Implemented 2026-09-01.** `OnBootSec` + bounded `Restart=on-failure` + a 19:00 nightly retry + `cscan resume-check`; no `config_hash` move |
 
 ---
 

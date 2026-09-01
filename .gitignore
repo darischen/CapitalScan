@@ -61,3 +61,9 @@ config.toml
 # large provenance archives - keep out of git, back up separately
 reports/archive/
 reports/nightly/
+# run_job.{sh,ps1} runtime output: per-day logs and the single-instance
+# lock file (ADR 160). The poller session CSVs under reports/poller/ and
+# reports/scan/ are deliberately tracked and stay so.
+reports/weekly/
+reports/monthly/
+reports/*/*.lock
