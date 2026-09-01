@@ -451,7 +451,13 @@ harmless, because `web/lib/db.ts` sets the hash on every connection from
 What it is not harmless for is **you**, verifying by hand:
 
     psql on the Pi   current_setting(...)  ->  f66729c7eda212a4   (stale)
-    serving_config                         ->  a38d3ca6b58295e8   (live)
+    serving_config                         ->  a38d3ca6b58295e8   (live *then*)
+
+**Both hashes above are historical.** They are the 2026-08-26 incident's
+values, kept because the *shape* is the lesson. The live generation moved
+to `0523841076f47293` on 2026-08-29 (ADR 161). Read this section for the
+mechanism, never for a hash to compare against -- get that from
+`serving_config`.
 
 Every serving view filters on that GUC, so a manual query silently reads a
 generation the site does not serve. Hit 2026-08-26: `SELECT count(*) FROM

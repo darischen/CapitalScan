@@ -45,13 +45,28 @@ silently:
 **What is left**, and it is deliberately left until a live session proves
 the change:
 
-1. `_sweep_provisional_poll_rows` against **research** is now dead code.
-   Removing it before the migration is proven would make a rollback harder,
-   so it stays until a session has run.
-2. `wait_and_poll.ps1` is kept for reference and for its CSV export, which
-   is read-only against the database. **It must not be started while the Pi
-   polls** -- two pollers would double-write, one to research with a push
-   and one to serving directly.
+1. ~~`_sweep_provisional_poll_rows` against **research** is now dead
+   code.~~ **Wrong, corrected 2026-09-01.** It is not dead: the 2026-08-31
+   nightly logged `swept 36 unreconciled poller row(s)`, and 36 is the
+   research `DELETE` rowcount. The workstation fallback poll had written
+   research directly that day and the sweep cleaned up after it. Confirmed
+   by what survives -- the newest `poll_` event on research is 2026-08-25,
+   because everything from the 31st was swept.
+
+   It goes dead only *going forward*, from the moment `wait_and_poll.ps1`
+   switched to `--serving` on 2026-08-31 afternoon, and it has not yet run
+   a full day in that state. **Decided 2026-09-01 (user): leave it.**
+   Deleting the cleanup for the fallback path the day after the fallback
+   path last used it is the change that breaks quietly. It should go with
+   the research poll path, not before it.
+2. ~~`wait_and_poll.ps1` is kept for reference and for its CSV export,
+   which is read-only against the database.~~ **Superseded 2026-08-31.**
+   It now runs `cscan poll --serving` and writes serving directly -- a true
+   drop-in for the Pi, same guards, same target, not a read-only reference
+   copy. **The two must still never run at once**, and now for a sharper
+   reason: both write serving and would double-write, rather than one
+   writing research with a push. The Pi's unit is a `oneshot` finished by
+   ~13:00, so a later manual run is safe and a concurrent one is not.
 
 #### Original mechanism
 
@@ -1054,48 +1069,78 @@ counts. That understates nothing dramatically today but is a silent staleness.
 
 ---
 
-### 81 tickers are inactive with no date, so "retired" and "flagged" are indistinguishable
+### ~~81 tickers are inactive with no date~~ — **investigated 2026-09-01; not a defect, but it uncovered one**
 
-**The class ORKA was a thread of.** That entry was closed by deleting the
-one ticker; the class underneath it was never touched, and the ORKA
-writeup says so explicitly ("The class is the real item").
+**The flag is correct and the entry misread it.** Investigated after being
+promoted to its own item the same day. `is_active = false` with
+`delisted_on = NULL` does not mean "something set a flag and forgot the
+date". It means **"no longer a current S&P 500 constituent"**, and for most
+of these that is a *rename*, not a delisting -- so a delisting date would
+be false.
 
-Re-measured 2026-09-01, and it has not moved:
+Read the population and it is unambiguous:
 
-    81   is_active = false, delisted_on IS NULL     <- no record of when
-    18   is_active = false, delisted_on set         <- properly retired
-     2   of the 81 still have bars in the last 30 days
+    FB TWTR YHOO PCLN ATVI CERN ANSS KORS CDAY FISV DWDP KRFT FRC SIVB ...
 
-`is_active = false` with `delisted_on = NULL` is internally inconsistent:
-nothing recorded *when* the ticker stopped being active, so a deliberate
-retirement is indistinguishable from something having set a flag. For 82%
-of inactive tickers there is no such record.
+FB -> META, PCLN -> BKNG, FISV -> FI, KORS -> CPRI, CDAY -> DAY: renamed,
+still trading. ATVI, CERN, ANSS: acquired. DWDP: split into DD and DOW.
+FRC and SIVB: the 2023 bank failures. The 18 rows that *do* carry
+`delisted_on` are the genuinely delisted ones, so the two groups are
+different things rather than the same thing recorded inconsistently.
 
-**The consequence is silent.** `_resolve_tickers(None)` returns active
-tickers only, so every one of the 81 is excluded from every job invoked
-without an explicit ticker list -- and nothing reports the exclusion. ORKA
-was found only by comparing `last_indicator` against `last_bar`, not by any
-check that exists.
+**No writer exists to find.** Every `is_active` write in the codebase sets
+`True` (`run_tickers_ensure`, `run_tickers_refresh`, the NYSE seeding), and
+the column defaults to `true`. The 81 are historical rows from ADR 035's
+union, bare stubs: 81 of 81 have no exchange, 80 have no CIK and no name.
+The entry's premise -- "find what writes the flag without a date" -- had no
+referent.
 
-**The two with recent bars are both legitimate**, which is what makes the
-class undetectable by inspection:
-
-    FISV   Fiserv          bars to 2026-08-17   renamed to FI in 2024
-    UA     (no name)       bars to 2026-08-17   Under Armour's second class
-
-Both are correctly inactive. So "has recent bars" does not separate a
-wrongly-flagged ticker from a rightly-flagged one, and neither does any
-other column on the row.
-
-**The work is finding what writes the flag without a date**, not auditing
-the 81. A writer that sets `is_active = false` and leaves `delisted_on`
-NULL will keep producing them, and each one silently leaves the universe.
-Until that is found, the count is the only symptom.
-
-Raised 2026-08-26 inside the ORKA entry, promoted to its own on 2026-09-01
-because it survived the fix it was attached to.
+**The exclusion it warned about is correct behaviour.** `_resolve_tickers(None)`
+drops all 81, and it should: they are renamed, acquired or dead. Verified
+that the successors are present, active and current -- META, BKNG, DD, DOW,
+SNPS, ORCL, MSFT all carry bars through 2026-09-01.
 
 ---
+
+**What the investigation actually found is upstream, and it is real.**
+
+**The ticker universe seed is never refreshed automatically.**
+`run_tickers_refresh` is reachable only through `cscan tickers --refresh`.
+It is **not in `nightly`** -- confirmed against `cli.nightly`'s source,
+whose ingest calls are `bars_daily`, `bars_hourly`, `market`, `actions`,
+`shares`, `earnings` and nothing else. `runs` says it last executed
+**2026-08-25**, and before that 2026-08-01.
+
+So a new S&P 500 constituent, or a rename, enters the system only when
+someone remembers a command.
+
+**Proven instance: `FI` does not exist.** Fiserv renamed FISV -> FI in 2024
+and is a current constituent. `tickers` holds the stale `FISV` row, flagged
+inactive, and **no row for `FI` at all** -- therefore no bars, no
+`universe` rows, no events, and no possibility of detecting on it. FISV
+itself has 0 universe rows and 0 events, so the name has been absent from
+the study entirely since the rename.
+
+This is a coverage gap wearing the shape of a stale flag, which is why it
+survived being looked at twice. It also bears on ADR 035: the universe is
+*seeded* from S&P 500 membership, and a seed that is refreshed by hand
+drifts from the index it claims to track.
+
+**The fix is a decision, not a lookup**, which is why it is recorded rather
+than applied:
+
+- Adding `run_tickers_refresh` to `nightly` is two lines, but it changes
+  the trade universe on a schedule, and ADR 060 makes universe definition
+  config. A constituent appearing mid-week between a backtest and its
+  statistics is exactly the determinism problem `universe --quarter`
+  already has rules about.
+- Running it by hand now would add whatever has accumulated since
+  2026-08-25 in one step, unmeasured. Worth doing deliberately, with the
+  diff read before and after, not as a side effect of this investigation.
+- Neither option addresses renames directly: `FI` would be *added*, but
+  nothing links it to `FISV`'s history, so its bars start at the rename.
+  Whether that matters is a survivorship question ADR 035 already has
+  opinions about.
 
 ### Depositary listings have no pre-2018 history
 
@@ -1625,8 +1670,8 @@ the repair path.
 `assert_sequences_are_ahead` (ADR 158's 2026-08-28 consequence) refuses to
 start the poller when any target sequence sits at or below its table's max
 id. It runs only inside `cli.py`'s `if serving:` block, so
-`scripts/wait_and_poll.ps1` — the workstation fallback that writes research
-— skips it.
+`scripts/wait_and_poll.ps1` — the workstation fallback, which wrote
+research until 2026-08-31 — skips it.
 
 Hit for real: a fallback poll on 2026-08-31 failed mid-session with
 
