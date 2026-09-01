@@ -95,6 +95,30 @@ class TestWiredIntoPreflight:
         src = inspect.getsource(cli)
         assert src.index("assert_sequences_are_ahead") < src.index("report = poll_job.run_poll(")
 
+    def test_both_target_paths_are_guarded(self) -> None:
+        """The research path went unguarded until 2026-09-01 and it bit.
+
+        `assert_sequences_are_ahead` lived only inside the `if serving:`
+        preflight, so `wait_and_poll.ps1` -- the workstation fallback when
+        the Pi skips a day -- reached `run_poll` without it and failed
+        mid-session on 2026-08-31 (`signal_reports_pkey`, id 1832). The
+        cause arrives from the opposite direction to ADR 158's: rather
+        than a copy-only store never advancing its sequences,
+        `pull_live_records` copies serving -> research with explicit ids,
+        which does not advance research's either.
+
+        Asserted as two calls rather than by reading the branch, because
+        the defect was structural -- one call, reachable on one path.
+        """
+        from capitalscan.jobs import cli
+
+        src = inspect.getsource(cli.poll)
+        assert src.count("assert_sequences_are_ahead(behind)") == 2, (
+            "both the --serving and the research poll paths must run the "
+            "sequence guard; one call means one guarded path"
+        )
+        assert src.count("poll_job.sequences_behind(conn)") == 2
+
 
 class TestDroppedColumnsAreExcluded:
     """Found 2026-08-28 by running the query, after eleven green unit tests.

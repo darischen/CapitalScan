@@ -327,6 +327,17 @@ def test_poll_command_threads_resolved_params(monkeypatch, tmp_path):
         return SimpleNamespace(rows_written=0, notes=None)
 
     monkeypatch.setattr("capitalscan.jobs.poll.run_poll", _fake_run_poll)
+    # **The research path gained a sequence preflight on 2026-09-01**, and
+    # it opens a real connection. Stubbed here for the same reason
+    # `run_poll` is: this test is about the resolved config reaching the
+    # job, and a unit test must not depend on a live database.
+    #
+    # Not stubbed to a passing *result* by accident -- `[]` is what
+    # `sequences_behind` returns when every sequence is ahead, which is the
+    # state this test wants to assume. Left unstubbed it reached the real
+    # research store and failed correctly: the sequence was 211 behind at
+    # the time, from that night's `pull_live_records`.
+    monkeypatch.setattr("capitalscan.jobs.poll.sequences_behind", lambda conn: [])
 
     result = runner.invoke(cli.app, ["poll", "--tickers", "AAPL"])
 

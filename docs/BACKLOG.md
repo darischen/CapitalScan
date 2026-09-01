@@ -1544,7 +1544,7 @@ earnings calendar also update on non-trading days.
 calendar fetchers and the catch-up — not a blanket skip that also disables
 the repair path.
 
-### The research poll path has no sequence guard, and it bit on 2026-08-31
+### ~~The research poll path has no sequence guard, and it bit on 2026-08-31~~ — **fixed 2026-09-01**
 
 `assert_sequences_are_ahead` (ADR 158's 2026-08-28 consequence) refuses to
 start the poller when any target sequence sits at or below its table's max
@@ -1567,6 +1567,29 @@ the nightly pull. `run_sync`'s sequence reset targets serving only.
 Unblocked by hand with
 `SELECT setval('signal_reports_id_seq', (SELECT max(id) FROM signal_reports), true)`.
 
+**Fixed 2026-09-01 by option 1**, the guard moved out of the `if serving:`
+block so both target paths run it before `run_poll`.
+
+Option 2 was not taken and stays worth doing: `pull_live_records` still
+does not reset research's sequences, so the drift it causes recurs every
+night and the guard now refuses the poll instead of the poll failing
+mid-session. **Refusing is the right failure and it is still a failure** --
+the operator has to `setval` by hand before a fallback poll can run. Fixing
+the cause makes the guard redundant rather than load-bearing.
+
+**Verified against live data on the day of the fix**, which is why this is
+recorded rather than assumed: research's `signal_reports_id_seq` was at
+**2007** against `max(id)` **2218**, 211 behind after that night's pull of
+899 rows. A fallback poll the next morning would have failed exactly as it
+did on 2026-08-31. The guard caught it in a unit-test run that reached the
+real database, which is also how the test's own missing stub was found.
+
+`test_poll_sequence_guard.py::test_both_target_paths_are_guarded` asserts
+two call sites rather than reading the branch, because the defect was
+structural: one call, reachable on one path.
+
+#### Original entry
+
 **Two ways to fix, neither done:**
 
 1. Call `assert_sequences_are_ahead` on the research path too — move it out
@@ -1578,6 +1601,72 @@ Unblocked by hand with
 Low urgency: it only surfaces when the workstation poll path runs, which
 ADR 158 exists to retire. Worth doing before that path is deleted, so the
 deletion is not what "fixes" it by accident.
+
+### `run_sync` overwrites serving's `events.id`, and the two id spaces have diverged
+
+**Broke the 2026-09-01 nightly sync. It recurs every day the poller
+fires.** Nightly itself exited 0; the sync inside it failed with
+
+```
+duplicate key value violates unique constraint "events_pkey"
+DETAIL:  Key (id)=(61797210) already exists.
+```
+
+**Two unrelated rows, one id**, verified on both stores:
+
+| store | id 61797210 |
+|---|---|
+| serving | ADM, 2026-09-01, `bb_upper_touch` — written by that day's **poller** |
+| research | AA, 2026-09-01, `stoch_oversold` — written by that night's **`run_events`** |
+
+**ADR 158 is what made this possible, and nothing noticed at the time.**
+The poller now writes serving natively, so it mints ids from **serving's
+own sequence** while research mints from its own. The two databases
+allocate independently out of one numeric range. Before ADR 158 serving was
+copy-only: every id arrived from research and the spaces could not diverge.
+
+`run_sync` matches on the natural key `(config_hash, ticker, signal_date,
+signal_type, entry_kind)` -- which is correct -- and then does `DO UPDATE
+SET id = EXCLUDED.id`, stamping research's surrogate id onto serving's
+matching row. That collides with whatever unrelated serving row already
+holds it. The `id` is in the update set because `db_io.upsert`'s default
+overwrites **every** non-key column, which is right for data columns and
+wrong for a surrogate key.
+
+**The blast radius is smaller than it looks, because an earlier fix held.**
+The serving sweep is guarded on `sync_ok` (closed 2026-08-28), so it
+correctly skipped rather than deleting serving's provisional rows with
+nothing to replace them. The site keeps showing the poller's rows for the
+day; it shows provisional rather than reconciled data, not blanks. That
+guard was written for a torn WiFi connection and paid for itself against an
+unrelated bug.
+
+**Two fixes, and the second is preferred.**
+
+1. **Drop `id` from the sync update set.** Stops the daily failure. Leaves
+   a latent skew: `pull_live_records` copies `signal_reports.event_id`
+   serving -> research, and once the id spaces differ that value names a
+   *different event* on the target. Largely inert today because ADR 150
+   nulls those links nightly and `v_screen_live` stopped joining on them
+   (`d5e91a7c3b48`), but it is wrong rather than harmless.
+2. **Also stop copying `event_id` in `pull_live_records`,** nulling it on
+   arrival. Removes the class instead of the symptom, and says plainly that
+   a surrogate id means nothing across two stores. The cost is discarding a
+   link that is briefly valid for rows the sweep has not reached, and which
+   nothing currently reads.
+
+**Either needs an ADR**, because it changes what `events.id` means across
+the two databases -- from "the same row everywhere" to "local to its
+store". That is a real weakening of an invariant readers may be assuming,
+and it should be stated rather than discovered.
+
+**Related, same root, already fixed:** the research poll path had no
+sequence guard and failed on 2026-08-31 (`signal_reports_pkey`, id 1832).
+Fixed 2026-09-01. That is the same explicit-id/sequence family arriving
+from the opposite direction, and it is the third instance found in two
+days -- worth treating as a class rather than three bugs.
+
+---
 
 ### The research machine is not portable, and it is about to move
 
@@ -1713,15 +1802,17 @@ Verification, the part that answers "does it work on this machine":
 
 Follow-through:
 
-- [ ] **`wivie` and the workstation are not on the same Python.** Measured
-      2026-09-01: workstation **3.14.3** (`spawn`), `wivie` **3.13.5**
-      (`fork`). `pyproject.toml` says only `requires-python = ">=3.11"`, so
-      `uv` resolved whatever each machine had. The whole premise of the
-      staging is that the two are identical, and a minor-version gap is
-      what turns "works here" into a one-machine test failure. Pin the
-      version in `pyproject.toml` and re-sync `wivie`. Note 3.14 moves the
-      Linux default start method to `forkserver`, so the upgrade changes
-      `wivie`'s process model too — worth one real `weekly` afterwards.
+- [x] **The two machines need to be functionally identical, not literally
+      identical** (user's call, 2026-09-01). Measured the same day:
+      workstation Python **3.14.3** (`spawn`), `wivie` **3.13.5** (`fork`),
+      because `pyproject.toml` pins only `requires-python = ">=3.11"` and
+      `uv` resolved whatever each box had. **Accepted, not a to-do.** The
+      code supports the whole range, the spawn-first rule in `CLAUDE.md`
+      already forbids depending on `fork`, and nothing in the cutover
+      copies an interpreter between machines. Recorded so the difference is
+      known rather than discovered. Postgres 16.14 against 17.11 is the
+      same kind of fact, with the one real constraint that the cutover
+      direction restores and the reverse does not.
 - [x] `CLAUDE.md`'s machine-specific sections say which machine each rule
       is about, and the ones that were desktop-only are marked as such or
       generalised. Done 2026-09-01. **Framed as a two-machine document
@@ -1788,6 +1879,53 @@ in for one.
 
 Blocked on nothing but effort, and it is statistics work rather than
 plumbing.
+
+### ETF `mcap_usd` wants its own dated migration (ADR 156)
+
+**Decided, built, and one step short.** ADR 156 chose option B via (i):
+store the derived share count `netAssets / close` with its own `source`.
+`cscan shares` has written `yahoo_netassets` rows since 2026-08-27 — VOO
+2,395,461,971, IBIT 1,046,421,772, SPY 1,038,151,224, QQQ 636,519,171 —
+which closed the missing-share-count entry.
+
+**What is left is the rewrite of history.** Adopting `netAssets` moves
+QQQ's recorded `mcap_usd` from **$289B to $453B across 66 quarters**. That
+is a correction rather than a change — the existing figure comes from a
+share count frozen at 2021-03-17 — but it still rewrites values that other
+tables were computed against, so it wants its own dated migration rather
+than arriving as a side effect of a `shares` run.
+
+Small and self-contained. Scheduled rather than urgent because ADR 154
+already admits all four ETFs regardless of market cap, so nothing is
+blocked meanwhile.
+
+### An isolated harness for `wait_and_poll`'s guards
+
+The poller wrappers are the least-tested code in the system and the most
+recently changed: `wait_and_poll.ps1` switched to `cscan poll --serving` on
+2026-08-31, and the guards it depends on are exactly the ones that failed
+that day.
+
+**The container test for `run_job.sh` is the pattern.** A throwaway
+`debian:trixie-slim` proved the wrapper's mechanics — repo-root derivation,
+venv discovery, logging, the config-hash guard — without touching
+production. The equivalent here is a **throwaway serving database**: a
+schema-only restore into a scratch Postgres, seeded `trading_days` and a
+watermark, with `DATABASE_URL_SERVING` pointed at it.
+
+**What that exercises**, all of it pre-poll and all of it previously
+untested:
+
+- the trading-day check (does a Saturday `[SKIP]`?)
+- the staleness guard, including the trading-session counting added
+  2026-08-31 for the weekend case
+- the sequence guard, on both target paths as of 2026-09-01
+- serving host/db parsing out of `DATABASE_URL_SERVING`
+- `psql` discovery through PATH and `CAPSCAN_PSQL`
+
+**What it cannot exercise** is the polling loop itself, which needs live
+quotes and a real clock. That half stays session-only, which is fine: the
+guards are the part that has actually broken.
 
 ### Cluster size as a feature, not a discovery
 

@@ -1486,6 +1486,38 @@ def poll(
             f"[bold]poll[/bold]: writing serving directly "
             f"(newest bar {watermark}, last trading day {last_day})"
         )
+    else:
+        # **The research path needs the same sequence guard, and did not
+        # have it until 2026-09-01.** `assert_sequences_are_ahead` lived
+        # inside the `if serving:` block above, so `wait_and_poll.ps1` --
+        # the workstation fallback for a day the Pi skips -- ran without
+        # it and failed mid-session on 2026-08-31 with
+        # `duplicate key value violates unique constraint
+        # "signal_reports_pkey"`, id 1832 already taken.
+        #
+        # The cause is the same one ADR 158 names for serving, arriving
+        # from the opposite direction. `sync.pull_live_records` copies
+        # `signal_reports` serving -> research with **explicit ids**, and
+        # an explicit-id INSERT does not advance the sequence. So research's
+        # `max(id)` climbed to 1863 through nightly pulls while
+        # `signal_reports_id_seq` stayed at 1832, and the first poller
+        # insert collided. `run_sync` resets sequences, but only on serving.
+        #
+        # Checked here rather than inside `run_poll` because it is a
+        # preflight question -- refuse before writing anything, not
+        # halfway through a session. The staleness guard above is
+        # deliberately **not** mirrored: research is the source of truth
+        # for `universe` and `indicators`, so it cannot be stale against
+        # itself the way a synced copy can.
+        from capitalscan.jobs import db_io as _db_io
+
+        with _db_io.get_engine().connect() as conn:
+            behind = poll_job.sequences_behind(conn)
+        try:
+            poll_job.assert_sequences_are_ahead(behind)
+        except RuntimeError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
 
     report = poll_job.run_poll(
         interval=interval,

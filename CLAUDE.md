@@ -75,11 +75,12 @@ the scheduled role is **what the Pi's `.env.local` points at**, plus the
 one-time `pg_dump`/`pg_restore` of research. See `docs/SETUP.md` Part C1;
 everything else is already staged on `wivie`.
 
-**"Identical" is the goal, not yet the state.** Two gaps measured
-2026-09-01: Postgres 16.14 against 17.11 (fine in the cutover direction,
-not reversible) and Python 3.14.3 against 3.13.5 (see Platform below).
-Both are tracked in `BACKLOG.md`. Do not assume a version matches because
-the setup was scripted — `pyproject.toml` pins only `>=3.11`.
+**The bar is functionally identical, not literally identical.** Measured
+2026-09-01: Postgres 16.14 against 17.11, Python 3.14.3 against 3.13.5.
+Both accepted — `pyproject.toml` supports the whole range and nothing in
+the cutover copies an interpreter between machines. Do not "fix" either
+one. Do not assume a version matches because the setup was scripted;
+check when a version could plausibly matter.
 
 **The two places they genuinely cannot be identical**, and therefore the
 only labels that carry weight below:
@@ -302,19 +303,18 @@ the Pi are Debian. Code must run on both — that is what `scripts/run_job.ps1`
 and `scripts/run_job.sh` exist for, and why no script under `scripts/` may
 contain an absolute path to the repo, the venv or `psql`.
 
-**The two boxes are not on the same Python**, measured 2026-09-01:
+**The two boxes are not on the same Python, and that is accepted**,
+measured 2026-09-01:
 
 | | workstation | `wivie` |
 |---|---|---|
 | Python | **3.14.3** | **3.13.5** |
 | `mp.get_start_method()` | `spawn` | `fork` |
 
-`pyproject.toml` only says `requires-python = ">=3.11"`, so `uv` resolved
-whatever each machine had. **Close this before the cutover** — the point of
-staging `wivie` was that the two look identical, and a minor-version gap is
-exactly the kind of difference that shows up as one machine's test failure.
-Note that 3.14 changes the Linux default start method to `forkserver`, so
-upgrading `wivie` also changes its start method.
+`pyproject.toml` pins only `requires-python = ">=3.11"`, so `uv` resolved
+whatever each machine had. Deliberately left alone: the code supports the
+range and the rule below already forbids depending on the start method.
+Worth knowing, not worth aligning.
 
 `ProcessPoolExecutor` therefore uses **spawn on the workstation and fork on
 `wivie` today.** Write for spawn: it is the stricter of the two, and code
