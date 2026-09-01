@@ -1508,6 +1508,17 @@ the honest way to separate the two before anyone acts on the stopless result.
 
 ### Docker Desktop does not start after a reboot, and nightly fails silently into it
 
+**Resolved by the wivie migration, 2026-09-01 (ADR 160).** The research
+role moves to `wivie`, a Debian box running **native** PostgreSQL 17 as a
+systemd service (`enabled`, `After=network-online.target`). No Docker, no
+Docker Desktop, no `com.docker.service`, so the whole failure class is
+gone: Postgres is up before the timer, and the nightly service itself now
+retries on failure and re-fires `OnBootSec` (ADR 160). Kept below as the
+record of why the Windows setup was fragile; not worth fixing on the
+Windows box, which is being retired from this role.
+
+---
+
 Found 2026-08-30. The workstation rebooted at 12:38 PT. Docker Desktop did
 not come back, so the `capitalscan-postgres` container was not running when
 Task Scheduler fired nightly at 13:15. The run failed with:
@@ -1679,6 +1690,19 @@ confirm `cscan preflight` on the Pi, and label CLAUDE.md's
 machine-specific sections. The old `run_nightly.ps1` still ran the
 2026-08-31 nightly; the shim to `run_job.ps1` has not fired from Task
 Scheduler yet.
+
+**Progress, 2026-09-01.** `wivie` (192.168.1.12, Debian 13) is staged:
+native PostgreSQL 17, repo + `.env.local`, `cscan preflight` all-OK,
+systemd units installed but timers disabled. Research DB has the schema at
+head but no data yet — the `pg_dump`/`pg_restore` is the remaining
+one-time step. All three LAN addresses are now DHCP-reserved (Pi
+`192.168.1.30`, wivie `192.168.1.12`, the workstation `192.168.1.14`),
+closing item 8 and the ADR 152 lease-drift consequence — but the Pi keeps
+`listen_addresses = '*'` because that is a boot-ordering race (wlan0 not
+yet associated when Postgres binds), independent of whether the address is
+reserved. ADR 160 added boot/failure resume to `run_job.{sh,ps1}` and the
+nightly/weekly systemd units. `run_job.sh`'s new lock + `resume-check`
+guards are verified on wivie against a real firing.
 
 Portability of the scripts:
 

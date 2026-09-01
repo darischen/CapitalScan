@@ -6964,3 +6964,92 @@ and small; left alone.
 once the decision it informed is recorded in `RESULTS.md` and any config
 change it produced is shipped. Until then it stays resident. The live
 generation and every ADR's config of record are never archived.
+
+---
+
+## 160. Scheduled jobs resume on boot and retry on failure
+
+**Status.** Implemented, 2026-09-01. Applies to `nightly` and `weekly` on
+the research machine (Debian + systemd) and to the Pi poller. Does not
+move `config_hash`.
+
+**Context.**
+
+Three failure modes left a scheduled job silently skipped for a day:
+
+1. **A crash mid-run.** A systemd timer with `Persistent=true` re-fires a
+   run that was *missed* while the machine was off. It does **not** re-fire
+   one that started and then died: the timer's stamp records that it
+   elapsed, so a power loss at 13:40 and a reboot at 13:50 get no
+   catch-up. The poller had the same gap between `00:00` (its stamp write)
+   and the `06:45` open (ADR 158's wrapper does its own waiting).
+2. **A transient failure.** `Type=oneshot` ignores `Restart=`, so a
+   nightly that failed because the Pi was asleep during the sync step, or
+   Yahoo returned a 5xx, stayed failed until the next day's timer. Nightly
+   feeds the served site; a full day stale is not acceptable.
+3. **A re-fire redoing completed work.** Adding a boot trigger naively
+   would re-run a nightly that had already finished, every reboot.
+
+**Decision.**
+
+- **`OnBootSec=`** on `capitalscan-nightly.timer` (3 min),
+  `capitalscan-weekly.timer` (5 min) and `capitalscan-poller.timer`
+  (2 min). Covers the crash-mid-run case (1).
+- **`Type=simple` + `Restart=on-failure`**, `RestartSec=15min`,
+  `StartLimitBurst=5` per `StartLimitIntervalSec=90min` on the nightly and
+  weekly services. About four retries over an hour, then the unit gives up
+  until the next timer fire. `RuntimeMaxSec` (4h / 6h) replaces
+  `TimeoutStartSec`, which does not bound runtime for a non-oneshot
+  service. Covers (2).
+- **A second `OnCalendar=*-*-* 19:00:00`** on the nightly timer: one fresh
+  full retry burst the same evening if the 13:15 one is exhausted. A total
+  failure then costs an evening, not a day.
+- **`cscan resume-check <job>`**, called by `scripts/run_job.{sh,ps1}`
+  before any work. Exit 3 when `scheduled_runs` holds a `status='ok'` row
+  inside the current period (today / since Sunday / since the 1st); the
+  wrapper logs "skip" and exits 0. Exit 0 to run. Any other exit is
+  treated as "run": redoing an idempotent chain is cheaper than skipping a
+  needed one. Covers (3), and makes every extra trigger cheap.
+- **An exclusive lock** (`flock -n` on Linux, `FileShare.None` on Windows)
+  in the wrapper, taken before the day's log is truncated. `OnBootSec` and
+  `OnCalendar` can fire close together; the loser logs and exits 0 rather
+  than starting a second writer.
+
+**Rationale.**
+
+*Why comparison on naive wall-clock digits.* `scheduled_runs.record`
+writes `actual_start = datetime.now()`, a naive Pacific timestamp, into a
+`timestamptz` column. It reads back tz-aware with the Pacific digits
+intact but a tzinfo that depends on the reading session (`Etc/UTC` on the
+old Docker Postgres, Pacific on wivie's native cluster). Trusting the
+tzinfo pushed a Sunday-02:00 weekly run onto the wrong side of the period
+boundary. `resume_decision` drops tzinfo from both sides and compares
+Pacific wall clocks, which both values are by construction.
+
+*Why not `OnFailure=` handler units.* They work but need external state to
+count retries (a dated marker file the wrapper checks). `Type=simple` +
+`StartLimitBurst` is the native bounded retry, no marker files.
+
+*Why `Type=simple` is safe here.* `run_job.sh` runs to completion and
+exits; nothing orders on the unit reaching "started". The only visible
+change is that `systemctl start capitalscan-nightly.service` returns
+immediately instead of blocking until the job finishes.
+
+**Consequences.**
+
+- `systemctl start` on a nightly/weekly service no longer blocks. Watch
+  with `journalctl -fu capitalscan-nightly` instead of waiting on the
+  command.
+- `StartLimitBurst` counts every start, timer- and boot-triggered
+  included. The 90-minute interval is wider than any two real triggers
+  (13:15, 19:00, a boot) are apart, so only a genuine restart storm
+  accumulates toward the limit. If a machine reboots several times inside
+  90 minutes while a job is also failing, the burst can trip early and the
+  job waits for the next timer.
+- The first weekly read on wivie after the cutover may re-run once: an
+  old weekly row written under the UTC-session Postgres, read back on
+  wivie's Pacific-session cluster, shifts to the previous Saturday
+  evening and reads as "previous period". Self-corrects after wivie
+  writes its own weekly row. "Run" is the safe direction anyway.
+- `cscan resume-check` is read-only. It queries one `scheduled_runs` row
+  and never writes.

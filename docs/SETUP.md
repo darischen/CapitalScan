@@ -140,8 +140,9 @@ sudo scripts/systemd/install.sh
 
 Fills `User` and `WorkingDirectory` into the unit templates in
 `scripts/systemd/`, installs them to `/etc/systemd/system`, and enables
-`capitalscan-nightly.timer` (13:15), `capitalscan-weekly.timer`
-(Sun 02:00), `capitalscan-monthly.timer` (1st, 03:00).
+`capitalscan-nightly.timer` (13:15 and a 19:00 retry),
+`capitalscan-weekly.timer` (Sun 02:00), `capitalscan-monthly.timer`
+(1st, 03:00).
 
 ```
 systemctl list-timers 'capitalscan-*'
@@ -149,8 +150,17 @@ sudo systemctl start capitalscan-nightly.service     # run once now
 journalctl -fu capitalscan-nightly                   # watch it
 ```
 
-Confirm it exits 0 and the Pi's serving data advances. `cscan preflight`
-should now show `schedule: OK`.
+The nightly/weekly services are `Type=simple` (ADR 160), so
+`systemctl start` **returns immediately** rather than blocking until the
+job finishes — watch the run in `journalctl`, not by waiting on the
+command. Confirm it exits 0 and the Pi's serving data advances.
+`cscan preflight` should now show `schedule: OK`.
+
+**Resume behaviour (ADR 160).** Each timer also fires `OnBootSec`, and the
+nightly service retries on failure (`Restart=on-failure`, ~4 attempts over
+an hour, then the 19:00 slot). `run_job.sh` calls `cscan resume-check`
+first, so a boot or retry that finds the period's run already `ok` in
+`scheduled_runs` logs `skip` and exits 0 without redoing it.
 
 Uninstall: `sudo scripts/systemd/install.sh --remove`.
 
@@ -281,23 +291,36 @@ machine can be wiped.
 
 | job | when (PT) | does | ~time |
 |---|---|---|---|
-| `nightly` | daily 13:15 | `pull_live_records` from the Pi, ingest chain, indicators, events, `sync` to serving | 35-40 min |
+| `nightly` | daily 13:15, 19:00 retry | `pull_live_records` from the Pi, ingest chain, indicators, events, `sync` to serving | 35-40 min |
 | `weekly` | Sun 02:00 | `run_backtest` (no harness) | ~36 min |
 | `monthly` | 1st, 03:00 | maintenance | short |
 
 Deadlines are loose — `weekly` only has to land within ~2.5 days, and
 every job self-heals on the next run (7-day lookback).
 
+**Boot and failure resume (ADR 160).** Each timer also fires `OnBootSec`
+(3 min nightly, 5 min weekly), covering a crash mid-run that
+`Persistent=true` does not. The nightly/weekly services retry on failure
+(`Restart=on-failure`, ~4 attempts over an hour) and the nightly timer has
+a second 19:00 slot for one fresh full attempt. Every extra trigger is
+gated by `cscan resume-check`, which exits 3 (wrapper logs `skip`, exits
+0) when `scheduled_runs` already holds a `status='ok'` run for the current
+period.
+
 ### Wrappers
 
 - `scripts/run_job.{ps1,sh} <nightly|weekly|monthly>` — the real wrapper.
-  Derives the repo root from its own location, uses `.venv`, runs a
-  config-hash guard against `serving_config`, logs to
+  Derives the repo root from its own location, uses `.venv`, takes an
+  exclusive lock (a concurrent trigger exits 0), runs `cscan resume-check`
+  then the config-hash guard against `serving_config`, logs to
   `reports/<job>/<job>_YYYY_MM_DD.log`, propagates the exit code.
 - `scripts/run_nightly.ps1` — a one-line shim to `run_job.ps1 nightly`,
   kept for older references.
 - `scripts/install_schedule.ps1` / `scripts/systemd/install.sh` — install
   or `--remove` the schedule.
+- `cscan resume-check <job>` — read-only: exit 0 to run, 3 if this
+  period's run already succeeded. Used by the wrappers; safe to run by
+  hand to see what a trigger would decide.
 
 ### Health check
 
