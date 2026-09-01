@@ -2774,6 +2774,39 @@ def monthly() -> None:
     console.print("monthly: no jobs wired yet (retrain/calibrate are Phase 6 scope)")
 
 
+@app.command(name="resume-check")
+def resume_check(
+    job: str = typer.Argument(..., help="nightly, weekly, or monthly"),
+) -> None:
+    """Decide whether a scheduled job still needs to run (used by run_job.{sh,ps1}).
+
+    A systemd timer's `Persistent=true` re-fires a run missed while the
+    machine was off, and `OnBootSec=` re-fires one that crashed mid-run.
+    Neither knows the chain has since completed. This does: exit 0 to run
+    now, exit 3 if this period's run already finished successfully. Any
+    other exit is an error resolving the decision, and the wrappers treat
+    that as "run" — redoing an idempotent chain is cheaper than skipping a
+    needed one.
+    """
+    from zoneinfo import ZoneInfo
+
+    from capitalscan.jobs import db_io, scheduled_runs
+
+    if job not in scheduled_runs.SCHEDULE:
+        console.print(
+            f"[red]error[/red]: unknown job {job!r} (expected nightly, weekly or monthly)"
+        )
+        raise typer.Exit(code=2)
+
+    # America/Los_Angeles, not the machine clock or UTC: the period boundary
+    # is Pacific local midnight, the same zone `runs`/`scheduled_runs` are
+    # read in everywhere else (OPERATIONS.md, wait_and_poll.sh).
+    now = datetime.now(ZoneInfo("America/Los_Angeles"))
+    decision, detail = scheduled_runs.resume_decision(db_io.get_engine(), job, now)
+    console.print(detail)
+    raise typer.Exit(code=0 if decision == "run" else 3)
+
+
 logs_app = typer.Typer(help="Logging utilities")
 app.add_typer(logs_app, name="logs")
 
