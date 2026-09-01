@@ -222,34 +222,56 @@ Uninstall: `powershell -File scripts\install_schedule.ps1 -Remove`.
 
 # Part C — Migrating from the old machine
 
-Do this in order. Nothing on the new machine depends on the old one
-afterward.
+Nothing on the new machine depends on the old one afterward. The Pi is
+untouched throughout.
 
-1. **Old machine — dump research:**
+## C1. Cutover — when the new machine is already staged
+
+"Staged" means Part A is done, `cscan preflight` exits 0, and the systemd
+units are installed with their **timers disabled** (`systemctl is-enabled
+capitalscan-nightly.timer` -> `disabled`). This is the state `wivie` was
+left in on 2026-08-31. If that holds, the switch is four steps:
+
+1. **Old machine — dump research** (during a market-closed window, no
+   nightly running):
    ```
-   pg_dump -Fc -h localhost -U capscan -d capitalscan -f capitalscan.dump
+   pg_dump -Fc -U capscan -d capitalscan -f capitalscan.dump
    ```
-   Copy `capitalscan.dump` to the new machine (scp, USB, whatever).
+   Copy it over (scp, USB).
 
-2. **New machine — do Part A (or B)** steps 1–8. Step A6 restores the
-   dump.
+2. **New machine — restore, then preflight:**
+   ```
+   pg_restore -U capscan -d capitalscan --clean --if-exists capitalscan.dump
+   cscan preflight        # must exit 0; research schema at head, config hash matches serving
+   ```
 
-3. **New machine — `cscan preflight` exits 0.**
+3. **New machine — go live:**
+   ```
+   sudo systemctl enable --now capitalscan-nightly.timer \
+        capitalscan-weekly.timer capitalscan-monthly.timer
+   systemctl list-timers 'capitalscan-*'          # confirm NEXT times
+   sudo systemctl start capitalscan-nightly.service   # one manual run
+   journalctl -fu capitalscan-nightly                 # exit 0, serving advances
+   ```
 
-4. **New machine — `cscan sync` completes.**
-
-5. **New machine — install the schedule** (A9 / B8), run `nightly` once
-   by hand, confirm exit 0 and that `serving` advances.
-
-6. **Old machine — remove its schedule** so two machines do not both run
+4. **Old machine — stand its schedule down** so two boxes never both run
    nightly:
    - Windows: `powershell -File scripts\install_schedule.ps1 -Remove`
-     (or delete "CapitalScan nightly" in Task Scheduler)
+   - Linux: `sudo scripts/systemd/install.sh --remove`
 
-7. **Update `CLAUDE.md`** — the machine-specific notes that said
-   "desktop" / a `C:\Users\daris\...` path now describe the new machine.
+Then update `CLAUDE.md` — the machine-specific notes that named the old
+box or a `C:\Users\daris\...` path now describe the new one. The old
+machine can be wiped.
 
-8. The old machine can be wiped.
+## C2. From scratch — new machine not yet staged
+
+1. **Old machine — dump research** (as C1 step 1).
+2. **New machine — do Part A (or B)** steps 1–9. Step A6 restores the
+   dump instead of leaving the DB empty.
+3. `cscan preflight` exits 0; `cscan sync` completes.
+4. The schedule install in A9/B8 already enables the timers — so do the
+   old machine's stand-down (C1 step 4) in the same sitting.
+5. Update `CLAUDE.md`; wipe the old machine.
 
 ---
 
