@@ -2,16 +2,23 @@
 Description=CapitalScan weekly (run_backtest, no harness)
 After=network-online.target postgresql.service
 Wants=network-online.target
+# Bounded retry (ADR 160), same rationale as the nightly unit. The weekly
+# deadline is loose (~2.5 days) so the retry only has to survive a
+# transient failure, not race a clock.
+StartLimitIntervalSec=90min
+StartLimitBurst=5
 
 [Service]
-Type=oneshot
+Type=simple
 User={{USER}}
 WorkingDirectory={{REPO}}
 ExecStart={{REPO}}/scripts/run_job.sh weekly
+Restart=on-failure
+RestartSec=15min
+RuntimeMaxSec=6h
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=capscan-weekly
-TimeoutStartSec=6h
 
 [Install]
 WantedBy=multi-user.target
