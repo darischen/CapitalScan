@@ -105,7 +105,21 @@ without a second writer on `events`.
 ### ~~`scan_candidates` spends 70% of its time on pandas row access~~
 
 **Closed 2026-08-27: 56.8s -> 31.0s on 29,509 bar rows, 1.83x, identical
-16,218 events out.** Two changes, each with the test written first:
+16,218 events out.**
+
+**The end-to-end effect was larger than the microbenchmark, which is the
+opposite of what this entry predicted.** Measured from `runs` on
+2026-09-01: the harness ran 55-75 minutes across six runs on 2026-08-27
+and 9-13 minutes across fourteen runs from 2026-08-28 02:34 onward. Every
+slow run predates the commits (`6c04a50` 23:12, `cf8c05c` 23:23,
+`77cb5ee` 02:48) -- the last started at 22:42, half an hour before the
+first one landed. The `checks` phase went 4,472s to 628s while
+`load_bars` barely moved, and `checks` is the ladder calling
+`scan_candidates` six times per chunk.
+
+The 1.83x on one `_event_set` became ~6x on the harness because the
+ladder amplifies it, which the "rough ceiling: 57s -> 15-20s would take
+the harness from ~75 min to ~30 min" estimate below under-called. Two changes, each with the test written first:
 
 - close-confirmed flags attached **once per ticker** instead of written into
   a freshly materialised Series per bar (56.8 -> 32.7s, the bulk of it)

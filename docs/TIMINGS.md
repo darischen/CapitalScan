@@ -33,12 +33,40 @@ end on 2026-08-26 against **1,470 tickers / 1,365,000 events** under
 |---|---|---|
 | `compute` (59 chunks x 25 tickers, 8 workers) | **81.9 min** | 1,365,000 rows |
 | `finalize` (cross-ticker cofire) | **3.6 min** | 1,365,000 rows |
-| `harness` (8 workers, parallel) | **35.7 min** | `harness passed` |
+| `harness` (8 workers, parallel) | ~~35.7 min~~ **9-13 min** | `harness passed` |
 
 Compute averaged 83s per chunk. **The harness is the number that was most
 wrong**: this file said 4h19m, which was single-threaded on 590 tickers.
-It is 35.7 min against 2.5x the tickers -- roughly the worker count, which is
-what parallelising it was supposed to buy.
+It was then 35.7 min against 2.5x the tickers -- roughly the worker count,
+which is what parallelising it was supposed to buy.
+
+**It has been 9-13 minutes since 2026-08-28, and this line said 35.7 until
+2026-09-01.** Fourteen consecutive runs in `runs` (2026-08-28 02:34 to
+2026-08-30 03:16) sit in that band. Quote the band, not a point: the
+spread inside it is real and tracks machine load, not a code change.
+
+**The history is worth keeping, because it reads backwards from memory.**
+
+| when | harness | |
+|---|---|---|
+| 2026-08-26 01:41 | 35m 42s | the figure this table used to quote |
+| 2026-08-27 04:39 - 22:42 | **55-75 min**, six runs | slower, and nobody recorded why |
+| 2026-08-28 02:34 onward | **9-13 min** | `scan_candidates` optimisation |
+
+The `scan_candidates` commits are `6c04a50` (08-27 23:12), `cf8c05c`
+(23:23) and `77cb5ee` (08-28 02:48), so **every slow run predates them** --
+the last one started at 22:42, half an hour before the first commit. It
+was already slow when that work began, and that work is what ended it.
+The instrumentation agrees: `checks=4472s` on the last slow run against
+`checks=628s` on the first fast one, while `load_bars` barely moved
+(243s -> 141s). `checks` is the ladder, which calls `scan_candidates` six
+times per chunk.
+
+**What caused 36 -> 75 minutes is not recorded and was not measured.** The
+universe grew 58% with the NYSE expansion on 2026-08-26, which fits a
+superlinear per-bar loop and is the obvious candidate. It is written down
+here as a candidate, not a finding, because nothing measured it at the
+time and the runs in that window differ in more than one variable.
 
 - **The harness is parallel now, and this line said otherwise until
   2026-08-25.** It read "the validation harness is single-threaded and takes
