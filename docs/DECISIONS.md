@@ -204,6 +204,8 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 160 | Scheduled jobs resume on boot and retry on failure | **Implemented 2026-09-01.** `OnBootSec` + bounded `Restart=on-failure` + a 19:00 nightly retry + `cscan resume-check`; no `config_hash` move |
 | 161 | The shipped exit policy is 5% + ATR k=2.0, chosen against the sweep winner | **Decided 2026-08-29, recorded 2026-09-01.** Stopless won on mean in every era and costs 11 points of worst case; k=2.0 gains 3.1 bp over k=1.5 at no tail cost. Config of record `0523841076f47293` |
 | 162 | Site auth stays off while the deployment is LAN-only | **Decided 2026-09-01.** Narrows ADR 138's pin; revisit only if the site is reachable off-LAN |
+| 163 | `events.id` is local to its store; the natural key is the identity | **Implemented 2026-09-01.** Narrows ADR 158. Fixes the sync `events_pkey` collision; `pull_live_records` nulls `event_id` and resets research's sequences |
+| 164 | The two research machines are functionally identical, not literally | **Decided 2026-09-01.** PG 16.14/17.11 and Python 3.14/3.13 accepted; do not align |
 
 ---
 
@@ -7197,3 +7199,144 @@ waiting to be flipped by accident.
 
 **The fail-safe direction is unchanged.** With `SITE_PASSWORD` unset the
 site returns 503 rather than falling open. Nothing here weakens that.
+
+---
+
+## 163. `events.id` is local to its store; the natural key is the identity
+
+**Status.** Decided and implemented 2026-09-01. Narrows ADR 158. No
+`config_hash` move, no migration -- a behaviour change in `sync.py` only.
+
+**Context.**
+
+The 2026-09-01 nightly sync failed:
+
+```
+duplicate key value violates unique constraint "events_pkey"
+DETAIL:  Key (id)=(61797210) already exists.
+```
+
+Two unrelated rows holding one id, verified on both stores:
+
+| store | id 61797210 |
+|---|---|
+| serving | ADM, 2026-09-01, `bb_upper_touch` — that day's **poller** |
+| research | AA, 2026-09-01, `stoch_oversold` — that night's **`run_events`** |
+
+**ADR 158 created the condition and nothing noticed.** With the poller
+writing serving natively, serving mints `events.id` from its own sequence
+while research mints from its own, so the two databases allocate
+independently out of one numeric range. Before ADR 158 serving was
+copy-only: every id arrived from research and the spaces could not diverge.
+
+`run_sync` matches `events` on the natural key `(config_hash, ticker,
+signal_date, signal_type, entry_kind)`, which is correct. But
+`db_io.upsert`'s default overwrites every non-key column, so it also issued
+`SET id = EXCLUDED.id` -- stamping research's surrogate id onto serving's
+matching row, colliding with whatever unrelated row already held it.
+
+**Decision.**
+
+**`events.id` is local to the database it was written in.** The identity of
+an event is its natural key, which already agrees across both stores.
+Nothing may assume the id names the same row on both sides.
+
+Three changes, all in `sync.py`:
+
+1. `_update_columns_preserving_id` excludes a surrogate `id` from any
+   upsert whose conflict key does not name it. Applied on both push paths
+   (`run_sync` and `run_live_sync`).
+2. `pull_live_records` nulls `signal_reports.event_id` on arrival.
+3. `pull_live_records` resets the target's sequences, which `run_sync` has
+   done for serving since 2026-08-28 and the reverse direction never did.
+
+**Consequences.**
+
+**Alternatives, and why each was rejected.** The instinct to make the two
+id spaces agree is right in general and expensive here:
+
+- **Disjoint ranges** (serving allocates from 10^12+) works, but `run_sync`
+  resets serving's sequences every night by design, so the reset and the
+  offset would each own the sequence and fight.
+- **UUID or ULID keys** genuinely fix it -- ids become globally unique by
+  construction. It is a type change on `events.id` plus every foreign key
+  and every reader, on a 61.8M-row table. Correct and out of proportion.
+- **Serving never mints ids** is the pre-ADR-158 design, which ADR 158
+  exists to remove.
+
+The chosen fix is smaller because it does not make two id spaces agree --
+it stops asking them to. The natural key was already doing the work.
+
+**`signal_reports.event_id` loses a link on research, and it was already
+losing it.** ADR 150's nightly sweep nulls that column by design for every
+provisional row, and `d5e91a7c3b48` moved `v_screen_live` off it for
+exactly that reason. Nothing reads it. Copying it across stores produced
+something worse than NULL: a link that resolves and points at a different
+ticker. The report stays self-contained -- `ticker`, `fired_at` and
+`state_json` are all NOT NULL -- which is ADR 150's own argument.
+
+**The sequence reset closes the third instance of one class in two days.**
+The other two: serving's sequences frozen at 21 against 39M rows
+(2026-08-28, ADR 158) and research's `signal_reports_id_seq` 211 behind
+`max(id)`, which failed the 2026-08-31 fallback poll. All three are
+"an explicit-id INSERT does not advance a sequence". `cscan poll`'s guard
+now backstops it on both target paths rather than gating it.
+
+**What this does not license.** A surrogate id remains a legitimate
+conflict key where a table has no natural one -- `predictions`,
+`positions`, and `signal_reports` itself all key on `id` and are
+unaffected, because `db_io.upsert` never writes a conflict column.
+
+---
+
+## 164. The two research machines are functionally identical, not literally
+
+**Status.** Decided 2026-09-01 (user). Documentation and expectation only;
+no code change.
+
+**Context.**
+
+`wivie` was staged to take the scheduled research role when the workstation
+leaves the house. Measured on 2026-09-01, the two boxes differ:
+
+| | workstation | `wivie` |
+|---|---|---|
+| Postgres | 16.14 (Docker) | 17.11 (native) |
+| Python | 3.14.3 (`spawn`) | 3.13.5 (`fork`) |
+
+`pyproject.toml` pins only `requires-python = ">=3.11"`, so `uv` resolved
+whatever each machine already had.
+
+**Decision.**
+
+**Accept both differences. Do not align the versions.** The bar for the
+migration is that the two machines are *functionally* interchangeable, not
+that they carry identical software.
+
+**Consequences.**
+
+**The code already supports the range.** `>=3.11` is the declared contract
+and CI runs against it. The start-method difference is covered by an
+existing rule rather than by luck: `CLAUDE.md` requires every job module to
+be importable with no side effects and every entry point to guard
+`__main__`, which is what `spawn` demands and `fork` tolerates. Code
+written for the stricter platform runs on both.
+
+**Nothing in the cutover copies an interpreter.** The migration is a
+`pg_dump`/`pg_restore` plus repointing the Pi's `.env.local`. A version
+that differs on two machines that never exchange bytecode costs nothing.
+
+**Postgres carries the one real constraint, and it is directional.** 16.14
+restores into 17.11; the reverse does not. So a dump taken on `wivie`
+cannot be loaded back onto the workstation's container without a downgrade
+path. That is a fact about the cutover order, not a reason to align.
+
+**Neither machine is being retired.** The workstation keeps the
+heavy-research role permanently -- it is the faster box, and sweeps and
+rebuilds stay there. So this is a standing two-machine arrangement rather
+than a handoff with an end date, and "which machine" remains a live
+question in `CLAUDE.md`.
+
+**What would reopen this.** A defect that reproduces on one machine and not
+the other, traced to the interpreter or the server version. Then align the
+one that matters and say which, rather than aligning on principle.

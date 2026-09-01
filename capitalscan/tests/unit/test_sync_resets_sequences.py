@@ -20,10 +20,17 @@ id. The moment serving became a write target, the sequence mattered.
 That would have crashed on the first live event of the session rather than
 the first report.
 
-**Why the fix belongs in `run_sync` and not in a one-off repair.** Every
-sync copies research's ids again, so a sequence corrected by hand goes
-stale on the next nightly. The reset has to happen wherever the copy
-happens.
+**Why the fix belongs in the copy path and not in a one-off repair.**
+Every sync copies ids again, so a sequence corrected by hand goes stale on
+the next nightly. The reset has to happen wherever the copy happens.
+
+**Extracted to `_reset_sequences` on 2026-09-01**, because the same defect
+turned up in the other direction: `pull_live_records` copies
+`signal_reports` serving -> research with explicit ids, and research's
+`signal_reports_id_seq` drifted 211 behind `max(id)`, which failed the
+2026-08-31 fallback poll. Two directions, one implementation. These tests
+now read the helper rather than `run_sync`'s body, and assert that both
+callers reach it.
 """
 
 from __future__ import annotations
@@ -32,7 +39,9 @@ import inspect
 
 from capitalscan.jobs import sync as sync_job
 
-SRC = inspect.getsource(sync_job.run_sync)
+SRC = inspect.getsource(sync_job._reset_sequences) + sync_job._RESET_SEQUENCES_SQL
+RUN_SYNC_SRC = inspect.getsource(sync_job.run_sync)
+PULL_SRC = inspect.getsource(sync_job.pull_live_records)
 
 
 def test_run_sync_resets_sequences():
@@ -42,26 +51,39 @@ def test_run_sync_resets_sequences():
         "run_sync copies rows with explicit ids, which does not advance "
         "serving's sequences; the poller then inserts and collides"
     )
+    assert "_reset_sequences(target)" in RUN_SYNC_SRC
+
+
+def test_the_pull_resets_them_too():
+    """The same defect arriving the other way (2026-09-01).
+
+    `pull_live_records` copies with explicit ids into research, so research
+    drifts exactly as serving did. `cscan poll` now refuses to start
+    against the drift, which is the right failure and still a failure --
+    fixing the cause makes that guard a backstop rather than a gate.
+    """
+    assert "_reset_sequences(target)" in PULL_SRC
+
+
+def test_one_implementation():
+    """Two copies of this SQL is two places for the `attisdropped` guard to
+    be forgotten."""
+    assert inspect.getsource(sync_job).count("_RESET_SEQUENCES_SQL") == 2
 
 
 def test_the_reset_runs_against_the_target_not_the_source():
     """Research's sequences are already correct -- it is where the ids came
     from. Resetting them would be harmless but pointless, and resetting the
     wrong one would leave the real problem in place."""
-    # `PERFORM setval`, not bare `setval`: the explanatory comment above the
-    # code mentions `setval(seq, 0)`, and that mention comes first.
-    idx = SRC.index("PERFORM setval")
-    # The nearest connection opened before the reset must be the target's.
-    # A character window is too brittle -- the explanatory comment above it
-    # is longer than any window worth picking.
-    before = SRC[:idx]
-    last_target = before.rfind("target.begin(")
-    last_source = before.rfind("source.connect(")
-    assert last_target > 0, "no target connection precedes the sequence reset"
-    assert last_target > last_source, (
-        "the sequence reset runs on the source; research's sequences are "
-        "already correct and serving's are the ones that trail"
-    )
+    # The helper takes one engine and both callers pass `target`, which is
+    # what makes the direction checkable at all now that the SQL is shared.
+    assert "engine.begin()" in SRC
+    for caller in (RUN_SYNC_SRC, PULL_SRC):
+        assert "_reset_sequences(target)" in caller
+        assert "_reset_sequences(source)" not in caller, (
+            "the sequence reset runs on the source; the ids came from there "
+            "and its sequences are already correct"
+        )
 
 
 def test_it_derives_the_sequence_rather_than_naming_tables():

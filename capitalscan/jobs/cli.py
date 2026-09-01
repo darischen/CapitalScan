@@ -593,6 +593,35 @@ def _load_events_for_run(engine, run_id: str):
         )
 
 
+def _is_trading_day(engine, d) -> bool:
+    """Is `d` a session on the exchange calendar?
+
+    Read from `trading_days` rather than computed from the weekday, because
+    a holiday is a non-trading day that falls on a weekday and a weekday
+    test would run the full pass on Thanksgiving. The same table backs
+    `wait_and_poll.sh`'s poller guard, so the two agree by construction.
+
+    **Fails open.** An empty or unreachable calendar returns `True` and the
+    full pass runs. The guard exists to avoid waste, so its own failure
+    must cost waste rather than a skipped night -- a nightly that silently
+    stops running is the failure this whole area is about.
+    """
+    from sqlalchemy import text
+
+    try:
+        with engine.connect() as conn:
+            hit = conn.execute(
+                text("SELECT 1 FROM trading_days WHERE d = :d"), {"d": d}
+            ).scalar_one_or_none()
+            if hit is not None:
+                return True
+            # An empty calendar is not evidence of a closed market.
+            known = int(conn.execute(text("SELECT count(*) FROM trading_days")).scalar_one())
+            return known == 0
+    except Exception:  # noqa: BLE001 - a guard must not be able to fail a job
+        return True
+
+
 def _sweep_provisional_poll_rows(engine, chash: str, session_date) -> int:
     """Delete this session's unreconciled poller rows (ADR 150).
 
@@ -2518,18 +2547,49 @@ def nightly() -> None:
     end = date.today()
     start = end - timedelta(days=5)
 
-    ingest.run_bars_daily(tickers, start, end, engine=engine)
-    # BUILD.md §9.0: `run_bars_hourly`'s only other caller is the `bars` CLI
-    # command, so without this the hourly table goes stale and
-    # `core.returns.entry_price_for` returns NaN instead of raising,
-    # silently dropping two of four entry kinds in the backtest. Same
-    # 5-day `start` as the daily pull above, which is well inside Yahoo's
-    # per-request window and yields one 60-day fetch window per ticker
-    # rather than the 13 a full 730-day backfill walks (~21 min for ~630
-    # tickers at RATE_LIMIT_PER_SEC = 0.5, vs. hours for a full backfill).
-    ingest.run_bars_hourly(tickers, start, end, engine=engine)
+    # **A reduced pass on a non-trading day, never a blanket skip.**
+    #
+    # The poller's guard (`wait_and_poll.sh`) exits entirely on a closed
+    # market, and that reasoning does **not** transfer. The poller's is a
+    # correctness guard: polling a closed market writes signals off the
+    # previous session's stale quotes into the store the site serves, and
+    # adds a `poller_sessions` row that pollutes ADR 084's `coverage_pct`.
+    # Nightly has no equivalent failure -- every step is idempotent, and a
+    # weekend run recomputes an unchanged window and fetches bars that do
+    # not exist.
+    #
+    # So the cost here is waste, not wrongness, and the fix must not buy it
+    # by breaking something that works. **Nightly is the catch-up path.**
+    # Its 7-day lookback is what repairs a Friday failure on Saturday, and
+    # a blanket skip would leave that broken until Monday -- trading a
+    # certain 10 minutes for an occasional lost day.
+    #
+    # Only the three price fetchers are skipped, because only they provably
+    # have nothing to fetch: no session means no bar and no index close.
+    # Everything after them still runs -- `actions` and `earnings` because
+    # corporate actions and calendar revisions land on non-trading days,
+    # the recompute and the sync because they are the repair path.
+    trading_day = _is_trading_day(engine, end)
+    if not trading_day:
+        console.print(
+            f"nightly: {end.isoformat()} is not a trading day; skipping the price "
+            "fetchers (bars, market). Calendar fetchers, recompute and sync still run "
+            "-- this is the catch-up path."
+        )
+
+    if trading_day:
+        ingest.run_bars_daily(tickers, start, end, engine=engine)
+        # BUILD.md §9.0: `run_bars_hourly`'s only other caller is the `bars`
+        # CLI command, so without this the hourly table goes stale and
+        # `core.returns.entry_price_for` returns NaN instead of raising,
+        # silently dropping two of four entry kinds in the backtest. Same
+        # 5-day `start` as the daily pull above, which is well inside Yahoo's
+        # per-request window and yields one 60-day fetch window per ticker
+        # rather than the 13 a full 730-day backfill walks (~21 min for ~630
+        # tickers at RATE_LIMIT_PER_SEC = 0.5, vs. hours for a full backfill).
+        ingest.run_bars_hourly(tickers, start, end, engine=engine)
+        ingest.run_market(lookback_days=5, engine=engine)
     ingest.run_actions(tickers, engine=engine)
-    ingest.run_market(lookback_days=5, engine=engine)
     ingest.run_shares(tickers, engine=engine)
     ingest.run_earnings(tickers, historical=False, forward_days=90, engine=engine)
     compute.run_indicators(

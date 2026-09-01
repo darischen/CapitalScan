@@ -124,6 +124,102 @@ class SyncTable:
     key: tuple[str, ...]
 
 
+_RESET_SEQUENCES_SQL = """
+DO $$
+DECLARE r record; n bigint;
+BEGIN
+  FOR r IN
+    SELECT c.oid::regclass AS tbl, a.attname AS col,
+           pg_get_serial_sequence(c.oid::regclass::text, a.attname) AS seq
+      FROM pg_class c
+      JOIN pg_attribute a ON a.attrelid = c.oid
+       AND a.attnum > 0 AND NOT a.attisdropped
+     WHERE c.relkind = 'r'
+       AND pg_get_serial_sequence(c.oid::regclass::text, a.attname) IS NOT NULL
+  LOOP
+    EXECUTE format('SELECT coalesce(max(%I),0) FROM %s', r.col, r.tbl) INTO n;
+    IF n > 0 THEN PERFORM setval(r.seq, n); END IF;
+  END LOOP;
+END $$;
+"""
+
+
+def _reset_sequences(engine: Engine) -> None:
+    """Advance every serial sequence past its table's max id.
+
+    **An explicit-id INSERT does not advance a sequence**, so any store
+    populated by copying ends up holding rows its sequences have never
+    seen. Both directions need this and only one had it until 2026-09-01.
+
+    **Serving (`run_sync`, since 2026-08-28).** Invisible until the poller
+    moved to write serving (ADR 158), because until then nothing ever
+    *inserted* there. On the first live session the Pi's poller inserted a
+    `signal_reports` row, got id 21, and id 21 already existed: serving
+    held 1,829 rows with its sequence still at 21. `events_id_seq` was at
+    21 against a max of 39,167,955 -- that one would have crashed on the
+    first live event rather than the first report.
+
+    **Research (`pull_live_records`, since 2026-09-01).** The same defect
+    arriving the other way. The pull copies `signal_reports` with explicit
+    ids, so research's `signal_reports_id_seq` drifted 211 behind
+    `max(id)`, and the 2026-08-31 fallback poll failed on it
+    (`signal_reports_pkey`, id 1832).
+
+    Derived from the catalogue rather than a hardcoded list, which would go
+    stale the moment a table gains a serial. **`AND a.attnum > 0 AND NOT
+    a.attisdropped` is required**, not tidiness: `pg_get_serial_sequence`
+    raises on a `........pg.dropped.N........` placeholder and aborts the
+    whole statement. Skipped for an empty table because `setval(seq, 0)` is
+    an error in Postgres.
+
+    Belongs in the copy path rather than in a one-off repair: every sync
+    copies ids again, so a sequence fixed by hand goes stale on the next
+    run.
+    """
+    with engine.begin() as conn:
+        conn.execute(text(_RESET_SEQUENCES_SQL))
+
+
+def _update_columns_preserving_id(frame: pd.DataFrame, key: tuple[str, ...]) -> list[str] | None:
+    """Every column the upsert may overwrite, minus a surrogate `id`.
+
+    **Never overwrite a surrogate key you are not matching on.** Returns
+    `None` -- meaning "the default, overwrite everything" -- unless the
+    frame carries an `id` the conflict key does not include.
+
+    **The failure this closes broke the 2026-09-01 nightly sync.**
+    `db_io.upsert`'s default overwrites every non-key column, which is
+    right for data and wrong for a surrogate id. `events` conflicts on the
+    natural key `(config_hash, ticker, signal_date, signal_type,
+    entry_kind)`, so the default also issued `SET id = EXCLUDED.id` --
+    stamping the source's id onto the target's matching row:
+
+        duplicate key value violates unique constraint "events_pkey"
+        DETAIL:  Key (id)=(61797210) already exists.
+
+    Two unrelated rows, one id. On serving 61797210 was ADM
+    `bb_upper_touch`, written by that day's poller; on research it was AA
+    `stoch_oversold`, written by that night's `run_events`.
+
+    **ADR 158 is what made the collision possible.** With the poller
+    writing serving natively, serving mints ids from its own sequence while
+    research mints from its own, so the two databases allocate
+    independently out of one numeric range. Before ADR 158 serving was
+    copy-only: every id arrived from research and the spaces could not
+    diverge.
+
+    **The id was never the identity.** `run_sync` already matches `events`
+    on its natural key, and that key is correct across both stores. So the
+    fix is not to make two id spaces agree -- it is to stop asking them to.
+    A table whose conflict key *is* `id` (`signal_reports`, `predictions`,
+    `positions`) is unaffected: `db_io.upsert` never writes a conflict
+    column, so there is nothing to exclude.
+    """
+    if "id" not in frame.columns or "id" in key:
+        return None
+    return [c for c in frame.columns if c not in key and c != "id"]
+
+
 def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
     """The serving subset, in foreign-key order.
 
@@ -427,7 +523,37 @@ def pull_live_records(
             source,
             params={"since": floor},
         )
+        # **`event_id` does not survive the crossing (2026-09-01).** It
+        # names a row in *serving's* id space, and since ADR 158 the two
+        # stores mint `events.id` independently -- so the same integer is a
+        # different event on each side. Copying it would produce a link
+        # that resolves, points at the wrong ticker, and looks correct.
+        #
+        # Nulling is the honest value, not a loss: ADR 150's nightly sweep
+        # already nulls this column by design for every provisional row,
+        # and `v_screen_live` stopped joining on it in `d5e91a7c3b48`
+        # precisely because the sweep made it unreliable. Nothing reads it.
+        #
+        # The report itself is self-contained -- `ticker`, `fired_at` and
+        # `state_json` are all NOT NULL -- which is the same argument ADR
+        # 150 makes for its own null.
+        if name == "signal_reports" and "event_id" in frame.columns:
+            frame = frame.assign(event_id=None)
         pulled[name] = db_io.copy_upsert(target, name, frame, list(key)) if not frame.empty else 0
+
+    # **Reset the target's sequences, mirroring `run_sync` (2026-09-01).**
+    # Every row above was copied with its own id, and an explicit-id INSERT
+    # does not advance a sequence -- so research ends a pull holding rows
+    # its sequences have never seen. `run_sync` has done this for serving
+    # since 2026-08-28; the reverse direction was missed, and research's
+    # `signal_reports_id_seq` drifted 211 behind `max(id)` by 2026-09-01.
+    #
+    # That drift is what failed the 2026-08-31 fallback poll
+    # (`signal_reports_pkey`, id 1832). `cscan poll` now refuses to start
+    # against it, which is the right failure and still a failure -- the
+    # operator has to `setval` by hand before polling. Fixing the cause
+    # makes that guard a backstop rather than a gate.
+    _reset_sequences(target)
     return pulled
 
 
@@ -544,49 +670,18 @@ def run_sync(
                 # Writes the *target* from inside the source's read
                 # transaction, deliberately: the snapshot must outlive
                 # every read, and serving is a different database.
-                rows[table.name] = db_io.copy_upsert(target, table.name, frame, list(table.key))
+                rows[table.name] = db_io.copy_upsert(
+                    target,
+                    table.name,
+                    frame,
+                    list(table.key),
+                    _update_columns_preserving_id(frame, table.key),
+                )
 
-        # **Reset the target's sequences (2026-08-28).** Every row above was
-        # copied with its own id, and an INSERT that supplies an explicit id
-        # does not advance the sequence -- so serving ends a sync holding
-        # rows its sequences have never seen.
-        #
-        # That was invisible until the poller moved to write serving (ADR
-        # 158), because until then nothing ever *inserted* there. On the
-        # first live session the Pi's poller inserted a `signal_reports`
-        # row, got id 21, and id 21 already existed: serving held 1,829 rows
-        # with its sequence still at 21. `events_id_seq` was at 21 too,
-        # against a max of 39,167,955 -- that one would have crashed on the
-        # first live event rather than the first report.
-        #
-        # Derived from the catalogue rather than a hardcoded list, which
-        # would go stale the moment a table gains a serial. Skipped for an
-        # empty table because `setval(seq, 0)` is an error in Postgres.
-        #
-        # Belongs here rather than in a one-off repair: every sync copies
-        # research's ids again, so a sequence fixed by hand goes stale on
-        # the next nightly.
-        with target.begin() as conn:
-            conn.execute(
-                text("""
-                DO $$
-                DECLARE r record; n bigint;
-                BEGIN
-                  FOR r IN
-                    SELECT c.oid::regclass AS tbl, a.attname AS col,
-                           pg_get_serial_sequence(c.oid::regclass::text, a.attname) AS seq
-                      FROM pg_class c
-                      JOIN pg_attribute a ON a.attrelid = c.oid
-                       AND a.attnum > 0 AND NOT a.attisdropped
-                     WHERE c.relkind = 'r'
-                       AND pg_get_serial_sequence(c.oid::regclass::text, a.attname) IS NOT NULL
-                  LOOP
-                    EXECUTE format('SELECT coalesce(max(%I),0) FROM %s', r.col, r.tbl) INTO n;
-                    IF n > 0 THEN PERFORM setval(r.seq, n); END IF;
-                  END LOOP;
-                END $$;
-                """)
-            )
+        # Sequences, in the direction this function copies. See
+        # `_reset_sequences` for why an explicit-id INSERT leaves them
+        # behind and what it cost on both stores.
+        _reset_sequences(target)
 
         # Assigned *before* the pin, which can raise. Measured 2026-08-21:
         # a pin failure discarded the count and recorded rows_written = 0
@@ -787,7 +882,16 @@ def run_live_sync(
         per_batch = _rows_per_batch(len(frame.columns))
         for start in range(0, len(frame), per_batch):
             batch = frame.iloc[start : start + per_batch]
-            written += db_io.upsert(target, table.name, batch.to_dict("records"), list(table.key))
+            # Same surrogate-id rule as `run_sync` (2026-09-01). This path
+            # is the research poller's per-tick push, so it writes serving
+            # from the other direction and can collide identically.
+            written += db_io.upsert(
+                target,
+                table.name,
+                batch.to_dict("records"),
+                list(table.key),
+                _update_columns_preserving_id(batch, table.key),
+            )
         rows[table.name] = written
         if table.name in high and not frame.empty:
             high[table.name] = max(high[table.name], int(frame["id"].max()))
