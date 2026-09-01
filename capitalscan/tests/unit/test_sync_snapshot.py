@@ -80,7 +80,7 @@ class TestItStaysAReader:
         open across those writes is intended; writing to the source
         connection is not."""
         # Matched on the argument rather than the call spelling: the call
-        # became multi-line on 2026-09-01 when it gained an
-        # `_update_columns_preserving_id` argument (ADR 163).
+        # became multi-line on 2026-09-01 when its frame argument gained a
+        # `_drop_surrogate_id` wrapper (ADR 163).
         assert "db_io.copy_upsert(" in SRC
         assert "target," in SRC

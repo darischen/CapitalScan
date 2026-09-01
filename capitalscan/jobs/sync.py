@@ -180,44 +180,55 @@ def _reset_sequences(engine: Engine) -> None:
         conn.execute(text(_RESET_SEQUENCES_SQL))
 
 
-def _update_columns_preserving_id(frame: pd.DataFrame, key: tuple[str, ...]) -> list[str] | None:
-    """Every column the upsert may overwrite, minus a surrogate `id`.
+def _drop_surrogate_id(frame: pd.DataFrame, key: tuple[str, ...]) -> pd.DataFrame:
+    """Drop a surrogate `id` the conflict key does not name, so the target
+    assigns its own.
 
-    **Never overwrite a surrogate key you are not matching on.** Returns
-    `None` -- meaning "the default, overwrite everything" -- unless the
-    frame carries an `id` the conflict key does not include.
+    **`events.id` is local to its store (ADR 163).** Since the poller began
+    writing serving natively, serving mints ids from its own sequence while
+    research mints from its own, so the two allocate independently out of
+    one numeric range and the same integer names a different event on each
+    side.
 
-    **The failure this closes broke the 2026-09-01 nightly sync.**
-    `db_io.upsert`'s default overwrites every non-key column, which is
-    right for data and wrong for a surrogate id. `events` conflicts on the
-    natural key `(config_hash, ticker, signal_date, signal_type,
-    entry_kind)`, so the default also issued `SET id = EXCLUDED.id` --
-    stamping the source's id onto the target's matching row:
+    **The 2026-09-01 nightly sync is what this closes:**
 
         duplicate key value violates unique constraint "events_pkey"
         DETAIL:  Key (id)=(61797210) already exists.
 
-    Two unrelated rows, one id. On serving 61797210 was ADM
-    `bb_upper_touch`, written by that day's poller; on research it was AA
-    `stoch_oversold`, written by that night's `run_events`.
+    On serving 61797210 was ADM `bb_upper_touch`, written by that day's
+    poller; on research it was AA `stoch_oversold`, written by that night's
+    `run_events`.
 
-    **ADR 158 is what made the collision possible.** With the poller
-    writing serving natively, serving mints ids from its own sequence while
-    research mints from its own, so the two databases allocate
-    independently out of one numeric range. Before ADR 158 serving was
-    copy-only: every id arrived from research and the spaces could not
-    diverge.
+    **Excluding `id` from the `DO UPDATE SET` is not enough, and the first
+    fix stopped there.** That removes the overwrite of an existing row's
+    id, but the collision has two halves and the insert is the other one: a
+    source row that is *new* to the target under the natural key raises no
+    conflict at all, so `ON CONFLICT` never fires and the INSERT proceeds
+    carrying the source's id straight into the target's primary key. The
+    re-run failed identically on the same id, which is what proved it.
 
-    **The id was never the identity.** `run_sync` already matches `events`
-    on its natural key, and that key is correct across both stores. So the
-    fix is not to make two id spaces agree -- it is to stop asking them to.
-    A table whose conflict key *is* `id` (`signal_reports`, `predictions`,
-    `positions`) is unaffected: `db_io.upsert` never writes a conflict
-    column, so there is nothing to exclude.
+    So the column is not shipped. `events.id` on both stores defaults to
+    `nextval('events_id_seq')`, so an INSERT that omits it gets the
+    target's own id, and an UPDATE through the natural key leaves the
+    existing id untouched. Neither statement carries an id across the
+    boundary any more.
+
+    **Nothing downstream depended on the ids matching.** `run_sync` already
+    resolves `events` by its natural key `(config_hash, ticker,
+    signal_date, signal_type, entry_kind)`, which is correct on both sides.
+    The one cross-store reader was `signal_reports.event_id`, which
+    `pull_live_records` now nulls on arrival for this reason -- and which
+    ADR 150's sweep already nulled nightly, and `v_screen_live` stopped
+    joining on in `d5e91a7c3b48`.
+
+    **A table whose conflict key *is* `id` is untouched** --
+    `signal_reports`, `predictions` and `positions` all key on it, and
+    there the id is the identity the upsert resolves by rather than a
+    value being carried along.
     """
     if "id" not in frame.columns or "id" in key:
-        return None
-    return [c for c in frame.columns if c not in key and c != "id"]
+        return frame
+    return frame.drop(columns=["id"])
 
 
 def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
@@ -673,9 +684,8 @@ def run_sync(
                 rows[table.name] = db_io.copy_upsert(
                     target,
                     table.name,
-                    frame,
+                    _drop_surrogate_id(frame, table.key),
                     list(table.key),
-                    _update_columns_preserving_id(frame, table.key),
                 )
 
         # Sequences, in the direction this function copies. See
@@ -882,15 +892,14 @@ def run_live_sync(
         per_batch = _rows_per_batch(len(frame.columns))
         for start in range(0, len(frame), per_batch):
             batch = frame.iloc[start : start + per_batch]
-            # Same surrogate-id rule as `run_sync` (2026-09-01). This path
-            # is the research poller's per-tick push, so it writes serving
+            # Same surrogate-id rule as `run_sync` (ADR 163). This path is
+            # the research poller's per-tick push, so it writes serving
             # from the other direction and can collide identically.
             written += db_io.upsert(
                 target,
                 table.name,
-                batch.to_dict("records"),
+                _drop_surrogate_id(batch, table.key).to_dict("records"),
                 list(table.key),
-                _update_columns_preserving_id(batch, table.key),
             )
         rows[table.name] = written
         if table.name in high and not frame.empty:

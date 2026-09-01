@@ -14,8 +14,18 @@ each store mints `events.id` from its own sequence, so the two allocate
 independently out of one numeric range. Before that, serving was copy-only
 and the id spaces could not diverge.
 
-`db_io.upsert`'s default overwrites every non-key column -- correct for
-data, wrong for a surrogate key the conflict clause does not name.
+**The collision has two halves and the first fix only closed one.**
+Excluding `id` from `DO UPDATE SET` stops an existing row's id being
+overwritten. But a source row that is *new* to the target under the natural
+key raises no conflict at all, so `ON CONFLICT` never fires and the INSERT
+carries the source's id straight into the target's primary key. A verifying
+re-run failed on the identical id, which is what proved the first fix
+insufficient.
+
+So the column is not shipped at all. `events.id` defaults to
+`nextval('events_id_seq')` on both stores, so an omitted id is assigned by
+the target and an update through the natural key leaves the existing one
+alone.
 """
 
 import inspect
@@ -25,30 +35,47 @@ import pandas as pd
 from capitalscan.jobs import sync as sync_job
 
 
-class TestUpdateColumnsPreservingId:
-    def test_it_drops_id_when_the_key_is_natural(self) -> None:
-        frame = pd.DataFrame(columns=["id", "config_hash", "ticker", "net_ret"])
-        key = ("config_hash", "ticker")
+class TestDropSurrogateId:
+    def test_the_id_is_not_shipped_when_the_key_is_natural(self) -> None:
+        """Not merely excluded from the update -- absent from the INSERT.
 
-        cols = sync_job._update_columns_preserving_id(frame, key)
+        The target's `nextval` default then assigns its own, which is the
+        only version that survives a row that is new to the target.
+        """
+        frame = pd.DataFrame({"id": [1], "config_hash": ["h"], "ticker": ["AA"], "net_ret": [0.1]})
 
-        assert cols == ["net_ret"], "id and the conflict columns must both be excluded"
+        out = sync_job._drop_surrogate_id(frame, ("config_hash", "ticker"))
 
-    def test_it_defers_to_the_default_when_the_key_is_the_id(self) -> None:
+        assert "id" not in out.columns
+        assert list(out.columns) == ["config_hash", "ticker", "net_ret"]
+
+    def test_the_source_frame_is_not_mutated(self) -> None:
+        """`run_live_sync` reads `frame["id"]` afterwards for its watermark,
+        which tracks *source* ids and must survive the drop."""
+        frame = pd.DataFrame({"id": [7], "config_hash": ["h"], "ticker": ["AA"]})
+
+        sync_job._drop_surrogate_id(frame, ("config_hash", "ticker"))
+
+        assert "id" in frame.columns, "the caller still needs the source id"
+
+    def test_the_id_is_kept_when_it_is_the_conflict_key(self) -> None:
         """`signal_reports`, `predictions` and `positions` conflict on `id`.
 
-        A conflict column is never written by `db_io.upsert`, so there is
-        nothing to exclude and narrowing the update set would only risk
-        dropping a real column.
+        There the id is the identity the upsert resolves by, not a value
+        being carried along, so dropping it would break the match.
         """
-        frame = pd.DataFrame(columns=["id", "ticker", "fired_at"])
+        frame = pd.DataFrame({"id": [1], "ticker": ["AA"], "fired_at": ["t"]})
 
-        assert sync_job._update_columns_preserving_id(frame, ("id",)) is None
+        out = sync_job._drop_surrogate_id(frame, ("id",))
 
-    def test_it_defers_to_the_default_when_there_is_no_id(self) -> None:
-        frame = pd.DataFrame(columns=["ticker", "ts", "close"])
+        assert "id" in out.columns
 
-        assert sync_job._update_columns_preserving_id(frame, ("ticker", "ts")) is None
+    def test_a_frame_without_an_id_is_returned_unchanged(self) -> None:
+        frame = pd.DataFrame({"ticker": ["AA"], "ts": ["t"], "close": [1.0]})
+
+        out = sync_job._drop_surrogate_id(frame, ("ticker", "ts"))
+
+        assert list(out.columns) == ["ticker", "ts", "close"]
 
     def test_the_events_key_is_natural_so_events_is_covered(self) -> None:
         """Guards the premise rather than the mechanism.
@@ -62,12 +89,12 @@ class TestUpdateColumnsPreservingId:
 
 class TestWiredIntoBothPushPaths:
     def test_run_sync_uses_it(self) -> None:
-        assert "_update_columns_preserving_id" in inspect.getsource(sync_job.run_sync)
+        assert "_drop_surrogate_id" in inspect.getsource(sync_job.run_sync)
 
     def test_run_live_sync_uses_it(self) -> None:
         """The research poller's per-tick push writes serving too, and can
         collide identically."""
-        assert "_update_columns_preserving_id" in inspect.getsource(sync_job.run_live_sync)
+        assert "_drop_surrogate_id" in inspect.getsource(sync_job.run_live_sync)
 
 
 class TestPullDropsTheCrossStoreEventId:

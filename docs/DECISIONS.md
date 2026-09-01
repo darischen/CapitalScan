@@ -7243,9 +7243,10 @@ Nothing may assume the id names the same row on both sides.
 
 Three changes, all in `sync.py`:
 
-1. `_update_columns_preserving_id` excludes a surrogate `id` from any
-   upsert whose conflict key does not name it. Applied on both push paths
-   (`run_sync` and `run_live_sync`).
+1. `_drop_surrogate_id` removes a surrogate `id` the conflict key does
+   not name from the frame entirely, so the target's `nextval` default
+   assigns its own. Applied on both push paths (`run_sync` and
+   `run_live_sync`).
 2. `pull_live_records` nulls `signal_reports.event_id` on arrival.
 3. `pull_live_records` resets the target's sequences, which `run_sync` has
    done for serving since 2026-08-28 and the reverse direction never did.
@@ -7266,6 +7267,22 @@ id spaces agree is right in general and expensive here:
 
 The chosen fix is smaller because it does not make two id spaces agree --
 it stops asking them to. The natural key was already doing the work.
+
+**Excluding `id` from `DO UPDATE SET` is half a fix, and the first attempt
+stopped there.** Recorded because the failure re-ran identically and the
+reason is not obvious: the collision has two halves. Removing `id` from the
+update set stops an existing row's id being overwritten, but a source row
+that is **new** to the target under the natural key raises no conflict at
+all -- `ON CONFLICT` never fires and the INSERT carries the source id
+straight into the target's primary key. Verified live: after the first fix
+the sync failed on the identical id, 61797210.
+
+The column is therefore not shipped. Both stores default `events.id` to
+`nextval('events_id_seq')`, so an omitted id is assigned by the target and
+an update through the natural key leaves the existing one alone. Confirmed
+on the repair sync: the research row that had been blocked (AA,
+`stoch_oversold`) landed on serving as **61801782** while serving's ADM row
+kept 61797210.
 
 **`signal_reports.event_id` loses a link on research, and it was already
 losing it.** ADR 150's nightly sweep nulls that column by design for every
