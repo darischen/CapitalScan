@@ -13,9 +13,11 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from typing import cast
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlalchemy import Engine
 
 from capitalscan.jobs import scheduled_runs
 
@@ -56,7 +58,7 @@ class _FakeEngine:
 
 
 def _decide(job: str, row: tuple | None, now: datetime = WED):
-    return scheduled_runs.resume_decision(_FakeEngine(row), job, now)
+    return scheduled_runs.resume_decision(cast(Engine, _FakeEngine(row)), job, now)
 
 
 # --- no record / crashed / failed -> run -----------------------------------
@@ -159,11 +161,9 @@ def test_weekly_sunday_0200_run_counts_this_week() -> None:
 
 
 def test_naive_and_aware_now_agree() -> None:
-    aware_start = datetime(2026, 9, 2, 13, 20, tzinfo=LA)
-    naive = scheduled_runs.resume_decision(
-        _FakeEngine(("ok", aware_start)), "nightly", datetime(2026, 9, 2, 15, 0)
-    )
-    aware = scheduled_runs.resume_decision(_FakeEngine(("ok", aware_start)), "nightly", WED)
+    row = ("ok", datetime(2026, 9, 2, 13, 20, tzinfo=LA))
+    naive = _decide("nightly", row, now=datetime(2026, 9, 2, 15, 0))
+    aware = _decide("nightly", row, now=WED)
     assert naive[0] == aware[0] == "already_complete"
 
 
