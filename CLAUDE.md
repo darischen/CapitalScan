@@ -21,7 +21,7 @@ expansion to other markets and more ETFs is in `BACKLOG.md`.
 
 ## Before writing any code
 
-Read `docs/DECISIONS.md`. It holds 150 ADRs. They are decisions, not suggestions.
+Read `docs/DECISIONS.md`. It holds 159 ADRs. They are decisions, not suggestions.
 
 If a task appears to require contradicting one, **stop and ask.** Do not work around it.
 
@@ -33,6 +33,11 @@ If a task appears to require contradicting one, **stop and ask.** Do not work ar
 | What do I build next? | `docs/BUILD.md` |
 | How do I know it works? | `docs/TESTS.md` |
 | What happened when we ran it? | `docs/RESULTS.md` |
+| What broke before, and the fix? | `docs/OPERATIONS.md` |
+| How long does a job take? | `docs/TIMINGS.md` |
+
+`docs/OPERATIONS.md` and `docs/TIMINGS.md` hold the full incident writeups and
+measured durations. This file keeps the one-line rule for each and points there.
 
 ---
 
@@ -54,9 +59,17 @@ uv run pytest capitalscan/tests/unit capitalscan/tests/property -p no:randomly \
 
 Three traps, all hit for real on 2026-08-09:
 
-- **`ruff check capitalscan/` is not `ruff check .`.** It skips `db/migrations/`, where a long `op.execute(...)` line had been failing E501 on a branch for three days. It reached `main` unnoticed because every local check was scoped to `capitalscan/`.
+- **`ruff check capitalscan/` is not `ruff check .`.** It skips `db/migrations/`, where a long `op.execute(...)` line failed E501 on a branch for three days and reached `main` unnoticed.
 - **`ruff format --check` is a separate gate from `ruff check`.** A file can pass lint and still fail formatting, and nothing warns you.
 - **`uv run mypy` bare is wider than any explicit path list.** It reads `pyproject.toml` and covers 137 files including tests; `mypy capitalscan/core capitalscan/jobs` covers 43 and proves much less.
+
+**No `cscan db migrate` or `uv sync`/`uv add` while a job is running.** Migrate takes an ACCESS EXCLUSIVE lock against a live writer; `uv sync`/`uv add` on Windows locks `.venv` files a running process holds open.
+
+**Editing a module mid-job gives it a split brain.** A long-running job holds whichever modules it has already imported and picks up the rest from disk as it reaches them. Edit freely during a job whose remaining steps you are not touching; do not edit a module the job has not reached yet. → `OPERATIONS.md`
+
+---
+
+## Reaching the database
 
 **Bash on this machine does not see user or system environment variables.**
 Anything not on the default PATH needs its full path -- `psql`, `docker.exe`,
@@ -65,306 +78,48 @@ Anything not on the default PATH needs its full path -- `psql`, `docker.exe`,
 **Postgres runs in Docker** as container `capitalscan-postgres`, mapped to
 5432. A *separate* native PostgreSQL 18 service listens on **15432** and
 rejects the `capscan` password. So `connection refused` on 5432 means the
-container is down, not that the server moved -- check it before diagnosing
-anything else:
+container is down, not that the server moved. `docker` is not on PATH in
+agent shells:
 
 ```
-"C:\Program Files\Docker\Docker
-esourcesin\docker.exe" ps -a
-"C:\Program Files\Docker\Docker
-esourcesin\docker.exe" start capitalscan-postgres
+"C:\Program Files\Docker\Docker\resources\bin\docker.exe" ps -a
+"C:\Program Files\Docker\Docker\resources\bin\docker.exe" start capitalscan-postgres
 ```
 
-It exited 255 unprompted on 2026-08-21 at ~01:00 PT, killing a 1h55m
-backtest. No OOM, no disk error in its log, nobody touched it. Crash
-recovery lost nothing. Long jobs should be assumed interruptible.
-
-`docker` is not on PATH in agent shells. Reach Postgres directly:
+Reach Postgres directly:
 
 ```
 PGPASSWORD=capscan "/c/Program Files/PostgreSQL/18/bin/psql" -h localhost -U capscan -d capitalscan
 ```
 
-Prefix `SET max_parallel_workers_per_gather=0;` if a **query** hits a shared-memory error:
+Prefix `SET max_parallel_workers_per_gather=0;` if a **query** hits
+`could not resize shared memory segment ... No space left on device`. That
+setting does **not** cover `VACUUM`/`REINDEX`/`CREATE INDEX`; use the
+command's own option, `VACUUM (PARALLEL 0, ANALYZE) tablename`.
 
-```
-could not resize shared memory segment ... No space left on device
-```
+Rules from past incidents (full writeups in `OPERATIONS.md`):
 
-**Binding the container IPv4-only makes `localhost` cost 2.1 seconds.**
-Caused on 2026-08-28 by rebinding the Postgres container to `0.0.0.0:5432`
-so a second machine could reach it. The original bound **two** addresses:
+- **Any change to how the database is reached needs a connect-latency check.** Binding the container IPv4-only (`0.0.0.0:5432`) made `localhost` resolve to `::1` first and cost 2 s per connect, a 4-5x backtest regression with no error in any log. Bind both families: `-p 0.0.0.0:5432:5432 -p "[::]:5432:5432"`. Every timing measured 2026-08-24 to 2026-08-26 is inflated by this.
+- **A firewall rule scoped `-Profile Private,Domain` stops applying when the network profile flips to Public**, and only the remote writer fails. Check `Get-NetConnectionProfile` first; fix with `Set-NetConnectionProfile -NetworkCategory Private`, not `-Profile Any`.
+- **A client-side network symptom is not evidence of a client-side cause.** `server closed the connection` from a remote writer was a stalled checkpoint (research ran the 1 GB default `max_wal_size` until 2026-08-29, now 4 GB, `synchronous_commit=on`). Read `docker logs capitalscan-postgres` before blaming the link. WAL and autovacuum tuning live on the server, not in a migration.
+- **Run `VACUUM (PARALLEL 0, ANALYZE)` after any bulk write**, and check `n_live_tup` against a real `count(*)` when a job is inexplicably slow. `indicators` once held 4M rows while the planner believed 80k (never autoanalyzed after the 2026-08-21 crash); `indicators` and `events` now carry absolute autovacuum thresholds.
+- **`psql` exits 0 on the shared-memory error** (it goes to stderr). Verify maintenance via `pg_stat_user_tables.last_vacuum` / `last_analyze`, never the exit code.
+- **A `pg_attribute` sweep must exclude dropped columns** (`AND a.attnum > 0 AND NOT a.attisdropped`); `pg_get_serial_sequence` raises on a `........pg.dropped.N........` placeholder and aborts the statement.
+- **Sequences do not advance on an explicit-id INSERT**, so a copy-only store has frozen sequences. `cscan poll --serving` refuses to start when any sequence is behind its table's max id (ADR 158).
 
-```
-127.0.0.1:5432->5432/tcp, [::1]:5432->5432/tcp
-```
+---
 
-`0.0.0.0` is IPv4 only, so `localhost` resolves to `::1` first, waits for
-that to fail, and only then falls back. Measured immediately after:
+## Caches and stale reads
 
-    localhost      2167 ms per connect
-    127.0.0.1       120 ms
-    192.168.1.31    117 ms
+**The fetch cache is keyed on arguments, which assumes the function's meaning is frozen.** `jobs/fetch/yahoo.py` caches to `data/cache/{source}/{key}.parquet`. **Change what a fetcher returns for unchanged arguments and you must bump the `source=` string** in `@cached(source="yahoo_daily_v2", key_fn=...)` -- not the key function. A cache hit is indistinguishable from a fetch except by duration, and it fails toward the old behaviour, so a correct fix can merge, pass CI, and never run. → `OPERATIONS.md`
 
-`DATABASE_URL_RESEARCH` uses `localhost`, and every backtest worker opens
-its own connection, so **compute chunks went from 73-120s to 488-525s**, a
-4-5x regression with no error and nothing in any log. It was diagnosed only
-because `runs` held the before-and-after durations side by side.
+**Spotting a cache hit:** `RATE_LIMIT_PER_SEC = 0.5`, so ~600 tickers cannot ingest in under a minute. A sub-second ingest is a cache read. `data/cache/yahoo_daily/` and `yahoo_hourly/` hold pre-`_v2` entries, unread; delete freely.
 
-Bind both families when exposing the container:
+---
 
-```
--p 0.0.0.0:5432:5432 -p "[::]:5432:5432"
-```
+## Windows and PowerShell
 
-This is the same IPv6 trap recorded further down for a different cause, and
-the general rule is worth stating: **any change to how the database is
-reached must be followed by a connect-latency check**, because the symptom
-is uniformly slower jobs rather than a failure.
-
-```
-for h in localhost 127.0.0.1; do ... psql -h $h -c "SELECT 1" ... done
-```
-
-**A Windows firewall rule scoped to Private/Domain stops working the moment
-the network profile flips to Public, and the symptom is a remote machine that
-looks broken.** Exposing the research database to the LAN on 2026-08-28 used:
-
-```powershell
-New-NetFirewallRule -DisplayName 'CapitalScan Postgres (LAN)' -Direction Inbound `
-  -Protocol TCP -LocalPort 5432 -RemoteAddress 192.168.1.0/24 -Profile Private,Domain
-```
-
-The workstation is on Wi-Fi, and its profile was **Public**. The rule never
-applied, so 5432 was blocked from the LAN while `localhost` kept working
-perfectly — meaning **every local job was unaffected and only the second
-machine failed**, which is exactly the shape that makes you blame the second
-machine. It failed three different ways over four hours:
-`server closed the connection`, then a runner alive with zero output for 45
-minutes, then `ConnectionTimeout: connection timeout expired`.
-
-Fix the network category rather than widening the rule:
-
-```powershell
-Set-NetConnectionProfile -InterfaceAlias 'Wi-Fi 3' -NetworkCategory Private
-```
-
-`-Profile Any` also works and is wrong: it opens 5432 on every network the
-machine ever joins, including public Wi-Fi.
-
-**Check this first when a remote writer fails and the local one is fine:**
-
-```powershell
-Get-NetConnectionProfile | Select InterfaceAlias, NetworkCategory
-```
-
-**Three explanations were reached for before the right one** — the laptop's
-Wi-Fi, then the database's WAL settings, then the firewall. Only the third was
-the cause. The first two were guesses that fit the symptom; the third was
-found by checking configuration rather than by reasoning about behaviour.
-
-**The research database ran on the default `max_wal_size` until 2026-08-29,
-and the Pi was better tuned than the workstation.** Under the exit sweep's
-write load its own log read:
-
-```
-LOG:  checkpoints are occurring too frequently (9 seconds apart)
-HINT: Consider increasing the configuration parameter "max_wal_size".
-```
-
-Checkpoints every 9-28 seconds, each flushing 48k-89k buffers and taking 6-27
-seconds — near-continuous. The setting was **1 GB, the stock default**, on the
-store that takes the heaviest writes in the system (2M events and 6.5M path
-rows per backtest arm), while `capitalscan_serving` on the Pi had been given
-4 GB deliberately.
-
-Raised to 4 GB. **`max_wal_size` is `sighup`**, so it applies without a
-restart and without dropping a connection, which matters when a multi-hour
-job is running:
-
-```
-psql -c "ALTER SYSTEM SET max_wal_size = '4GB'"   # its own invocation:
-psql -c "SELECT pg_reload_conf()"                 # ALTER SYSTEM cannot run
-                                                  # inside a transaction, and
-                                                  # psql wraps multiple -c in one
-```
-
-`synchronous_commit` was left `on`. The Pi can afford `off` because serving is
-a derived copy; research is the source of truth and losing the last few
-transactions to a crash is a different trade.
-
-**The diagnostic lesson is the bigger one.** A second machine writing over the
-network failed with `OperationalError: server closed the connection`, and the
-first explanation reached for was its Wi-Fi. The server's own log said
-otherwise. A client-side network symptom is not evidence of a client-side
-cause: the local writer rides out a stalled checkpoint that a remote one
-cannot. **Read `docker logs capitalscan-postgres` before blaming the link.**
-
-**A table can go stale forever without anything reporting it.** Found
-2026-08-25: `indicators` held **4,011,351 rows while the planner believed
-80,043** — a 50x underestimate on every plan touching it. The symptom was a
-job that had "worked forever" suddenly crawling: 20 tickers of full history
-took **36 seconds on 2026-08-21** and 3 tickers took **8.8 minutes on
-2026-08-25**, with no change to the code path. `git log` on `compute.py`
-showed nothing touching `run_indicators`, which is what sent the
-investigation to the database.
-
-    relname      n_live_tup   actual      last_autoanalyze
-    indicators       80,043   4,011,351   never
-    bars          8,152,486   8,154,808   2026-08-26
-    events       16,175,934   16,269,169  2026-08-25
-
-**Autovacuum was on, with no table-level override.** One table was simply
-never serviced. The likely cause, assembled from three facts rather than
-observed: Postgres statistics are **not crash-safe**, the container exited
-255 unprompted on 2026-08-21 (recorded above), and autoanalyze fires at
-`50 + 0.1 * n_live_tup` — about 8,054 at the stale estimate. The only
-successful indicator writes since that crash were two nightly runs of 3,561
-and 4,497 rows, **8,058 total**, sitting on the threshold.
-
-**The trap is that the trigger scales with the number that is wrong.** A
-table growing in large batches, whose counters were reset, can sit under its
-own threshold indefinitely.
-
-Fixed by making the trigger absolute on the two tables that grow in bulk:
-
-```sql
-ALTER TABLE indicators SET (
-  autovacuum_analyze_scale_factor = 0.0,
-  autovacuum_analyze_threshold    = 50000,
-  autovacuum_vacuum_scale_factor  = 0.0,
-  autovacuum_vacuum_threshold     = 50000
-);
-```
-
-**Run `VACUUM (PARALLEL 0, ANALYZE)` after any bulk write**, and check
-`n_live_tup` against a real `count(*)` when a job is inexplicably slow.
-Six seconds of maintenance was the whole fix here, after roughly four hours
-lost to diagnosing it as a hang, a deadlock, a wrong interpreter and a
-`ProcessPoolExecutor` bug — none of which it was.
-
-**That setting does not cover maintenance commands.** It governs query-time gather nodes only. `VACUUM` parallelises index cleanup under `max_parallel_maintenance_workers` and ignores it entirely, so a large vacuum fails with the same message and the same fix does nothing. Use the command's own option:
-
-```
-VACUUM (PARALLEL 0, ANALYZE) tablename;
-```
-
-`REINDEX` and `CREATE INDEX` take `max_parallel_maintenance_workers` too.
-
-**The failure is silent.** `psql` exits **0** on this error — it goes to stderr, so a piped or filtered invocation swallows it and the command looks like it worked. On 2026-08-17 two `VACUUM` runs on `path` failed this way and were only caught because `pg_stat_user_tables.last_vacuum` was still NULL with 57.3M dead tuples. Verify maintenance with the catalog, never with the exit code:
-
-```sql
-SELECT relname, n_dead_tup, last_vacuum, last_analyze
-FROM pg_stat_user_tables WHERE relname = 'path';
-```
-
-**A catalogue sweep over `pg_attribute` must exclude dropped columns.**
-`DROP COLUMN` does not delete the row — it renames the column to a
-`........pg.dropped.N........` placeholder and sets `attisdropped`, so the
-physical tuple layout is preserved. Worse, `pg_get_serial_sequence` **raises**
-on a name that is not a real column instead of returning NULL, so a
-`WHERE ... IS NOT NULL` filter meant to skip it never runs and the whole
-statement aborts:
-
-```
-ERROR: column "........pg.dropped.45........" of relation "cell_stats" does not exist
-```
-
-Always `JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT
-a.attisdropped`. Hit 2026-08-28 in both the sync sequence reset and the
-poller's preflight audit — serving has no dropped columns and passed,
-research's `cell_stats` has one and did not. **Eleven unit tests were green
-at the time.** The bug was only reachable by executing the SQL against a
-real database, which is the general lesson: a query pinned by tests that
-never run it is untested.
-
-**Sequences do not advance on an INSERT that supplies an explicit id.** So a
-store that is only ever *copied into* has sequences frozen wherever they
-started, and the defect is silent until something *inserts*. Serving held
-1,829 `signal_reports` with its sequence at 21. Audit any store you are
-about to write to:
-
-```sql
-SELECT last_value, (SELECT max(id) FROM signal_reports) FROM signal_reports_id_seq;
-```
-
-`cscan poll --serving` now refuses to start when any sequence is behind its
-table's max id. See ADR 158's consequence section.
-
-## The fetch cache lies when you change what a key means
-
-`jobs/fetch/yahoo.py` caches every network result to
-`data/cache/{source}/{key}.parquet`, keyed on the fetcher's arguments —
-`_batch_key` is `tickers_start_end`, `_window_key` is `ticker_start_end`.
-
-That key is a **promise**: for these inputs, this is the answer. It holds
-only while the function means the same thing.
-
-**Change what a fetcher returns for unchanged arguments and you must bump
-the cache source.** Not the key function — the `source=` string, which is
-the directory name:
-
-```python
-@cached(source="yahoo_daily_v2", key_fn=_batch_key)
-```
-
-**What this cost, 2026-08-17.** `yf.download`'s `end` is exclusive, so
-`cscan nightly` — scheduled 16:30 local, after the close — never ingested
-the session it had just run after. The fix added a day inside
-`_download_daily`. It merged, CI passed, and **the next nightly still
-produced stale data**, because every cached entry answered the post-fix
-request with the pre-fix result. The fix was correct and simply never ran.
-
-Three properties make this worse than an ordinary stale cache:
-
-- **It survives a merge.** The cache short-circuits the function containing
-  the fix.
-- **There is no error.** A hit is indistinguishable from a fetch in every
-  observable way except duration. `run_market` returned 5 rows and a `runs`
-  status of `ok`; the only tell was that it finished in **46 ms**, too fast
-  to have touched the network.
-- **It fails toward the old behaviour.** A miss would have been loud and
-  self-correcting. A hit silently preserves exactly the bug being fixed.
-
-It hid completely because the one path that bypassed the cache was the one
-path that worked: a manual recovery script had used `end = today + 1`, a
-different key, so daily bars looked correct throughout.
-
-**Rule.** A cache key must capture everything that determines the output,
-including the version of the code producing it. These key on arguments
-alone, which assumes the semantics are frozen. They are not, so the version
-lives in the `source` string and moving it is a manual step in any change
-to what a fetcher returns.
-
-**Checking a suspicious result.** Compare the job's duration against a
-plausible network cost — `RATE_LIMIT_PER_SEC = 0.5`, so ~600 tickers cannot
-complete in under a minute. A sub-second ingest is a cache read.
-`data/cache/yahoo_daily/` and `yahoo_hourly/` hold the pre-`_v2` entries and
-are unread; delete them freely.
-
-**`2>&1` on a native executable is *terminating* under
-`$ErrorActionPreference = "Stop"`, and it killed the first scheduled
-nightly.** PowerShell 5.1 wraps every stderr line from a native command in a
-`NativeCommandError` record. With the preference at `Stop`, the **first**
-stderr line becomes a terminating `RemoteException` — the exit code is
-irrelevant, and ordinary progress output is enough to do it.
-
-On 2026-08-28 at 13:15 `run_nightly.ps1` ran
-
-```powershell
-$ErrorActionPreference = "Stop"
-& .\.venv\Scripts\cscan.exe nightly 2>&1 | Tee-Object -FilePath $log -Append
-```
-
-and died before writing a single line of `cscan` output. The evidence was
-misleading in three directions at once: the log held only the wrapper's own
-two header lines, so it looked like `cscan` never started; a `bars_daily`
-row sat at `status='running'` with no process behind it, so it looked like a
-hang; and the row's age (18 minutes) invited the conclusion that the step
-was merely slow. It had been dead the whole time.
-
-Scope the preference to the call rather than the file, so genuine cmdlet
-errors still stop the script:
+**`2>&1` on a native exe is terminating under `$ErrorActionPreference = "Stop"`.** PowerShell 5.1 wraps the first stderr line in a `RemoteException`; ordinary progress output is enough, and the exit code is irrelevant. It killed the first scheduled nightly before a line of output. Scope the preference to the call:
 
 ```powershell
 $prev = $ErrorActionPreference
@@ -374,248 +129,36 @@ $code = $LASTEXITCODE     # capture immediately; any native call clobbers it
 $ErrorActionPreference = $prev
 ```
 
-**Two related traps in the same file.** `$ErrorActionPreference = "Stop"`
-does **not** make a native exe's non-zero exit fail the script, so a wrapper
-must `exit $LASTEXITCODE` explicitly or Task Scheduler records success for a
-failed job. And `Tee-Object` has no `-Encoding` in 5.1 — it writes UTF-16LE,
-which `tail` and `grep` read as gibberish. Use
-`Add-Content -Encoding utf8`.
+`$ErrorActionPreference = "Stop"` does **not** make a native exe's non-zero exit fail the script -- a wrapper must `exit $LASTEXITCODE` or Task Scheduler records success for a failed job. `Tee-Object` has no `-Encoding` in 5.1 and writes UTF-16LE; use `Add-Content -Encoding utf8`. → `OPERATIONS.md`
 
-**`npm run build` invalidates a running `next start`.** The server holds
-its chunk hashes in memory; a build rewrites `.next/` with new ones, so
-every asset 404s and the page renders as unstyled text. It looks exactly
-like broken CSS and is not. **Restart the server after any build**, and
-never run `next dev` against the same `.next/` a production server is
-serving from. Hit twice, 2026-08-19 and 2026-08-20, both times diagnosed
-from the browser console:
+**`npm run build` invalidates a running `next start`.** The server holds its chunk hashes in memory; a build rewrites `.next/` and every asset 404s, rendering as unstyled text that looks like broken CSS. Restart the server after any build; never point `next dev` at a `.next/` a production server is serving. → `OPERATIONS.md`
 
-```
-ChunkLoadError: Loading chunk 974 failed
-400 Bad Request  /_next/static/chunks/app/page-<hash>.js
-```
+---
 
-Check it in one command -- if the server started before the build, that is
-the cause:
+## Long jobs
 
-```
-ls -l --time-style=+%H:%M web/.next/BUILD_ID
-Get-CimInstance Win32_Process -Filter "ProcessId=<pid of :3100>" | Select CreationDate
-```
+Budgets, so nobody starts one blind. Per-step tables, regimes, and the history of every figure that was wrong are in `docs/TIMINGS.md` -- **a step has regimes, and one measurement is one regime; check `runs` for the distribution.**
 
-No `cscan db migrate` or `uv sync`/`uv add` while a job is running. Migrate takes an ACCESS EXCLUSIVE lock against a live writer; `uv sync`/`uv add` on Windows locks `.venv` files a running process holds open.
+| job | budget |
+|---|---|
+| `cscan backtest --workers 8`, full universe (~1,470 tickers) | **~2 h** (compute 82 min, finalize 4 min, harness 36 min) |
+| `cscan nightly`, cold | **35-40 min** (not 21; `shares` alone is ~10 min at this universe size) |
+| `cscan weekly` | ~36 min (runs the backtest, skips the harness) |
+| `cscan bars --daily --lookback 8000` | ~11 min / 521 tickers |
+| `cscan bars --hourly --backfill`, all tickers | ~4.5-5.5 h, no incremental path |
+| `cscan universe --quarter` x 66 | ~20 min |
 
-Long jobs, measured, so nobody starts one blind:
+- **Use `--phase` for anything long.** `compute` is resumable, checkpointed per `--chunk-size` (default 25); `_chunk_already_done` keys on `(config_hash, chunk, of)`, so **keep `--chunk-size` identical across restarts** or every chunk re-runs. Each phase writes its own `runs` row (`backtest_compute` per chunk, `backtest_finalize`, `backtest_harness`); `notes` carries `harness passed` or the failing check.
+- **`compute`'s `cofire_count` is only correct within a chunk** and is excluded from that write. `finalize` is the whole-universe pass that corrects it, and only if `compute` finished for the config.
+- **`cscan indicators` writes nothing until it finishes** -- it collects across all tickers then upserts once. Querying mid-run returns the pre-run count and looks exactly like a hang. Pass `--workers 8`; it defaults to 1.
+- **Never run `cscan universe --quarter` while a backtest runs.** Not locking -- determinism: workers resolving eligibility against a `universe` that changes mid-run violate ADR 060.
+- **`runs` timed the write phase only before 2026-08-18.** Check `started_at` before quoting an old duration.
 
-- `cscan backtest --workers 8`, full universe: **~2 hours**, measured end to
-  end on 2026-08-26 against **1,470 tickers / 1,365,000 events** under
-  `a38d3ca6b58295e8`, on a machine where `localhost` connects in 40ms (see
-  the IPv6 note above -- every timing taken between 2026-08-24 and
-  2026-08-26 is inflated and should be distrusted).
+---
 
-  | phase | wall clock | output |
-  |---|---|---|
-  | `compute` (59 chunks x 25 tickers, 8 workers) | **81.9 min** | 1,365,000 rows |
-  | `finalize` (cross-ticker cofire) | **3.6 min** | 1,365,000 rows |
-  | `harness` (8 workers, parallel) | **35.7 min** | `harness passed` |
+## Config generation and sync
 
-  Compute averaged 83s per chunk. **The harness is the number that was most
-  wrong**: this file said 4h19m, which was single-threaded on 590 tickers.
-  It is 35.7 min against 2.5x the tickers -- roughly the worker count,
-  which is what parallelising it was supposed to buy.
-  - **The harness is parallel now, and this line said otherwise until 2026-08-25.** It read "the validation harness is single-threaded and takes the rest regardless of worker count". That was true between `78d1e38` (which reverted a parallel harness that deadlocked passing frames to workers) and `0b2cc00`, which re-parallelised it by spooling ticker slices to **parquet** instead of pickling frames through a pipe. `research/harness.py::_run_harness_parallel` runs whenever `max_workers > 1`.
-  - `--phase` splits the job into `compute` (resumable, checkpointed per
-    `--chunk-size`, default 25), `finalize` (cross-ticker cofire) and
-    `harness`. Use the phases for anything long: `_chunk_already_done` keys
-    on `(config_hash, chunk, of)`, so **keep `--chunk-size` identical across
-    restarts** or every chunk re-runs.
-  - **Each phase writes its own `runs` row** -- `backtest_compute` (one per
-    chunk), `backtest_finalize`, `backtest_harness`. The harness writes no
-    *event* rows, which is a different claim; it does record its run, and
-    `notes` carries the result (`harness passed`, or the failing check).
-    That is the cheapest way to watch a long run without polling processes.
-  - **`compute` warns on every chunk that `cofire_count` is only correct
-    within the chunk**, and excludes it from that write's update columns.
-    That is by design: cofire is cross-sectional and a 25-ticker slice
-    cannot see the other 1,445. `finalize` is the whole-universe pass that
-    corrects it, and it is only correct if `compute` finished for the
-    config.
-  - **Superseded history.** 2026-08-13 measured 4h55m total (write 35m50s,
-    harness ~4h19m) on 627,380 rows / 590 tickers under
-    `697f3ae71428d392`, single-threaded harness. Kept only so an old
-    `runs` row can be read correctly; do not quote it as an estimate.
-  - **`runs` measures this from 2026-08-18, and did not before.** `cli.py::backtest` used to close its `with ingest.run_job(...)` block before calling `run_harness`, so `finished_at - started_at` timed the write phase **only** — 20-38 min against a 2h48m-to-4h55m job. A 2026-08-09 session read those durations as the whole job and briefly "corrected" this line to ~36 min. It was wrong. Session 15 moved the harness inside the block, so new rows time the whole job and a failing harness now records `status='failed'`. **Rows written before 2026-08-18 are still write-phase-only** and must be read that way; check `started_at` before quoting one.
-  - `cscan weekly` genuinely is ~36 min: it calls `run_backtest` and deliberately skips the harness (`cli.py::weekly` docstring). Do not read a weekly duration as a `cscan backtest` duration.
-- **`cscan nightly`, every step measured 2026-08-26** on 1,470 tickers, after
-  the IPv6 fix. Twelve steps; the totals are dominated by three fetchers that
-  ask one ticker at a time.
-
-**Every figure below is one measured run, 2026-08-26 evening**, on 1,470
-  tickers. Where a step has two regimes the normal one is given and the
-  other is named, because quoting the wrong regime is how this table has
-  been wrong three times.
-
-  | step | wall clock | rows |
-  |---|---|---|
-  | `bars_daily` (batched) | 5.0 min | 5,740 |
-  | `bars_hourly` (batched; loop fixed `4f97d8b`) | 5.4 min | 40,615 |
-  | `actions` (batched + dated key `9b008c9`) | 4.0 min | 349 |
-  | `market` | 0.0 min | 5 |
-  | `shares` | 0.7 min | 236,008 |
-  | `earnings` (bulk calendar `647ee25`) | **0.6 min** | 1,203 |
-  | `indicators` (5-day, `max_workers=1`) | 1.4 min | 5,574 |
-  | `events` (5-day) | 1.2 min | 3,119 |
-  | `path_capture` (incremental) | 1.2 min | 17,117 |
-  | `peak_labels` | 1.0 min | 484,929 |
-  | `sync` (**incremental**, COPY) | **0.4 min** | 104,669 |
-  | **total** | **~21 min** | |
-
-  **Measured end to end 2026-08-26 19:00 PT: 20.5 minutes**, on 1,470
-  tickers, against ~4h35m two days earlier. What changed, in order of size:
-
-  | | before | after |
-  |---|---|---|
-  | `earnings` | 43.5 min | **0.6** — the Finnhub calendar is bulk and was being asked per symbol |
-  | `sync` | 114.2 min | **0.4** — incremental bound, then `COPY` instead of a dict per row |
-  | `bars_hourly` | 54.5 min | **5.4** — batched fetch, then three per-ticker scans removed |
-  | `actions` | 21.3 min | **4.0** — batched, and the cache key now carries a date |
-
-  - **A second measured run, 2026-08-28 13:36 PT, totalling 36.8 minutes**
-    — the first one Task Scheduler ran rather than a hand-typed command,
-    on the same 1,470 tickers. Recorded beside the 08-26 column rather
-    than replacing it, because the two disagree on exactly two steps and
-    only one of them is understood:
-
-    | step | 08-26 | 08-28 | rows 08-28 |
-    |---|---|---|---|
-    | `bars_daily` | 5.0 | 3.4 | 7,192 |
-    | `bars_hourly` | 5.4 | 3.8 | 50,743 |
-    | `actions` | 4.0 | **13.0** | 348 |
-    | `market` | 0.0 | 0.0 | 5 |
-    | `shares` | **0.7** | **10.0** | 235,839 |
-    | `earnings` | 0.6 | 0.6 | 1,179 |
-    | `indicators` | 1.4 | 1.7 | 6,978 |
-    | `events` | 1.2 | 1.7 | 3,643 |
-    | `path_capture` | 1.2 | 1.0 | 20,693 |
-    | `peak_labels` | 1.0 | 1.0 | 490,436 |
-    | `sync` | 0.4 | 0.5 | 107,845 |
-    | **total** | **~21** | **36.8** | |
-
-    **`shares` at 0.7 min is a cache read, not a measurement.** 236,008 rows
-    at `RATE_LIMIT_PER_SEC = 0.5` cannot complete in 42 seconds — that is
-    this file's own test for a cache hit, applied to a row in this file's
-    own table. The 10.0 min figure agrees with the note further down that
-    `shares` went to ten minutes when the universe reached 1,470, so **10
-    minutes is the real cost and ~21 min was never a cold total.**
-
-    `actions` at 4.0 against 13.0 is *not* explained. Its recent history is
-    0.3 / 4.0 / 14.7 / 13.0, and 0.3 is the known dateless-cache-key bug.
-    Treat it as unresolved rather than quoting either end.
-
-    **Budget 35-40 minutes for a cold nightly**, not 21.
-
-  - **This table has been wrong three separate ways, all on 2026-08-26.**
-    Read the failure modes before trusting a figure in it.
-    1. **The sum was never re-added.** `bars_hourly` was batched, the row
-       was updated, the total stayed at ~4h35m. A session quoted it back as
-       fact. **Re-add the column when you change a row.**
-    2. **`actions` 21.3 min was a cache miss, and 0.3 min was the bug.**
-       `fetch_actions` keyed on the bare ticker with no date, so it always
-       hit and fetched nothing — 640 tickers had zero corporate actions
-       after 2026-07-31. Neither number described a working step. See
-       `BACKLOG.md`.
-    3. **`path_capture` 41.2 min / 6.5M rows was a post-rebuild
-       catch-up, not a nightly.** The `runs` history is unambiguous: normal
-       nights are **1-3 min / 10-25k rows**, and the ~41 min runs follow a
-       full backtest, which creates millions of events with incomplete
-       forward windows. Throughput is *higher* on those (2,627/s against
-       285/s), so the short runs are fixed overhead rather than slow work.
-       Nothing is wrong with the step.
-
-    The shared lesson: **a step has regimes, and one measurement is one
-    regime.** Check `runs` for the distribution before recording a number
-    here.
-  - **Indicator chunking does not appear here and should not.** It
-    fixed the full-history rebuild, where 1,462 tickers held 11 GB
-    resident. Nightly's `indicators` step is a 5-day window at 0.4 min
-    and never touched that path.
-  - **`cscan sync` and nightly's sync are different commands now.** The
-    bare command still copies everything; nightly passes
-    `incremental=True`, bounded by the **serving store's own watermark** so
-    a Pi that missed a night is caught up rather than left with a hole. A
-    full pass is still ~7.4M rows -- run it after a rebuild or a reflash.
-  - **`sync` writes via `COPY` into a TEMP staging table** (`bd8cbc5`).
-    Measured 78,589 rows/s against ~1,090 for the dict path. Profiling said
-    the obvious suspects were wrong: the Pi was 76% idle (load 1.11 of four
-    cores, SD card 15% utilised) while the workstation held 894 MB and
-    53.8% of *one* core. It was `to_dict("records")` and SQLAlchemy
-    re-binding, not the network and not the database.
-  - **`indicators` runs `max_workers=1` in nightly** (`cli.py`). Harmless at
-    a 5-day window; do not read 1.4 min as what the step costs on history.
-  - **`bars_hourly` at 5.4 min is `_back_adjust_hourly`, not fetching.**
-    The fetch is ~15 batched requests, about 30 seconds. Predicting ~2 min
-    was wrong and the remainder is real per-ticker computation.
-
-**Editing a module while a job runs gives it a split brain.** Found
-2026-08-26: `cscan nightly` imported `db_io` at startup, then imported
-`sync` **lazily** when the sync step began -- picking up a `sync.py` edited
-in between, which called a `db_io.copy_upsert` that the already-cached
-`db_io` module did not have. It failed instantly with `module
-'capitalscan.jobs.db_io' has no attribute 'copy_upsert'`.
-
-Nothing was corrupted, and the failure was loud. But the rule is wider than
-"no concurrent writers": **a long-running job holds whichever modules it has
-already imported and picks up the rest from disk as it reaches them.** Edit
-freely during a job whose remaining steps you are not touching; do not edit
-a module the job has not reached yet.
-
-  - **Three fetchers account for ~2 hours of that**, and only because they
-    request one ticker at a time. `bars_hourly` was batched on 2026-08-26
-    (54.5 min -> ~1 min); `actions` and `earnings` are not, and are in
-    `BACKLOG.md`. `bars_daily` does the whole universe in 4.9 minutes by
-    batching, which is the comparison that makes the point.
-  - **Every per-step average recorded before 2026-08-26 was measured on ~929
-    tickers.** The universe is now 1,470, so scale by ~1.6 before using an
-    old figure -- `shares` went from a 2.2 min average to 10 minutes on
-    exactly that change, and a stale threshold caused two false "this is
-    stuck" alarms in one night.
-- `cscan bars --daily --lookback 8000`: **11 minutes for 521 tickers /
-  2,002,797 rows** (measured 2026-08-25). Do **not** extrapolate from a small
-  sample: 10 tickers took 2m37s, which predicts 2h20m and is wrong by an
-  order of magnitude, because `_batch_key` puts every ticker in one
-  `yf.download` rather than one request each. Per-ticker timing does not
-  scale here.
-- `cscan indicators`: the slow one, and **it writes nothing until it
-  finishes** -- results are collected across all tickers then upserted once.
-  Querying `indicators` mid-run returns the pre-run count, which looks
-  exactly like a hang. Two working runs were killed on 2026-08-25 for that
-  reason. Pass `--workers 8`; it defaults to 1.
-- `cscan bars --hourly --backfill`, all tickers: **~4.5-5.5 hours**. Yahoo caps hourly at 60 days per request, so backfill walks 13 sequential windows per ticker at 0.5 req/s. No incremental path — already-stored data does not reduce the cost.
-- `cscan universe --quarter`, one quarter: **~18 seconds** on the
-  1,563-ticker universe, so a full 66-quarter backfill is **~20 minutes**
-  (measured 2026-08-26, all 66 quarters `ok`, zero failures).
-  - This line has been wrong twice. It said ~10s, true at an earlier
-    universe size. It was then "corrected" to ~2.6 min on 2026-08-25 --
-    a figure taken while every `localhost` connect cost 130 seconds, so
-    it measured the IPv6 bug rather than the job.
-  - Use `scripts/universe_backfill.ps1` rather than a hand-rolled loop. It
-    resumes (`-StartFrom 2017Q3`), times each quarter, and collects failures
-    instead of dying on one bad quarter.
-  - **Never run it while a backtest is running.** Not locking -- MVCC handles
-    that -- but determinism: workers resolving eligibility against a
-    `universe` that changes mid-run produce different output for one config,
-    violating ADR 060.
-
-**`cscan sync` picks its generation from the RESEARCH database's GUC, not
-from `core/config.py` and not from `serving_config`.** `run_sync` opens with:
-
-```python
-config_hash = conn.execute(
-    text("SELECT current_setting('capitalscan.default_config_hash', true)")
-).scalar_one()
-```
-
-on the **source** connection. So after a deliberate config change the order
-that works is:
+**`cscan sync` picks its generation from the RESEARCH database's GUC**, not from `core/config.py` and not from `serving_config`. After a deliberate config change:
 
 ```
 1. edit core/config.py
@@ -624,78 +167,25 @@ that works is:
 4. cscan sync                # now copies the right generation
 ```
 
-Skipping step 2 cost 42.5 minutes on 2026-08-29: the sync ran, reported
-`synced 7,499,059 rows`, exited 0, and copied **zero rows of the new
-generation** — it faithfully re-copied the old one. Nothing in the output
-says which hash it used, and `rows_written` looks identical either way.
+Skipping step 2 re-copies the old generation, reports `synced N rows`, and exits 0 -- nothing in the output names the hash. `capscan` IS superuser on research, so `ALTER DATABASE` needs no `sudo -u postgres` here (it does on the Pi).
 
-**`capscan` IS superuser on research**, unlike on the Pi, so `ALTER DATABASE`
-works here without `sudo -u postgres`. That asymmetry is easy to forget after
-reading the Pi note below.
-
-**Check all three before trusting a sync:**
+**Check all three agree before trusting a sync or a manual query:**
 
 ```sql
--- research
-SELECT current_setting('capitalscan.default_config_hash', true);
--- serving, on the Pi
-SELECT config_hash FROM serving_config;
+SELECT current_setting('capitalscan.default_config_hash', true);   -- research
+SELECT config_hash FROM serving_config;                            -- serving, on the Pi
 ```
 ```
 uv run python -c "from capitalscan.jobs.config import config_hash, resolve_config; print(config_hash(resolve_config()))"
 ```
 
-**A `psql` session on the Pi reads the WRONG config generation.**
-`run_sync` ends by pinning `capitalscan.default_config_hash` on the serving
-database and **cannot**: custom `capitalscan.*` parameters need superuser,
-and `capscan` is not one. The failure is logged and explicitly called
-harmless, because `web/lib/db.ts` sets the hash on every connection from
-`serving_config` (ADR 115) — so the *site* is always right.
-
-What it is not harmless for is **you**, verifying by hand:
-
-    psql on the Pi   current_setting(...)  ->  f66729c7eda212a4   (stale)
-    serving_config                         ->  a38d3ca6b58295e8   (live)
-
-Every serving view filters on that GUC, so a manual query silently reads a
-generation the site does not serve. Hit 2026-08-26: `SELECT count(*) FROM
-v_screen_live WHERE signal_date='2026-08-26'` returned **0** while the page
-rendered 138 rows for that date. The instrument was wrong, not the system.
-
-**Fixable, as of 2026-08-27.** `capscan` cannot set a custom parameter,
-but `postgres` can, and SSH to the Pi gives you that:
-
-```bash
-ssh darischen@192.168.1.30 "sudo -u postgres psql -c   \"ALTER DATABASE capitalscan_serving SET capitalscan.default_config_hash = '<hash>'\""
-```
-
-**Re-run it after every rebuild**, because `run_sync`'s own pin still fails
--- it connects as `capscan`. Verify the two agree before trusting any
-manual query:
-
-```sql
-SELECT current_setting('capitalscan.default_config_hash', true),
-       (SELECT config_hash FROM serving_config);
-```
-
-If they disagree, or you would rather not touch the database default, set
-it per session instead:
-
-```sql
-SET capitalscan.default_config_hash = '<hash from serving_config>';
-```
+**A `psql` session on the Pi reads the wrong generation.** `run_sync`'s pin on the serving DB fails silently (needs superuser); the site is fine because `web/lib/db.ts` sets the hash per connection from `serving_config` (ADR 115), but a hand query reads a generation the site does not serve. Re-pin after every rebuild via SSH as `postgres`, or `SET capitalscan.default_config_hash = '<hash>'` per session. → `OPERATIONS.md`
 
 ---
 
-**Every timestamp in `runs` is UTC, and nothing in the output says so.**
-The research database is `TimeZone = Etc/UTC`, so `psql` prints `+00` and a
-row reads `13:00:11`. In PDT that is **06:00**, seven hours earlier than it
-looks. Misread once on 2026-08-27: a sync scheduled for 1pm PT was found
-"already running at 13:00" and reported as in flight. It had started at
-6am and been dead for three hours.
+## Reading `runs`
 
-Convert before quoting a `runs` time, and get the offset from the database
-rather than assuming seven -- PST is eight:
+**Every timestamp is UTC and nothing says so.** The research DB is `TimeZone = Etc/UTC`; a row reading `13:00` is 06:00 PDT. Convert, and get the offset from the DB (PST is eight, not seven):
 
 ```sql
 SELECT started_at AT TIME ZONE 'America/Los_Angeles' AS started_pt,
@@ -703,11 +193,7 @@ SELECT started_at AT TIME ZONE 'America/Los_Angeles' AS started_pt,
 FROM runs ORDER BY started_at DESC LIMIT 5;
 ```
 
-**`status = 'running'` is not evidence a job is running.** It means a row
-was opened and never closed, which is also what a power loss, a kill and a
-crash leave behind. A job that dies mid-run cannot write `finished_at`, so
-the corpse is indistinguishable from live work by that column alone. Check
-for a process and a backend before believing it:
+**`status = 'running'` is not evidence a job is running.** A crash, kill, or power loss leaves the same row -- `finished_at` never gets written. Check for a live backend and a process:
 
 ```
 SELECT count(*) FROM pg_stat_activity
@@ -716,8 +202,7 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
   Where-Object { $_.CommandLine -like '*cscan.exe*' }
 ```
 
-Zero live backends and no `cscan` process means the row is stale. Mark it
-`failed` rather than leaving it, because the next reader hits the same trap.
+Zero backends and no `cscan` process means the row is stale. Mark it `failed`, because the next reader hits the same trap.
 
 ---
 
@@ -747,12 +232,15 @@ Native Windows. The only Linux is inside the Postgres container, and that is tra
 
 `ProcessPoolExecutor` uses **spawn**, not fork. Every job module must be importable with no side effects, every entry point needs `if __name__ == "__main__":`, and workers open their own database connections because connections are not picklable. Getting this wrong causes recursive process creation, which looks like a hang.
 
-Scheduling is *intended* to be Windows Task Scheduler with catch-up enabled,
-not cron or systemd. **Nothing is registered today.** Checked 2026-08-21:
-`Get-ScheduledTask` returns no entry for `nightly`, `weekly` or the poller,
-and every row in `runs` got there from a hand-run command. This line asserted
-a live schedule until then, and that assertion was quoted back as fact in a
-session before anyone checked it. Treat `nightly` and `weekly` as manual.
+Scheduling is Windows Task Scheduler with catch-up enabled, not cron or
+systemd. **`CapitalScan nightly` is registered and `Ready`** (checked
+2026-09-01); the 2026-08-28 run was the first Task Scheduler fired rather
+than a hand-typed command. `weekly` has no task and stays manual. The poller
+runs on the Pi (see below).
+
+On 2026-08-21 nothing was registered and this line still claimed a live
+schedule; the false claim was quoted back as fact in a session before anyone
+ran `Get-ScheduledTask`. Run it rather than trusting this paragraph.
 
 **The poller moved to the Pi on 2026-08-28 (ADR 158), and this changes what
 you may run during market hours.** It is the one genuinely scheduled thing
@@ -787,9 +275,9 @@ Three consequences worth knowing before relying on it:
 
   **The live hash is `0523841076f47293` as of 2026-08-29** (arm `t5_atr20`:
   `target_pct` 0.05, `stop_atr_k` 2.0; commit `42ae20a`, RESULTS
-  2026-08-29). It moved from `a38d3ca6b58295e8`, which this file still
-  names in the two 2026-08-26 anecdotes above and which stays resident as
-  the prior serving generation. Confirm against all three before trusting a
+  2026-08-29). It moved from `a38d3ca6b58295e8`, which the `OPERATIONS.md`
+  and `TIMINGS.md` anecdotes still name and which stays resident as the
+  prior serving generation. Confirm against all three before trusting a
   manual query: `serving_config`, the research GUC, and
   `config_hash(resolve_config())`.
 - **Nightly must still run on the workstation**, because
