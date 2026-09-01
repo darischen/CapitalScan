@@ -7,6 +7,19 @@ Description=Start the CapitalScan poller wrapper at midnight
 # is already up and logging hours before the session -- a failure to start
 # is then visible in the morning rather than at the open.
 OnCalendar=*-*-* 00:00:00
+
+# Also fire ~2 min after every boot. Persistent=true only catches up a
+# trigger MISSED while the timer was inactive; once 00:00 has fired today
+# its stamp is written and a later crash-and-reboot gets no catch-up, so a
+# power loss between 00:00 and the 06:45 open would silently lose the whole
+# session. OnBootSec re-launches the wrapper on that reboot: it re-checks
+# the trading-day guard, then either resumes polling (reboot 06:45-13:00),
+# waits for the open (reboot before 06:45), or exits cleanly (after close).
+# Safe to run twice a day -- poller_sessions is keyed on session_date,
+# bars_live on (ticker, session_date), and duplicate signals are blocked by
+# _already_fired(chash, ticker, today, signal_type).
+OnBootSec=2min
+
 Persistent=true
 Unit=capitalscan-poller.service
 
