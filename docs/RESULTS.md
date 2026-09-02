@@ -5463,3 +5463,77 @@ arms, held until that sweep is closed out.
 is in `.gitignore`. It needs its own backup, or the reproducibility
 guarantee for those 12 arms is only as good as one disk. WAL was left at
 `max_wal_size = 4GB` deliberately.
+
+---
+
+## 2026-09-01 — `max_hold_days` swept: the window is not where the money is
+
+**The arms were computed 2026-08-29/30 and nobody read them until now.**
+`h3_t5_atr20` (`f7d7bcd52ec48c22`) and `h10_t5_atr20` (`d750336f30551cab`)
+each hold 1,379,144 events with 597,605 carrying `net_ret` — complete, and
+run in 2h42m and 2h32m. They were built with `--no-stats`, which is why
+`cell_stats` is 0 for both and correct: `hit_flags` reads
+`fwd_ret_{horizon}d`, a fixed-window market fact that cannot respond to an
+exit-policy change.
+
+**Counting every fire, at the shipped 5% target and ATR k=2.0:**
+
+| | train | validate | p0.1 | worst | sd | timeout |
+|---|---|---|---|---|---|---|
+| hold=3 | −3.90 bp | +1.26 | −18.37% | −48.39% | 3.30% | 71.8% |
+| **hold=5 — live** | **−2.77 bp** | +7.48 | −18.98% | −48.39% | 3.74% | 56.4% |
+| hold=10 | −3.00 bp | +17.69 | −19.50% | −48.39% | 4.30% | 29.4% |
+
+n = 310,749 train / 75,112 validate, identical across all three.
+
+### The shipped config is confirmed, and the margin is noise
+
+**On train, hold=5 wins by 0.23 bp over hold=10 and 1.13 bp over hold=3.**
+With sd 3.74% and n 310,749 the standard error is ~0.67 bp, so the winning
+margin is a quarter of one standard error — and that is before any
+correction for serial dependence, which only widens it. **No arm is
+statistically distinguishable from any other.** The right conclusion is not
+"hold=5 is best" but "the holding window does not matter at this target and
+stop".
+
+**Validate disagrees and must not be used to choose.** It ranks
+hold=10 (+17.69) > hold=5 (+7.48) > hold=3 (+1.26), monotonic and a much
+wider spread. Selecting on it would be choosing the best of three at their
+luckiest, which is the discipline the exit sweep already fixed once.
+
+### What this settles, which is the reason it was run
+
+The open question after the stop sweep was whether `t5_nostop`'s win was
+real or an artifact: 72.6% of its trades exited on the clock, so "the stop
+costs money" and "five days is the wrong window" were not separable.
+
+**They are now separable, and the window is not the explanation.** Moving
+the window from 3 to 10 days — which moves the timeout rate from 71.8% to
+29.4%, a larger swing than removing the stop produced — changes train mean
+by **1.13 bp**. The stop moved it by **~9 bp** across its range. The stop is
+the dominant exit parameter by roughly an order of magnitude, and
+`max_hold_days` is not a hidden second one.
+
+So the stopless result stands as measured, and the case against shipping it
+remains what ADR 161 says it is: the tail, not the holding window.
+
+### Two things worth carrying
+
+**Filtering on `is_cluster_head` makes these arms non-comparable, and the
+first pass at this table did it.** Cluster membership is computed from
+`days_since_head`, which depends on `max_hold_days`, so the filter returns a
+*different population per arm* — 104,460 / 78,432 / 51,832 train rows for
+hold 3 / 5 / 10. Read that way the arms appeared non-monotonic with the
+splits disagreeing, which is an artifact of comparing three different
+populations. Counting every fire gives all three the same 310,749 and the
+picture resolves.
+
+This is a sharper version of the 2026-08-29 cluster finding: the filter is
+not merely conservative, it is *not invariant to the parameter being
+swept*. Any future sweep touching the holding window must count every fire.
+
+**Dispersion rises monotonically with the window** — sd 3.30% → 3.74% →
+4.30% — while the worst trade is identical across all three (−48.39% train,
+−39.55% validate, the same trade gapping through every configuration). A
+longer hold buys variance without buying tail risk, which is a different
+trade from the stop, where loosening bought mean *and* tail.

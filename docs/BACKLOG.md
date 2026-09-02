@@ -1984,24 +1984,32 @@ Work that is decided, understood and deliberately not next. Nothing here
 blocks the move or the daily chain. Ordered by what each one would change
 if it were run.
 
-### The `max_hold_days` sweep — 3 / 5 / 10
+### ~~The `max_hold_days` sweep — 3 / 5 / 10~~ — **done; arms were already built, read 2026-09-01**
 
-**ADR 161 names this as the open question behind the shipped exit policy.**
+**The arms had been computed on 2026-08-29/30 and nobody read them.**
+`h3_t5_atr20` and `h10_t5_atr20` were already in `scripts/exit_sweep.py`'s
+grid and already in `events` -- 1,379,144 rows each, 597,605 with
+`net_ret`, 2h42m and 2h32m of compute. The open item was analysis, not
+machine time.
 
-**This is the one that decides a live parameter**, and RESULTS 2026-08-29
-names it as the test that settles the stop question. At the shipped config
-**51.5% of trades exit on the five-day timeout**, against 33.1% under the
-old default and 72.6% with no stop. Loosening the stop pushed trades out of
-the stop and into the clock, so the exit rule is increasingly "hold a week
-and take what is there" — and the length of that week has never been
-tested.
+**Result: the window does not matter, and hold=5 stays.** Counting every
+fire, train means are −3.90 / **−2.77** / −3.00 bp for hold 3 / 5 / 10. The
+winning margin is 0.23 bp against a standard error of ~0.67, so no arm is
+distinguishable from another. RESULTS 2026-09-01 has the table.
 
-Until it is, **"the stop is costing money" and "five days is the wrong
-window" are not separable**, which is exactly why 5% + k=2.0 shipped
-instead of the stopless arm that beat it on mean.
+**It settles what it was run to settle.** Moving the window 3 → 10 swings
+the timeout rate 71.8% → 29.4% — a bigger swing than removing the stop
+produced — and moves train mean by 1.13 bp against the stop's ~9 bp. So
+`max_hold_days` is not a hidden second dominant parameter, "the stop costs
+money" and "five days is the wrong window" are separable, and the case
+against shipping stopless remains the tail (ADR 161).
 
-Three arms, one knob, same universe, and the runner already exists. ~2h40m
-per arm on the workstation, so one evening.
+**One methodological finding, promoted to the entry below.** The first pass
+filtered `is_cluster_head` and got three *different populations* (104,460 /
+78,432 / 51,832), because cluster membership derives from `days_since_head`
+which derives from `max_hold_days`. The filter is not invariant to the
+parameter being swept. That is a stronger argument for the next item than
+the 7-9 bp gap already recorded.
 
 ### Count every fire in backtest returns, keep the filter in `cell_stats`
 
@@ -2016,6 +2024,20 @@ one rule to both:
   construction and dropping the filter would take train `n` from 78k to
   311k and narrow every interval ~2x — the direction that manufactures
   significance.
+
+**A second argument arrived 2026-09-01, and it is stronger than the 7-9 bp
+gap.** The filter is **not invariant to the parameter being swept**.
+Cluster membership is computed from `days_since_head`, which depends on
+`max_hold_days`, so filtering on it during that sweep returned a different
+population per arm — 104,460 / 78,432 / 51,832 train rows for hold 3 / 5 /
+10. Read filtered, the arms looked non-monotonic with the splits
+disagreeing; counting every fire gave all three the same 310,749 and the
+picture resolved.
+
+So this is not only "the filter costs 7-9 bp of measured return". It is
+"the filter can invent an effect that is not there", for any sweep touching
+a parameter clustering depends on. That makes it a correctness issue for
+future sweeps rather than only an accounting one.
 
 The work is separating the two paths, not choosing between them. It
 changes published return figures, so it needs an ADR.
