@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import date
 from typing import cast
 
 import pandas as pd
@@ -82,7 +83,10 @@ def _fetch_json(url: str) -> dict:
     return cast(dict, _get(url).json())
 
 
-@cached(source="sec_tickers", key_fn=lambda: "company_tickers")
+@cached(
+    source="sec_tickers_v2",
+    key_fn=lambda: f"company_tickers_{date.today():%Y-%m-%d}",
+)
 def fetch_cik_lookup() -> pd.DataFrame:
     """Ticker -> CIK mapping from SEC's published `company_tickers.json`."""
     raw = _fetch_json(TICKERS_URL)

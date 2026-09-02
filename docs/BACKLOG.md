@@ -1104,43 +1104,52 @@ SNPS, ORCL, MSFT all carry bars through 2026-09-01.
 
 **What the investigation actually found is upstream, and it is real.**
 
-**The ticker universe seed is never refreshed automatically.**
-`run_tickers_refresh` is reachable only through `cscan tickers --refresh`.
-It is **not in `nightly`** -- confirmed against `cli.nightly`'s source,
-whose ingest calls are `bars_daily`, `bars_hourly`, `market`, `actions`,
-`shares`, `earnings` and nothing else. `runs` says it last executed
-**2026-08-25**, and before that 2026-08-01.
+**`run_tickers_refresh` could not refresh, and had not since 2026-07-31.**
+Both Wikipedia fetchers and `sec.fetch_cik_lookup` keyed their cache on a
+**constant string** — `key_fn=lambda: "current_constituents"` — so the
+first fetch answered every later one forever. The cached snapshot was 32
+days old and `cscan tickers --refresh` replayed it in under a second, which
+`CLAUDE.md` names as the signature of a cache read.
 
-So a new S&P 500 constituent, or a rename, enters the system only when
-someone remembers a command.
+Third instance of one class: `yahoo_daily` → `_v2`, then `fetch_actions` →
+`yahoo_actions_v2` (2026-08-26), now these. The rule was in `CLAUDE.md` and
+nothing enforced it, so each sibling had to be found by hand.
+**Fixed 2026-09-01**: all three keys carry the date, `source` bumped to
+`_v2`, and `test_fetch_cache_keys_expire.py` now fails on a constant key so
+the fourth instance is caught by CI rather than by a person.
 
-**Proven instance: `FI` does not exist.** Fiserv renamed FISV -> FI in 2024
-and is a current constituent. `tickers` holds the stale `FISV` row, flagged
-inactive, and **no row for `FI` at all** -- therefore no bars, no
-`universe` rows, no events, and no possibility of detecting on it. FISV
-itself has 0 universe rows and 0 events, so the name has been absent from
-the study entirely since the rename.
+`sec.fetch_cik_lookup` was the worse of the three: frozen, a new company
+resolves no CIK, therefore no SEC market cap, therefore fails `crit_mcap`
+silently.
 
-This is a coverage gap wearing the shape of a stale flag, which is why it
-survived being looked at twice. It also bears on ADR 035: the universe is
-*seeded* from S&P 500 membership, and a seed that is refreshed by hand
-drifts from the index it claims to track.
+**`run_tickers_refresh` is still not in `nightly`**, which is the remaining
+open half. Adding it changes the trade universe on a schedule and ADR 060
+makes universe definition config, so it is a decision rather than two
+lines.
 
-**The fix is a decision, not a lookup**, which is why it is recorded rather
-than applied:
+---
 
-- Adding `run_tickers_refresh` to `nightly` is two lines, but it changes
-  the trade universe on a schedule, and ADR 060 makes universe definition
-  config. A constituent appearing mid-week between a backtest and its
-  statistics is exactly the determinism problem `universe --quarter`
-  already has rules about.
-- Running it by hand now would add whatever has accumulated since
-  2026-08-25 in one step, unmeasured. Worth doing deliberately, with the
-  diff read before and after, not as a side effect of this investigation.
-- Neither option addresses renames directly: `FI` would be *added*, but
-  nothing links it to `FISV`'s history, so its bars start at the rename.
-  Whether that matters is a survivorship question ADR 035 already has
-  opinions about.
+**A correction, recorded because it was asserted twice before being
+checked.** An earlier version of this entry claimed `FI` was missing
+because Fiserv renamed FISV → FI, and called that a proven coverage gap.
+**That was wrong, and it came from memory rather than from the source of
+record.** The live 2026-09-01 scrape lists **`FISV`**, and contains the
+recent additions (SW, SOLV, GEV, TKO), so it is not itself stale.
+
+What was true: **FISV was wrongly flagged `is_active = false`**, so
+`_resolve_tickers(None)` excluded it and its bars stopped at 2026-08-17
+while the rest of the universe reached 2026-09-01. The refresh corrected
+it — 1,462 → 1,463 active.
+
+Cross-checked afterwards against the live list: **zero** rows flagged
+inactive are current constituents, and the 960 active non-constituents are
+ADR 035's historical union plus the NYSE/Nasdaq seeds, as intended. So the
+flags are now consistent, and FISV was the single wrong one.
+
+**The live refresh added no tickers**, which also bounds what the cache
+freeze cost: the index did not change in those 32 days. The bug was real
+and its data impact this time was one flag — it would have hidden the next
+change indefinitely, which is the part worth fixing.
 
 ### Depositary listings have no pre-2018 history
 

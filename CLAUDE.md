@@ -12,9 +12,9 @@ criteria in `UniverseParams.required_criteria` read price, SMA200, slope and
 relative return, and market cap resolves from SEC XBRL by CIK **with a Yahoo
 fallback for names that have none** (68 tickers today, `shares_outstanding.source`).
 
-**The seed is refreshed by hand and drifts** — `run_tickers_refresh` is not in `nightly`, last ran 2026-08-25, and `FI` is missing entirely, so Fiserv has been absent since its 2024 rename. → `BACKLOG.md`
+**The seed is refreshed by hand** — `run_tickers_refresh` is not in `nightly`. Until 2026-09-01 it could not refresh at all: the Wikipedia and SEC fetchers keyed their cache on a constant string, so the constituent list was frozen at 2026-07-31. Keys now carry the date. → `BACKLOG.md`
 
-**`is_active = false` with `delisted_on = NULL` is not a bug** — it means "not a current constituent", usually a rename. Investigated twice; do not re-raise. → `BACKLOG.md`
+**`is_active = false` with `delisted_on = NULL` is not a bug** — it means "not a current constituent". Verified 2026-09-01 against a live scrape: **zero** such rows are in the index. Investigated twice; do not re-raise. → `BACKLOG.md`
 
 QQQ is the proof and it was added by hand: no CIK, no sector, 5,280 daily
 bars, 66 universe evaluations, `in_trade` true at $289B, and 29,343 events.
