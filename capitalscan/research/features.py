@@ -293,6 +293,7 @@ def build_training_frame(
         kept = kept.dropna(subset=list(LABEL_COLS)).reset_index(drop=True)
     dropped_no_label = before - len(kept)
 
+    kept = _coerce_boolean_features(kept)
     kept = _add_derived(kept)
     report = FrameReport(
         rows=len(kept),
@@ -301,6 +302,48 @@ def build_training_frame(
         dropped_no_label=dropped_no_label,
     )
     return kept, report
+
+
+#: Feature columns that are `boolean` in Postgres. Named rather than
+#: sniffed, so a new boolean feature has to be added here deliberately.
+BOOL_FEATURE_COLS: tuple[str, ...] = ("above_sma200", "k_cross_up", "k_cross_down")
+
+
+def _coerce_boolean_features(frame: pd.DataFrame) -> pd.DataFrame:
+    """Restore `bool` dtype to boolean columns after the row drops.
+
+    **This is a dtype-survival bug, and it broke every fit.** `read_sql`
+    returns `object` for a boolean column containing any NULL. The drops
+    above then remove the offending rows -- but pandas does not
+    re-infer, so the column stays `object` with only `True`/`False` in it.
+    LightGBM refuses:
+
+        ValueError: pandas dtypes must be int, float or bool.
+        Fields with bad pandas dtypes: above_sma200: object
+
+    Measured 2026-09-02 on the live config: `train` came back `object` and
+    `validate` came back `bool`, from the same query, purely because one
+    split happened to contain a dropped row with a NULL. So it failed on
+    one split and not the other, and `research/train.py::fit_head` failed
+    with it -- the whole Phase 6 training path.
+
+    **Raises rather than coercing a surviving NULL.** After the drops there
+    should be none; if there is, `astype(bool)` would silently turn it into
+    `True`, which is invariant 4's exact prohibition wearing a cast.
+    """
+    out = frame.copy()
+    for col in BOOL_FEATURE_COLS:
+        if col not in out.columns:
+            continue
+        nulls = int(out[col].isna().sum())
+        if nulls:
+            raise ValueError(
+                f"{col} has {nulls} NULL value(s) after the training-frame drops. "
+                "Casting them to bool would invent True; drop the rows or repair "
+                "the source (invariant 4)."
+            )
+        out[col] = out[col].astype(bool)
+    return out
 
 
 def _add_derived(frame: pd.DataFrame) -> pd.DataFrame:

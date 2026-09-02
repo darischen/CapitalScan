@@ -2534,6 +2534,110 @@ def stats_returns(
         )
 
 
+model_app = typer.Typer(help="Model layer (Phase 6, ADR 113)")
+
+
+@model_app.command("gate")
+def model_gate(
+    config_hash: str = typer.Option(..., "--config-hash", help="Config generation to evaluate"),
+    out: str | None = typer.Option(None, "--out", help="Write the per-head table to this CSV"),
+) -> None:
+    """ADR 113 check 5 and DESIGN 7.6 coverage, on the **validate** split.
+
+    Fits each of the twenty heads once on all of train and scores it on a
+    split it has never seen. `cscan model fit` (research/train.py) answers
+    a different question -- walk-forward CV *inside* train -- and returns
+    no booster on purpose.
+
+    **Check 5's baseline is the global unconditional quantile** (ADR 167).
+    ADR 113 said "per-ticker-year", inherited from the cell grid; across
+    ADR 019's temporal split the ticker-year overlap is zero and a faithful
+    reconstruction would be an oracle fitted on the labels being scored.
+    Per-sector and per-ticker are reported and gate nothing.
+
+    **The kill criterion hangs on check 5**, so this command prints it
+    plainly rather than burying it: a model no better than a constant
+    retires the two-indicator hypothesis at the model layer.
+    """
+    from capitalscan.jobs import db_io
+    from capitalscan.research import features as feat_mod
+    from capitalscan.research import promotion
+
+    engine = db_io.get_engine()
+
+    console.print("building frames...")
+    train_frame, train_report = feat_mod.build_training_frame(engine, config_hash, split="train")
+    val_frame, val_report = feat_mod.build_training_frame(engine, config_hash, split="validate")
+    for label, frm, rep in (
+        ("train", train_frame, train_report),
+        ("validate", val_frame, val_report),
+    ):
+        console.print(
+            f"  {label:<9}{len(frm):>8,} rows   "
+            f"(dropped: {rep.dropped_etf} etf, "
+            f"{rep.dropped_missing_sector} no-sector, {rep.dropped_no_label} no-label)"
+        )
+
+    if val_frame.empty:
+        console.print("[red]validate split is empty[/red]; nothing to check")
+        raise typer.Exit(code=1)
+
+    # The fold builder needs the exchange calendar to place a horizon's
+    # forward window. Read from `trading_days` rather than counting calendar
+    # days: a five-day horizon spans a weekend.
+    from sqlalchemy import text as _text
+
+    with engine.connect() as conn:
+        calendar = list(conn.execute(_text("SELECT d FROM trading_days ORDER BY d")).scalars())
+    console.print(f"fitting {len(promotion.train.all_heads())} heads on train...")
+    report = promotion.run_gate(train_frame, val_frame, calendar)
+
+    frame = report.summary()
+    console.print(frame.to_string(index=False))
+
+    if out:
+        frame.to_csv(out, index=False)
+        console.print(f"wrote {out}")
+
+    beat = sum(1 for e in report.evaluations if e.beats_global)
+    beat_sector = sum(1 for e in report.evaluations if e.beats_sector)
+    cov = sum(1 for e in report.evaluations if e.coverage_ok)
+    total = len(report.evaluations)
+
+    console.print("")
+    console.print(
+        f"[bold]check 5[/bold] (ADR 113/167): {beat}/{total} heads beat the global baseline"
+    )
+    console.print(f"  of those, {beat_sector}/{total} also beat the per-sector baseline")
+    console.print(
+        f"[bold]coverage[/bold] (DESIGN 7.6): {cov}/{total} heads within "
+        f"{promotion.COVERAGE_TOLERANCE:.0%} of nominal"
+    )
+    console.print("")
+
+    if report.check5_passes:
+        console.print(
+            "[green]check 5 PASSES[/green]: at least one head beats the baseline out of sample"
+        )
+    else:
+        console.print(
+            "[red]check 5 FAILS[/red]: no head beats the unconditional baseline on validate.\n"
+            "ADR 113's kill criterion applies -- the two-indicator hypothesis is retired at "
+            "the model layer, and Phase 6 closes with that recorded."
+        )
+    if report.coverage_passes:
+        console.print("[green]coverage PASSES[/green]: every tau within tolerance")
+    else:
+        console.print(
+            "[yellow]coverage FAILS[/yellow]: at least one tau is outside tolerance (gate check 3)"
+        )
+
+    raise typer.Exit(code=0 if report.check5_passes else 1)
+
+
+app.add_typer(model_app, name="model")
+
+
 app.add_typer(stats_app, name="stats")
 
 

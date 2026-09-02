@@ -1192,22 +1192,82 @@ freeze cost: the index did not change in those 32 days. The bug was real
 and its data impact this time was one flag — it would have hidden the next
 change indefinitely, which is the part worth fixing.
 
-### Depositary listings have no pre-2018 history
+### Depositary listings have no pre-2018 history — **investigated 2026-09-02: the proposed fix would fabricate numbers**
 
 Not a wrong number — a missing one, and the distinction matters when
 coverage is quoted.
 
-`is_depositary_listing` switches the share *source* to Yahoo rather than
-scaling an ordinary-share count, which is what closed the ADR-ratio class
-(NTES from a $1,666.9B peak to $82.1B; zero depositary rows above $1T). But
-Yahoo's `shares_full` series starts around 2018, so **360 of 970 depositary
-universe rows are NULL**, and those names are absent from the trade universe
-before then rather than present at a fabricated size.
+`is_depositary_listing` (a name predicate, `"american depositary"`, not a
+column) switches the share *source* to Yahoo rather than scaling an
+ordinary-share count, which is what closed the ADR-ratio class (NTES from a
+$1,666.9B peak to $82.1B; zero depositary rows above $1T). Yahoo's
+`shares_full` series starts around 2018, so the early years are unpriced.
 
-Correct under invariant 4, and survivorship-relevant, so it should be said
-aloud when ADR coverage is quoted. Deriving the ratio from
-`dei:EntityCommonStockSharesOutstanding` against the ADS count would recover
-the history — that, not correctness, is now the reason to do it.
+**Re-measured 2026-09-02**, against a `universe` that has since gained
+`config_hash` (so the row counts are larger than the "360 of 970" this
+entry used to quote):
+
+    22 depositary tickers
+    6,480 of 17,460 universe rows have no mcap_usd   (37%)
+    first priced row  2016-12-31
+    shares_outstanding: yahoo_shares_full 2015-11-05 .. 2026-09-01
+                        sec_xbrl          2011-03-31 .. 2026-08-05
+
+**The proposed fix was to derive the ADS ratio from
+`dei:EntityCommonStockSharesOutstanding` against the Yahoo ADS count and
+extrapolate it backward. Measured, that is not safe.**
+
+The ratio is computable wherever both sources overlap. Per ticker, across
+that window (SEC filings matched to the nearest Yahoo observation within 45
+days):
+
+| ticker | n | median | min | max | CV |
+|---|---|---|---|---|---|
+| NTES | 8 | 4.989 | 4.879 | **25.000** | **0.931** |
+| HTHT | 8 | 9.779 | **0.512** | 10.032 | **0.722** |
+| TCOM | 7 | 0.986 | **0.126** | 1.032 | **0.567** |
+| RYAAY | 8 | 5.013 | 2.002 | 6.477 | **0.368** |
+| PDD | 5 | 3.923 | 1.524 | 4.000 | **0.312** |
+| LI | 7 | 1.875 | 1.751 | 2.000 | 0.058 |
+| VOD | 5 | 10.026 | 9.453 | 10.337 | 0.035 |
+| ONC | 9 | 12.484 | 12.077 | 13.288 | 0.033 |
+| ARGX | 9 | 0.993 | 0.927 | 0.997 | 0.028 |
+| NICE | 10 | 0.996 | 0.964 | 1.045 | 0.024 |
+| BNTX | 8 | 1.000 | 0.955 | 1.018 | 0.019 |
+| SIMO | 8 | 3.962 | 3.956 | 4.059 | 0.009 |
+| ABVX | 3 | 0.999 | 0.991 | 1.000 | 0.005 |
+| ARM | 3 | 1.000 | 0.993 | 1.000 | 0.004 |
+| BLTE | 4 | 0.984 | 0.980 | 0.986 | 0.003 |
+
+15 of 22 tickers have a usable overlap. **Ten are stable. Five are not**,
+and the instability is not noise — NTES runs 4.99 to 25.0 and HTHT 0.512 to
+10.03, which are ratio *changes*, the thing an ADR does when the depositary
+bank restates the receipt.
+
+**The reason this kills the approach is sharper than "a third are
+unstable".** The ratio can only be *measured* where both sources exist,
+which is 2018 onward. It is *needed* where only SEC exists, which is before
+2018. So the extrapolation is unverifiable exactly in the region it would
+be applied, and the tickers most likely to have changed ratio during the
+unobserved years are the ones already observed changing during the
+observed ones.
+
+Applying a constant median backward would give NTES a market cap wrong by
+up to 5x across its early history, silently and plausibly — the same defect
+class ADR 146 closed for the x1,000 scale errors, reintroduced by a
+correction. A missing value is correct under invariant 4; a fabricated one
+is not.
+
+**What would actually work**, and none of it is available here: a source
+publishing ADS ratio-change *events* with effective dates, so the ratio is
+carried rather than inferred. Failing that, the honest position is the
+current one.
+
+**So this stays open as a coverage caveat, not as work.** State it aloud
+when quoting ADR coverage: 37% of depositary universe rows carry no market
+cap, those names are absent from the trade universe before ~2017 rather
+than present at a fabricated size, and that absence is survivorship-relevant
+in the direction of understating early coverage.
 
 ---
 
