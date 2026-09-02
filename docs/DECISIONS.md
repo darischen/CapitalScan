@@ -154,7 +154,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 110 | The raw %K is the trigger; the smoothed %K must agree within 5 points | Pinned. Supersedes the 2026-08-05 `stoch_source` A/B note |
 | 111 | `--actionable`: a long needs confluence, a short needs confluence and confirmation | Pinned. Serving-layer only |
 | 112 | ADR 033's first kill criterion fired: the two-indicator hypothesis is retired as a standalone returns predictor | Pinned. Fires 033. Retires 015's central claim; downgrades 093's prior |
-| 113 | Phase 6 opens: the model is a distinct hypothesis from the cell grid, sized down and gated harder | Pinned. Answers 093's Provisional condition; amends 064's head count and 067's gate |
+| 113 | Phase 6 opens: the model is a distinct hypothesis from the cell grid, sized down and gated harder | Pinned. Answers 093's Provisional condition; amends 064's head count and 067's gate. **Check 5's baseline amended by ADR 167** |
 | 114 | The screener's default is the event feed; statistics are one action away | Pinned. Follows 112. Governs `screen_signals` and `/` |
 | 115 | `v_positions` reads a settings row, not a generated DDL | Pinned. Resolves 095's deferred rebuild; reverses its stated preference |
 | 116 | `v_ticker_state` reads one row per ticker instead of sorting three million | Pinned. 1000x on `v_positions`; corrects a Session 15 measurement |
@@ -208,6 +208,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 164 | The two research machines are functionally identical, not literally | **Decided 2026-09-01.** PG 16.14/17.11 and Python 3.14/3.13 accepted; do not align |
 | 165 | Returns count every fire; `cell_stats` keeps the cluster-head filter | **Implemented 2026-09-01.** Adds `research/returns.py` and `cscan stats returns`; the filter is not invariant to a swept `max_hold_days`. No `config_hash` move |
 | 166 | Cluster-robust variance replaces the mean-size `n_eff` correction | **Proposed 2026-09-02, not started.** Two-way clustering by date and `cluster_id`; `n_eff` becomes derived. Validate against current intervals before migrating. After Phase 6 and after the move |
+| 167 | Check 5's baseline is global, not per-ticker-year | **Decided 2026-09-02.** Amends ADR 113. Ticker-year overlap across a temporal split is zero, and the faithful reconstruction would be an oracle; per-sector and per-ticker reported beside it, gating nothing |
 
 ---
 
@@ -7577,3 +7578,112 @@ bucket of 10+ fires that **does not exist** in the measured population,
 where clusters cap at 6. It was computed on a population mixing entry
 kinds. Re-run it through `research/returns.py` before either this ADR or
 Phase 6 builds on it.
+
+---
+
+## 167. Check 5's baseline is global, not per-ticker-year
+
+**Status.** Decided 2026-09-02. Amends ADR 113's fifth promotion check and
+the kill criterion attached to it. No `config_hash` move, no migration.
+Unblocks Phase 6's next step.
+
+**Context.**
+
+ADR 113 added a fifth promotion check and a kill criterion in ADR 033's
+spirit, both written before the model existed:
+
+> Fifth check: the model's out-of-sample pinball loss must beat the
+> unconditional baseline — **the same per-ticker-year empirical
+> distribution the cell grid measured against**, fit with no features.
+
+**That baseline cannot be built on the validation split, and the reason is
+structural rather than an oversight.** ADR 019's split is temporal.
+Measured 2026-09-02 on the shipped config, `in_trade`, `next_open`:
+
+| | |
+|---|---|
+| train | 2010-03-31 → 2021-12-31, 163,424 events, 2,089 ticker-years |
+| validate | 2022-01-03 → 2023-12-29, 35,125 events, 550 ticker-years |
+| **ticker-year overlap** | **0** |
+| ticker overlap | 336 of 392 validate tickers (86%) |
+
+Zero overlap is not a data gap. A temporal split makes it a certainty: no
+calendar year appears on both sides. So there is no train-estimable
+per-ticker-year distribution to score a validate event against, and there
+never could be.
+
+**And the phrase carries a second problem the first one hides.** The cell
+grid's per-ticker-year baseline was *contemporaneous* — it measured what a
+ticker did during the same year it was being tested in, which is legitimate
+for a within-sample descriptive comparison and is an oracle out of sample.
+Rebuilding it faithfully would mean fitting the baseline on the labels the
+model is being scored against. `research/train.py` already refuses that
+inside CV, with the reason in the code: *"Fitting it on the validation
+labels would make it an oracle and a harder bar than the honest one, so
+check 5 would fire when it should not."*
+
+So the inherited phrase is not merely unbuildable. It describes a bar that
+would be wrong to build.
+
+**Decision.**
+
+**Check 5's baseline is the global unconditional quantile, fitted on train
+and applied to validate.** This is what `research/train.py` already
+computes per fold, promoted to the split-level check.
+
+**The kill criterion binds on this bar and no other.** ADR 113: *"If the
+model fails check 5 on the validation split ... the two-indicator
+hypothesis is retired at the model layer as well as the cell layer."*
+Retiring a hypothesis is the most consequential act available here, and it
+must not turn on a bar the model was never given the information to clear.
+
+**Two further baselines are reported beside it, and gate nothing.**
+
+- **Per-sector, fitted on train.** `sector` is in the model's 21-feature
+  set, so this asks the fair and interesting question: did conditioning on
+  twenty other features beat conditioning on the one coarsest? A model that
+  clears global but not per-sector has learned sector and little else, and
+  that is worth seeing rather than hiding.
+- **Per-ticker, fitted on train**, with the global value for the 56
+  validate tickers absent from train. Context only.
+
+**Consequences.**
+
+**"Beats no model at all" is now literally what is tested.** ADR 113's own
+justification for the check was that ADR 067's four checks are all relative
+to an incumbent, so a first model "could pass all four by default while
+being worse than a constant". A constant is exactly what the global
+quantile is. The per-ticker-year phrasing was inherited from the grid's
+vocabulary and pulled against that intent.
+
+**The model does not condition on ticker, which settles the fairness
+question.** Its features are `bb_pctb`, `bb_width_pct`, `k_full`, `d_full`,
+`k_fast`, `k_cross_up`, `k_cross_down`, `rv_pct_252d`, `vix_close`,
+`above_sma200`, `sma200_slope_60`, `dd_52w`, `vol_z_20d`, `spx_ret_1d`,
+`cofire_count`, `signal_strength`, `seq_in_cluster`, `days_to_earnings`,
+`sector`, `k_minus_d`, `mcap_log`. Ticker identity is absent. A per-ticker
+gate would require the model to beat information it was never given, and
+would fail it for that rather than for lacking skill.
+
+**This does not weaken the gate relative to what ADR 113 intended**, and
+the distinction matters because the change moves in the permissive
+direction. The intended bar was "better than no model". The written bar was
+unbuildable, and its faithful reconstruction was an oracle. Replacing an
+unbuildable oracle with the honest constant is not a lowered standard; it
+is the standard ADR 113 argued for, stated in terms that can be evaluated.
+
+**The per-sector bar is where the real risk of a false positive now sits.**
+`sector` is a 21st feature that partitions the population coarsely, and a
+gradient-boosted model can clear a global constant by learning sector
+alone. Reporting both is what keeps check 5 falsifiable in the way ADR 113
+wanted, and it costs one extra fit of a features-free predictor.
+
+**No change to CV.** `research/train.py`'s per-fold baseline is already the
+global quantile fitted on the fold's training labels, so the in-CV bar and
+the split-level bar are now the same construction at two scopes. That was
+accidental before this ADR and is deliberate after it.
+
+**What would revisit this.** A non-temporal split. ADR 019's is temporal
+for look-ahead reasons that are not in question, so this is theoretical.
+ADR 113's kill criterion otherwise stands unchanged in force and in
+wording, on this baseline.

@@ -151,12 +151,22 @@ $M_h$ is a maximum, and `rv_pct_252d`, `bb_width_pct` and `vix_close` are
 all in the feature set. The directional heads (`*_q50` terminal) improve
 0.55–1.00% and each lose a fold, which is consistent with ADR 112.
 
-**ADR 113's check 5 names a baseline that cannot be built.** Its
-"per-ticker-year" phrase is inherited from the cell grid, which measured
-within sample; ADR 019's split is temporal and the ticker-year overlap
-between train and validate is **zero**. Open item in `DECISIONS.md` — the
-global unconditional quantile is used for now, and the measured bar for
-all twenty heads is in `RESULTS.md`.
+~~**ADR 113's check 5 names a baseline that cannot be built.**~~
+**Resolved 2026-09-02 by ADR 167.** The "per-ticker-year" phrase was
+inherited from the cell grid, which measured within sample; ADR 019's split
+is temporal, so the ticker-year overlap between train and validate is
+**zero** (2,089 train ticker-years, 550 validate, 0 shared) and always will
+be. Worse, a faithful reconstruction would be contemporaneous — an oracle
+fitted on the labels being scored, which `research/train.py` already
+refuses inside CV for that exact reason.
+
+**Check 5 gates on the global unconditional quantile**, fitted on train and
+applied to validate — which is what the per-fold baseline already computes,
+now promoted to the split level. The kill criterion binds on that bar and
+no other. Per-sector and per-ticker baselines are reported beside it and
+gate nothing; per-sector is the interesting one, since `sector` is a model
+feature and a model clearing global but not per-sector has learned sector
+and little else.
 
 Next: check 5 proper on validate, then coverage (DESIGN §7.6), which a head
 can fail while posting a good pinball loss.
