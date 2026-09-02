@@ -49,6 +49,23 @@ CREATE FUNCTION public.market_date() RETURNS date
 
 ALTER FUNCTION public.market_date() OWNER TO capscan;
 
+--
+-- Name: market_is_open(); Type: FUNCTION; Schema: public; Owner: capscan
+--
+
+CREATE FUNCTION public.market_is_open() RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$ SELECT (now() AT TIME ZONE 'America/New_York')::time >= TIME '09:30'
+             AND (now() AT TIME ZONE 'America/New_York')::time <
+                 CASE WHEN EXISTS (
+                        SELECT 1 FROM public.trading_days td
+                         WHERE td.d = (now() AT TIME ZONE 'America/New_York')::date
+                           AND td.is_early_close)
+                      THEN TIME '13:00' ELSE TIME '16:00' END $$;
+
+
+ALTER FUNCTION public.market_is_open() OWNER TO capscan;
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -126,7 +143,8 @@ CREATE TABLE public.bars (
     CONSTRAINT bars_check CHECK ((high >= low)),
     CONSTRAINT bars_check1 CHECK (((close >= low) AND (close <= high))),
     CONSTRAINT bars_check2 CHECK (((open >= low) AND (open <= high)))
-);
+)
+WITH (autovacuum_analyze_scale_factor='0.0', autovacuum_analyze_threshold='50000');
 
 
 ALTER TABLE public.bars OWNER TO capscan;
@@ -376,12 +394,52 @@ CREATE TABLE public.events (
     peak_ret_5d numeric(12,6),
     peak_ret_10d numeric(12,6),
     in_trade boolean DEFAULT true NOT NULL,
+    in_watch boolean,
+    watch_reason text,
+    bb_mid numeric(18,6),
+    close numeric(18,6),
+    vix_pct_252d numeric(18,6),
     CONSTRAINT events_side_check CHECK ((side = ANY (ARRAY['long'::text, 'short'::text]))),
     CONSTRAINT events_split_key_check CHECK ((split_key = ANY (ARRAY['train'::text, 'validate'::text, 'holdout'::text])))
 );
 
 
 ALTER TABLE public.events OWNER TO capscan;
+
+--
+-- Name: COLUMN events.mcap_usd; Type: COMMENT; Schema: public; Owner: capscan
+--
+
+COMMENT ON COLUMN public.events.mcap_usd IS 'Market cap from the universe evaluation in force at signal_date (as_of <= signal_date). Point-in-time, unlike sector.';
+
+
+--
+-- Name: COLUMN events.sector; Type: COMMENT; Schema: public; Owner: capscan
+--
+
+COMMENT ON COLUMN public.events.sector IS 'GICS sector from tickers.sector, which has NO history: a company reclassified in 2018 carries its post-2018 sector on its 2010 events. Mild look-ahead, accepted (ADR 135, BACKLOG). Use tickers.sector directly if you need to know it is a snapshot.';
+
+
+--
+-- Name: COLUMN events.bb_mid; Type: COMMENT; Schema: public; Owner: capscan
+--
+
+COMMENT ON COLUMN public.events.bb_mid IS 'Bollinger mid band at t-1, same row bb_pctb comes from.';
+
+
+--
+-- Name: COLUMN events.close; Type: COMMENT; Schema: public; Owner: capscan
+--
+
+COMMENT ON COLUMN public.events.close IS 'Split-adjusted close at t-1, NOT entry_price. entry_price is priced at t; using it as the denominator of atr_14/close would put the entry into a state-at-signal feature (invariant 3).';
+
+
+--
+-- Name: COLUMN events.vix_pct_252d; Type: COMMENT; Schema: public; Owner: capscan
+--
+
+COMMENT ON COLUMN public.events.vix_pct_252d IS 'VIX 252-day percentile at t-1, from market_days.';
+
 
 --
 -- Name: events_id_seq; Type: SEQUENCE; Schema: public; Owner: capscan
@@ -434,8 +492,10 @@ CREATE TABLE public.indicators (
     days_to_earnings integer,
     computed_at timestamp with time zone DEFAULT now() NOT NULL,
     run_id text,
-    bear_close_above_upper boolean
-);
+    bear_close_above_upper boolean,
+    bull_close_below_lower boolean
+)
+WITH (autovacuum_analyze_scale_factor='0.0', autovacuum_analyze_threshold='50000', autovacuum_vacuum_scale_factor='0.0', autovacuum_vacuum_threshold='50000');
 
 
 ALTER TABLE public.indicators OWNER TO capscan;
@@ -763,6 +823,21 @@ CREATE TABLE public.shares_outstanding (
 ALTER TABLE public.shares_outstanding OWNER TO capscan;
 
 --
+-- Name: shares_scale_errors_pre_adr146; Type: TABLE; Schema: public; Owner: capscan
+--
+
+CREATE TABLE public.shares_scale_errors_pre_adr146 (
+    ticker text,
+    filed_on date,
+    period_end date,
+    shares bigint,
+    source text
+);
+
+
+ALTER TABLE public.shares_scale_errors_pre_adr146 OWNER TO capscan;
+
+--
 -- Name: signal_reports; Type: TABLE; Schema: public; Owner: capscan
 --
 
@@ -777,11 +852,19 @@ CREATE TABLE public.signal_reports (
     call_overlay_json jsonb,
     channels_sent text[],
     model_version text,
-    git_sha text
+    git_sha text,
+    signal_type text
 );
 
 
 ALTER TABLE public.signal_reports OWNER TO capscan;
+
+--
+-- Name: COLUMN signal_reports.signal_type; Type: COMMENT; Schema: public; Owner: capscan
+--
+
+COMMENT ON COLUMN public.signal_reports.signal_type IS 'The signal type this report fired on, written by the poller. NULL on rows predating 2026-08-29: state_json carries indicator state but no signal type, and the events that would have supplied it were removed by ADR 150 sweeps. NULL means not recorded, never unknown-so-guessed.';
+
 
 --
 -- Name: signal_reports_id_seq; Type: SEQUENCE; Schema: public; Owner: capscan
@@ -852,11 +935,30 @@ CREATE TABLE public.universe (
     crit_above_sma200 boolean,
     crit_sma200_slope boolean,
     crit_rel_return boolean,
-    crit_rev_growth boolean
+    crit_rev_growth boolean,
+    in_watch boolean,
+    watch_reason text,
+    config_hash text NOT NULL,
+    crit_rel_return_history boolean,
+    CONSTRAINT universe_watch_consistent CHECK (((((in_watch IS NOT TRUE) AND (watch_reason IS NULL)) OR ((in_watch IS TRUE) AND (watch_reason = ANY (ARRAY['history'::text, 'pullback'::text])))) AND (NOT (in_trade AND (in_watch IS TRUE)))))
 );
 
 
 ALTER TABLE public.universe OWNER TO capscan;
+
+--
+-- Name: COLUMN universe.config_hash; Type: COMMENT; Schema: public; Owner: capscan
+--
+
+COMMENT ON COLUMN public.universe.config_hash IS 'The config whose UniverseParams produced this row. ''unknown'' marks rows that predate this column - nothing recorded what evaluated them. Readers must scope on a real hash; see ADR 060.';
+
+
+--
+-- Name: COLUMN universe.crit_rel_return_history; Type: COMMENT; Schema: public; Owner: capscan
+--
+
+COMMENT ON COLUMN public.universe.crit_rel_return_history IS 'ADR 014 history gate alone: TRUE when 757 bars of return exist, NULL when they do not. Never FALSE -- ADR 149 watch route keys on NULL. Decides membership only when required_criteria names it (arm 3). NULL on rows written before c93f4a1e77b2.';
+
 
 --
 -- Name: v_chart; Type: VIEW; Schema: public; Owner: capscan
@@ -1034,7 +1136,9 @@ CREATE VIEW public.v_ticker_state AS
     u.crit_sma200_slope,
     u.crit_rel_return,
     u.crit_rev_growth,
-    (b.close > i.sma_200) AS above_sma200
+    (b.close > i.sma_200) AS above_sma200,
+    u.in_watch,
+    u.watch_reason
    FROM (((((public.tickers t
      CROSS JOIN LATERAL ( SELECT ind.ts
            FROM public.indicators ind
@@ -1052,9 +1156,11 @@ CREATE VIEW public.v_ticker_state AS
             u2.crit_above_sma200,
             u2.crit_sma200_slope,
             u2.crit_rel_return,
-            u2.crit_rev_growth
+            u2.crit_rev_growth,
+            u2.in_watch,
+            u2.watch_reason
            FROM public.universe u2
-          WHERE ((u2.ticker = i.ticker) AND (u2.as_of <= (i.ts)::date))
+          WHERE ((u2.ticker = i.ticker) AND (u2.as_of <= (i.ts)::date) AND (u2.config_hash = current_setting('capitalscan.default_config_hash'::text, true)))
           ORDER BY u2.as_of DESC
          LIMIT 1) u ON (true));
 
@@ -1204,6 +1310,7 @@ CREATE VIEW public.v_screen_live AS
     e.k_full,
     e.d_full,
     e.k_cross_up,
+    e.bb_pctb,
     e.dd_52w,
     e.dd_bucket,
     e.above_sma200,
@@ -1220,7 +1327,10 @@ CREATE VIEW public.v_screen_live AS
     b.low,
     b.close,
     b.volume,
-    lq.price AS live_price,
+        CASE
+            WHEN public.market_is_open() THEN lq.close
+            ELSE NULL::numeric
+        END AS live_price,
     lq.ts AS live_price_ts,
     fr.fired_at,
     rev.confirmed AS rev_confirmed,
@@ -1229,35 +1339,40 @@ CREATE VIEW public.v_screen_live AS
     rev.rev_ts,
     c.cell_id,
         CASE
-            WHEN c.suppressed THEN NULL::numeric
+            WHEN (c.suppressed OR (NOT e.in_trade)) THEN NULL::numeric
             ELSE c.p_hit
         END AS p_hit,
         CASE
-            WHEN c.suppressed THEN NULL::numeric
+            WHEN (c.suppressed OR (NOT e.in_trade)) THEN NULL::numeric
             ELSE c.baseline_empirical
         END AS baseline,
         CASE
-            WHEN c.suppressed THEN NULL::numeric
+            WHEN (c.suppressed OR (NOT e.in_trade)) THEN NULL::numeric
             ELSE c.edge
         END AS edge,
         CASE
-            WHEN c.suppressed THEN NULL::numeric
+            WHEN (c.suppressed OR (NOT e.in_trade)) THEN NULL::numeric
             ELSE c.ci_low
         END AS ci_low,
         CASE
-            WHEN c.suppressed THEN NULL::numeric
+            WHEN (c.suppressed OR (NOT e.in_trade)) THEN NULL::numeric
             ELSE c.ci_high
         END AS ci_high,
     c.n_events,
     c.n_eff,
     c.q_value,
-    c.suppressed,
-    c.suppress_reason,
+    (c.suppressed OR (NOT e.in_trade)) AS suppressed,
+        CASE
+            WHEN (NOT e.in_trade) THEN 'watch_universe'::text
+            ELSE c.suppress_reason
+        END AS suppress_reason,
     p.q50,
     p.p_touch_3,
     p.p_touch_5,
     p.p_adverse_3,
-    p.model_version
+    p.model_version,
+    e.in_watch,
+    e.watch_reason
    FROM ((((((((public.events e
      LEFT JOIN LATERAL ( SELECT i2.bb_lower,
             i2.bb_mid,
@@ -1268,27 +1383,22 @@ CREATE VIEW public.v_screen_live AS
           ORDER BY i2.ts DESC
          LIMIT 1) ind ON (true))
      LEFT JOIN public.bars b ON (((b.ticker = e.ticker) AND (b.ts = e.signal_date) AND (b."interval" = '1d'::text))))
-     LEFT JOIN LATERAL ( SELECT q.price,
-            q.ts
-           FROM public.quotes_live q
-          WHERE (q.ticker = e.ticker)
-          ORDER BY q.ts DESC
-         LIMIT 1) lq ON (true))
-     LEFT JOIN LATERAL ( SELECT min(r.fired_at) AS fired_at
+     LEFT JOIN public.bars_live lq ON (((lq.ticker = e.ticker) AND (lq.session_date = public.market_date()))))
+     LEFT JOIN LATERAL ( SELECT max(r.fired_at) AS fired_at
            FROM public.signal_reports r
-          WHERE (r.event_id = e.id)) fr ON (true))
+          WHERE ((r.ticker = e.ticker) AND (((r.fired_at AT TIME ZONE 'America/New_York'::text))::date = e.signal_date) AND ((r.signal_type IS NULL) OR (r.signal_type = e.signal_type)))) fr ON (true))
      LEFT JOIN LATERAL ( SELECT (((r2.state_json -> 'bear_reversal'::text) ->> 'confirmed'::text))::boolean AS confirmed,
             (((r2.state_json -> 'bear_reversal'::text) ->> 'above_band'::text))::boolean AS above_band,
             (((r2.state_json -> 'bear_reversal'::text) ->> 'open_gap_atr'::text))::numeric AS open_gap_atr,
             r2.fired_at AS rev_ts
            FROM public.signal_reports r2
-          WHERE ((r2.event_id = e.id) AND (r2.state_json ? 'bear_reversal'::text))
+          WHERE ((r2.ticker = e.ticker) AND (((r2.fired_at AT TIME ZONE 'America/New_York'::text))::date = e.signal_date) AND (r2.state_json ? 'bear_reversal'::text))
           ORDER BY r2.fired_at DESC
          LIMIT 1) rev ON (true))
      JOIN public.tickers t ON ((t.ticker = e.ticker)))
      LEFT JOIN public.cell_stats c ON (((c.signal_type = e.signal_type) AND (c.side = e.side) AND (c.dd_bucket = e.dd_bucket) AND (c.signal_strength IS NULL) AND (c.entry_kind = 'next_open'::text) AND (c.split_key = 'validate'::text) AND (c.era IS NULL) AND (c.horizon_days = 5) AND (c.target_pct = 0.03) AND (c.config_hash = current_setting('capitalscan.default_config_hash'::text, true)) AND (c.arm = 'signal'::text))))
      LEFT JOIN public.predictions p ON (((p.ticker = e.ticker) AND (p.as_of = e.signal_date))))
-  WHERE ((e.entry_kind = 'touch'::text) AND e.in_trade AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)));
+  WHERE ((e.entry_kind = 'touch'::text) AND (e.in_trade OR e.in_watch) AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)));
 
 
 ALTER VIEW public.v_screen_live OWNER TO capscan;
@@ -1360,6 +1470,110 @@ CREATE VIEW public.v_stats AS
 ALTER VIEW public.v_stats OWNER TO capscan;
 
 --
+-- Name: v_ticker_events; Type: VIEW; Schema: public; Owner: capscan
+--
+
+CREATE VIEW public.v_ticker_events AS
+ SELECT e.ticker,
+    t.sector,
+    e.id,
+    e.signal_date,
+    e.signal_type,
+    e.signal_types_all,
+    e.signal_strength,
+    e.cluster_id,
+    e.seq_in_cluster,
+    e.is_cluster_head,
+    e.bb_pctb,
+    e.k_full,
+    e.k_fast,
+    e.dd_52w,
+    e.dd_bucket,
+    e.above_sma200,
+    e.vix_close,
+    e.days_to_earnings,
+    e.entry_kind,
+    e.entry_date,
+    e.entry_price,
+    e.entry_gapped,
+    e.exit_date,
+    e.exit_price,
+    e.exit_reason,
+    e.holding_days,
+    e.ambiguous,
+    e.gross_ret,
+    e.net_ret,
+    e.mfe,
+    e.mae,
+    e.time_to_mfe,
+    e.capture_ratio,
+    e.touched_2pct,
+    e.touched_3pct,
+    e.touched_5pct,
+    e.touched_10pct,
+    e.day_touched_5pct,
+    e.earnings_in_window,
+    e.era,
+    e.split_key,
+    e.in_trade,
+    false AS pending
+   FROM (public.events e
+     JOIN public.tickers t ON ((t.ticker = e.ticker)))
+  WHERE ((e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)) AND (e.entry_kind = 'next_open'::text))
+UNION ALL
+ SELECT e.ticker,
+    t.sector,
+    e.id,
+    e.signal_date,
+    e.signal_type,
+    e.signal_types_all,
+    e.signal_strength,
+    e.cluster_id,
+    e.seq_in_cluster,
+    e.is_cluster_head,
+    e.bb_pctb,
+    e.k_full,
+    e.k_fast,
+    e.dd_52w,
+    e.dd_bucket,
+    e.above_sma200,
+    e.vix_close,
+    e.days_to_earnings,
+    e.entry_kind,
+    e.entry_date,
+    e.entry_price,
+    e.entry_gapped,
+    e.exit_date,
+    e.exit_price,
+    e.exit_reason,
+    e.holding_days,
+    e.ambiguous,
+    e.gross_ret,
+    e.net_ret,
+    e.mfe,
+    e.mae,
+    e.time_to_mfe,
+    e.capture_ratio,
+    e.touched_2pct,
+    e.touched_3pct,
+    e.touched_5pct,
+    e.touched_10pct,
+    e.day_touched_5pct,
+    e.earnings_in_window,
+    e.era,
+    e.split_key,
+    e.in_trade,
+    e.in_trade AS pending
+   FROM (public.events e
+     JOIN public.tickers t ON ((t.ticker = e.ticker)))
+  WHERE ((e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)) AND (e.entry_kind = 'touch'::text) AND (NOT (EXISTS ( SELECT 1
+           FROM public.events n
+          WHERE ((n.config_hash = e.config_hash) AND (n.ticker = e.ticker) AND (n.signal_date = e.signal_date) AND (n.signal_type = e.signal_type) AND (n.entry_kind = 'next_open'::text))))));
+
+
+ALTER VIEW public.v_ticker_events OWNER TO capscan;
+
+--
 -- Name: v_universe; Type: VIEW; Schema: public; Owner: capscan
 --
 
@@ -1380,13 +1594,58 @@ CREATE VIEW public.v_universe AS
     u.crit_rel_return,
     u.crit_rev_growth,
     t.is_active,
-    t.delisted_on
+    t.delisted_on,
+    u.in_watch,
+    u.watch_reason
    FROM (public.universe u
      JOIN public.tickers t ON ((t.ticker = u.ticker)))
+  WHERE (u.config_hash = current_setting('capitalscan.default_config_hash'::text, true))
   ORDER BY u.ticker, u.as_of DESC;
 
 
 ALTER VIEW public.v_universe OWNER TO capscan;
+
+--
+-- Name: v_watchlist; Type: VIEW; Schema: public; Owner: capscan
+--
+
+CREATE VIEW public.v_watchlist AS
+ SELECT e.ticker,
+    e.signal_date,
+    e.signal_type,
+    e.signal_types_all,
+    e.signal_strength,
+    e.touch_level,
+    e.bb_pctb,
+    e.k_full,
+    e.k_fast,
+    e.k_cross_up,
+    e.dd_52w,
+    e.dd_bucket,
+    e.above_sma200,
+    e.seq_in_cluster,
+    e.cofire_count,
+    t.sector,
+    u.watch_reason,
+    u.mcap_usd,
+    u.crit_rel_return,
+    u.crit_above_sma200,
+    u.crit_sma200_slope
+   FROM ((public.events e
+     JOIN public.tickers t ON ((t.ticker = e.ticker)))
+     JOIN LATERAL ( SELECT u2.watch_reason,
+            u2.mcap_usd,
+            u2.crit_rel_return,
+            u2.crit_above_sma200,
+            u2.crit_sma200_slope
+           FROM public.universe u2
+          WHERE ((u2.ticker = e.ticker) AND (u2.as_of <= e.signal_date) AND (u2.config_hash = current_setting('capitalscan.default_config_hash'::text, true)))
+          ORDER BY u2.as_of DESC
+         LIMIT 1) u ON (true))
+  WHERE (e.is_cluster_head AND (e.entry_kind = 'next_open'::text) AND e.in_watch AND (e.config_hash = current_setting('capitalscan.default_config_hash'::text, true)));
+
+
+ALTER VIEW public.v_watchlist OWNER TO capscan;
 
 --
 -- Name: bar_rejects id; Type: DEFAULT; Schema: public; Owner: capscan
@@ -1674,7 +1933,7 @@ ALTER TABLE ONLY public.trading_days
 --
 
 ALTER TABLE ONLY public.universe
-    ADD CONSTRAINT universe_pkey PRIMARY KEY (ticker, as_of);
+    ADD CONSTRAINT universe_pkey PRIMARY KEY (ticker, as_of, config_hash);
 
 
 --
@@ -1689,20 +1948,6 @@ CREATE INDEX bars_ts_idx ON public.bars USING btree (ts);
 --
 
 CREATE INDEX benchmarks_lookup ON public.benchmarks USING btree (run_id, arm, split_key);
-
-
---
--- Name: events_cluster; Type: INDEX; Schema: public; Owner: capscan
---
-
-CREATE INDEX events_cluster ON public.events USING btree (cluster_id, seq_in_cluster);
-
-
---
--- Name: events_feed_latest; Type: INDEX; Schema: public; Owner: capscan
---
-
-CREATE INDEX events_feed_latest ON public.events USING btree (config_hash, entry_kind, signal_date DESC) WHERE in_trade;
 
 
 --
@@ -1738,6 +1983,13 @@ CREATE INDEX indicators_daily_latest ON public.indicators USING btree (ticker, t
 --
 
 CREATE INDEX indicators_ts_idx ON public.indicators USING btree (ts);
+
+
+--
+-- Name: universe_config_ticker_asof_idx; Type: INDEX; Schema: public; Owner: capscan
+--
+
+CREATE INDEX universe_config_ticker_asof_idx ON public.universe USING btree (config_hash, ticker, as_of DESC);
 
 
 --
@@ -1981,6 +2233,13 @@ GRANT SELECT ON TABLE public.shares_outstanding TO capscan_ro;
 
 
 --
+-- Name: TABLE shares_scale_errors_pre_adr146; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.shares_scale_errors_pre_adr146 TO capscan_ro;
+
+
+--
 -- Name: TABLE signal_reports; Type: ACL; Schema: public; Owner: capscan
 --
 
@@ -2065,10 +2324,24 @@ GRANT SELECT ON TABLE public.v_stats TO capscan_ro;
 
 
 --
+-- Name: TABLE v_ticker_events; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.v_ticker_events TO capscan_ro;
+
+
+--
 -- Name: TABLE v_universe; Type: ACL; Schema: public; Owner: capscan
 --
 
 GRANT SELECT ON TABLE public.v_universe TO capscan_ro;
+
+
+--
+-- Name: TABLE v_watchlist; Type: ACL; Schema: public; Owner: capscan
+--
+
+GRANT SELECT ON TABLE public.v_watchlist TO capscan_ro;
 
 
 --

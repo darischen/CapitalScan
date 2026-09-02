@@ -27,9 +27,9 @@ same as having run on schedule.
 
 | when | what | first time for | where to look |
 |---|---|---|---|
-| 00:00 PT | Pi poll | the calendar guard that no longer calls a dead database a holiday | `journalctl -u capitalscan-poller --since today` on the Pi |
-| 13:15 PT | `nightly` | the ticker refresh **and** the trading-day guard | `reports/nightly/nightly_2026_09_02.log` |
-| ~13:50 PT | the sync inside nightly | ADR 163's surrogate-id fix on the *scheduled* path | same log, and `runs` for `job='sync'` |
+| 00:00 PT | Pi poll | the calendar guard that no longer calls a dead database a holiday | **VERIFIED 2026-09-02 02:12.** The guard queried `trading_days` for 2026-09-02, got a clean answer, and the unit entered `[WAIT]` counting down to 06:45 — no `[SKIP]`, no `[ERROR]`. |
+| 13:15 PT | `nightly` | the ticker refresh **and** the trading-day guard | **Not yet run** as of 05:15. `reports/nightly/nightly_2026_09_02.log` |
+| ~13:50 PT | the sync inside nightly | ADR 163's surrogate-id fix on the *scheduled* path | **Not yet run.** Same log, and `runs` for `job='sync'`. A full `cscan sync` did pass by hand on 2026-09-01 (7,498,713 rows), so this confirms the scheduled path only. |
 
 **What a pass looks like**, so a partial one is not read as success:
 
