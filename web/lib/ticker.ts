@@ -1,4 +1,5 @@
 import { num, query } from "./db";
+import { EQUITY_LOOKBACK_SESSIONS, compoundEquity } from "./equity";
 import { isoDate, sideFor, type Side } from "./screen";
 
 /**
@@ -161,6 +162,13 @@ export interface TickerEvent {
   side: Side;
   isClusterHead: boolean | null;
   ddBucket: string | null;
+  /**
+   * The `$10k` compounding replay (`lib/equity.ts`), evaluated as of this
+   * event -- `null` for any event the replay never took: outside the
+   * ~500-session lookback, not a confluence, not a cluster head, not yet
+   * backtested, or skipped because an earlier trade was still held.
+   */
+  equity10k: number | null;
   /** The poller recorded this fire and `cscan backtest` has not reached it
    * yet, so it has no measured outcome *yet*. 246 rows when measured. */
   pending: boolean;
@@ -568,6 +576,67 @@ const EVENTS_COUNT_SQL = `
           OR signal_types_all && ARRAY['confluence_high','confluence_low'])
 `;
 
+/**
+ * Every confluence trade the `$10k` replay (`lib/equity.ts`) is allowed to
+ * take, for one ticker: a resolved cluster head within the lookback window.
+ *
+ * **Ascending and unpaginated, unlike `EVENTS_SQL`.** The display table
+ * pages newest-first in chunks of `EVENT_PAGE`, but the replay has to walk
+ * the *whole* window in order to know the balance at any one row -- a
+ * later page cannot be compounded without the earlier ones. "A few hundred
+ * rows" for one ticker (`EVENTS_SQL`'s own comment) is cheap to read whole.
+ *
+ * `is_cluster_head IS NOT FALSE` keeps NULL (poller wrote it, clustering
+ * has not run) and excludes only a confirmed repeat -- a cluster's second
+ * and third days are the same underlying move, not a second trade to take.
+ */
+const EQUITY_TRADES_SQL = `
+  SELECT id, entry_date::date AS entry_date, exit_date::date AS exit_date, net_ret
+    FROM v_ticker_events
+   WHERE ticker = $1
+     AND signal_types_all && ARRAY['confluence_high','confluence_low']
+     AND is_cluster_head IS NOT FALSE
+     AND net_ret IS NOT NULL
+     AND entry_date IS NOT NULL
+     AND exit_date IS NOT NULL
+     AND entry_date >= (
+       SELECT min(d) FROM (
+         SELECT d FROM trading_days
+          WHERE d <= market_date()
+          ORDER BY d DESC LIMIT $2
+       ) recent
+     )
+`;
+
+interface EquityTradeRaw {
+  id: string;
+  entry_date: Date;
+  exit_date: Date;
+  net_ret: string;
+}
+
+/**
+ * The `$10k` balance for every event id the replay actually traded, for one
+ * ticker. Confluence events outside the lookback window, not cluster
+ * heads, or not yet backtested (`net_ret IS NULL`) simply never enter the
+ * candidate set -- see `EQUITY_TRADES_SQL` -- so they carry no entry here
+ * and the column reads `—`, same as any other unmeasured cell.
+ */
+async function equityBalances(ticker: string): Promise<Map<number, number>> {
+  const rows = await query<EquityTradeRaw>(EQUITY_TRADES_SQL, [
+    ticker,
+    EQUITY_LOOKBACK_SESSIONS,
+  ]);
+  return compoundEquity(
+    rows.map((r) => ({
+      id: Number(r.id),
+      entryDate: isoDate(r.entry_date),
+      exitDate: isoDate(r.exit_date),
+      netRet: Number(r.net_ret),
+    })),
+  );
+}
+
 interface EventRowRaw {
   id: string;
   signal_date: Date;
@@ -627,11 +696,14 @@ export async function events(
   ticker: string,
   options: { limit?: number; all?: boolean; offset?: number } = {},
 ): Promise<TickerEvent[]> {
-  const rows = await query<EventRowRaw>(EVENTS_SQL, [
-    ticker,
-    clampEvents(options.limit),
-    Boolean(options.all),
-    Math.max(0, Math.trunc(options.offset ?? 0)),
+  const [rows, balances] = await Promise.all([
+    query<EventRowRaw>(EVENTS_SQL, [
+      ticker,
+      clampEvents(options.limit),
+      Boolean(options.all),
+      Math.max(0, Math.trunc(options.offset ?? 0)),
+    ]),
+    equityBalances(ticker),
   ]);
   return rows.map((r) => ({
     id: Number(r.id),
@@ -646,6 +718,7 @@ export async function events(
     side: sideFor(r.signal_type),
     isClusterHead: r.is_cluster_head,
     ddBucket: r.dd_bucket,
+    equity10k: balances.get(Number(r.id)) ?? null,
     pending: r.pending,
     inTrade: r.in_trade,
     entryDate: r.entry_date ? isoDate(r.entry_date) : null,

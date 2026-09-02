@@ -63,6 +63,14 @@ export function mcap(value: number | null | undefined): string {
   return String(Math.round(value));
 }
 
+/** A dollar figure with thousands separators and two decimals -- the `$10k`
+ * equity curve column, which is read at the cent (`compoundEquity` never
+ * rounds between trades, only for this display). */
+export function usd(value: number | null | undefined): string {
+  if (value === null || value === undefined) return NONE;
+  return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 /** Volume, abbreviated. A ten-digit share count in a dense row is noise. */
 export function vol(value: number | null | undefined): string {
   if (value === null || value === undefined) return NONE;

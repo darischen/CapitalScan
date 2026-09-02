@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { NONE, SIGNAL_LABELS, fmt, signedPct } from "@/lib/format";
+import { NONE, SIGNAL_LABELS, fmt, signedPct, usd } from "@/lib/format";
 import { EVENT_PAGE, type TickerEvent } from "@/lib/ticker";
 
 /**
@@ -160,7 +160,9 @@ export default function EventRows({
             <th className="r">Net</th>
             <th className="r">MFE</th>
             <th className="r">MAE</th>
-            <th>Bucket</th>
+            <th className="r" title="A hypothetical $10,000, all-in on every confluence this ticker fired, compounding (cosmetic -- see lib/equity.ts)">
+              $10k
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -231,8 +233,12 @@ export default function EventRows({
               <td className="num r" data-label="MAE">
                 {signedPct(e.mae)}
               </td>
-              <td className="dim" data-label="Bucket">
-                {e.ddBucket ?? NONE}
+              <td className="num r" data-label="$10k">
+                {e.equity10k === null ? (
+                  <span className="dim">{NONE}</span>
+                ) : (
+                  usd(e.equity10k)
+                )}
               </td>
             </tr>
           ))}
