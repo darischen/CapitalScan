@@ -51,6 +51,25 @@ function dayClass(row: ScreenRow): string {
   return "";
 }
 
+/**
+ * The Live cell's colour, mirroring `dayClass` above but for the running
+ * price against the session's own open rather than the settled close
+ * against its open. Cool above the open, warm below -- same palette,
+ * same rule, just evaluated while the session is still moving instead of
+ * after it settles.
+ *
+ * Compares against `liveOpen` (from `bars_live`, ADR 128) rather than
+ * `open` (the nightly bar): the nightly bar is null all session, so
+ * falling back to it would just be "always uncoloured until tonight" --
+ * exactly the state this exists to fill in.
+ */
+function liveClass(row: ScreenRow): string {
+  if (row.livePrice === null || row.liveOpen === null) return "";
+  if (row.livePrice > row.liveOpen) return "up";
+  if (row.livePrice < row.liveOpen) return "down";
+  return "";
+}
+
 export function StatusStrip({
   meta,
   fired,
@@ -447,7 +466,7 @@ export function ScreenerTable({
             sortKey="open"
             ctx={sortCtx}
             className="r"
-            title="The signal date's own bar. Empty until that night's ingest."
+            title="The signal date's own bar; the live session's open (bars_live) until that night's ingest."
           />
           <SortHeader label="High" sortKey="high" ctx={sortCtx} className="r" />
           <SortHeader label="Low" sortKey="low" ctx={sortCtx} className="r" />
@@ -580,31 +599,34 @@ export function ScreenerTable({
               {fmt(row.kFast, 1)}
               <span className="dim"> / {fmt(row.kSlow, 1)}</span>
             </td>
-            {/* Empty intraday, and that is the honest rendering: bars are
-                ingested nightly, so a signal that fired at 09:35 has no bar
-                until that evening. Back-filling from quotes would put a
-                first-tick price in a column labelled "open". */}
             {/* Four columns rather than one slash-separated cell (user's
                 request, 2026-08-19). Separate columns let the eye scan one
                 series down the page, which a joined cell does not.
 
-                Empty intraday and that is the honest rendering: bars are
-                ingested nightly, so a signal that fired at 09:35 has no bar
-                until that evening. The dash carries the reason on hover. */}
+                The nightly `bars` row wins when it exists. Intraday, before
+                that night's ingest, this falls back to `bars_live` (ADR
+                128) -- a real tracked session bar, not a single quote
+                mislabelled -- dimmed to mark it provisional. Only a name
+                the poller does not cover, or a date with neither table
+                populated, falls through to the dash. */}
             <td className="r num" data-label="Open">
-              {row.open === null ? (
+              {row.open !== null ? (
+                fmt(row.open)
+              ) : row.liveOpen !== null ? (
+                <span className="dim" title="today's session, from the live poller -- not yet the settled bar">
+                  {fmt(row.liveOpen)}
+                </span>
+              ) : (
                 <span className="dim" title="no bar yet; ingested tonight">
                   —
                 </span>
-              ) : (
-                fmt(row.open)
               )}
             </td>
             <td className="r num dim" data-label="High">
-              {fmt(row.high)}
+              {row.high !== null ? fmt(row.high) : fmt(row.liveHigh)}
             </td>
             <td className="r num dim" data-label="Low">
-              {fmt(row.low)}
+              {row.low !== null ? fmt(row.low) : fmt(row.liveLow)}
             </td>
             {/* The one coloured number in the bar. Cool closed above its
                 open, warm closed below -- the same cool/warm the side rail
@@ -618,8 +640,12 @@ export function ScreenerTable({
             <td className="r num" data-label="Vol">
               {vol(row.volume)}
             </td>
+            {/* Coloured against today's own open, from `bars_live` --
+                the same cool/warm rule the Close column applies against
+                the nightly open, just evaluated live instead of after
+                the session settles. */}
             <td
-              className="r num"
+              className={`r num ${liveClass(row)}`}
               data-label="Live"
               title={
                 row.livePriceTs ? `as of ${clock(row.livePriceTs)}` : undefined

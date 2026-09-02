@@ -46,6 +46,20 @@ export interface ScreenRow {
   low: number | null;
   close: number | null;
   volume: number | null;
+  /**
+   * Today's session, from `bars_live` (ADR 128) -- the same table the
+   * ticker chart's candle reads, not the nightly `bars` `open`/`high`/`low`
+   * above. Populated only while a session is open and only for a ticker the
+   * poller covers; `null` otherwise, same as the nightly columns outside
+   * their own window.
+   *
+   * Deliberately no `liveClose`: the Close column is the settled nightly
+   * bar and `livePrice` below is already the running price. A third close
+   * would just be `livePrice` under a different name.
+   */
+  liveOpen: number | null;
+  liveHigh: number | null;
+  liveLow: number | null;
   /** The newest price the poller saw, with the time it saw it. */
   livePrice: number | null;
   livePriceTs: string | null;
@@ -665,6 +679,10 @@ export async function screen(
     low: num(r.low),
     close: num(r.close),
     volume: num(r.volume),
+    // Filled in by `attachLiveBars` below, once the ticker set is known.
+    liveOpen: null,
+    liveHigh: null,
+    liveLow: null,
     livePrice: num(r.live_price),
     livePriceTs: r.live_price_ts ? r.live_price_ts.toISOString() : null,
     firedAt: r.fired_at ? r.fired_at.toISOString() : null,
@@ -689,6 +707,8 @@ export async function screen(
     watchReason: (r.watch_reason as WatchReason | null) ?? null,
     stats: null,
   }));
+
+  await attachLiveBars(rows);
 
   if (options.withStats) {
     await attachStats(rows);
@@ -779,6 +799,51 @@ async function attachStats(rows: ScreenRow[]): Promise<void> {
 
   for (const row of rows) {
     row.stats = row.cellId ? (byCell.get(row.cellId) ?? null) : null;
+  }
+}
+
+const LIVE_BARS_SQL = `
+  SELECT ticker, open, high, low
+    FROM bars_live
+   WHERE ticker = ANY($1::text[])
+     AND session_date = market_date()
+`;
+
+interface LiveBarRaw {
+  ticker: string;
+  open: string | null;
+  high: string | null;
+  low: string | null;
+}
+
+/**
+ * Today's real intraday bar, from `bars_live` (ADR 128) -- the same table
+ * `ticker.ts::liveRowFor` reads for the chart's candle, not the nightly
+ * `bars` this view otherwise joins.
+ *
+ * One batched query for every ticker on the page, not one per row, same
+ * shape as `attachStats` below. Outside a session, or for any ticker the
+ * poller does not cover, the query returns nothing for it and the row's
+ * `live*` fields stay `null` -- there is no "no session" case to branch on
+ * here, `bars_live` just does not have the row.
+ *
+ * Runs unconditionally rather than gated on today's date: `bars_live` is
+ * always keyed to `market_date()`, so a historical screen's tickers simply
+ * find no match and the round trip costs one query against an
+ * always-tiny table.
+ */
+async function attachLiveBars(rows: ScreenRow[]): Promise<void> {
+  const tickers = [...new Set(rows.map((r) => r.ticker))];
+  if (tickers.length === 0) return;
+
+  const raw = await query<LiveBarRaw>(LIVE_BARS_SQL, [tickers]);
+  const byTicker = new Map(raw.map((r) => [r.ticker, r]));
+
+  for (const row of rows) {
+    const live = byTicker.get(row.ticker);
+    row.liveOpen = live ? num(live.open) : null;
+    row.liveHigh = live ? num(live.high) : null;
+    row.liveLow = live ? num(live.low) : null;
   }
 }
 
