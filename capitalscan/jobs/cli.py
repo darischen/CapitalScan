@@ -2459,6 +2459,81 @@ def stats_benchmarks_cmd(
         console.print("[yellow]signal arm is at or below the null's 97.5th percentile[/yellow]")
 
 
+@stats_app.command("returns")
+def stats_returns(
+    config_hash: str = typer.Option(..., "--config-hash", help="Config generation to measure"),
+    split_key: str | None = typer.Option(None, "--split-key", help="train | validate | holdout"),
+    entry_kind: str = typer.Option("next_open", "--entry-kind"),
+    by: str | None = typer.Option(None, "--by", help="Group by: split_key, era, side, ..."),
+    cluster_heads_only: bool = typer.Option(
+        False, "--cluster-heads-only", help="Reproduce a pre-2026-09-01 figure"
+    ),
+    compare_to: list[str] = typer.Option(
+        [], "--compare-to", help="label=hash, repeatable, for a sweep table"
+    ),
+) -> None:
+    """Strategy return distribution, counting every fire (ADR 165).
+
+    **The reason this is a command and not a query.** Every strategy-return
+    figure in `RESULTS.md` before 2026-09-01 was hand-rolled SQL, and the
+    `max_hold_days` table was written that way twice and wrong both times --
+    once filtering `is_cluster_head` (which for that sweep returns a
+    different population per arm), once omitting `in_trade` and averaging
+    two entry kinds together. The arithmetic was never the problem; which
+    rows were being averaged was.
+
+    Counts every fire by default. `cell_stats` and `benchmarks` keep the
+    cluster-head filter and are untouched -- see ADR 165 for why the two
+    questions want opposite populations.
+    """
+    from capitalscan.jobs import db_io
+    from capitalscan.research import returns as returns_mod
+
+    engine = db_io.get_engine()
+    try:
+        if compare_to:
+            # **`rsplit`, not `split`.** The label is arbitrary text and
+            # routinely contains `=` -- `hold=10=d750336f30551cab` is the
+            # natural way to write it. Splitting on the first separator
+            # made the label "hold" and the hash "10=d750336f30551cab",
+            # which reached Postgres as a config hash and failed there.
+            arms = dict(pair.rsplit("=", 1) for pair in compare_to)
+            frame = returns_mod.compare(
+                engine,
+                arms,
+                split_key=split_key or "train",
+                entry_kind=entry_kind,
+                cluster_heads_only=cluster_heads_only,
+            )
+        else:
+            frame = returns_mod.strategy_returns(
+                engine,
+                config_hash,
+                split_key=split_key,
+                entry_kind=entry_kind,
+                by=by,
+                cluster_heads_only=cluster_heads_only,
+            )
+    except returns_mod.UngroupableColumn as exc:
+        console.print(f"[red]error[/red]: {exc}")
+        raise typer.Exit(code=2) from None
+
+    if frame.empty:
+        console.print("[yellow]no rows[/yellow] for that config and split")
+        raise typer.Exit(code=1)
+
+    # Plain text rather than a `rich.Table`: nine numeric columns plus a
+    # label do not fit a default terminal, and rich truncates *headers*
+    # ("mean_…", "p01_…"), which is the worst failure mode for a table
+    # whose whole content is which number is which.
+    console.print(frame.to_string(index=False))
+    if not cluster_heads_only:
+        console.print(
+            "[dim]counting every fire; `cell_stats` and `benchmarks` keep the "
+            "cluster-head filter (ADR 165)[/dim]"
+        )
+
+
 app.add_typer(stats_app, name="stats")
 
 

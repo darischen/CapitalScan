@@ -5470,36 +5470,49 @@ guarantee for those 12 arms is only as good as one disk. WAL was left at
 
 **The arms were computed 2026-08-29/30 and nobody read them until now.**
 `h3_t5_atr20` (`f7d7bcd52ec48c22`) and `h10_t5_atr20` (`d750336f30551cab`)
-each hold 1,379,144 events with 597,605 carrying `net_ret` — complete, and
+each hold 1,379,144 events with 597,605 carrying `net_ret` -- complete, and
 run in 2h42m and 2h32m. They were built with `--no-stats`, which is why
 `cell_stats` is 0 for both and correct: `hit_flags` reads
 `fwd_ret_{horizon}d`, a fixed-window market fact that cannot respond to an
 exit-policy change.
 
-**Counting every fire, at the shipped 5% target and ATR k=2.0:**
+**Measured population: `in_trade AND entry_kind = 'next_open'`, counting
+every fire** -- ADR 102's population, the one `cell_stats` and `benchmarks`
+use, minus the cluster-head filter (ADR 165). n = 163,424 train / 35,125
+validate, identical across all three arms.
 
-| | train | validate | p0.1 | worst | sd | timeout |
-|---|---|---|---|---|---|---|
-| hold=3 | −3.90 bp | +1.26 | −18.37% | −48.39% | 3.30% | 71.8% |
-| **hold=5 — live** | **−2.77 bp** | +7.48 | −18.98% | −48.39% | 3.74% | 56.4% |
-| hold=10 | −3.00 bp | +17.69 | −19.50% | −48.39% | 4.30% | 29.4% |
+### Train, the selection split
 
-n = 310,749 train / 75,112 validate, identical across all three.
+| | mean | sd | p1 | p0.1 | worst | stopped | target | timeout |
+|---|---|---|---|---|---|---|---|---|
+| hold=3 | −2.85 bp | 3.15% | −8.69% | −17.87% | −48.39% | 13.7% | 10.0% | 72.0% |
+| **hold=5 — live** | **−1.94 bp** | 3.58% | −9.43% | −18.20% | −48.39% | 21.7% | 14.7% | 56.4% |
+| hold=10 | −2.32 bp | 4.11% | −10.10% | −18.49% | −48.39% | 35.0% | 21.6% | 28.5% |
+
+### Validate, looked at once
+
+| | mean | sd | p0.1 | worst | timeout |
+|---|---|---|---|---|---|
+| hold=3 | +6.05 bp | 3.57% | −15.57% | −39.55% | 67.8% |
+| hold=5 — live | +15.40 bp | 4.08% | −16.38% | −39.55% | 51.0% |
+| hold=10 | **+30.38 bp** | 4.71% | −17.19% | −39.55% | 22.7% |
 
 ### The shipped config is confirmed, and the margin is noise
 
-**On train, hold=5 wins by 0.23 bp over hold=10 and 1.13 bp over hold=3.**
-With sd 3.74% and n 310,749 the standard error is ~0.67 bp, so the winning
-margin is a quarter of one standard error — and that is before any
-correction for serial dependence, which only widens it. **No arm is
-statistically distinguishable from any other.** The right conclusion is not
-"hold=5 is best" but "the holding window does not matter at this target and
-stop".
+**On train, hold=5 wins by 0.38 bp over hold=10 and 0.91 bp over hold=3.**
+The standard error of the mean is **0.89 bp** (sd 3.58%, n 163,424), so the
+winning margin is under half a standard error, and the widest gap in the
+table is about one. That is before any correction for serial dependence,
+which only widens it. **No arm is statistically distinguishable from any
+other.** The conclusion is not "hold=5 is best" but "the holding window
+does not matter at this target and stop".
 
-**Validate disagrees and must not be used to choose.** It ranks
-hold=10 (+17.69) > hold=5 (+7.48) > hold=3 (+1.26), monotonic and a much
-wider spread. Selecting on it would be choosing the best of three at their
-luckiest, which is the discipline the exit sweep already fixed once.
+**Validate disagrees, ranks monotonically the other way, and must not be
+used to choose.** Its own standard error is 2.18 bp, so hold=10's +30.38
+against hold=5's +15.40 is a real gap on that split. Selecting on it would
+be taking the best of three at their luckiest, which is the discipline the
+exit sweep already had to fix once. Recorded because it is the strongest
+argument anyone will make for revisiting this.
 
 ### What this settles, which is the reason it was run
 
@@ -5508,32 +5521,40 @@ real or an artifact: 72.6% of its trades exited on the clock, so "the stop
 costs money" and "five days is the wrong window" were not separable.
 
 **They are now separable, and the window is not the explanation.** Moving
-the window from 3 to 10 days — which moves the timeout rate from 71.8% to
-29.4%, a larger swing than removing the stop produced — changes train mean
-by **1.13 bp**. The stop moved it by **~9 bp** across its range. The stop is
+the window from 3 to 10 days swings the timeout rate from 72.0% to 28.5% --
+a larger swing than removing the stop produced -- and changes train mean by
+**0.91 bp**. The stop moved it by **~9 bp** across its range. The stop is
 the dominant exit parameter by roughly an order of magnitude, and
 `max_hold_days` is not a hidden second one.
 
 So the stopless result stands as measured, and the case against shipping it
 remains what ADR 161 says it is: the tail, not the holding window.
 
-### Two things worth carrying
+### Three things worth carrying
 
 **Filtering on `is_cluster_head` makes these arms non-comparable, and the
 first pass at this table did it.** Cluster membership is computed from
 `days_since_head`, which depends on `max_hold_days`, so the filter returns a
-*different population per arm* — 104,460 / 78,432 / 51,832 train rows for
-hold 3 / 5 / 10. Read that way the arms appeared non-monotonic with the
-splits disagreeing, which is an artifact of comparing three different
-populations. Counting every fire gives all three the same 310,749 and the
-picture resolves.
+*different population per arm* -- 104,460 / 78,432 / 51,832 rows for hold 3
+/ 5 / 10. Read that way the arms appeared non-monotonic with the splits
+disagreeing, which is an artifact of comparing three different populations.
 
 This is a sharper version of the 2026-08-29 cluster finding: the filter is
-not merely conservative, it is *not invariant to the parameter being
-swept*. Any future sweep touching the holding window must count every fire.
+not merely conservative, it is **not invariant to the parameter being
+swept**. Any future sweep touching the holding window must count every fire.
 
-**Dispersion rises monotonically with the window** — sd 3.30% → 3.74% →
-4.30% — while the worst trade is identical across all three (−48.39% train,
-−39.55% validate, the same trade gapping through every configuration). A
-longer hold buys variance without buying tail risk, which is a different
-trade from the stop, where loosening bought mean *and* tail.
+**The first published version of this table was wrong twice over, and
+`research/returns.py` caught it.** Written by hand, it omitted `in_trade`
+and averaged `next_open` and `touch` together, giving n = 310,749 and a
+train mean of −2.77 bp for the live arm against the correct −1.94. The
+ordering survived; the magnitudes did not, and validate's spread was
+understated by nearly half (+17.69 against +30.38). That module exists
+precisely because every strategy-return figure here had been hand-rolled
+SQL, and it found its first defect within minutes of being written --
+against the entry that motivated it.
+
+**Dispersion rises monotonically with the window** -- sd 3.15% → 3.58% →
+4.11% -- while the worst trade is identical across all three (−48.39%
+train, −39.55% validate, the same trade gapping through every
+configuration). A longer hold buys variance without buying tail risk, which
+is a different trade from the stop, where loosening bought mean *and* tail.

@@ -2011,36 +2011,33 @@ which derives from `max_hold_days`. The filter is not invariant to the
 parameter being swept. That is a stronger argument for the next item than
 the 7-9 bp gap already recorded.
 
-### Count every fire in backtest returns, keep the filter in `cell_stats`
+### ~~Count every fire in backtest returns, keep the filter in `cell_stats`~~ — **built 2026-09-01, ADR 165**
 
-Decided in substance by the 2026-08-29 cluster measurement, not yet built.
-The two uses of `events` want opposite things and the current code applies
-one rule to both:
+`capitalscan/research/returns.py` is the one implementation, exposed as
+`cscan stats returns`. Counts every fire by default; `cell_stats` and
+`benchmarks` are untouched and keep `is_cluster_head` until a serial
+`n_eff` exists.
 
-- **Returns** should count every fire. They are real trades with real money
-  attached, and excluding 74% of them understates the strategy by 7-9 bp.
-- **`cell_stats`** should keep `is_cluster_head` until a serial `n_eff`
-  exists, because the added observations are serially dependent by
-  construction and dropping the filter would take train `n` from 78k to
-  311k and narrow every interval ~2x — the direction that manufactures
-  significance.
+**The decisive argument turned out to be invariance, not the 7-9 bp gap.**
+The gap says the filter is biased. The `max_hold_days` sweep showed it is
+**not invariant to the parameter being swept** -- cluster membership
+derives from `days_since_head`, which derives from `max_hold_days`, so a
+filtered comparison measured three different populations and read as
+non-monotonic with the splits disagreeing. A filter that can invent an
+effect is a correctness problem for future sweeps, not only an accounting
+one.
 
-**A second argument arrived 2026-09-01, and it is stronger than the 7-9 bp
-gap.** The filter is **not invariant to the parameter being swept**.
-Cluster membership is computed from `days_since_head`, which depends on
-`max_hold_days`, so filtering on it during that sweep returned a different
-population per arm — 104,460 / 78,432 / 51,832 train rows for hold 3 / 5 /
-10. Read filtered, the arms looked non-monotonic with the splits
-disagreeing; counting every fire gave all three the same 310,749 and the
-picture resolved.
+**Why a module rather than a convention.** Every strategy-return figure in
+`RESULTS.md` before this date was hand-rolled SQL, and the `max_hold_days`
+table was written that way twice and wrong both times -- once filtering
+cluster heads, once omitting `in_trade` and averaging `next_open` and
+`touch` together (n 310,749 against the correct 163,424, train mean −2.77
+bp against −1.94). Neither error was arithmetic. `BASE_PREDICATES` is a
+module constant and `entry_kind` carries a default so a caller cannot omit
+them by forgetting.
 
-So this is not only "the filter costs 7-9 bp of measured return". It is
-"the filter can invent an effect that is not there", for any sweep touching
-a parameter clustering depends on. That makes it a correctness issue for
-future sweeps rather than only an accounting one.
-
-The work is separating the two paths, not choosing between them. It
-changes published return figures, so it needs an ADR.
+The module found that second error within minutes of being written,
+against the entry that motivated it.
 
 ### A serial `n_eff`, to match what `rho` does cross-sectionally
 

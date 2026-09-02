@@ -206,6 +206,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 162 | Site auth stays off while the deployment is LAN-only | **Decided 2026-09-01.** Narrows ADR 138's pin; revisit only if the site is reachable off-LAN |
 | 163 | `events.id` is local to its store; the natural key is the identity | **Implemented 2026-09-01.** Narrows ADR 158. Fixes the sync `events_pkey` collision; `pull_live_records` nulls `event_id` and resets research's sequences |
 | 164 | The two research machines are functionally identical, not literally | **Decided 2026-09-01.** PG 16.14/17.11 and Python 3.14/3.13 accepted; do not align |
+| 165 | Returns count every fire; `cell_stats` keeps the cluster-head filter | **Implemented 2026-09-01.** Adds `research/returns.py` and `cscan stats returns`; the filter is not invariant to a swept `max_hold_days`. No `config_hash` move |
 
 ---
 
@@ -7357,3 +7358,74 @@ question in `CLAUDE.md`.
 **What would reopen this.** A defect that reproduces on one machine and not
 the other, traced to the interpreter or the server version. Then align the
 one that matters and say which, rather than aligning on principle.
+
+---
+
+## 165. Returns count every fire; `cell_stats` keeps the cluster-head filter
+
+**Status.** Decided and implemented 2026-09-01. Adds
+`capitalscan/research/returns.py` and `cscan stats returns`. Does **not**
+change `cell_stats`, `benchmarks`, any view, or any published probability.
+No `config_hash` move, no migration.
+
+**Context.**
+
+`events` is read to answer two questions that want opposite populations,
+and one filter was answering both.
+
+`cell_stats` selects `is_cluster_head AND entry_kind = 'next_open'`, keeping
+only the first fire of a cluster. Measured 2026-08-29 on the shipped
+config, that discards **74.1% of train fires and 74.2% of validate**, and
+the discarded ones are the *better* trades -- train −7.9 bp kept against
+−1.0 bp dropped, validate +0.8 against +9.7. A 7-9 bp gap, against the 11 bp
+the entire target × stop grid spans. **Every number in both exit sweeps is
+measured on the worse quarter of the population.**
+
+**Decision.**
+
+**Return figures count every fire. Statistical figures keep the filter.**
+
+- **Returns** -- "what would this policy have made" -- are the returns of
+  the trades the strategy takes. Excluding three quarters of them
+  understates the strategy and, worse, is not a fixed offset.
+- **`cell_stats` and `benchmarks`** -- "is this cell distinguishable from
+  its baseline" -- keep `is_cluster_head` until a serial `n_eff` exists.
+  Dropping it takes train `n` from 78k to 311k and narrows every interval
+  roughly twofold, while the added observations are serially dependent by
+  construction. That is the direction that manufactures significance, and
+  ADR 098's `rho` corrects only the cross-sectional half.
+
+**Consequences.**
+
+**The decisive argument is invariance, not magnitude.** The 7-9 bp gap says
+the filter is *biased*. The `max_hold_days` sweep showed something worse:
+the filter is **not invariant to the parameter being swept**. Cluster
+membership derives from `days_since_head`, which derives from
+`max_hold_days`, so a filtered comparison of those arms measured
+104,460 / 78,432 / 51,832 rows -- three different populations -- and read as
+non-monotonic with the splits disagreeing. Counting every fire gave all
+three the same 163,424 and the effect vanished. A filter that can invent an
+effect is a correctness problem for future sweeps, not only an accounting
+one.
+
+**One implementation, because two hand-written ones were already wrong.**
+Every strategy-return figure in `RESULTS.md` before this date was
+hand-rolled SQL. The `max_hold_days` table was written that way twice: the
+first filtered cluster heads, the second omitted `in_trade` and averaged
+`next_open` and `touch` together (n 310,749 against 163,424, train mean
+−2.77 bp against −1.94). Neither error was arithmetic; both were about
+which rows were averaged. `BASE_PREDICATES` is therefore a module constant
+and `entry_kind` carries a default, so a caller cannot omit them by
+forgetting. This is the same reasoning as invariant 2 for signals.
+
+**Nothing that carries a probability changes**, so invariant 8 is
+untouched. No view, no handler, no serving surface reads this module. It
+adds a reader, not a rule.
+
+**`cluster_heads_only=True` is kept** so a pre-2026-09-01 figure can be
+reproduced rather than merely contradicted. New work should not pass it.
+
+**What would revisit this.** A serial `n_eff` -- the correction that makes
+overlapping observations countable in an interval, matching what `rho`
+already does cross-sectionally. Until that exists, the two paths stay
+split, and that work is in `BACKLOG.md`.
