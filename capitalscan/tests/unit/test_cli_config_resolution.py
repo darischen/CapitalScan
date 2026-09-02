@@ -26,6 +26,7 @@ accident.
 
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 
 import pytest
@@ -338,6 +339,16 @@ def test_poll_command_threads_resolved_params(monkeypatch, tmp_path):
     # research store and failed correctly: the sequence was 211 behind at
     # the time, from that night's `pull_live_records`.
     monkeypatch.setattr("capitalscan.jobs.poll.sequences_behind", lambda conn: [])
+    # The preflight also opens the connection `sequences_behind` above
+    # ignores. `db_io.get_engine()` reads `DATABASE_URL_RESEARCH` straight
+    # from `os.environ` (no fallback, no `.env.local` in CI), so left
+    # unstubbed this raised `KeyError('DATABASE_URL_RESEARCH')` before the
+    # stub above ever ran -- passed locally, where the var is set, and
+    # failed in CI on every push since the preflight landed.
+    monkeypatch.setattr(
+        "capitalscan.jobs.db_io.get_engine",
+        lambda *a, **k: SimpleNamespace(connect=lambda: contextlib.nullcontext(None)),
+    )
 
     result = runner.invoke(cli.app, ["poll", "--tickers", "AAPL"])
 
