@@ -1865,10 +1865,34 @@ machine-specific sections. The old `run_nightly.ps1` still ran the
 2026-08-31 nightly; the shim to `run_job.ps1` has not fired from Task
 Scheduler yet.
 
-**Progress, 2026-09-01.** `wivie` (192.168.1.12, Debian 13) is staged:
-native PostgreSQL 17, repo on `main`, `.env.local`, `cscan preflight`
-all-OK. Research DB has the schema at head but **no data** yet — the
-`pg_dump`/`pg_restore` is the remaining one-time step. The ADR 160
+**Progress, 2026-09-01 (evening). The data is on `wivie`.** A 2.59 GB
+`-Fc -Z6` dump streamed from the container over ssh in ~8 minutes (19 GB
+raw, ~5 MB/s over WiFi), restored in 10 minutes with `-j 4`. Verified by
+comparison rather than by exit code -- the restore exited **1**:
+
+    events 13,336,785   bars 8,196,897   indicators 5,997,334
+    path 52,793,296     universe 1,407,650   tickers 1,561
+    cell_stats 4,096    alembic b7f3c5d21a94
+
+Identical on both machines, every table. The exit 1 was **82 errors of one
+kind** -- `role "capscan_ro" does not exist`, the MCP read-only role, which
+was never provisioned on `wivie`. GRANTs failed, no data did. Provision it
+with `cscan db grant-readonly` if MCP is ever served from there.
+
+`wivie` is 18 GB against research's 19 GB; the difference is bloat the
+restore did not carry, not missing rows. The one-migration drift
+(`a4c8d19f6e02`) closed in the same step, since the database was dropped
+and recreated rather than restored into.
+
+`cscan preflight` on `wivie` is **all-OK, exit 0** -- role, env, psql, both
+databases, schema at head, config hash matching `serving_config`, schedule
+installed. **All three timers verified `disabled` and `inactive`**, so
+nothing on `wivie` fires and there is no second writer.
+
+**This copy goes stale from here.** It is a rehearsal and a bulk baseline,
+not a dump nobody repeats: at cutover the delta is whatever accumulated
+since 2026-09-01. The measured 8+10 minutes is the number to decide with --
+re-dumping is likely cheaper than building a delta path. The ADR 160
 systemd units (`Type=simple`, `Restart=on-failure`, `OnBootSec`, the 19:00
 nightly retry) are rendered into `/etc/systemd/system` and
 `daemon-reload`ed, **timers still `disabled`** — `systemctl enable --now`

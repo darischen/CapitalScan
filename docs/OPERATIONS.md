@@ -10,6 +10,7 @@ may not be now. Verify against the live system before acting on one.
 Index:
 
 - [A failed calendar query reads as a market holiday (Pi poller)](#a-failed-calendar-query-reads-as-a-market-holiday-pi-poller-2026-09-01)
+- [A pipeline throws away every exit code but the last](#a-pipeline-throws-away-every-exit-code-but-the-last)
 - [The Pi is a separate clone, and pushing is not deploying](#the-pi-is-a-separate-clone-and-pushing-is-not-deploying)
 - [Postgres: container down vs server moved](#postgres-container-down-vs-server-moved)
 - [Container exited 255 unprompted](#container-exited-255-unprompted)
@@ -639,6 +640,50 @@ condition.
 **Deployment is a separate step and was not done here.** The Pi runs its
 own clone; the commit landing on `main` changes nothing until
 `git pull` runs there. → see the note below.
+
+---
+
+## A pipeline throws away every exit code but the last
+
+Recorded 2026-09-01, after hitting it twice in one afternoon in two
+different languages.
+
+**The Pi poller** decided whether to trade on
+`psql ... | grep -q 1`. A `psql` that failed printed nothing, the grep
+found nothing, and the script called a dead database a market holiday and
+exited 0. Full writeup above.
+
+**Then the wivie restore did the same thing to me while I was writing that
+entry up.** The command was
+
+```bash
+set -e
+sudo -u postgres dropdb --if-exists capitalscan
+sudo -u postgres createdb -O capscan capitalscan
+sudo -u postgres pg_restore -d capitalscan -j 4 ... ~/dump | tail -15
+```
+
+`pg_restore` failed -- it runs as the `postgres` system user and cannot
+traverse `/home/daris` -- but `$?` is `tail`'s, so `set -e` saw success and
+the script reported exit 0 to its caller. The database had already been
+dropped by then. Nothing was lost, because the target held zero rows and
+the dump was intact, but the *ordering* was wrong: the destructive step ran
+before the step that could fail.
+
+**Three rules, in order of how much they buy:**
+
+1. **`set -o pipefail`** whenever a pipeline's exit code matters. `set -e`
+   alone does not cover it and reads as though it does.
+2. **`${PIPESTATUS[0]}`** to read the real status when you must pipe. It is
+   what surfaced both of these; without the explicit echo the restore
+   looked clean.
+3. **Prove the fallible step can start before running the destructive
+   one.** `sudo -u postgres test -r <dump>` would have caught this with the
+   database still intact.
+
+**The general shape.** A guard, a check, or a job that pipes its work into
+a formatter has silently delegated its verdict to the formatter. Look for
+this anywhere a script tests something and then pretty-prints it.
 
 ---
 
