@@ -16,6 +16,40 @@ deleting the entry loses nothing.
 
 ## Open
 
+### CHECK 2026-09-02 — three things run in a new configuration for the first time
+
+**Delete this entry once checked.** It is a transient note, not backlog
+work; nothing here is a known defect.
+
+Everything below was changed on 2026-09-01 and none of it has completed a
+real cycle. Each was verified in a container or by hand, which is not the
+same as having run on schedule.
+
+| when | what | first time for | where to look |
+|---|---|---|---|
+| 00:00 PT | Pi poll | the calendar guard that no longer calls a dead database a holiday | `journalctl -u capitalscan-poller --since today` on the Pi |
+| 13:15 PT | `nightly` | the ticker refresh **and** the trading-day guard | `reports/nightly/nightly_2026_09_02.log` |
+| ~13:50 PT | the sync inside nightly | ADR 163's surrogate-id fix on the *scheduled* path | same log, and `runs` for `job='sync'` |
+
+**What a pass looks like**, so a partial one is not read as success:
+
+- the poller opens a `poller_sessions` row and fires through the session,
+  rather than logging `[SKIP]` -- 2026-09-02 is a Wednesday, so the
+  trading-day guards on both the poller and nightly should *not* fire, and
+  a `[SKIP]` from either is the thing to investigate
+- nightly logs `ticker seed refreshed, N row(s)` near the top, before the
+  bar fetchers
+- the sync reports `synced N rows` and `runs` shows `status='ok'`; the
+  2026-09-01 nightly is the one where it failed on `events_pkey`, so this
+  is the run that proves the fix on the path that matters
+
+**One known-benign line to ignore**: `could not pin
+capitalscan.default_config_hash on the serving database`. ADR 115 -- the
+serving views read `serving_config`, not the GUC.
+
+---
+
+
 ### ~~Move the poller off research (ADR 158)~~ — **built and deployed 2026-08-28**
 
 **Steps 1-6 are done and on the Pi.** `cscan poll --serving` writes the
@@ -1754,7 +1788,7 @@ days -- worth treating as a class rather than three bugs.
 
 ---
 
-### The research machine is not portable, and it is about to move
+### ~~The research machine is not portable, and it is about to move~~ — **closed 2026-09-01, every box checked**
 
 **The desktop leaves and an old laptop takes its exact role** -- research
 database, `nightly`, `weekly`, `monthly`, `sync` to the Pi. The Pi is
@@ -1902,15 +1936,14 @@ Verification, the part that answers "does it work on this machine":
 - [x] `cscan preflight` exits 0 on the desktop and on the Pi (the Pi
       infers `role: serving` from a localhost `DATABASE_URL_SERVING` and
       skips the research checks).
-- [~] The *new* `run_job` wrappers run with no absolute-path or dependency
-      error. Verified 2026-08-31 in a throwaway `debian:trixie-slim`
-      container: fresh `git clone`, `uv sync`, `cscan db migrate`, `cscan
-      preflight` exit 0, `bash scripts/run_job.sh nightly` derived the repo
-      root, found the venv, wrote `reports/nightly/<date>.log`, ran the
-      config-hash guard against the real Pi, and invoked `cscan nightly`
-      (which then failed on empty-DB data, not on the wrapper). Still
-      pending: a real Task Scheduler / systemd firing, and `wait_and_poll`
-      (`.ps1` post-edit, `.sh`) exercised on both machines.
+- [x] The *new* `run_job` wrappers run with no absolute-path or dependency
+      error. Container-tested 2026-08-31 in `debian:trixie-slim`, then
+      **fired for real by Task Scheduler on 2026-09-01 13:15** --
+      `resume-check` decided to run, the config-hash guard passed, and the
+      chain closed `exit=0` at 13:52. `wait_and_poll` is now covered on
+      both platforms by `scripts/test_wait_and_poll.ps1` (14 assertions)
+      and `scripts/test_wait_and_poll_pi.sh` (11), each against a
+      throwaway container; both found a real bug on their first run.
 - [x] The migration is one section in `docs/SETUP.md` and depends on
       nothing on the desktop afterward.
 
@@ -1936,7 +1969,12 @@ Follow-through:
       matter are therefore not "desktop vs laptop" but the two places the
       machines genuinely cannot be identical -- Docker Postgres against
       native Postgres, and Task Scheduler against systemd.
-- [ ] This entry is struck through and dated when every box is checked.
+- [x] This entry is struck through and dated when every box is checked.
+      **Done 2026-09-01.** `wivie` holds a full copy of research, passes
+      `cscan preflight` with its timers dormant, and the cutover is a
+      `pg_dump`/`pg_restore` (measured 8 + 10 minutes) plus repointing the
+      Pi's `.env.local`. What remains is not portability work -- it is the
+      cutover itself, which waits on the move.
 
 ---
 
