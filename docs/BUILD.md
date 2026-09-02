@@ -168,8 +168,34 @@ gate nothing; per-sector is the interesting one, since `sector` is a model
 feature and a model clearing global but not per-sector has learned sector
 and little else.
 
-Next: check 5 proper on validate, then coverage (DESIGN §7.6), which a head
-can fail while posting a good pinball loss.
+**Both were run 2026-09-02** (`cscan model gate`, RESULTS 2026-09-02).
+
+**Check 5 passes: 17 of 20 heads beat the global baseline on validate, and
+the same 17 beat the per-sector baseline. The kill criterion does not
+fire.** Coverage fails: 14 of 20 within 5 points, and gate check 3 requires
+every τ. Nothing is promoted — ADR 067's failure path leaves the incumbent
+serving, and there is no incumbent.
+
+**The pass is not evidence of a directional edge, and the q50 pair shows
+why.** `terminal_h*_q50` predicts direction and **loses** to a constant
+(−0.44%, −0.55%); `peak_h*_q50` predicts dispersion and gains 10.4% and
+10.7%. `rounds` agrees independently — the directional heads stop at 41 and
+20 CV iterations, the dispersion heads run to 218 and 167. Session 23
+suspected the peak family was forecasting dispersion; validate confirms it.
+
+Read `abs_gain`, not `improve_pct`: the 11.92% at τ=0.95 is 0.000643 of
+pinball loss, and the largest absolute gain anywhere is 0.003023.
+
+Coverage fails in one direction per family — terminal over-covers at the
+low end, peak under-covers at the middle and upper — which is one defect
+seen twice: **the fans are compressed toward their centres**, the expected
+behaviour of quantile regression under DESIGN §7.5's deliberately
+conservative regularisation.
+
+Next: recalibrate the fans, then re-run coverage. Re-running it unchanged
+will not move it. Loosening `lambda_l2` or a per-τ affine correction fitted
+on validate are the two routes; the second is what §7.6 already does for
+binary heads with isotonic regression.
 
 One migration, `d7f4b91c26ea`: `serving_config` plus a rebuilt `v_positions`. Applied
 to research on 2026-08-18 and `db/schema.sql` regenerated. Run `cscan db sync-config`

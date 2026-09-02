@@ -5639,3 +5639,124 @@ question rather than a query.
 caught repeatedly on the way down.** That reading, from 2026-08-29,
 survives. What does not survive is the hope that it can be acted on at the
 first or second fire.
+
+---
+
+## 2026-09-02 — Check 5 passes, coverage fails, and the model forecasts dispersion not direction
+
+ADR 113's fifth promotion check, on the validate split, against the global
+unconditional baseline (ADR 167). Twenty heads, each fitted once on all of
+train (157,938 rows) and scored on 34,195 validate rows it has never seen.
+Rounds from the median CV `best_iteration`; no early stopping on the scored
+split. `cscan model gate --config-hash 0523841076f47293`.
+
+**Headline: check 5 PASSES. The kill criterion does not fire.** 17 of 20
+heads beat the baseline, and the same 17 also beat the per-sector baseline.
+The two-indicator hypothesis is not retired at the model layer.
+
+**Coverage FAILS.** 14 of 20 heads are within 5 points of nominal; gate
+check 3 requires every τ.
+
+| head | τ | improve % | **absolute gain** | beats | coverage | error | rounds |
+|---|---|---|---|---|---|---|---|
+| terminal_h5_q05 | 0.05 | 4.74 | 0.000268 | ✓ | 0.0870 | +0.037 | 72 |
+| terminal_h5_q25 | 0.25 | 1.34 | 0.000195 | ✓ | 0.3318 | **+0.082** | 61 |
+| **terminal_h5_q50** | 0.50 | **−0.44** | −0.000075 | **✗** | 0.5476 | +0.048 | **41** |
+| terminal_h5_q75 | 0.75 | 2.17 | 0.000299 | ✓ | 0.7567 | +0.007 | 159 |
+| terminal_h5_q95 | 0.95 | 11.92 | 0.000643 | ✓ | 0.9353 | −0.015 | 199 |
+| terminal_h10_q05 | 0.05 | 4.06 | 0.000320 | ✓ | 0.0885 | +0.039 | 120 |
+| terminal_h10_q25 | 0.25 | 0.54 | 0.000113 | ✓ | 0.3428 | **+0.093** | **20** |
+| **terminal_h10_q50** | 0.50 | **−0.55** | −0.000135 | **✗** | 0.5510 | **+0.051** | **20** |
+| terminal_h10_q75 | 0.75 | 1.70 | 0.000332 | ✓ | 0.7636 | +0.014 | 83 |
+| terminal_h10_q95 | 0.95 | 10.87 | 0.000801 | ✓ | 0.9373 | −0.013 | 177 |
+| peak_h5_q05 | 0.05 | −0.04 | −0.000001 | ✗ | 0.0584 | +0.008 | 86 |
+| peak_h5_q25 | 0.25 | 4.17 | 0.000427 | ✓ | 0.2432 | −0.007 | 105 |
+| **peak_h5_q50** | 0.50 | **10.43** | 0.001584 | ✓ | 0.4617 | −0.038 | **218** |
+| peak_h5_q75 | 0.75 | 16.02 | 0.002362 | ✓ | 0.6863 | **−0.064** | 211 |
+| peak_h5_q95 | 0.95 | 20.10 | 0.001279 | ✓ | 0.9160 | −0.034 | 195 |
+| peak_h10_q05 | 0.05 | 0.27 | 0.000010 | ✓ | 0.0551 | +0.005 | 62 |
+| peak_h10_q25 | 0.25 | 4.99 | 0.000652 | ✓ | 0.2362 | −0.014 | 111 |
+| **peak_h10_q50** | 0.50 | **10.70** | 0.002115 | ✓ | 0.4492 | **−0.051** | **167** |
+| peak_h10_q75 | 0.75 | 15.81 | 0.003023 | ✓ | 0.6796 | **−0.070** | 218 |
+| peak_h10_q95 | 0.95 | 18.49 | 0.001488 | ✓ | 0.9126 | −0.037 | 189 |
+
+### The pass is real and it is not evidence of a directional edge
+
+**Session 23 suspected the peak family was forecasting dispersion rather
+than direction. The validate split confirms it, and the cleanest evidence
+is the q50 pair.**
+
+| q50 head | what it predicts | improve % | rounds |
+|---|---|---|---|
+| terminal_h5_q50 | **direction** — median of $R_h$ | **−0.44** | 41 |
+| terminal_h10_q50 | **direction** | **−0.55** | 20 |
+| peak_h5_q50 | **dispersion** — median of $M_h$, a maximum | +10.43 | 218 |
+| peak_h10_q50 | **dispersion** | +10.70 | 167 |
+
+$R_h$'s median is where the price *ends up*: direction. $M_h$'s median is
+how far it *wandered*: dispersion, since a maximum over a path grows with
+volatility whichever way the path goes. The model loses on the first and
+gains 10% on the second, at both horizons.
+
+**`rounds` is an independent witness and it says the same thing.** It is
+the median CV `best_iteration`, so it measures how long early stopping
+found anything worth learning. The two directional heads stop at **41 and
+20** rounds; the dispersion heads run to **218 and 167**. A head that stops
+at 20 rounds has been told there is nothing there — and those are exactly
+the heads that then lose to a constant.
+
+`rv_pct_252d`, `bb_width_pct` and `vix_close` are all in the feature set.
+Predicting the spread of a maximum from volatility features is not a
+market edge; it is arithmetic with a lag.
+
+### The tails are where the percentages come from, and they are worth ~0
+
+Relative improvement is the wrong scale to read this table on, which
+`BUILD.md` warned before the numbers existed. At τ=0.95 an 11.92% gain is
+an **absolute** pinball improvement of **0.000643**. The largest absolute
+gain anywhere is peak_h10_q75 at 0.003023, and every terminal head is under
+0.001.
+
+The heads with the biggest relative gains are the ones with the smallest
+losses to improve on, because pinball loss shrinks toward the tails by
+construction. Read the `abs_gain` column.
+
+### Coverage fails in one direction per family
+
+Six heads are outside tolerance, and they are not scattered:
+
+- **terminal over-covers at the low end** — q25 by +8.2 and +9.3 points,
+  q50 by +4.8 and +5.1. Coverage above τ means the predicted quantile sits
+  too high: more realised returns fall below it than should.
+- **peak under-covers at the middle and upper** — q50 by −5.1, q75 by −6.4
+  and −7.0. The predicted quantile sits too low.
+
+Both are the same defect seen from two sides: **the fans are compressed
+toward their centres.** That is the expected failure of quantile regression
+under strong regularisation — `lambda_l2 = 5.0`, `num_leaves = 15`,
+`max_depth = 4` (DESIGN §7.5, chosen deliberately conservative for an
+effective sample near 8,000). The model is shrinking predictions toward the
+conditional centre, which improves pinball loss while narrowing the fan.
+
+**Pinball loss and coverage disagree here, and that is the point of having
+both.** peak_h10_q75 has the largest absolute gain in the table *and* the
+worst coverage error. A sharper fan scores better and calibrates worse, and
+DESIGN §7.6 exists because the product is the probability.
+
+### What this means for the gate
+
+**Check 5 is cleared. Gate check 3 is not**, so nothing is promoted: ADR
+067's failure path leaves the incumbent serving and logs the candidate with
+its metrics. There is no incumbent, so nothing serves.
+
+**The honest summary is that the model passes the falsifiability bar ADR
+113 set and does not demonstrate a directional edge.** ADR 112 found no
+cell surviving FDR; this finds no directional head beating a constant. The
+two results agree, and the model's wins are concentrated in a quantity
+(path dispersion) that was never the hypothesis.
+
+Next, in order: recalibrate the fans before re-running coverage —
+loosening `lambda_l2` or fitting a per-τ affine correction on validate are
+the two obvious routes, and the second is what DESIGN §7.6 already does for
+binary heads with isotonic regression. Re-running coverage without changing
+anything will not move it.
