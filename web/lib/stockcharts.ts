@@ -10,7 +10,7 @@
  * supplies the symbol, independently -- which is exactly the seam this
  * needs.
  *
- * Verified 2026-08-21 against a cookieless request: `s=DAL` with the id
+ * Verified 2026-09-02 against a cookieless request: `s=DAL` with the id
  * below renders DAL as candlesticks over one year, with `BB(20,2.0)`,
  * `EMA(10)` and `EMA(50)` on price and three panels beneath -- volume,
  * `Full STO %K(14,3) %D(3)`, and `RSI(14)`. No StockCharts account is
@@ -44,7 +44,9 @@
  * tier allows three overlays per chart and the three above use them; the
  * stochastic panel draws its own reference lines at 20, 50 and 80, so the
  * thresholds stayed legible. Superseded ids: `p18455069802` (OHLC bars,
- * panel above price), `p79286883726` (candlesticks, MA200, drawn lines).
+ * panel above price), `p79286883726` (candlesticks, MA200, drawn lines),
+ * `p35839673656` (identical settings to below; replaced 2026-09-02 by
+ * user request, reason not recorded here).
  *
  * **A source constant, deliberately not an environment variable.** The id
  * decides which indicators a reader sees next to this project's signals, so
@@ -59,7 +61,7 @@
  * reason, and re-checking the rendered chart is a manual step in any change
  * to the indicator config.
  */
-export const CHART_ID = "p35839673656";
+export const CHART_ID = "p32084814251";
 
 /** SharpCharts workbench. The interactive page, not the rendered PNG at
  * `c-sc/sc` -- a reader following one of these links wants to pan and zoom. */
