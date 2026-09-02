@@ -2543,6 +2543,34 @@ def nightly() -> None:
     # runs — the property the original fix was for is unchanged.
     scheduled_runs.record(engine, "nightly")
     config = _resolve_config_or_exit()
+
+    # **Refresh the ticker seed first, so tonight's fetchers see tonight's
+    # index** (2026-09-01). Until then `run_tickers_refresh` was reachable
+    # only through `cscan tickers --refresh`, run by hand, and `runs` showed
+    # it last executing 2026-08-25 and before that 2026-08-01. A new
+    # constituent entered the system when someone remembered a command.
+    #
+    # **Before `_resolve_tickers`, deliberately.** A ticker added after that
+    # call would wait a full day for its first bar, and the point of putting
+    # this in the chain is that a name is ingested the night it appears.
+    #
+    # **This does not change the trade universe on its own**, which is what
+    # makes it safe to schedule against ADR 060. `tickers` is a reference
+    # table; membership is decided by `run_universe`, which this does not
+    # call. A new row gets bars and indicators and becomes *eligible* to be
+    # evaluated at the next universe pass, rather than silently entering the
+    # traded set overnight.
+    #
+    # **Failures are reported, not fatal.** Wikipedia is a scrape and the
+    # rest of the chain does not depend on it: a night that cannot reach it
+    # ingests the universe it already knows, which is exactly what every
+    # night before 2026-09-01 did.
+    try:
+        tick_report = ingest.run_tickers_refresh(engine=engine)
+        console.print(f"nightly: ticker seed refreshed, {tick_report.rows_written} row(s)")
+    except Exception as exc:  # noqa: BLE001 - reported; the chain does not depend on it
+        console.print(f"[yellow]warn[/yellow] ticker refresh skipped: {exc}")
+
     tickers = _resolve_tickers(None)
     end = date.today()
     start = end - timedelta(days=5)

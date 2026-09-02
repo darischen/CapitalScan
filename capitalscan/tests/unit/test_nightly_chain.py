@@ -56,6 +56,18 @@ def _no_real_nightly_io(monkeypatch):
 
     monkeypatch.setattr(ingest, "run_job", _fake_run_job)
 
+    # **The ticker seed refresh joined the chain 2026-09-01, and it reaches
+    # the network.** `nightly` wraps it in a `try`, so leaving it unstubbed
+    # does not fail these tests -- it just quietly scrapes Wikipedia and the
+    # SEC from a unit test, or reads their cache, which is exactly the IO
+    # this fixture exists to keep out. Silent because the failure path is
+    # the intended one.
+    monkeypatch.setattr(
+        ingest,
+        "run_tickers_refresh",
+        lambda **kwargs: ingest.IngestReport(job="tickers", run_id="test-run-id"),
+    )
+
 
 def _record_call(calls: list, name: str, result=None):
     def _fake(*args, **kwargs):
@@ -154,3 +166,67 @@ def test_nightly_calls_run_path_capture_after_run_events(monkeypatch):
     # is only correct *after* that pass has run.
     assert "sweep_poll" in names, "nightly() never swept provisional poller rows"
     assert names.index("sweep_poll") > names.index("run_events")
+
+
+class TestTickerRefreshIsInTheChain:
+    """Added 2026-09-01. `run_tickers_refresh` was reachable only through
+    `cscan tickers --refresh`, so a new S&P 500 constituent entered the
+    system when someone remembered a command -- `runs` showed it last
+    executing 2026-08-25, and before that 2026-08-01.
+
+    It compounded with a cache defect: all three seed fetchers keyed on a
+    constant string, so even the hand-run command replayed a 2026-07-31
+    snapshot. Both halves are fixed; this pins the scheduling half.
+    """
+
+    def test_nightly_refreshes_the_ticker_seed(self) -> None:
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        assert "run_tickers_refresh" in inspect.getsource(cli.nightly)
+
+    def test_it_runs_before_the_ticker_list_is_resolved(self) -> None:
+        """A ticker added after `_resolve_tickers` waits a full day for its
+        first bar, which defeats the point of scheduling this at all."""
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        src = inspect.getsource(cli.nightly)
+        assert src.index("run_tickers_refresh") < src.index("tickers = _resolve_tickers(None)")
+
+    def test_a_failure_does_not_fail_the_chain(self) -> None:
+        """Wikipedia is a scrape and nothing downstream depends on it. A
+        night that cannot reach it should ingest the universe it already
+        knows -- which is what every night before 2026-09-01 did."""
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        src = inspect.getsource(cli.nightly)
+        head = src[: src.index("tickers = _resolve_tickers(None)")]
+        block = head[head.index("run_tickers_refresh") :]
+        assert "except Exception" in head, "the refresh must be wrapped"
+        assert "raise" not in block.split("except Exception")[1].split("tickers =")[0]
+
+    def test_it_does_not_call_run_universe(self) -> None:
+        """The safety property against ADR 060. `tickers` is a reference
+        table; membership is decided by `run_universe`. Refreshing the seed
+        makes a name *eligible* to be evaluated at the next universe pass
+        rather than entering the traded set overnight.
+        """
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        # Comment lines stripped first: the word appears in the explanation
+        # of why the call is absent, and matching the bare word failed
+        # against correct code -- the same trap that caught
+        # `test_nightly_is_not_short_circuited` on the word "return".
+        code = [
+            line
+            for line in inspect.getsource(cli.nightly).splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        assert "run_universe(" not in chr(10).join(code)
