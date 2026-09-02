@@ -5760,3 +5760,96 @@ loosening `lambda_l2` or fitting a per-τ affine correction on validate are
 the two obvious routes, and the second is what DESIGN §7.6 already does for
 binary heads with isotonic regression. Re-running coverage without changing
 anything will not move it.
+
+---
+
+## 2026-09-02 — Gate check 3 is measuring regime shift, not calibration
+
+Follow-up to the same day's gate run, which failed coverage on 6 of 20
+heads. Three diagnostics, and the first two were both wrong guesses worth
+recording as such.
+
+### Quantile crossing: ruled out, and the sort was missing anyway
+
+DESIGN §7.4 repairs crossing by sorting across τ post-fit.
+`train.sort_quantiles` implements it, was written in Session 23, and had
+**no production caller** — the first version of `research/promotion.py`
+scored each head alone, which skips the sort by construction.
+
+Fixed: the evaluation unit is now a (family, horizon) and the five τ are
+sorted before scoring. **The output is byte-identical**, because the
+measured crossing rate is **0.0000%** on both `terminal_h5` and `peak_h5`.
+The fans were already monotone.
+
+Worth having anyway — the requirement is real and was unwired — but it
+explains nothing about coverage.
+
+### Regularisation: guessed, tested, wrong
+
+The first reading was that DESIGN §7.5's conservative parameters
+(`lambda_l2 = 5.0`, `num_leaves = 15`, `max_depth = 4`) were shrinking the
+fan toward its centre. Tested on the worst head, `terminal_h10_q25`:
+
+| | coverage error | prediction sd | pinball loss |
+|---|---|---|---|
+| shipped | +0.0954 | 0.01668 | 0.020921 |
+| `lambda_l2=0`, `num_leaves=63`, `max_depth=-1` | **+0.1054** | 0.01913 | 0.021258 |
+
+Loosening made coverage **worse** while raising prediction dispersion. So
+the fan is not compressed. The bias is in the *level*, not the spread, and
+no amount of model capacity addresses it.
+
+### The cause: the train-fitted constant fails coverage too, usually worse
+
+The decisive test needs no model at all. Take the unconditional quantile of
+each label on **train**, apply it to **validate**, and measure coverage:
+
+| head | τ | model err | **constant err** |
+|---|---|---|---|
+| terminal_h5_q25 | 0.25 | +0.082 | +0.088 |
+| terminal_h10_q25 | 0.25 | +0.093 | +0.101 |
+| terminal_h10_q50 | 0.50 | +0.051 | +0.048 |
+| peak_h5_q75 | 0.75 | −0.064 | **−0.158** |
+| peak_h10_q50 | 0.50 | −0.051 | **−0.163** |
+| peak_h10_q75 | 0.75 | −0.070 | **−0.160** |
+
+**A featureless constant mis-covers in the same direction, and on five of
+the six failing heads it mis-covers *further* than the model does.** The
+peak family is the stark case: the constant is out by 16 points where the
+model is out by 5 to 7.
+
+The full constant-only table shows the shape plainly — terminal
+over-covers at the low end (+0.037 to +0.101) and under-covers at the high
+end (−0.020 to −0.024), while peak under-covers throughout the middle
+(−0.082 to −0.163). Those are properties of **2022-2023 against
+2010-2021**, not of any model.
+
+### What follows
+
+**The model is not miscalibrated relative to what was knowable.** It is
+inheriting a distribution shift, and then correcting part of it: on the
+peak family it removes roughly two thirds of the constant's coverage error.
+
+**Gate check 3 as written cannot distinguish the two.** DESIGN §7.7 asks
+for "quantile coverage within 5 points of nominal for every τ" — an
+absolute tolerance. Any predictor fitted on train fails it here, including
+the null one. A check that the null fails is not measuring the candidate.
+
+**That does not make the check wrong to enforce.** A served fan that is out
+by 9 points is out by 9 points whatever the reason, and refusing to promote
+it is correct — the product is the probability (§7.6). The failure is
+correctly *actioned* and incorrectly *attributed*, and the attribution is
+what a reader needs.
+
+**The informative version is relative**, and it is the same move ADR 167
+made for check 5: compare the candidate's coverage error against the
+featureless baseline's, rather than against an absolute band. On that
+reading the model passes 5 of 6 and loses one by 0.003. Proposed as an
+amendment rather than applied — DESIGN §7.7 is a pinned gate, and changing
+what it measures is a decision.
+
+**What this is not.** It is not evidence the model is good. Check 5 already
+showed the directional heads losing to a constant while the dispersion
+heads win, and nothing here changes that. It says only that the coverage
+failure is the market moving between 2021 and 2022, not the model
+misreading it.

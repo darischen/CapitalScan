@@ -192,10 +192,30 @@ seen twice: **the fans are compressed toward their centres**, the expected
 behaviour of quantile regression under DESIGN §7.5's deliberately
 conservative regularisation.
 
-Next: recalibrate the fans, then re-run coverage. Re-running it unchanged
-will not move it. Loosening `lambda_l2` or a per-τ affine correction fitted
-on validate are the two routes; the second is what §7.6 already does for
-binary heads with isotonic regression.
+~~Next: recalibrate the fans~~ — **diagnosed 2026-09-02 instead, and
+recalibration is not the answer.** Three tests, two of which refuted my own
+guesses:
+
+- **Crossing: 0.0000%.** `sort_quantiles` had no production caller and is
+  now wired (DESIGN §7.4 requires it), but the fans were already monotone
+  and the output is byte-identical.
+- **Regularisation: refuted.** Loosening `lambda_l2` to 0 with 63 leaves
+  made coverage *worse* (+0.0954 → +0.1054) while raising prediction
+  dispersion. The bias is in the level, not the spread.
+- **Regime shift: confirmed.** The train-fitted *constant* — no features —
+  mis-covers on validate in the same direction, and on five of the six
+  failing heads it mis-covers **further** than the model. On the peak
+  family the constant is out by 16 points where the model is out by 5-7.
+
+So gate check 3's absolute 5-point band is failed by the null predictor
+too, which means it is measuring 2022-2023 against 2010-2021 rather than
+the candidate. Refusing to promote remains correct — a fan out by 9 points
+is out by 9 points — but the attribution belongs to the regime, not the
+model. The relative form (candidate's coverage error against the
+baseline's, the move ADR 167 made for check 5) is proposed, not applied:
+§7.7 is a pinned gate.
+
+RESULTS 2026-09-02 has all three tables.
 
 One migration, `d7f4b91c26ea`: `serving_config` plus a rebuilt `v_positions`. Applied
 to research on 2026-08-18 and `db/schema.sql` regenerated. Run `cscan db sync-config`
