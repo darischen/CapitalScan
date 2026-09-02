@@ -209,6 +209,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 165 | Returns count every fire; `cell_stats` keeps the cluster-head filter | **Implemented 2026-09-01.** Adds `research/returns.py` and `cscan stats returns`; the filter is not invariant to a swept `max_hold_days`. No `config_hash` move |
 | 166 | Cluster-robust variance replaces the mean-size `n_eff` correction | **Proposed 2026-09-02, not started.** Two-way clustering by date and `cluster_id`; `n_eff` becomes derived. Validate against current intervals before migrating. After Phase 6 and after the move |
 | 167 | Check 5's baseline is global, not per-ticker-year | **Decided 2026-09-02.** Amends ADR 113. Ticker-year overlap across a temporal split is zero, and the faithful reconstruction would be an oracle; per-sector and per-ticker reported beside it, gating nothing |
+| 168 | `watch_reason` gains `near_trade`: `crit_rel_return` alone barring `in_trade` | **Decided 2026-09-02.** Amends ADR 149. `crit_mcap`, `crit_above_sma200`, `crit_sma200_slope` all true, `crit_rel_return` not true (`False` or `None`) — the same "one named failure" shape as `pullback`. No `config_hash` move; existing rows unbackfilled until the next `cscan universe --quarter` |
 
 ---
 
@@ -7687,3 +7688,80 @@ accidental before this ADR and is deliberate after it.
 for look-ahead reasons that are not in question, so this is theoretical.
 ADR 113's kill criterion otherwise stands unchanged in force and in
 wording, on this baseline.
+
+## 168. `watch_reason` gains `near_trade`: `crit_rel_return` alone barring `in_trade`
+
+**Status.** Decided 2026-09-02. Amends ADR 149. Migration `e2c7a94b3d15`
+widens `universe_watch_consistent`; no `config_hash` move.
+
+**Context.**
+
+ADR 149 gave `in_watch` two admission routes, each one *named* failure with
+the other three criteria holding:
+
+- `history` — `crit_above_sma200` true, `crit_rel_return` `None` because
+  the ticker has fewer than 757 daily bars.
+- `pullback` — `crit_sma200_slope` true, `crit_above_sma200` false: a dip
+  below a still-rising average.
+
+Both leave `crit_rel_return` failing outright (`False`, not `None`, with
+757+ bars — the sector-median comparison ran and the ticker lost it) with
+no route at all, even when `crit_mcap`, `crit_above_sma200` and
+`crit_sma200_slope` all pass. TSLA carries exactly this shape across three
+quarters of 2024 (`crit_above_sma200` true, `crit_rel_return` false), and
+sits in neither `in_trade` nor `in_watch` for any of them.
+
+**Decision.**
+
+A third route, `near_trade`: `crit_mcap`, `crit_above_sma200` and
+`crit_sma200_slope` all true, and `crit_rel_return` is not true (`False`
+*or* `None`). The bar count that distinguishes `history` from a real
+failure stops mattering here — both shapes mean the same thing under this
+route, that relative return is the one thing standing between this name
+and `in_trade`.
+
+```
+in_watch = in_watch (ADR 149's formula) OR
+       ( crit_mcap AND crit_above_sma200 AND crit_sma200_slope
+         AND crit_rel_return IS NOT TRUE )
+```
+
+`core.universe.watch_reason` checks `history` and `pullback` first, in that
+order, so `near_trade` only ever catches what neither of them already
+named — in practice, a ticker with 757+ bars whose `crit_rel_return` came
+back `False`, or (rare, defensive) came back `None` for a reason other than
+insufficient history.
+
+**Why this is not "any three of four" in disguise.** `crit_mcap` and
+`crit_sma200_slope` stay hard-required in every route — never the *named*
+failure, in `pullback` or here. They are clean, near-binary gates (a
+dollar-cap threshold, a trend direction) rather than judgment calls, so
+there is no `pullback`-shaped discriminating reading of either failing
+alone; ADR 149's own measurement (three-of-four on any criterion: 247
+tickers, $14.85T, "admits names because they failed the test that would
+have excluded them") is exactly the scheme this declines to reproduce.
+`near_trade` names one specific criterion, the same way `pullback` names
+`crit_above_sma200` — two exceptions, not four.
+
+**Consequences.**
+
+**No existing `universe` row changes.** The migration widens what
+`watch_reason` may say on the *next* evaluation; it does not backfill
+history. TSLA's 2024 rows stay `in_watch = false` until `cscan universe
+--quarter` re-runs those quarters under this rule.
+
+**Still a sibling, not a relaxation, of `in_trade`.** `in_watch` and
+`in_trade` remain disjoint by the same CHECK constraint ADR 149 wrote;
+`watch_reason` is computed only when `in_trade` is false
+(`jobs/compute.py`).
+
+**Everything ADR 149 said about the watch population still holds.** These
+rows get events, indicators, entries and exits computed exactly as before;
+`stats` is always `Suppressed` with reason `watch_universe`, and nothing
+here changes that — `near_trade` widens *membership*, not what a member
+row is allowed to claim statistically.
+
+**What would revisit this.** Running `cscan universe --quarter` across
+history and measuring how many ticker-quarters and how much market cap the
+route actually admits, the same way ADR 149 measured `history` (6 tickers,
+$1.18T) and `pullback` (22 tickers, $2.75T) before calling either settled.

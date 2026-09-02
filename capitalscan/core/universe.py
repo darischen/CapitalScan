@@ -350,6 +350,7 @@ _REBALANCE_DAYS: dict[str, int] = {"D": 1, "W": 7, "M": 31, "Q": 92, "A": 366, "
 # does not.
 WATCH_HISTORY = "history"
 WATCH_PULLBACK = "pullback"
+WATCH_NEAR_TRADE = "near_trade"
 
 
 def watch_reason(
@@ -365,7 +366,7 @@ def watch_reason(
     already qualifies to trade, so a name graduates from watch to trade and
     never holds both.
 
-    Two admission reasons, and the distinction between them is the whole
+    Three admission reasons, and the distinction between them is the whole
     argument:
 
     - `history` -- every judgeable criterion passes and `crit_rel_return` is
@@ -376,21 +377,38 @@ def watch_reason(
       not, so price sits below a **rising** 200-day average. That is a dip
       inside an intact uptrend, which for a mean-reversion study is the
       canonical setup rather than a risk.
+    - `near_trade` -- `crit_mcap`, `crit_above_sma200` and `crit_sma200_slope`
+      all pass and `crit_rel_return` is the *only* thing standing between
+      this name and `in_trade` -- whether it is unjudgeable (`None`, and by
+      now with 757+ bars, so not a history case) or judged and failed
+      (`False`, a real sector-median shortfall). User's decision,
+      2026-09-02: the point of `in_watch` is names worth detecting on that
+      are not quite in trade yet, and a name failing on relative return
+      alone while everything else about its trend holds is exactly that,
+      the same way `pullback` names one specific failure rather than any of
+      the four. Added 2026-09-02; `TestNotAnyThreeOfFour` used to pin
+      `crit_rel_return=False` (all else true) as excluded -- it is this
+      route's own admitted case now, not a rejected one.
 
     **Why not "any three of four".** Measured 2026-08-24: three passing with
-    one `None` is 6 tickers and $1.18T; three passing with one `False` is
-    247 tickers and $14.85T. The second admits names *because* they failed
-    the test that would have excluded them. The pullback carve-out is not
-    that: it is one specific failure conditioned on the trend gate still
-    passing, and TSLA demonstrates the discrimination in both directions --
+    one `None` is 6 tickers and $1.18T; three passing with one `False` on
+    *any* of the four is 247 tickers and $14.85T. The second admits names
+    *because* they failed the test that would have excluded them, with no
+    regard for which one. `pullback` and `near_trade` are not that: each is
+    one *named* failure conditioned on the other three holding, and TSLA
+    demonstrates `pullback`'s discrimination in both directions --
     `above_sma F, slope F` in 2024 is a real downtrend and stays out, while
     `above_sma F, slope T` in 2026 is a $1.4T dip and is admitted.
+    `near_trade` draws the same line on `crit_rel_return`: failing it alone
+    while `crit_mcap`, `crit_above_sma200` and `crit_sma200_slope` all hold
+    is not "any three of four" -- it is always the same fourth.
 
     **`crit_mcap` and `crit_sma200_slope` are never waived.** The first is a
     designed floor and is what already excludes the genuinely dangerous
     names -- CHGG has no `universe` row at all, because $20B filters it
     before any criterion runs. The second is the trend gate that separates a
-    pullback from a collapse.
+    pullback from a collapse, and `near_trade` from a name actually rolling
+    over.
 
     **`stale` is never waived either.** A sibling universe inherits every
     safeguard, and ADR 135 exists because Aetna passed all four criteria at
@@ -415,6 +433,14 @@ def watch_reason(
         return WATCH_HISTORY
     if above is False and rel is True:
         return WATCH_PULLBACK
+    # `rel is not True` rather than `rel is False`: a ticker with 757+ bars
+    # whose `crit_rel_return` is still `None` for some other reason is the
+    # same "only this criterion is unresolved" shape as a real `False`, and
+    # the history route above only ever fires below `min_bars_for_rel_return`
+    # -- so this is not a second path to the same six names, it is the
+    # complement `history` never covers.
+    if above is True and rel is not True:
+        return WATCH_NEAR_TRADE
     return None
 
 

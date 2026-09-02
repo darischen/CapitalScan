@@ -12,16 +12,28 @@ this name and rejected it":
   `crit_above_sma200` false means the 200-day average is still **rising**
   while price sits below it. Twenty-two names, $2.75T — WMT, COST, WFC,
   TJX, GILD — not falling knives.
+- **Relative return is the only thing barring `in_trade`** (added
+  2026-09-02, user's decision). `crit_mcap`, `crit_above_sma200` and
+  `crit_sma200_slope` all pass and `crit_rel_return` alone does not, whether
+  it is unjudgeable (`None`, past the history floor) or judged and failed
+  (`False`). `in_watch` exists to surface names worth detecting on that are
+  not quite in trade yet, and failing on relative return alone while the
+  trend and size gates hold is exactly that.
 
-**Why those two and not "any three of four".** Measured 2026-08-24: three
+**Why those three and not "any three of four".** Measured 2026-08-24: three
 passing with one NULL is 6 tickers and $1.18T; three passing with one
-*False* is 247 tickers and $14.85T. The second is not a wider watchlist, it
-is the universe with the filter switched off, and it admits names *because*
-they failed the test that would have excluded them.
+*False* on any of the four is 247 tickers and $14.85T. The second is not a
+wider watchlist, it is the universe with the filter switched off, and it
+admits names *because* they failed the test that would have excluded them,
+with no regard for which one.
 
-The pullback carve-out survives that objection because it is not "any
-failure". It is one specific failure conditioned on the trend gate still
-passing, and TSLA shows the discrimination working in both directions:
+The pullback and near-trade carve-outs survive that objection because
+neither is "any failure" — each is one *named* failure conditioned on the
+other three holding. `crit_mcap` and `crit_sma200_slope` are never the
+named one: they are hard, near-binary gates (a dollar threshold, a trend
+direction) rather than judgment calls, so there is no discriminating
+"pullback"-shaped reading of either failing alone. TSLA shows `pullback`'s
+own discrimination working in both directions:
 
     2024-06-30  above_sma F, slope F  -> real downtrend, stays out
     2026-03-31  above_sma F, slope T  -> $1.4T dip in an uptrend, admitted
@@ -35,7 +47,12 @@ from __future__ import annotations
 
 import pytest
 
-from capitalscan.core.universe import WATCH_HISTORY, WATCH_PULLBACK, watch_reason
+from capitalscan.core.universe import (
+    WATCH_HISTORY,
+    WATCH_NEAR_TRADE,
+    WATCH_PULLBACK,
+    watch_reason,
+)
 
 FULL_HISTORY = 757
 SHORT_HISTORY = 603  # GEV's actual bar count
@@ -61,10 +78,14 @@ class TestWantOfHistory:
         `crit_rel_return` is `_cmp(rel_return_756d, sector_median)` and is
         NULL when **either** side is missing. A sector-median failure on a
         fifteen-year-old ticker is also NULL, and calling that "insufficient
-        history" would be a false statement about the data. Without the bar
-        count this is indistinguishable from GEV.
+        history" would be a false statement about the data -- so this must
+        not be `WATCH_HISTORY`. It is still admitted, though, as
+        `WATCH_NEAR_TRADE` (`TestNearTradeOnRelativeReturnAlone`): rel_return
+        is still the only unresolved criterion, just not because of age.
         """
-        assert watch_reason(_crit(rel=None), bars=FULL_HISTORY, stale=False) is None
+        reason = watch_reason(_crit(rel=None), bars=FULL_HISTORY, stale=False)
+        assert reason != WATCH_HISTORY
+        assert reason == WATCH_NEAR_TRADE
 
 
 class TestPullbackInAnUptrend:
@@ -128,13 +149,36 @@ class TestDisjointFromInTrade:
         assert {history, pullback} == {WATCH_HISTORY, WATCH_PULLBACK}
 
 
+class TestNearTradeOnRelativeReturnAlone:
+    """Added 2026-09-02 (user's decision): `crit_rel_return` failing alone,
+    with `crit_mcap`, `crit_above_sma200` and `crit_sma200_slope` all true,
+    is the same "one named failure" shape as `pullback` -- not "any three
+    of four", because the other three are never the failing one.
+    """
+
+    def test_a_real_relative_return_shortfall_is_admitted(self):
+        """Judged on three years and failed -- 757+ bars, `False` rather
+        than `None`, so this is not a history case."""
+        assert watch_reason(_crit(rel=False), bars=FULL_HISTORY, stale=False) == WATCH_NEAR_TRADE
+
+    def test_an_unjudgeable_relative_return_past_the_history_floor_is_also_admitted(self):
+        """`None` for a reason other than insufficient bars lands here too --
+        `history` only ever fires below `min_bars_for_rel_return`."""
+        assert watch_reason(_crit(rel=None), bars=FULL_HISTORY, stale=False) == WATCH_NEAR_TRADE
+
+    def test_below_the_average_is_still_pullback_or_nothing_not_near_trade(self):
+        """`near_trade` requires `crit_above_sma200` true. A name that is
+        also below its average is `pullback`'s territory (or excluded), not
+        this route's."""
+        assert watch_reason(_crit(above=False, rel=False), bars=FULL_HISTORY, stale=False) is None
+
+
 class TestNotAnyThreeOfFour:
     """The measurement that bounded the feature: 6 tickers versus 247."""
 
     @pytest.mark.parametrize(
         "criteria",
         [
-            _crit(rel=False),  # judged on three years and failed
             _crit(above=False, rel=False),  # pullback *and* weak relative
             _crit(slope=False),  # trend gate failed
             _crit(mcap=False),  # under the floor
@@ -143,7 +187,10 @@ class TestNotAnyThreeOfFour:
     def test_a_failed_criterion_is_not_a_watch_reason(self, criteria):
         """`False` is evidence; `None` is the absence of it. Admitting on a
         failure would put a name in the watchlist *because* it failed the
-        test that would have kept it out."""
+        test that would have kept it out. `crit_rel_return` alone is the
+        one named exception (`TestNearTradeOnRelativeReturnAlone`); `mcap`
+        and `slope` never are -- they are hard gates, not judgment calls,
+        so there is no "one specific failure" reading of either."""
         assert watch_reason(criteria, bars=FULL_HISTORY, stale=False) is None
 
 

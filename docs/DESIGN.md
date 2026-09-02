@@ -2096,6 +2096,10 @@ LEFT JOIN v_ticker_state s ON s.ticker = p.ticker;
 
 **Eight views, not seven.** The ticker page needs `v_ticker_state` (one row, the state rail) and `v_chart` (one row per bar) as separate views. Merging them would force the chart query to re-read every state column on every bar.
 
+**The `$10k` column on the ticker page's event table (`web/lib/equity.ts`, added 2026-09-02) is not a view or a stored column.** It replaced `dd_bucket`, computed fresh on every read from `events.net_ret` -- see the "Caches and stale reads" and equity-curve sections of this file's neighbours for why that is cheap enough to not need a job. It is cosmetic: not a statistic, feeds no cell, read nowhere else.
+
+**Read the number on each row as that trade's *exit* balance, not its entry balance.** Every row shows the balance *after* applying that row's own `net_ret` to whatever the balance was going in -- so a row reads `previous_balance * (1 + net_ret)`, not the balance the account had when this trade opened. Worked example: TSLA's 2026-03-23 row reads `$8,975.77`, which is `$8,556.50 * 1.049` -- the prior trade's exit balance compounded by this row's own +4.9% `net_ret`. A row that was skipped for overlap (`lib/equity.ts::compoundEquity`'s doc comment) or that this replay never reached shows the usual `—`, same as any other unmeasured cell.
+
 ### 8.3 Endpoints
 
 ```

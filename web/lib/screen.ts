@@ -103,11 +103,12 @@ export interface ScreenRow {
 }
 
 /**
- * `universe.watch_reason`. Two routes today (ADR 149); the union is closed
- * so a third added to the enum fails the build here rather than rendering
- * as a raw slug on the screener.
+ * `universe.watch_reason`. Three routes now (ADR 149, amended 2026-09-02
+ * for `near_trade`); the union is closed so a fourth added to the enum
+ * fails the build here rather than rendering as a raw slug on the
+ * screener.
  */
-export type WatchReason = "pullback" | "history";
+export type WatchReason = "pullback" | "history" | "near_trade";
 
 /**
  * Display copy, not the enum. A reader should not have to know that
@@ -116,6 +117,10 @@ export type WatchReason = "pullback" | "history";
 export const WATCH_REASON_LABEL: Record<WatchReason, string> = {
   pullback: "Watch Universe: Below 200-Day SMA",
   history: "Watch Universe: Insufficient History",
+  // Everything but relative return passes -- unjudgeable or judged and
+  // failed, either way the one thing standing between this name and the
+  // trade universe.
+  near_trade: "Watch Universe: One Criterion Short",
 };
 
 /** Falls back to a generic label rather than throwing on an unknown slug. */

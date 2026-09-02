@@ -940,7 +940,7 @@ CREATE TABLE public.universe (
     watch_reason text,
     config_hash text NOT NULL,
     crit_rel_return_history boolean,
-    CONSTRAINT universe_watch_consistent CHECK (((((in_watch IS NOT TRUE) AND (watch_reason IS NULL)) OR ((in_watch IS TRUE) AND (watch_reason = ANY (ARRAY['history'::text, 'pullback'::text])))) AND (NOT (in_trade AND (in_watch IS TRUE)))))
+    CONSTRAINT universe_watch_consistent CHECK (((((in_watch IS NOT TRUE) AND (watch_reason IS NULL)) OR ((in_watch IS TRUE) AND (watch_reason = ANY (ARRAY['history'::text, 'pullback'::text, 'near_trade'::text])))) AND (NOT (in_trade AND (in_watch IS TRUE)))))
 );
 
 
