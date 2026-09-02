@@ -2039,17 +2039,32 @@ them by forgetting.
 The module found that second error within minutes of being written,
 against the entry that motivated it.
 
-### A serial `n_eff`, to match what `rho` does cross-sectionally
+### A serial `n_eff` — **scoped as ADR 166, deliberately not started**
 
-The precondition for ever dropping the cluster-head filter from
-`cell_stats`. ADR 098's `n_eff = n / (1 + rho(c_bar - 1))` corrects
-**cross-sectional** dependence — many tickers firing on one market move.
-There is no equivalent for **serial** dependence — one ticker firing
-repeatedly inside a holding window — and the filter is currently standing
-in for one.
+**Ordering (user's decision, 2026-09-02): Phase 6 first, this after the
+move.** It changes what a stored `cell_stats` column means and
+`cell_stats`, `handlers/` and the serving views all read it — a
+schema-adjacent change is the wrong thing to have in flight while the
+research machine is relocating. It blocks nothing in Phase 6.
 
-Blocked on nothing but effort, and it is statistics work rather than
-plumbing.
+**The design shifted once it was measured.** The work was scoped as "add a
+serial correction to match the cross-sectional one". The measurements say
+the serial axis is the *tighter* of the two — cluster size caps at 6 under
+`max_hold_days = 5`, CV 0.46 — while the axis already corrected runs 1 to
+185 with CV 0.85 and is collapsed to `k_bar = mean(cofire_count)`. So the
+heterogeneity problem is in what ships, not in what is missing, and the
+answer is one estimator covering both axes rather than a second scalar.
+
+ADR 166 has the full case, the two rejected alternatives, and the free
+validation that decides it (cluster-robust intervals on every fire against
+today's cluster-head intervals — agreement retires the filter with
+evidence, divergence means one is wrong).
+
+**One cheap prerequisite, worth doing before Phase 6 builds on it.** The
+2026-08-29 cluster-size finding — a ~300 bp spread, the largest effect
+measured anywhere here — rests on a 10+ fire bucket that **does not exist**
+in the measured population, where clusters cap at 6. It was computed on a
+population mixing entry kinds. Re-run through `research/returns.py`.
 
 ### ~~ETF `mcap_usd` wants its own dated migration (ADR 156)~~ — **investigated 2026-09-01: there is no migration to write**
 

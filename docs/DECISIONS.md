@@ -207,6 +207,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 163 | `events.id` is local to its store; the natural key is the identity | **Implemented 2026-09-01.** Narrows ADR 158. Fixes the sync `events_pkey` collision; `pull_live_records` nulls `event_id` and resets research's sequences |
 | 164 | The two research machines are functionally identical, not literally | **Decided 2026-09-01.** PG 16.14/17.11 and Python 3.14/3.13 accepted; do not align |
 | 165 | Returns count every fire; `cell_stats` keeps the cluster-head filter | **Implemented 2026-09-01.** Adds `research/returns.py` and `cscan stats returns`; the filter is not invariant to a swept `max_hold_days`. No `config_hash` move |
+| 166 | Cluster-robust variance replaces the mean-size `n_eff` correction | **Proposed 2026-09-02, not started.** Two-way clustering by date and `cluster_id`; `n_eff` becomes derived. Validate against current intervals before migrating. After Phase 6 and after the move |
 
 ---
 
@@ -7463,3 +7464,116 @@ historical `as_of`, which DESIGN §2.4 and that function's own contract
 forbid. The 2021Q2-2026Q3 quarters stay priced on the 2021 count, which is
 wrong as a recorded figure and changes no eligibility call: `min_mcap_usd`
 is $20e9 and both funds sit more than tenfold above it.
+
+---
+
+## 166. Cluster-robust variance replaces the mean-size `n_eff` correction
+
+**Status.** **Proposed 2026-09-02, not implemented and deliberately not
+started.** It changes what a stored `cell_stats` column means, and
+`cell_stats`, the handlers and the serving views all read it — not work to
+have in flight while the research machine is moving. Phase 6 comes first
+(BUILD.md); this is Phase 4 statistics and blocks nothing there.
+
+**Context.**
+
+`events` carries two kinds of dependence. The system corrects one with an
+approximation and the other by deletion.
+
+**Cross-sectional** — many tickers firing on one market move — is corrected
+by ADR 098:
+
+    n_eff = n / (1 + rho_bar * (k_bar - 1)),   k_bar = mean(cofire_count)
+
+**Serial** — one ticker firing repeatedly inside its own holding window —
+has no correction at all. `cell_stats` filters `is_cluster_head` instead,
+keeping the first fire of each cluster and discarding the rest. Measured
+2026-08-29: that is **74% of fires**, and the discarded ones are the better
+trades by 7-9 bp.
+
+**Three measurements make the current arrangement hard to defend.**
+
+**1. The filter is not invariant to a swept parameter.** Cluster membership
+derives from `days_since_head`, which derives from `max_hold_days`. A
+filtered comparison of the 2026-09-01 hold sweep measured 104,460 / 78,432
+/ 51,832 rows — three different populations — and read as non-monotonic
+with the splits disagreeing. Counting every fire gave all three 163,424 and
+the effect vanished. A correction that can invent an effect is not
+conservative, it is wrong (ADR 165).
+
+**2. The mean is doing the most damage on the axis that is already
+corrected.** Measured on the shipped config, train, `in_trade`,
+`next_open`:
+
+| axis | mean | median | p90 | max | CV |
+|---|---|---|---|---|---|
+| `cofire_count` (cross-sectional) | 28.5 | 22 | 59 | **185** | 0.85 |
+| cluster size (serial) | 3.84 | 4 | 6 | **6** | 0.46 |
+
+`k_bar` collapses a 1-to-185 distribution to its mean. The serial axis, by
+contrast, is hard-capped at 6 by `max_hold_days`, so a mean-size serial
+correction would have been roughly adequate — **the heterogeneity problem
+is in what already ships, not in what is missing.** That is the opposite of
+the assumption this work was scoped under, and it is why the case for
+cluster-robust variance is that it *subsumes both* corrections rather than
+that the serial axis most needs one.
+
+**3. `cluster_id` spans entry kinds.** The same signal's `touch` and
+`next_open` rows share a cluster, so raw cluster sizes reach 24 while the
+measured population caps at 6. Any serial correction must be computed on
+the measured population, or it corrects for overlap the measured rows do
+not have.
+
+**Decision.**
+
+**Adopt two-way cluster-robust variance and stop maintaining two
+approximations.** Cluster by date for cross-sectional co-firing and by
+`cluster_id` for serial overlap, taking the interval from the observed
+covariance on both axes rather than from a scalar built out of two mean
+sizes.
+
+**Two alternatives were considered and rejected.** An *overlap-aware
+`n_eff`* — extending the existing formula with a serial term — fits the
+current schema best, and was rejected for needing an invented composition
+rule between the two corrections while leaving the `k_bar` problem
+untouched. A *block bootstrap* assumes least, and was rejected on cost and
+on explicability: an interval a reader cannot reconstruct is worse here
+than one that is slightly conservative.
+
+**Consequences.**
+
+**`n_eff` becomes derived, not primary, and that is the real change.**
+Invariant 8 requires every response carrying a probability to carry `n_eff`
+and a confidence interval. Cluster-robust variance produces the interval
+directly; `n_eff` is then recovered from the variance ratio — the
+independent-sample size that would give the same width. The column keeps
+its meaning for a reader and stops being the thing the interval is computed
+*from*. `cell_stats`, `handlers/` and the serving views all read it, so
+this is a migration plus a coordinated change, not a function swap.
+
+**The filter can then retire from `cell_stats`, and only then.** ADR 165
+already split returns from statistics; this removes the reason statistics
+needed the filter. Until it lands, `cell_stats` and `benchmarks` keep
+`is_cluster_head` — dropping it today would take train `n` from 78k to 311k
+and narrow every interval about twofold on observations that are serially
+dependent by construction, which is the direction that manufactures
+significance.
+
+**Validation is free and decides whether this is right.** Compute
+cluster-robust intervals on every fire and compare against today's
+cluster-head intervals. Close agreement means both measure the same thing
+and the filter retires with evidence. Divergence means one of them is
+wrong, which is worth knowing before it reaches a surface. **Run this
+before writing the migration**, not after.
+
+**It may widen intervals, and that is an acceptable outcome.** ADR 112's
+house result is that no cell survives correction. A correction honest about
+serial dependence can only make that harder to overturn, and a result that
+survives it is worth more.
+
+**One prerequisite, cheap.** The 2026-08-29 cluster-size finding — a ~300
+bp spread, the largest effect measured anywhere in this system — rests on a
+bucket of 10+ fires that **does not exist** in the measured population,
+where clusters cap at 6. It was computed on a population mixing entry
+kinds. Re-run it through `research/returns.py` before either this ADR or
+Phase 6 builds on it.
