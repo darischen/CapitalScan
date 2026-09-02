@@ -5558,3 +5558,84 @@ against the entry that motivated it.
 train, −39.55% validate, the same trade gapping through every
 configuration). A longer hold buys variance without buying tail risk, which
 is a different trade from the stop, where loosening bought mean *and* tail.
+
+---
+
+## 2026-09-02 — Cluster size is real and almost entirely hindsight
+
+Two questions, run because ADR 166 flagged the first and Phase 6 was about
+to build on the second.
+
+### The ~300 bp effect survives a corrected population
+
+The 2026-08-29 finding was measured on a population where clusters reached
+10+ fires. In the **measured** population — `in_trade`,
+`entry_kind = 'next_open'` — clusters cap at **6**, because `cluster_id`
+spans entry kinds and the `touch` and `next_open` rows of one signal share
+a cluster, roughly doubling its apparent size. The concern was that the
+effect was an artifact of mixing the two.
+
+**It is not.** Re-measured per exact size rather than per bucket, it is
+monotonic on both splits:
+
+| cluster size | train | validate | n (train) |
+|---|---|---|---|
+| 1 | **+175.7 bp** | **+230.5 bp** | 5,953 |
+| 2 | +165.8 | +210.1 | 12,203 |
+| 3 | +112.5 | +154.2 | 17,810 |
+| 4 | +53.5 | +91.9 | 25,700 |
+| 5 | −11.7 | −0.1 | 33,419 |
+| 6 | **−93.2** | **−104.3** | 68,339 |
+
+Spread **269 bp on train, 335 bp on validate**, monotone at every step on
+both. That is roughly twenty-five times what the entire target × stop grid
+spans, and it holds on the split that was not used to find it.
+
+### And it is not usable, because the knowable half is flat
+
+**`cluster_size` is known only after the cluster ends. `seq_in_cluster` is
+known at fire time.** That is the whole question for a feature, and the
+answer is that almost none of the effect survives the translation:
+
+| position | train | validate | n (train) |
+|---|---|---|---|
+| 1 | −4.7 bp | +10.1 | 42,415 |
+| 2 | −4.8 | +9.9 | 36,505 |
+| 3 | +0.2 | +16.0 | 30,459 |
+| 4 | +4.0 | +16.2 | 24,528 |
+| 5 | +0.2 | +20.7 | 18,108 |
+| 6 | −4.7 | +41.8 | 11,409 |
+
+**Train spans 8.8 bp and is not monotonic** — it rises to position 4 and
+falls back. Validate rises, but from a base where every position is
+positive and the top cell holds 2,402 rows.
+
+**The mechanism is plain once stated.** At position 3 you know the cluster
+is *at least* 3. You do not know whether it stops there (+112 bp) or runs
+to 6 (−93 bp), and the 300 bp lives entirely in that difference. Position
+is a lower bound on size, and a lower bound on a monotone-decreasing
+quantity is worth almost nothing when the remaining mass is spread across
+the range.
+
+### What this means for Phase 6
+
+**Do not build `cluster_size` as a feature.** It would leak: the label
+window and the cluster window overlap, so a model given eventual size is
+told part of its own answer. The 269 bp would appear as skill in CV and
+vanish live.
+
+**`seq_in_cluster` is safe and nearly worthless** — 8.8 bp on train,
+non-monotonic. It costs nothing to include and should not be expected to
+carry the effect.
+
+**The open question is different and harder**, and worth stating so nobody
+re-derives the dead end: *can continuation be predicted from what is
+knowable at fire k* — drawdown depth, band width, realised vol, days since
+head? If a model can say "this cluster is likely to run", that is the
+usable form of the finding. Nothing here measures that, and it is a Phase 6
+question rather than a query.
+
+**A signal that fires six times is a stock in sustained decline being
+caught repeatedly on the way down.** That reading, from 2026-08-29,
+survives. What does not survive is the hope that it can be acted on at the
+first or second fire.

@@ -2172,14 +2172,35 @@ untested:
 quotes and a real clock. That half stays session-only, which is fine: the
 guards are the part that has actually broken.
 
-### Cluster size as a feature, not a discovery
+### ~~Cluster size as a feature, not a discovery~~ — **measured 2026-09-02: real, and not usable**
 
-The ~300 bp spread by cluster size is the largest effect measured anywhere
-in this system, and it is **partly hindsight**: cluster size is known only
-after the cluster ends. The first fire cannot know how long its cluster
-will run, though the 2nd through 5th increasingly can.
+**Both halves answered, and the entry can close.**
 
-What a live decision can use is therefore a *prefix* of the cluster, not
-its size. Turning this into something actionable means measuring what is
-knowable at each position — and that is a modelling question for Phase 6,
-not a sweep.
+**The ~300 bp effect is real.** ADR 166 flagged that it rested on a 10+
+fire bucket that does not exist in the measured population. Re-measured
+there (`in_trade`, `next_open`, clusters capped at 6) it is **monotone at
+every step on both splits** — train +175.7 → −93.2, validate +230.5 →
+−104.3, spreads of 269 and 335 bp. It survives the correction and it holds
+out of sample.
+
+**And it is almost entirely hindsight, which this entry suspected and can
+now quantify.** `seq_in_cluster` is what a live decision knows;
+`cluster_size` is not. Position spans **8.8 bp on train and is not
+monotonic**. At position 3 you know the cluster is at least 3, not whether
+it stops there (+112 bp) or runs to 6 (−93 bp) — and the effect lives
+entirely in that difference.
+
+**For Phase 6: do not build `cluster_size` as a feature.** It leaks. The
+label window and the cluster window overlap, so a model handed eventual
+size is told part of its own answer; the 269 bp would show as skill in CV
+and vanish live. `seq_in_cluster` is safe, costs nothing, and should not be
+expected to carry the effect.
+
+**The successor question, stated so nobody re-derives the dead end:** can
+*continuation* be predicted at fire k from drawdown depth, band width,
+realised vol, days since head? That is the usable form, it is a Phase 6
+modelling question rather than a query, and nothing measured so far
+addresses it.
+
+RESULTS 2026-09-02 has both tables.
+
