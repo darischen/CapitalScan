@@ -1122,10 +1122,17 @@ the fourth instance is caught by CI rather than by a person.
 resolves no CIK, therefore no SEC market cap, therefore fails `crit_mcap`
 silently.
 
-**`run_tickers_refresh` is still not in `nightly`**, which is the remaining
-open half. Adding it changes the trade universe on a schedule and ADR 060
-makes universe definition config, so it is a decision rather than two
-lines.
+~~**`run_tickers_refresh` is still not in `nightly`**~~ — **added
+2026-09-01 (user's decision).** It runs before `_resolve_tickers`, so a
+ticker added tonight gets its first bar tonight, and a failure warns rather
+than failing the chain.
+
+**The ADR 060 concern resolved rather than being accepted:** the refresh
+writes `tickers`, a reference table, and does **not** call `run_universe`.
+A new name becomes *eligible* to be evaluated at the next universe pass
+instead of entering the traded set overnight, so nothing about membership
+moves on a schedule. `test_nightly_chain.py` pins that, along with the
+ordering and the non-fatal failure path.
 
 ---
 
@@ -1212,16 +1219,26 @@ whoever hits it should find this rather than rediscover it.
 
 ### Operational, small
 
-**Reserve DHCP leases** for the workstation (192.168.1.14) and the Pi
-(192.168.1.30). Both addresses are now written into configuration — the
-Pi's into its `pg_hba.conf`, and connection strings on both ends — so a DHCP
-reshuffle breaks the sync with an error that reads like an auth failure.
+~~**Reserve DHCP leases**~~ — **done 2026-09-01.** All three reserved:
+workstation 192.168.1.14, `wivie` 192.168.1.12, the Pi 192.168.1.30. The
+addresses are written into configuration (the Pi's `pg_hba.conf`,
+connection strings on every end), so a reshuffle would have broken the sync
+with an error that reads like an auth failure.
 
-**`cscan weekly` is still manual.** `nightly` was registered with Task
-Scheduler on 2026-08-27 (13:15 daily, `scripts/run_nightly.ps1`, which
-refuses to run if the resolved config hash is not the serving one), and the
-poller runs from `capitalscan-poller.timer` on the Pi. `weekly` has no
-entry and every `runs` row for it was hand-typed.
+**`cscan weekly` and `monthly` are still manual, and stay that way until
+the cutover** (user's decision, 2026-09-01). `nightly` runs from Task
+Scheduler on the workstation (13:15 daily, now through
+`scripts/run_job.ps1`, which refuses if the resolved config hash is not the
+serving one) and the poller from `capitalscan-poller.timer` on the Pi.
+Neither `weekly` nor `monthly` has a Windows task and every `runs` row for
+them was hand-typed.
+
+**Deliberate rather than pending.** `monthly` is a universe-membership pass
+and `weekly` is the backtest plus stats; a sweep is a `weekly` in all but
+name, so they have been running whenever research ran. Both will be
+`systemctl enable`d on `wivie` at the cutover, where the units already
+exist. `scripts/install_schedule.ps1` would register them here and
+deliberately has not been run.
 
 
 ~~**`core.exits.resolve_exit` builds three pandas Series per forward bar**~~
@@ -1808,8 +1825,12 @@ comparison rather than by exit code -- the restore exited **1**:
 
 Identical on both machines, every table. The exit 1 was **82 errors of one
 kind** -- `role "capscan_ro" does not exist`, the MCP read-only role, which
-was never provisioned on `wivie`. GRANTs failed, no data did. Provision it
-with `cscan db grant-readonly` if MCP is ever served from there.
+was never provisioned on `wivie`. GRANTs failed, no data did.
+**Provisioned 2026-09-01**: `cscan db grant-readonly`, password `capscan`
+matching the other two machines (user's decision -- a read-only role on a
+LAN-only host, and consistency is what prevents mistakes at cutover).
+Verified: reads 13,336,785 events, `DELETE` returns `permission denied`.
+Set `DATABASE_URL_MCP` in `wivie`'s `.env.local` to point MCP at it.
 
 `wivie` is 18 GB against research's 19 GB; the difference is bloat the
 restore did not carry, not missing rows. The one-migration drift
