@@ -33,7 +33,22 @@ const connected = Boolean(process.env.DATABASE_URL_MCP || process.env.DATABASE_U
 /** Three tickers, as 17.3's acceptance criterion asks for. */
 const TICKERS = ["TSM", "AAPL", "NVDA"];
 
-describe.skipIf(!connected)("against the live database", () => {
+/*
+ * **30s, not vitest's default 5s, and the number is measured.**
+ *
+ * These run against whatever `DATABASE_URL_RESEARCH` points at, which on a
+ * developer box is the full research store -- 19 GB, ~1.38M events under
+ * the live `config_hash`, and `v_screen_live` carries five
+ * `LEFT JOIN LATERAL` subqueries. `attaches cell statistics` measured
+ * **4,280 ms** in isolation on 2026-09-02: inside the default budget, but
+ * only by 14%, so it failed whenever the rest of the suite was contending
+ * for the same pool.
+ *
+ * Raising the budget does not weaken anything -- every assertion below is
+ * unchanged, and a slow query is not a wrong one. CI never reaches this:
+ * the `web` job runs with no database, so `skipIf` skips the whole block.
+ */
+describe.skipIf(!connected)("against the live database", { timeout: 30_000 }, () => {
   afterAll(async () => {
     const { getPool } = await import("@/lib/db");
     await getPool().end();
