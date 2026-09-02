@@ -12,21 +12,9 @@ criteria in `UniverseParams.required_criteria` read price, SMA200, slope and
 relative return, and market cap resolves from SEC XBRL by CIK **with a Yahoo
 fallback for names that have none** (68 tickers today, `shares_outstanding.source`).
 
-**That seed is refreshed by hand and drifts.** `run_tickers_refresh` is
-reachable only through `cscan tickers --refresh`; it is **not in
-`nightly`**, and `runs` says it last executed 2026-08-25. A new
-constituent, or a rename, enters the system when someone remembers a
-command. **Proven gap: `FI` does not exist in `tickers` at all** — Fiserv
-renamed FISV → FI in 2024, we hold the stale `FISV` row flagged inactive,
-and the name has 0 universe rows and 0 events. Check the date on the last
-`tickers` run before treating coverage as current. → `BACKLOG.md`
+**The seed is refreshed by hand and drifts** — `run_tickers_refresh` is not in `nightly`, last ran 2026-08-25, and `FI` is missing entirely, so Fiserv has been absent since its 2024 rename. → `BACKLOG.md`
 
-**`is_active = false` with `delisted_on = NULL` is not a bug.** It means
-"no longer a current constituent", which for most of the 81 such rows is a
-*rename* (FB → META, PCLN → BKNG, KORS → CPRI) rather than a delisting, so
-a date would be false. The 18 rows carrying a date are the genuinely
-delisted. Nothing in the codebase writes `false`; those are ADR 035 union
-stubs. Investigated 2026-09-01 — do not re-raise it as an inconsistency.
+**`is_active = false` with `delisted_on = NULL` is not a bug** — it means "not a current constituent", usually a rename. Investigated twice; do not re-raise. → `BACKLOG.md`
 
 QQQ is the proof and it was added by hand: no CIK, no sector, 5,280 daily
 bars, 66 universe evaluations, `in_trade` true at $289B, and 29,343 events.
@@ -72,44 +60,13 @@ a rule that was true everywhere in August is now true on one box.
 | scheduler | Task Scheduler | systemd timers | systemd timers |
 | runs | backtests, sweeps, rebuilds, `nightly` today | `nightly`/`weekly`/`monthly` after cutover | poller, serving DB, web app |
 
-**The research database is 16.14 and both Debian boxes are 17.11**, so the
-cutover crosses a major version. `pg_restore` in that direction is fine;
-the reverse is not, so a dump taken on `wivie` cannot be loaded back onto
-the container without a downgrade path. Verified 2026-09-01.
+All three addresses are DHCP-reserved. **The desktop is not being retired** — it leaves the *scheduled* role at the cutover and stays the heavy-research box, so this is a permanent two-machine arrangement rather than a handoff.
 
-All three addresses are DHCP-reserved (2026-09-01), so an address in a
-config file stays valid.
+**Versions differ deliberately and must not be "fixed"** (ADR 164). One consequence binds: 16.14 restores into 17.11 and the reverse does not, so a dump taken on `wivie` cannot go back onto the container.
 
-**The desktop is not being retired.** It leaves the *scheduled* role at the
-cutover and stays the heavy-research box — it is 1.58x faster than the
-laptop on the real hot path (`scripts/cpu_bench.py`, 2026-08-28) and that
-gap is a power budget, not tuning. So this file is a **two-machine
-document, permanently**, not a handoff. Expect both to be live.
+**The two places they cannot be identical**, and the only labels that carry weight below: **Docker vs native Postgres** — the container does not restart after a reboot and failed the 2026-08-30 nightly — and **Task Scheduler vs systemd**, which needs an interactive logon and records success for a failed job unless the wrapper propagates `$LASTEXITCODE`.
 
-**The migration is one change, by design.** The only edit required to move
-the scheduled role is **what the Pi's `.env.local` points at**, plus the
-one-time `pg_dump`/`pg_restore` of research. See `docs/SETUP.md` Part C1;
-everything else is already staged on `wivie`.
-
-**The bar is functionally identical, not literally identical.** Measured
-2026-09-01: Postgres 16.14 against 17.11, Python 3.14.3 against 3.13.5.
-Both accepted — `pyproject.toml` supports the whole range and nothing in
-the cutover copies an interpreter between machines. Do not "fix" either
-one. Do not assume a version matches because the setup was scripted;
-check when a version could plausibly matter.
-
-**The two places they genuinely cannot be identical**, and therefore the
-only labels that carry weight below:
-
-1. **Docker Postgres against native Postgres.** The container does not
-   restart after a reboot and has failed a nightly for exactly that reason
-   (2026-08-30). Native systemd Postgres removes the whole failure class.
-2. **Task Scheduler against systemd.** Task Scheduler needs an interactive
-   logon and records success for a failed job unless the wrapper propagates
-   `$LASTEXITCODE`. systemd does neither.
-
-Where a rule applies to one machine it now says so. Where it says nothing,
-it applies everywhere.
+Cutover is `docs/SETUP.md` Part C1. Where a rule applies to one machine it says so; where it says nothing, it applies everywhere.
 
 ---
 
@@ -217,13 +174,7 @@ $ErrorActionPreference = $prev
 
 Budgets, so nobody starts one blind. Per-step tables, regimes, and the history of every figure that was wrong are in `docs/TIMINGS.md` -- **a step has regimes, and one measurement is one regime; check `runs` for the distribution.**
 
-**Every figure below was measured on the workstation.** `wivie` is slower on
-CPU-bound phases and the multiplier is **unmeasured** — the 1.58x in
-BACKLOG.md is for a different laptop (the Flow X13), not this one. Run
-`scripts/cpu_bench.py` on `wivie` before quoting a budget there. Two of this
-project's hardware estimates were wrong until measured, so predict nothing.
-Network-bound steps (the fetchers, most of `nightly`) should be close to
-parity.
+**Every figure below was measured on the workstation**, and `wivie`'s multiplier is **unmeasured** — the 1.58x in `BACKLOG.md` is a different laptop. Run `scripts/cpu_bench.py` there before quoting a budget.
 
 | job | budget |
 |---|---|
@@ -319,21 +270,7 @@ the Pi are Debian. Code must run on both — that is what `scripts/run_job.ps1`
 and `scripts/run_job.sh` exist for, and why no script under `scripts/` may
 contain an absolute path to the repo, the venv or `psql`.
 
-**The two boxes are not on the same Python, and that is accepted**,
-measured 2026-09-01:
-
-| | workstation | `wivie` |
-|---|---|---|
-| Python | **3.14.3** | **3.13.5** |
-| `mp.get_start_method()` | `spawn` | `fork` |
-
-`pyproject.toml` pins only `requires-python = ">=3.11"`, so `uv` resolved
-whatever each machine had. Deliberately left alone: the code supports the
-range and the rule below already forbids depending on the start method.
-Worth knowing, not worth aligning.
-
-`ProcessPoolExecutor` therefore uses **spawn on the workstation and fork on
-`wivie` today.** Write for spawn: it is the stricter of the two, and code
+**`ProcessPoolExecutor` uses spawn on the workstation and fork on `wivie`** (Python 3.14.3 against 3.13.5, accepted — ADR 164). Write for spawn: it is the stricter of the two, and code
 that quietly depends on fork breaks only on Windows. Every job module must
 be importable with no side effects, every entry point needs
 `if __name__ == "__main__":`, and workers open their own database
@@ -385,24 +322,8 @@ section depends on which one it is.
 
 Three consequences worth knowing before relying on it:
 
-- **Pushing is not deploying. The Pi is a separate clone.**
-  `scripts/pi/wait_and_poll.sh` runs from `~/CapitalScan` on the Pi and a
-  commit on `main` changes nothing there until `git pull` runs on that
-  machine. An agent shell on the workstation cannot always reach it
-  (`Permission denied (publickey,password)`, 2026-09-01), so a poller fix
-  can be committed, tested and still not running. On 2026-08-31 a `git
-  pull` there brought **51 commits**, and until it ran the Pi resolved a
-  stale `config_hash`. Verify with
-  `ssh daris@192.168.1.30 'cd ~/CapitalScan && git log --oneline -1'`.
-  → `OPERATIONS.md`
-- **A guard that cannot tell "no" from "I could not tell" is not a guard.**
-  The Pi poller's calendar check piped `psql` straight into `grep -q 1`, so
-  a database that was down, still starting, or refusing the role printed
-  nothing, and the script announced "not a trading day" and exited **0** —
-  systemd recording success for a session that never happened, at a timer
-  that fires at 00:00 on the same boot as Postgres. Fixed 2026-09-01;
-  `scripts/test_wait_and_poll_pi.sh` pins it. Look for this shape wherever
-  a shell script tests a database for a condition. → `OPERATIONS.md`
+- **Pushing is not deploying: the Pi and `wivie` are separate clones.** Check what a machine actually has before believing a fix is live; a 2026-08-31 pull on the Pi brought 51 commits. → `OPERATIONS.md`
+- **A guard that cannot tell "no" from "I could not tell" is not a guard.** The Pi poller's calendar check called a dead database a market holiday and exited 0. Fixed 2026-09-01. → `OPERATIONS.md`
 - **Never run `scripts/wait_and_poll.ps1` and the Pi timer at the same
   time.** As of 2026-08-31 the `.ps1` also runs `cscan poll --serving` and
   writes serving directly -- a true drop-in for the Pi when it skips a day,
