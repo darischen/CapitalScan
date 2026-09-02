@@ -197,7 +197,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 153 | The poller pushes to serving every tick | Pinned. Extends ADR 053 with a second sync path; gives ADR 150's sweep a serving target; no `config_hash` move |
 | 154 | An ETF is in the trade universe unconditionally | Pinned. Amends 149's `crit_mcap` requirement for funds; completes 147; ADR 112 wants re-measuring |
 | 155 | Quantile coverage fails and DESIGN §7.6 has no repair for it | **Decided 2026-08-26: option C**, conformalised, calibrated on normal years excluding 2022 |
-| 156 | ETF market cap: `netAssets` disagrees with `sharesOutstanding` | **Decided 2026-08-26: option B via (i)** — store `netAssets / close` with its own `source` |
+| 156 | ETF market cap: `netAssets` disagrees with `sharesOutstanding` | **Decided 2026-08-26: option B via (i)**. **Addendum 2026-09-01:** the disagreement is staleness, not units; no migration, the fix arrives at the next quarterly evaluation |
 | 157 | `events.sector` is a current snapshot, and that is accepted look-ahead | **Decided 2026-08-28.** Moved out of `BACKLOG.md`; no point-in-time GICS source exists, `universe.mcap_usd` shows the shape a fix would take |
 | 158 | The poller should write serving directly, not research | **Proposed 2026-08-28, not implemented.** Removes research from the live write path; frees the workstation during market hours |
 | 159 | Superseded sweep generations are archived out of the database, not kept in it | **Decided 2026-08-31, applied.** Narrows ADR 096; 12 arms moved to gzipped CSV, DB 48 GB -> 19 GB; no `config_hash` move |
@@ -7429,3 +7429,37 @@ reproduced rather than merely contradicted. New work should not pass it.
 overlapping observations countable in an interval, matching what `rho`
 already does cross-sectionally. Until that exists, the two paths stay
 split, and that work is in `BACKLOG.md`.
+
+---
+
+**Addendum, 2026-09-01 — the disagreement was staleness, not units.**
+
+ADR 156 recorded that `netAssets` and `sharesOutstanding` "disagree with
+each other" and could not say which was right, since for a fund price ×
+shares *is* net assets by construction:
+
+    SPY   netAssets/price = 1,038,381,651  vs shares   917,782,016  ratio 1.131
+    QQQ   netAssets/price =   637,101,310  vs shares   393,100,000  ratio 1.621
+
+Re-measured against what is now on file, the ratios hold and the reason is
+visible:
+
+| | frozen count | frozen at | `netAssets`-derived | ratio |
+|---|---|---|---|---|
+| QQQ | 393,100,000 | 2021-03-17 | 639,874,291 | **1.628** |
+| SPY | 917,782,016 | 2021-03-17 | 1,044,011,250 | **1.138** |
+
+**Both share counts are frozen at the same date and both ratios exceed 1 by
+*different* amounts.** A unit mismatch would give one consistent factor
+across funds. Five years of differing fund growth gives exactly this: QQQ
+grew ~63%, SPY ~14%. So `netAssets` is the current quantity and
+`sharesOutstanding` is stale for these tickers, which is what option B
+assumed and could not then demonstrate.
+
+**No action follows.** `_latest_shares` orders by `filed_on`, so the
+`netAssets` rows apply from the next quarterly evaluation forward and no
+historical row moves. Backdating them would let a current count answer a
+historical `as_of`, which DESIGN §2.4 and that function's own contract
+forbid. The 2021Q2-2026Q3 quarters stay priced on the 2021 count, which is
+wrong as a recorded figure and changes no eligibility call: `min_mcap_usd`
+is $20e9 and both funds sit more than tenfold above it.

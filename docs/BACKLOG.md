@@ -2051,24 +2051,41 @@ in for one.
 Blocked on nothing but effort, and it is statistics work rather than
 plumbing.
 
-### ETF `mcap_usd` wants its own dated migration (ADR 156)
+### ~~ETF `mcap_usd` wants its own dated migration (ADR 156)~~ — **investigated 2026-09-01: there is no migration to write**
 
-**Decided, built, and one step short.** ADR 156 chose option B via (i):
-store the derived share count `netAssets / close` with its own `source`.
-`cscan shares` has written `yahoo_netassets` rows since 2026-08-27 — VOO
-2,395,461,971, IBIT 1,046,421,772, SPY 1,038,151,224, QQQ 636,519,171 —
-which closed the missing-share-count entry.
+**The entry described work that would be wrong to do.** It said adopting
+`netAssets` "rewrites QQQ's `mcap_usd` from $289B to $453B across 66
+quarters" and therefore "wants its own dated migration". Neither half
+holds.
 
-**What is left is the rewrite of history.** Adopting `netAssets` moves
-QQQ's recorded `mcap_usd` from **$289B to $453B across 66 quarters**. That
-is a correction rather than a change — the existing figure comes from a
-share count frozen at 2021-03-17 — but it still rewrites values that other
-tables were computed against, so it wants its own dated migration rather
-than arriving as a side effect of a `shares` run.
+**`_latest_shares` already does the right thing, and it does nothing to
+history.** It selects the newest `shares_outstanding` row with
+`filed_on < as_of`, regardless of source. The `yahoo_netassets` rows are
+dated 2026-08-27 onward, so they are newer than every quarter already
+evaluated. Measured:
 
-Small and self-contained. Scheduled rather than urgent because ADR 154
-already admits all four ETFs regardless of market cap, so nothing is
-blocked meanwhile.
+    as_of 2020-06-30 .. 2026-06-30  ->  393,100,000  filed 2021-03-17
+    as_of 2026-09-30 onward         ->  639,874,291  filed 2026-09-01
+
+So the correction arrives at the **next** quarterly evaluation on its own,
+with no migration, and no historical row changes.
+
+**Backdating them would violate the rule the function exists to enforce.**
+Its docstring: "a row dated 2016 describes 2016 regardless of which fetcher
+produced it, so ordering by `filed_on` alone already prevents a current
+count from silently answering a historical `as_of` -- the one thing this
+function must not do." A migration stamping today's `netAssets` onto 66
+past quarters is exactly that, and DESIGN §2.4 rejects it explicitly.
+
+**The residual is real but smaller and different.** QQQ and SPY have no
+share rows between 2021-03-17 and 2026-08-27, so quarters 2021Q2 through
+2026Q3 are priced on a five-year-old count. `netAssets` cannot fix that --
+Yahoo publishes it as a current figure, with no history.
+
+**It changes no decision.** `min_mcap_usd` is $20e9; QQQ is recorded at
+$289B and SPY at $685B, both more than tenfold above the threshold, and
+`crit_mcap` is true either way. A wrong recorded number, never a wrong
+eligibility call. Left as-is.
 
 ### ~~An isolated harness for `wait_and_poll`'s guards~~ — **built 2026-09-01, and it found a bug**
 
