@@ -28,6 +28,7 @@ same as having run on schedule.
 | when | what | first time for | where to look |
 |---|---|---|---|
 | 00:00 PT | Pi poll | the calendar guard that no longer calls a dead database a holiday | **VERIFIED 2026-09-02 02:12.** The guard queried `trading_days` for 2026-09-02, got a clean answer, and the unit entered `[WAIT]` counting down to 06:45 — no `[SKIP]`, no `[ERROR]`. |
+| 06:45 PT | Pi poll, live | the fixed guard let a real session start | **VERIFIED 2026-09-02 08:11.** Poller in its monitor loop; serving holds **202 events across 173 tickers** and 202 `signal_reports` for today. |
 | 13:15 PT | `nightly` | the ticker refresh **and** the trading-day guard | **Not yet run** as of 05:15. `reports/nightly/nightly_2026_09_02.log` |
 | ~13:50 PT | the sync inside nightly | ADR 163's surrogate-id fix on the *scheduled* path | **Not yet run.** Same log, and `runs` for `job='sync'`. A full `cscan sync` did pass by hand on 2026-09-01 (7,498,713 rows), so this confirms the scheduled path only. |
 
