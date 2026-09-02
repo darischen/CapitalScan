@@ -138,7 +138,7 @@ class TestTheBaselineIsNeverFittedOnValidate:
     def test_no_early_stopping_on_the_scored_split(self) -> None:
         """Early stopping needs a stopping set. Using validate for it fits
         the model to the split under test; rounds come from CV instead."""
-        src = inspect.getsource(promotion.evaluate_head)
+        src = inspect.getsource(promotion._fit_and_predict)
         assert "early_stopping" not in src
         assert "statistics.median" in inspect.getsource(promotion)
 
@@ -148,9 +148,9 @@ class TestWeighting:
         """DESIGN §7.5's `1/|cluster|`. Unweighted, a four-event cluster
         votes four times in the coverage fraction — the same correlation
         the weights exist to undo in the loss."""
-        src = inspect.getsource(promotion.evaluate_head)
+        src = inspect.getsource(promotion.evaluate_family)
         below = src[src.index("below =") :]
-        assert "w_va" in below, "coverage must use the cluster weights"
+        assert "* w).sum() / w.sum()" in below, "coverage must use the cluster weights"
 
 
 class TestWiredIntoTheCli:
@@ -260,3 +260,56 @@ class TestBooleanDtypeSurvivesTheRowDrops:
 
         src = inspect.getsource(features.build_training_frame)
         assert src.index("_coerce_boolean_features") < src.index("_add_derived")
+
+
+class TestQuantileCrossingIsRepaired:
+    """DESIGN §7.4: independent heads carry no monotonicity constraint, so a
+    fitted `Q_0.25` can exceed `Q_0.50` on some feature vectors. Sorting is
+    the documented repair.
+
+    **`train.sort_quantiles` had no production caller until 2026-09-02.**
+    It was written in Session 23 and never wired in, and the first version
+    of this module scored each head alone -- which skipped the sort by
+    construction, since sorting is across τ. Every coverage number in the
+    first gate run was measured on a fan the design does not ship.
+    """
+
+    def test_the_gate_sorts_across_tau(self) -> None:
+        assert "sort_quantiles" in inspect.getsource(promotion.evaluate_family)
+
+    def test_it_sorts_before_scoring(self) -> None:
+        """Sorting after the loss is computed repairs nothing."""
+        src = inspect.getsource(promotion.evaluate_family)
+        assert src.index("sort_quantiles") < src.index("pinball_loss")
+
+    def test_the_unit_of_evaluation_is_a_family_and_horizon(self) -> None:
+        """Head by head cannot sort: the five taus have to exist together."""
+        sig = inspect.signature(promotion.evaluate_family)
+        assert "family" in sig.parameters
+        assert "horizon" in sig.parameters
+        assert "tau" not in sig.parameters
+
+    def test_run_gate_still_emits_every_head(self) -> None:
+        src = inspect.getsource(promotion.run_gate)
+        assert "all_heads()" in src
+        assert "evaluate_family" in src
+
+    def test_crossing_is_measurable_not_only_repaired(self) -> None:
+        """A high crossing rate means the heads disagree, which sorting
+        hides without fixing. It has to be reportable."""
+        # Column 0 descends (0.9, 0.5, 0.1) and crosses; column 1 ascends
+        # (0.1, 0.5, 0.9) and does not. Half the rows, and writing the
+        # fixture this way is deliberate -- the first version asserted 1.0
+        # and was wrong about its own data.
+        mixed = {
+            0.25: np.array([0.9, 0.1]),
+            0.5: np.array([0.5, 0.5]),
+            0.75: np.array([0.1, 0.9]),
+        }
+        assert promotion.crossing_rate(mixed) == 0.5
+
+        clean = {0.25: np.array([0.1]), 0.5: np.array([0.5]), 0.75: np.array([0.9])}
+        assert promotion.crossing_rate(clean) == 0.0
+
+        every = {0.25: np.array([0.9]), 0.5: np.array([0.5]), 0.75: np.array([0.1])}
+        assert promotion.crossing_rate(every) == 1.0

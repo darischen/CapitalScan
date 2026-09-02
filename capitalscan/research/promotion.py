@@ -175,25 +175,24 @@ def grouped_baseline(
     return np.asarray([per_group.get(key, overall) for key in validate_frame[by]], dtype=float)
 
 
-def evaluate_head(
-    train_frame: pd.DataFrame,
-    validate_frame: pd.DataFrame,
+def _fit_and_predict(
+    train_frame,
+    validate_frame,
     family: str,
     horizon: int,
     tau: float,
     calendar: Sequence[date],
-    rounds: int | None = None,
-) -> HeadEvaluation:
-    """Fit one head on all of train, score it on validate.
+    rounds: int | None,
+) -> tuple[np.ndarray, int]:
+    """Fit one head on all of train, return its raw validate predictions.
 
-    `rounds` defaults to the median `best_iteration` across this head's
-    walk-forward folds. Early stopping is deliberately not used: its
-    stopping set would be the split under test.
+    Separated from scoring because **quantile crossing is repaired across
+    τ, not within one head** (DESIGN §7.4), so the five heads of a
+    (family, horizon) have to be predicted before any of them is scored.
     """
     import lightgbm as lgb
 
     label = train.label_for(family, horizon)
-    name = train.head_name(family, horizon, tau)
 
     if rounds is None:
         cv = train.fit_head(train_frame, family, horizon, tau, calendar)
@@ -201,63 +200,128 @@ def evaluate_head(
         rounds = int(statistics.median(iters)) if iters else DEFAULT_ROUNDS
 
     y_tr = pd.to_numeric(train_frame[label], errors="coerce").to_numpy(float)
-    y_va = pd.to_numeric(validate_frame[label], errors="coerce").to_numpy(float)
     tr_ok = ~np.isnan(y_tr)
-    va_ok = ~np.isnan(y_va)
-
     w_tr = np.asarray(core_folds.cluster_weights(list(train_frame["cluster_id"])))
-    w_va = np.asarray(core_folds.cluster_weights(list(validate_frame["cluster_id"])))
-
-    x_tr = _matrix(train_frame)[tr_ok]
-    x_va = _matrix(validate_frame)[va_ok]
 
     params = {**train.LGBM_PARAMS, "objective": "quantile", "alpha": tau}
     booster = lgb.train(
         params,
-        lgb.Dataset(x_tr, label=y_tr[tr_ok], weight=w_tr[tr_ok], free_raw_data=False),
+        lgb.Dataset(
+            _matrix(train_frame)[tr_ok],
+            label=y_tr[tr_ok],
+            weight=w_tr[tr_ok],
+            free_raw_data=False,
+        ),
         num_boost_round=rounds,
     )
-    pred = booster.predict(x_va)
+    return np.asarray(booster.predict(_matrix(validate_frame)), dtype=float), int(rounds)
 
-    model_loss = pinball.pinball_loss(pred, y_va[va_ok], tau, weights=w_va[va_ok])
 
-    constant = pinball.unconditional_quantile(list(y_tr[tr_ok]), tau)
-    b_global = pinball.pinball_loss(
-        [constant] * int(va_ok.sum()), y_va[va_ok], tau, weights=w_va[va_ok]
-    )
-    b_sector = pinball.pinball_loss(
-        grouped_baseline(train_frame, validate_frame, label, tau, "sector")[va_ok],
-        y_va[va_ok],
-        tau,
-        weights=w_va[va_ok],
-    )
-    b_ticker = pinball.pinball_loss(
-        grouped_baseline(train_frame, validate_frame, label, tau, "ticker")[va_ok],
-        y_va[va_ok],
-        tau,
-        weights=w_va[va_ok],
-    )
+def evaluate_family(
+    train_frame: pd.DataFrame,
+    validate_frame: pd.DataFrame,
+    family: str,
+    horizon: int,
+    calendar: Sequence[date],
+    rounds: dict[str, int] | None = None,
+) -> list[HeadEvaluation]:
+    """The five τ of one (family, horizon), fitted and scored together.
 
-    # Coverage: the fraction of realised returns at or below the predicted
-    # quantile (DESIGN §7.6). Weighted by the same cluster weights, so a
-    # four-event cluster does not vote four times here either.
-    below = (y_va[va_ok] <= np.asarray(pred, dtype=float)).astype(float)
-    coverage = float((below * w_va[va_ok]).sum() / w_va[va_ok].sum())
+    **Sorted across τ before scoring, per DESIGN §7.4.** The heads are
+    fitted independently and carry no monotonicity constraint, so a fitted
+    `Q_0.25` can exceed `Q_0.50` on some feature vectors. `sort_quantiles`
+    is the documented repair and is applied at prediction time only --
+    reordering training labels would be fabricating outcomes.
 
-    return HeadEvaluation(
-        head=name,
-        family=family,
-        horizon=horizon,
-        tau=tau,
-        n_train=int(tr_ok.sum()),
-        n_validate=int(va_ok.sum()),
-        rounds=int(rounds),
-        model_loss=model_loss,
-        baseline_global=b_global,
-        baseline_sector=b_sector,
-        baseline_ticker=b_ticker,
-        coverage=coverage,
-    )
+    This is why the unit of evaluation is a *family and horizon* rather
+    than a head. The first version of this module scored each head alone,
+    which skipped the sort entirely: `train.sort_quantiles` had no
+    production caller at all, having been written in Session 23 and never
+    wired in. Coverage computed on unsorted predictions is measuring a fan
+    the design does not ship.
+    """
+    label = train.label_for(family, horizon)
+    y_va = pd.to_numeric(validate_frame[label], errors="coerce").to_numpy(float)
+    va_ok = ~np.isnan(y_va)
+    w_va = np.asarray(core_folds.cluster_weights(list(validate_frame["cluster_id"])))
+
+    raw: dict[float, np.ndarray] = {}
+    used_rounds: dict[float, int] = {}
+    for tau in train.TAUS:
+        name = train.head_name(family, horizon, tau)
+        pred, n_rounds = _fit_and_predict(
+            train_frame,
+            validate_frame,
+            family,
+            horizon,
+            tau,
+            calendar,
+            (rounds or {}).get(name),
+        )
+        raw[tau] = pred
+        used_rounds[tau] = n_rounds
+
+    sorted_pred = train.sort_quantiles(raw)
+
+    out: list[HeadEvaluation] = []
+    for tau in train.TAUS:
+        pred = sorted_pred[tau][va_ok]
+        y = y_va[va_ok]
+        w = w_va[va_ok]
+
+        model_loss = pinball.pinball_loss(pred, y, tau, weights=w)
+
+        y_tr = pd.to_numeric(train_frame[label], errors="coerce").to_numpy(float)
+        constant = pinball.unconditional_quantile(list(y_tr[~np.isnan(y_tr)]), tau)
+        b_global = pinball.pinball_loss([constant] * int(va_ok.sum()), y, tau, weights=w)
+        b_sector = pinball.pinball_loss(
+            grouped_baseline(train_frame, validate_frame, label, tau, "sector")[va_ok],
+            y,
+            tau,
+            weights=w,
+        )
+        b_ticker = pinball.pinball_loss(
+            grouped_baseline(train_frame, validate_frame, label, tau, "ticker")[va_ok],
+            y,
+            tau,
+            weights=w,
+        )
+
+        # Coverage: the weighted fraction of realised returns at or below
+        # the predicted quantile (DESIGN §7.6). Cluster-weighted for the
+        # same reason the loss is -- a four-event cluster must not vote
+        # four times here either.
+        below = (y <= pred).astype(float)
+        coverage = float((below * w).sum() / w.sum())
+
+        out.append(
+            HeadEvaluation(
+                head=train.head_name(family, horizon, tau),
+                family=family,
+                horizon=horizon,
+                tau=tau,
+                n_train=int((~np.isnan(y_tr)).sum()),
+                n_validate=int(va_ok.sum()),
+                rounds=used_rounds[tau],
+                model_loss=model_loss,
+                baseline_global=b_global,
+                baseline_sector=b_sector,
+                baseline_ticker=b_ticker,
+                coverage=coverage,
+            )
+        )
+    return out
+
+
+def crossing_rate(predictions: dict[float, np.ndarray]) -> float:
+    """Fraction of rows where the raw fan is not monotone across τ.
+
+    Reported rather than merely repaired: a high rate means the heads
+    disagree with each other, which `sort_quantiles` hides without fixing.
+    """
+    taus = sorted(predictions)
+    stacked = np.vstack([predictions[t] for t in taus])
+    return float((np.diff(stacked, axis=0) < 0).any(axis=0).mean())
 
 
 def run_gate(
@@ -266,17 +330,20 @@ def run_gate(
     calendar: Sequence[date],
     rounds: dict[str, int] | None = None,
 ) -> GateReport:
-    """Every head in `train.all_heads()`, in its fixed order."""
-    evaluations = [
-        evaluate_head(
-            train_frame,
-            validate_frame,
-            family,
-            horizon,
-            tau,
-            calendar,
-            rounds=(rounds or {}).get(train.head_name(family, horizon, tau)),
+    """Every head in `train.all_heads()`, grouped by (family, horizon).
+
+    Grouped rather than iterated head by head because the five τ of one
+    horizon must be sorted against each other before scoring (DESIGN §7.4).
+    The order of the output still matches `train.all_heads()`.
+    """
+    pairs: list[tuple[str, int]] = []
+    for family, horizon, _ in train.all_heads():
+        if (family, horizon) not in pairs:
+            pairs.append((family, horizon))
+
+    evaluations: list[HeadEvaluation] = []
+    for family, horizon in pairs:
+        evaluations.extend(
+            evaluate_family(train_frame, validate_frame, family, horizon, calendar, rounds)
         )
-        for family, horizon, tau in train.all_heads()
-    ]
     return GateReport(evaluations=tuple(evaluations))
