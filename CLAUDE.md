@@ -322,7 +322,7 @@ section depends on which one it is.
 
 Three consequences worth knowing before relying on it:
 
-- **Pushing is not deploying: the Pi and `wivie` are separate clones.** Check what a machine actually has before believing a fix is live; a 2026-08-31 pull on the Pi brought 51 commits. → `OPERATIONS.md`
+- **Pushing is not deploying: the Pi and `wivie` are separate clones.** Check what a machine actually has before believing a fix is live — the Pi was 21 commits behind by the evening of 2026-09-01. **The Pi's user is `darischen`, not `daris`**; the wrong one returns `Permission denied (publickey,password)`, which reads like a missing key and is not. → `OPERATIONS.md`
 - **A guard that cannot tell "no" from "I could not tell" is not a guard.** The Pi poller's calendar check called a dead database a market holiday and exited 0. Fixed 2026-09-01. → `OPERATIONS.md`
 - **Never run `scripts/wait_and_poll.ps1` and the Pi timer at the same
   time.** As of 2026-08-31 the `.ps1` also runs `cscan poll --serving` and

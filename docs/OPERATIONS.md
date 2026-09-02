@@ -651,21 +651,33 @@ deploy it.
 commit on `main` reaches it only when someone runs:
 
 ```
-ssh daris@192.168.1.30 'cd ~/CapitalScan && git pull --ff-only origin main'
+ssh darischen@192.168.1.30 'cd ~/CapitalScan && git pull --ff-only origin main'
 ```
 
-**The workstation cannot always do this.** As of 2026-09-01 an agent shell
-on the workstation gets `Permission denied (publickey,password)` against
-`192.168.1.30`, so a fix can be committed, pushed, tested and *still not be
-running* on the machine that needs it. This already happened once at
-larger scale: on 2026-08-31 a `git pull` on the Pi brought **51 commits**,
-and until it ran the Pi was resolving a stale `config_hash`.
+**The account names differ per machine, and guessing wastes a deploy.**
+
+    workstation   daris
+    wivie         daris        192.168.1.12
+    the Pi        darischen    192.168.1.30
+
+`daris@192.168.1.30` returns `Permission denied (publickey,password)`,
+which reads exactly like a missing key and is not one -- the key is fine
+and the user does not exist. That cost a deploy on 2026-09-01: the fix
+above was committed, tested and reported as undeployable, when the only
+problem was the username. `~/.ssh/config` has no `Host` entries, so
+nothing on the workstation records the difference except this table.
+
+**The gap is real regardless of the cause.** On 2026-08-31 a `git pull` on
+the Pi brought **51 commits**, and until it ran the Pi was resolving a
+stale `config_hash`. On 2026-09-01 it was **21 commits** behind by evening
+-- every fix of that day, including the calendar guard its 00:00 timer
+depends on.
 
 **So a poller fix is not finished at the push.** Check what the Pi actually
 has:
 
 ```
-ssh daris@192.168.1.30 'cd ~/CapitalScan && git log --oneline -1'
+ssh darischen@192.168.1.30 'cd ~/CapitalScan && git log --oneline -1'
 ```
 
 The same applies to `wivie` and to any `scripts/pi/` or `scripts/systemd/`
