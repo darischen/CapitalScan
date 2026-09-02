@@ -12,6 +12,22 @@ criteria in `UniverseParams.required_criteria` read price, SMA200, slope and
 relative return, and market cap resolves from SEC XBRL by CIK **with a Yahoo
 fallback for names that have none** (68 tickers today, `shares_outstanding.source`).
 
+**That seed is refreshed by hand and drifts.** `run_tickers_refresh` is
+reachable only through `cscan tickers --refresh`; it is **not in
+`nightly`**, and `runs` says it last executed 2026-08-25. A new
+constituent, or a rename, enters the system when someone remembers a
+command. **Proven gap: `FI` does not exist in `tickers` at all** — Fiserv
+renamed FISV → FI in 2024, we hold the stale `FISV` row flagged inactive,
+and the name has 0 universe rows and 0 events. Check the date on the last
+`tickers` run before treating coverage as current. → `BACKLOG.md`
+
+**`is_active = false` with `delisted_on = NULL` is not a bug.** It means
+"no longer a current constituent", which for most of the 81 such rows is a
+*rename* (FB → META, PCLN → BKNG, KORS → CPRI) rather than a delisting, so
+a date would be false. The 18 rows carrying a date are the genuinely
+delisted. Nothing in the codebase writes `false`; those are ADR 035 union
+stubs. Investigated 2026-09-01 — do not re-raise it as an inconsistency.
+
 QQQ is the proof and it was added by hand: no CIK, no sector, 5,280 daily
 bars, 66 universe evaluations, `in_trade` true at $289B, and 29,343 events.
 A ticker outside the S&P 500 participates fully once its rows exist. Planned
@@ -369,6 +385,24 @@ section depends on which one it is.
 
 Three consequences worth knowing before relying on it:
 
+- **Pushing is not deploying. The Pi is a separate clone.**
+  `scripts/pi/wait_and_poll.sh` runs from `~/CapitalScan` on the Pi and a
+  commit on `main` changes nothing there until `git pull` runs on that
+  machine. An agent shell on the workstation cannot always reach it
+  (`Permission denied (publickey,password)`, 2026-09-01), so a poller fix
+  can be committed, tested and still not running. On 2026-08-31 a `git
+  pull` there brought **51 commits**, and until it ran the Pi resolved a
+  stale `config_hash`. Verify with
+  `ssh daris@192.168.1.30 'cd ~/CapitalScan && git log --oneline -1'`.
+  → `OPERATIONS.md`
+- **A guard that cannot tell "no" from "I could not tell" is not a guard.**
+  The Pi poller's calendar check piped `psql` straight into `grep -q 1`, so
+  a database that was down, still starting, or refusing the role printed
+  nothing, and the script announced "not a trading day" and exited **0** —
+  systemd recording success for a session that never happened, at a timer
+  that fires at 00:00 on the same boot as Postgres. Fixed 2026-09-01;
+  `scripts/test_wait_and_poll_pi.sh` pins it. Look for this shape wherever
+  a shell script tests a database for a condition. → `OPERATIONS.md`
 - **Never run `scripts/wait_and_poll.ps1` and the Pi timer at the same
   time.** As of 2026-08-31 the `.ps1` also runs `cscan poll --serving` and
   writes serving directly -- a true drop-in for the Pi when it skips a day,

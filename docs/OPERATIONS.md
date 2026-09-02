@@ -9,6 +9,8 @@ may not be now. Verify against the live system before acting on one.
 
 Index:
 
+- [A failed calendar query reads as a market holiday (Pi poller)](#a-failed-calendar-query-reads-as-a-market-holiday-pi-poller-2026-09-01)
+- [The Pi is a separate clone, and pushing is not deploying](#the-pi-is-a-separate-clone-and-pushing-is-not-deploying)
 - [Postgres: container down vs server moved](#postgres-container-down-vs-server-moved)
 - [Container exited 255 unprompted](#container-exited-255-unprompted)
 - [Binding the container IPv4-only makes `localhost` cost 2 seconds](#binding-the-container-ipv4-only-makes-localhost-cost-2-seconds)
@@ -573,3 +575,99 @@ previous Saturday evening under a UTC session, reading as "previous
 period" and re-running a completed weekly on every boot. If you ever make
 `record` write a correct instant, revisit this — the strip becomes wrong
 the moment the digits stop being Pacific.
+
+---
+
+## A failed calendar query reads as a market holiday (Pi poller, 2026-09-01)
+
+**Found by a test, not by an outage**, which is the only reason it is
+written up in the past tense. `scripts/pi/wait_and_poll.sh` decided whether
+to poll with one pipeline:
+
+```bash
+if ! sudo -n -u postgres psql -d capitalscan_serving -X -tA \
+     -c "SELECT 1 FROM trading_days WHERE d = '$TODAY'" | grep -q 1; then
+  say SKIP "$TODAY is not a trading day. Nothing to poll; exiting cleanly."
+  exit 0
+fi
+```
+
+**A `psql` that fails prints nothing to stdout.** `grep -q 1` then finds
+nothing, the `!` inverts it, and the script announces *"not a trading
+day"* and exits **0**. A database that is down, still starting, or
+refusing the role is indistinguishable from a closed market — and the exit
+code tells systemd the unit succeeded.
+
+Reproduced in a throwaway container by denying the role login:
+
+```
+psql: error: ... FATAL:  role "postgres" is not permitted to log in
+[SKIP] 09:42:30 - 2026-09-02 is not a trading day. Nothing to poll; exiting cleanly.
+EXIT=0
+```
+
+**Why this was going to bite.** `capitalscan-poller.timer` fires at
+**00:00**, and Postgres on the Pi is on the same SD card and the same boot
+as everything else. A session lost to a slow database start would leave
+`journalctl -u capitalscan-poller` reading `[SKIP] ... exiting cleanly` and
+`systemctl status` reading success. Nothing anywhere would say the market
+had been open and unpolled. ADR 084's `coverage_pct` would not catch it
+either, because no `poller_sessions` row is opened at all.
+
+**The Windows script never had this.** `wait_and_poll.ps1` checks
+`$LASTEXITCODE` and emits `[ERROR] ... Not polling` with exit 1, separately
+from `[SKIP]`. The two wrappers are meant to be interchangeable and this
+was a silent divergence between them — worth remembering when reading
+"the `.sh` mirrors the `.ps1`" anywhere.
+
+**The fix** splits the two answers. A non-zero `psql` exit is `[ERROR]` and
+exit 1; only a successful query returning no row is `[SKIP]` and exit 0.
+
+```bash
+CAL=$(sudo -n -u postgres psql ... 2>&1)
+if [ $? -ne 0 ]; then say ERROR "cannot reach the serving database ..."; exit 1; fi
+if ! printf '%s' "$CAL" | grep -q '^1$'; then say SKIP "..."; exit 0; fi
+```
+
+**The general shape, which is the part worth carrying.** *A guard that
+cannot distinguish "no" from "I could not tell" is not a guard.* Piping a
+query straight into `grep` throws away the exit code, and the failure
+direction is whichever answer the empty string happens to mean. The same
+pattern is worth looking for anywhere a shell script tests a database for a
+condition.
+
+**Deployment is a separate step and was not done here.** The Pi runs its
+own clone; the commit landing on `main` changes nothing until
+`git pull` runs there. → see the note below.
+
+---
+
+## The Pi is a separate clone, and pushing is not deploying
+
+Recorded 2026-09-01 after fixing the poller bug above and being unable to
+deploy it.
+
+`scripts/pi/wait_and_poll.sh` runs from `~/CapitalScan` **on the Pi**. A
+commit on `main` reaches it only when someone runs:
+
+```
+ssh daris@192.168.1.30 'cd ~/CapitalScan && git pull --ff-only origin main'
+```
+
+**The workstation cannot always do this.** As of 2026-09-01 an agent shell
+on the workstation gets `Permission denied (publickey,password)` against
+`192.168.1.30`, so a fix can be committed, pushed, tested and *still not be
+running* on the machine that needs it. This already happened once at
+larger scale: on 2026-08-31 a `git pull` on the Pi brought **51 commits**,
+and until it ran the Pi was resolving a stale `config_hash`.
+
+**So a poller fix is not finished at the push.** Check what the Pi actually
+has:
+
+```
+ssh daris@192.168.1.30 'cd ~/CapitalScan && git log --oneline -1'
+```
+
+The same applies to `wivie` and to any `scripts/pi/` or `scripts/systemd/`
+change. Three machines, three clones, and only the workstation's is the one
+you are editing.
