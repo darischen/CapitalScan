@@ -78,14 +78,27 @@ class HeadEvaluation:
 
     @property
     def beats_scaled(self) -> bool:
-        """The bar that tells volatility scaling from skill.
+        """**Vacuous on loss, and kept only so the vacuity is visible.**
 
-        A raw constant cannot follow a regime whose volatility rose 12-28%,
-        so beating it is compatible with the model doing nothing but crude
-        rescaling. This asks whether it beats a constant that *can* rescale.
-        Diagnostic, not gating -- ADR 167 fixed what the kill criterion
-        reads, and widening it after seeing the numbers would be choosing
-        the bar to suit the result.
+        Built to ask whether the model's wins were crude volatility
+        scaling: a raw constant cannot follow a regime whose volatility
+        rose 12-28%, so beating it is compatible with the model doing
+        nothing else.
+
+        Measured 2026-09-02, it cannot answer that. The scaled constant has
+        **higher pinball loss than the raw one on all 20 heads**, by up to
+        3.6x (`peak_h10_q95`, 0.008052 -> 0.029068), so this is an *easier*
+        bar and passing it means nothing.
+
+        The cause is the trade DESIGN §7.6 keeps two metrics for.
+        Multiplying a constant by each row's own sigma improves **coverage**
+        and worsens **sharpness**: the prediction gains variance, which
+        pinball loss charges for and coverage does not. Compare
+        `baseline_scaled` against `baseline_global` before reading this.
+
+        The question is still open and is answerable only by fitting the
+        model in scale-free units too, so both sides are in the same units
+        -- item 2 of the Phase 6 refinement plan.
         """
         return self.model_loss < self.baseline_scaled
 
@@ -148,6 +161,10 @@ class GateReport:
                 "improve_pct": round(e.improvement * 100, 2),
                 "beats_global": e.beats_global,
                 "beats_sector": e.beats_sector,
+                # The loss, not only the verdict: the scaled constant is
+                # uniformly worse on pinball, so the boolean alone would
+                # read as a passed test rather than an easier bar.
+                "baseline_scaled": round(e.baseline_scaled, 6),
                 "beats_scaled": e.beats_scaled,
                 "coverage": round(e.coverage, 4),
                 "cov_err": round(e.coverage_error, 4),

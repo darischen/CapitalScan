@@ -33,26 +33,31 @@ too**, so the dead ends are not re-walked.
 
 ---
 
-### 1. Compare against a volatility-normalised baseline — do this first
+### ~~1. Compare against a volatility-normalised baseline~~ — **built 2026-09-02, and the check is vacuous**
 
-**Not an improvement to the model: a check on whether its wins are real.**
+**The idea was sound and the implementation could not answer it.**
 
-The measured regime shift between train (2010-2021) and validate
-(2022-2023) is a volatility increase: `fwd_ret_5d` sd +12%,
-`peak_ret_5d` q75 +28%, `peak_ret_10d` q95 +19%. The peak family's 10-20%
-gains are exactly what a model would show if it were doing crude
-volatility scaling and nothing else.
+The measured regime shift is a volatility increase (`fwd_ret_5d` sd +12%,
+`peak_ret_5d` q75 +28%), so a raw constant cannot follow it and the peak
+family's 10-20% gains might have been crude rescaling and nothing else.
+`scaled_baseline` fits `quantile(R/sigma)` on train and multiplies by each
+validate row's own sigma.
 
-ADR 167's baseline is a **raw** constant, so it cannot scale. Rebuild it as
-`quantile(R/sigma) * sigma_now` — a constant in scale-free units,
-rescaled at prediction time — and re-run check 5 against that.
+**It is an easier bar, not a harder one.** Measured across all twenty
+heads, the scaled constant's pinball loss is *higher* than the raw
+constant's — on every single one, by up to **3.6x** (`peak_h10_q95`,
+0.008052 → 0.029068). Every head that beats global also beats it, and that
+fact carries no information.
 
-**If the peak heads stop beating it, their 10-20% was volatility scaling,
-and the "dispersion not direction" reading becomes "nothing at all".** That
-is the single most informative test available, it needs no model change,
-and it can only lower the reported result.
+**The cause is the trade DESIGN §7.6 keeps two metrics for.** Multiplying
+by a per-row sigma improves **coverage** and worsens **sharpness**: the
+prediction gains variance, which pinball loss charges for and coverage does
+not. The check asked a coverage question with a loss comparison.
 
-Cost: hours. It is the same shape as `grouped_baseline`.
+Kept, with the loss now emitted beside the boolean so the vacuity is
+visible rather than hidden. **The question stays open** and is answerable
+only by fitting the model in scale-free units so both sides are in the same
+units — which is item 2.
 
 ### 2. Volatility-normalised targets
 

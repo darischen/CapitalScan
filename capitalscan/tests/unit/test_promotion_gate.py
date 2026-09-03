@@ -327,6 +327,14 @@ class TestTheVolatilityScaledBaseline:
     10-20% gains are exactly that shape.
     """
 
+    def test_the_summary_shows_the_scaled_loss_not_only_the_verdict(self) -> None:
+        """Measured 2026-09-02: the scaled constant has HIGHER pinball loss
+        than the raw one on all 20 heads, so `beats_scaled` is an easier
+        bar. A boolean alone would read as a passed test. The value has to
+        be visible beside it."""
+        frame = promotion.GateReport(evaluations=(_evaluation(),)).summary()
+        assert "baseline_scaled" in frame.columns
+
     def test_it_is_reported_but_does_not_gate(self) -> None:
         """ADR 167 fixed what the kill criterion reads. Widening the gate
         after seeing the numbers would be choosing the bar to suit the
