@@ -205,13 +205,14 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 161 | The shipped exit policy is 5% + ATR k=2.0, chosen against the sweep winner | **Decided 2026-08-29, recorded 2026-09-01.** Stopless won on mean in every era and costs 11 points of worst case; k=2.0 gains 3.1 bp over k=1.5 at no tail cost. Config of record `0523841076f47293` |
 | 162 | Site auth stays off while the deployment is LAN-only | **Decided 2026-09-01.** Narrows ADR 138's pin; revisit only if the site is reachable off-LAN |
 | 163 | `events.id` is local to its store; the natural key is the identity | **Implemented 2026-09-01.** Narrows ADR 158. Fixes the sync `events_pkey` collision; `pull_live_records` nulls `event_id` and resets research's sequences |
-| 164 | The two research machines are functionally identical, not literally | **Decided 2026-09-01.** PG 16.14/17.11 and Python 3.14/3.13 accepted; do not align |
+| 164 | The two research machines are functionally identical, not literally | **Decided 2026-09-01.** PG 16.14/17.11 and Python 3.14/3.13 accepted; do not align. **Reopening clause fired 2026-09-03 (ADR 171)**: CI aligned to 3.13, floor to `>=3.13`; the workstation/`wivie` difference itself stands |
 | 165 | Returns count every fire; `cell_stats` keeps the cluster-head filter | **Implemented 2026-09-01.** Adds `research/returns.py` and `cscan stats returns`; the filter is not invariant to a swept `max_hold_days`. No `config_hash` move |
 | 166 | Cluster-robust variance replaces the mean-size `n_eff` correction | **Proposed 2026-09-02, not started.** Two-way clustering by date and `cluster_id`; `n_eff` becomes derived. Validate against current intervals before migrating. After Phase 6 and after the move |
 | 167 | Check 5's baseline is global, not per-ticker-year | **Decided 2026-09-02.** Amends ADR 113. Ticker-year overlap across a temporal split is zero, and the faithful reconstruction would be an oracle; per-sector and per-ticker reported beside it, gating nothing |
 | 168 | `watch_reason` gains `near_trade`: `crit_rel_return` alone barring `in_trade` | **Decided 2026-09-02.** Amends ADR 149. `crit_mcap`, `crit_above_sma200`, `crit_sma200_slope` all true, `crit_rel_return` not true (`False` or `None`) — the same "one named failure" shape as `pullback`. No `config_hash` move; existing rows unbackfilled until the next `cscan universe --quarter` |
 | 169 | TabFM evaluated against ADR 063's LightGBM baseline, gated on running on `wivie` | **Measured 2026-09-03. The gate fails.** On `wivie`, a 250-row context takes **231 s for one row** of inference at 7.04GB RSS on a 7.6GB box; ADR 170's model scores all 34,195 validate events in 91 ms on a CPU. On the workstation GPU it runs but loses to LightGBM. Two claims in the original text were wrong and are corrected below. Originally proposed: Google's zero-shot tabular transformer (released 2026-06-30) directly contests ADR 063's "gradient boosting dominates tabular data at this scale" — TabArena beats tuned LightGBM/XGBoost across 700-150k rows and supports native quantile output. Deployment target is `wivie` (measured: i5-7200U, 4 threads, 7.6GB RAM, no discrete GPU), against TabFM's own stated ~40k-row/24GB-GPU ceiling. Nothing measured yet; salvaging a piece (its representation, not the whole model) is on the table alongside full adoption |
 | 170 | The distributional model is multi-task: one trunk, four heads, CRPS | **Measured 2026-09-03, not promoted.** One shared trunk, four softmax-over-bins heads, summed CRPS. Beats ADR 113's twenty independent LightGBM heads on 16/20 (14 beyond seed spread) and lifts coverage 14/20 -> 17/20; **both directional q50 heads beat a constant for the first time**. Gate still fails (coverage 17/20, not 20/20), so nothing is promoted. Adds `core/distributions.py` and `research/neural.py`; torch is an optional extra |
+| 171 | CI moves to Python 3.13 and the floor moves with it | **Decided 2026-09-03.** Invokes ADR 164's reopening clause; amends it for CI only. mypy failed in CI and nowhere else because the 3.11 interpreter resolves numpy 2.4.6 (stubs type `np.mean` as `Any`) against 2.5.1 on the workstation. **CI was the outlier**: `wivie` and the Pi both run 3.13.5. Dropping `wivie` to 3.11 was rejected, it relocates the mismatch and imports the old numpy into production. `requires-python` moves to `>=3.13` because a floor nothing tests is not a floor |
 
 ---
 
@@ -7364,6 +7365,15 @@ question in `CLAUDE.md`.
 the other, traced to the interpreter or the server version. Then align the
 one that matters and say which, rather than aligning on principle.
 
+**Reopened and partly amended 2026-09-03 by ADR 171.** The clause above
+fired: mypy failed in CI and nowhere else, traced to the interpreter
+selecting numpy 2.4.6 rather than 2.5.1. The machine that mattered was
+**CI**, not either research box, and `requires-python` moved to `>=3.13`
+with it -- so the `>=3.11` contract described above is historical. **The
+decision this ADR actually made is unchanged:** the workstation and
+`wivie` still run different Pythons deliberately, and are still required
+to be functionally interchangeable rather than identical.
+
 ---
 
 ## 165. Returns count every fire; `cell_stats` keeps the cluster-head filter
@@ -8070,3 +8080,89 @@ Session 23 already found irreducible from train data. If a fourth auxiliary
 task or a longer horizon closes them, the gate becomes reachable and the
 promotion question becomes real. Until then this is a recorded result and a
 research module, not a model.
+
+## 171. CI moves to Python 3.13 and the floor moves with it
+
+**Status.** Decided 2026-09-03. **Invokes ADR 164's reopening clause**, which
+asked for exactly this evidence before any version was aligned. Amends ADR
+164's "do not align the versions" for CI only; the workstation/`wivie`
+difference ADR 164 actually decided is untouched. No `config_hash` move.
+
+**Context.**
+
+ADR 164 accepted that the workstation runs 3.14.3 and `wivie` runs 3.13.5,
+and closed with:
+
+> **What would reopen this.** A defect that reproduces on one machine and
+> not the other, traced to the interpreter or the server version. Then
+> align the one that matters and say which, rather than aligning on
+> principle.
+
+Session 24 produced that defect. `Ensemble.predict_pmf` returned
+`np.mean(...)` directly, and mypy's `no-any-return` fired **in CI and
+nowhere else**. Clearing `.mypy_cache` and running `--no-incremental` did
+not reproduce it, which is the misleading part: "passes locally, fails in
+CI" invites suspecting the cache, and that suspicion was wrong.
+
+**The interpreter selects the dependency set, and that is the whole
+mechanism.** Measured:
+
+| environment | Python | numpy |
+|---|---|---|
+| workstation | 3.14.3 | 2.5.1 |
+| `wivie` | 3.13.5 | — |
+| Pi | 3.13.5 | — |
+| **CI** | **3.11** | **2.4.6** |
+
+numpy 2.4.6's bundled stubs type `np.mean` as `Any`; 2.5.x's do not. Nothing
+in the source differed.
+
+**Decision.**
+
+**Move CI to 3.13, and move `requires-python` to `>=3.13` with it.**
+
+**CI was the outlier, not `wivie`.** Two of the three real machines already
+run 3.13.5, including the deployment target after the cutover. The obvious
+alternative -- drop `wivie` to 3.11 so it matches CI -- was considered and
+rejected on three counts:
+
+1. It relocates the mismatch rather than removing it. The Pi stays on 3.13.
+2. 3.13.5 is Debian 13's *system* Python. Putting `wivie` on 3.11 means a
+   separately managed interpreter on the box that runs the scheduled jobs.
+3. It moves the defect the wrong way. The cause is an older numpy; that
+   change would import it **into production** rather than retire it from CI.
+
+**The floor moves because a floor nothing tests is not a floor.** CI at
+3.11 was the only thing verifying `>=3.11`, and no machine in this project
+has ever run 3.11. Keeping the claim while testing only 3.13 would assert
+support that nothing exercises -- the same failure this repo keeps
+recording elsewhere, where a documented guarantee turns out never to have
+been run.
+
+**Consequences.**
+
+`ruff`'s `target-version` moves to `py313` and `[tool.mypy] python_version`
+to 3.13. That last one was **3.12 against a 3.11 floor**, carrying a comment
+about parsing numpy 2.5's PEP 695 `type` statements -- a rationale that
+never applied in CI, because the 3.11 interpreter resolves numpy 2.4.6 and
+never sees those stubs. `python_version` tells mypy which syntax to assume;
+it does not change which numpy `uv` installs. Two separate knobs, and only
+the interpreter moves the dependency set.
+
+The `tomli>=2.0.0; python_version < '3.11'` dependency marker is removed as
+unreachable. It was already dead at the 3.11 floor -- `tomllib` has been
+stdlib since 3.11. The matching `try/except ModuleNotFoundError` in
+`jobs/config.py` is left alone: it is harmless, and deleting it is code
+cleanup rather than a version decision.
+
+**ADR 164 is not overturned.** Its subject is whether the two *research
+machines* must carry identical software, and the answer is still no. CI is
+a third environment it did not consider, and the bar for a test rig is
+different: it exists to predict what the deployment target will do, so it
+should match the deployment target.
+
+**What would revisit this.** The workstation moving to a Python that
+resolves a different dependency set from `wivie`'s, reproducing the same
+class of defect in the other direction. The rule that follows from this ADR
+is the general one: **when a gate disagrees across environments, compare
+the resolved dependency versions before the source.**

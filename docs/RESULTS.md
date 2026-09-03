@@ -6051,6 +6051,196 @@ model scored **−5.9%** on `terminal_h5_q05` where a shorter fit scored
 median across the whole walk-forward ladder. Copying LightGBM's model but
 not its selection procedure compares two procedures, not two models.
 
+### The three coverage failures are entirely 2022
+
+Splitting validate by year turns "coverage fails 3 of 20" into a much more
+specific statement. Validate is 2022-01-03 to 2023-12-29: 16,904 events in
+2022 and 17,291 in 2023.
+
+| head | pooled | 2022 | 2023 |
+|---|---|---|---|
+| `terminal_h5_q25` | +0.060 | **+0.102** | +0.019 |
+| `terminal_h10_q25` | +0.068 | **+0.117** | +0.020 |
+| `terminal_h10_q50` | +0.050 | **+0.106** | **−0.006** |
+
+**All three pass comfortably on 2023 and fail badly on 2022.**
+`terminal_h10_q50` is off by six thousandths on 2023 -- as well calibrated
+as anything in this project -- and by 10.6 points on 2022.
+
+**Why, in one number.** The realised 5-day q25 by year:
+
+| year | split | sd | q25 |
+|---|---|---|---|
+| 2019 | train | 2.95% | −1.09% |
+| 2020 | train | 7.65% | −2.73% |
+| 2021 | train | 4.05% | −1.65% |
+| 2022 | validate | 5.34% | **−3.34%** |
+| 2023 | validate | 3.85% | −1.79% |
+
+The model's fitted q25 is −1.63%. That is close to right for 2023 and far
+too high for 2022.
+
+**So the honest characterisation is not "coverage fails 3/20".** It is:
+**the model is well calibrated in an ordinary year and understates downside
+in a bear market** -- which is the year a user would lean on it hardest.
+Pooling two years hides that, and the gate reads the pooled number.
+
+**This narrows what a fix would have to do.** A `trough_ret` auxiliary task
+adds information about the lower tail in general; it does not obviously
+help a model recognise that it is *in* a 2022. The distinguishing feature
+of 2022 is available at prediction time -- `rv_pct_252d` and `vix_close`
+are already features -- so the model has the inputs and is not using them
+to widen its lower tail enough. That is a different and more tractable
+problem than "the tail is unmodellable", and it is worth measuring before
+building a new label.
+
+**One caution against the obvious next step.** Nothing here licenses fitting
+a 2022-specific correction. Validate is the split the gate scores, and a
+model tuned to it stops being a test. The measurement says where the error
+lives, not what to fit on.
+
+### Root cause of the 2022 failure: no market-level trend feature
+
+The three coverage failures are 2022-only. Chasing why produced a specific
+answer, and it is not the obvious one.
+
+**It is not that the model never saw a crisis.** Train covers 2010-03-31 to
+2021-12-31, so the 2008 recession is *outside* it, but 2020 is inside and
+2020 was worse on every volatility measure: mean VIX 29.1 against 2022's
+26.1, realised 5-day sd 7.65% against 5.34%. **Conditional on VIX > 25,
+2022 was the milder year** -- q25 of −2.43% against 2020's −3.83%.
+
+**It is not that the model ignores volatility.** It moves the right way and
+not far enough:
+
+| | |
+|---|---|
+| corr(predicted q25, `rv_pct_252d`) | −0.269 |
+| corr(predicted q25, `vix_close`) | −0.085 |
+| corr(predicted q25, `dd_52w`) | −0.171 |
+| predicted q25 gap, 2022 vs 2023 | −0.48 pp |
+| realised q25 gap, 2022 vs 2023 | −1.55 pp |
+| **share of the shift captured** | **31%** |
+
+**The error is worst where the events looked ordinary.** Coverage error on
+`terminal_h5_q25` within 2022, by the ticker's own drawdown:
+
+| `dd_52w` | 2022 | 2023 |
+|---|---|---|
+| 0-5% | **+0.118** | +0.039 |
+| 5-10% | **+0.141** | +0.009 |
+| 10-15% | +0.117 | +0.004 |
+| 15-25% | +0.071 | −0.005 |
+| 25%+ | **+0.039** | −0.008 |
+
+**Deep-drawdown events in 2022 are nearly calibrated; shallow ones are not.**
+When a signal fired on a stock already down 25%, every feature said danger
+and the fan widened correctly. When it fired on a stock down 3%, the
+features looked like any ordinary year and the forward return was still bad.
+
+**What distinguishes 2022 is duration, and nothing in the feature set
+measures it.** SPY's own drawdown, which the model never sees:
+
+| year | mean dd | worst dd | days below −10% |
+|---|---|---|---|
+| 2011 | −6.1% | −19.4% | 68 |
+| 2018 | −4.8% | −20.2% | 19 |
+| 2020 | −7.1% | **−34.1%** | 68 |
+| 2021 | −1.0% | −5.4% | 0 |
+| **2022** | **−14.4%** | −25.4% | **185** |
+| 2023 | −10.5% | −20.6% | 129 |
+
+2020 was the deepest crash in the data and lasted 68 days. **2022 spent 185
+days -- effectively the whole year -- more than 10% below the high, which
+is unmatched anywhere in train.** 2023 spent 129 days there and calibrates
+fine, so the discriminator is direction as well as duration: 2022 was
+making new lows, 2023 was recovering.
+
+**The gap, stated precisely.** Of 22 features, **only three are
+market-level** -- `vix_close` (a level), `spx_ret_1d` (**one day**) and
+`cofire_count` (same-day breadth). Every trend feature the model has --
+`above_sma200`, `sma200_slope_60`, `dd_52w` -- is computed **per ticker**.
+So the model can see that *this stock* is in a downtrend and cannot see
+that *the market* is. In 2022 individual names oscillated around their own
+moving averages while the index ground downward, and that is exactly the
+configuration the feature set cannot represent.
+
+**The fix is cheap to test and needs no new data source.** `SPY` is already
+in `bars` with daily history from 2004-09-29. The market analogues of three
+existing features -- index above its 200-day SMA, index 200-day slope over
+60 days, index 52-week drawdown -- are computable from rows already
+present. Whether they help is unmeasured and should be measured before
+anything is built on top of them.
+
+**Two cautions.** First, this is one year of evidence: 2022 is a single
+regime episode, and a market-trend feature fitted to help there could
+easily be fitting 2022 rather than fitting downtrends. Second, nothing here
+licenses tuning on validate -- the measurement says where the error lives,
+not what to fit on. The holdout (2024-2026) contains its own regimes and is
+still the only clean test.
+
+### Market-trend features were the obvious fix and they make it worse
+
+The root cause above says the model cannot see that the *market* is in a
+downtrend. The obvious response is to tell it. Measured the same day, and
+it is a clear negative.
+
+Three index analogues of features the model already has per ticker, built
+from `SPY` (already in `bars`), lagged one day like everything else:
+`mkt_above_sma200`, `mkt_sma200_slope_60`, `mkt_dd_52w`. Joined at 100%
+coverage on both splits. ADR 170's model otherwise unchanged, three seeds.
+
+| | beats the constant | coverage ok | mean abs cov err | mean improvement |
+|---|---|---|---|---|
+| baseline, 22 features | 18/20 | **17/20** | 0.0269 | **+8.01** |
+| + market, 25 features | 12/20 | **13/20** | 0.0490 | **+3.54** |
+
+**Worse on every measure, and worse in both years:**
+
+| mean abs coverage error | 2022 | 2023 |
+|---|---|---|
+| baseline | 0.0436 | 0.0213 |
+| + market | 0.0689 | 0.0312 |
+
+The degradation dwarfs the ~0.74 seed spread, so this is not noise.
+
+**Why, in one measurement.** The index was above its 200-day SMA on:
+
+    train      90.9% of signal-days
+    validate   58.8% of signal-days
+
+**The downtrend regime is 9% of train and 41% of validate.** A feature that
+identifies the regime correctly is still useless when the training set
+barely contains it -- the model has almost no examples of what follows a
+signal in that state, so the feature adds an input that is nearly constant
+where it was fitted, dilutes the rest, and generalises nothing.
+
+**This closes the loop and the conclusion is uncomfortable.**
+
+1. 2022 fails because it is a sustained decline.
+2. The model cannot see market trend -- but *giving* it market trend makes
+   things worse.
+3. Because 91% of training days are uptrend, so there is nothing to learn.
+4. The fix is more bear-regime training data, which means 2008.
+5. Which is blocked by survivorship: Lehman, Bear Stearns, Merrill and
+   Wachovia are absent from `tickers`, so training on 2008 would show a
+   bear market with the zeroes removed and push the model *further* toward
+   under-stating downside.
+
+**So this is accounted for by disclosure, not by a fix.** The honest
+statement about ADR 170's model is: *calibrated for uptrending and choppy
+markets, understates downside in a sustained decline, because it was fitted
+on twelve years containing no sustained decline.* For an advisory system
+that is a publishable limitation, and it is more useful to a reader than a
+feature fitted to the single bear episode in the data.
+
+**What is NOT ruled out.** Reconstructing the delisted universe and
+extending history is a real project with a real payoff, and it is the only
+route measured here that addresses the cause rather than the symptom. A
+regime feature might also work *once there are two bear episodes to learn
+from* -- this result says it does not work with one, not that the idea is
+wrong.
+
 ### Blending with the incumbent buys loss and costs calibration
 
 The two models fail differently, so averaging them was worth one cheap
