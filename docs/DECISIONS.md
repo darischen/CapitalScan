@@ -210,6 +210,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 166 | Cluster-robust variance replaces the mean-size `n_eff` correction | **Proposed 2026-09-02, not started.** Two-way clustering by date and `cluster_id`; `n_eff` becomes derived. Validate against current intervals before migrating. After Phase 6 and after the move |
 | 167 | Check 5's baseline is global, not per-ticker-year | **Decided 2026-09-02.** Amends ADR 113. Ticker-year overlap across a temporal split is zero, and the faithful reconstruction would be an oracle; per-sector and per-ticker reported beside it, gating nothing |
 | 168 | `watch_reason` gains `near_trade`: `crit_rel_return` alone barring `in_trade` | **Decided 2026-09-02.** Amends ADR 149. `crit_mcap`, `crit_above_sma200`, `crit_sma200_slope` all true, `crit_rel_return` not true (`False` or `None`) — the same "one named failure" shape as `pullback`. No `config_hash` move; existing rows unbackfilled until the next `cscan universe --quarter` |
+| 169 | TabFM evaluated against ADR 063's LightGBM baseline, gated on running on `wivie` | **Proposed 2026-09-03, not started.** Google's zero-shot tabular transformer (released 2026-06-30) directly contests ADR 063's "gradient boosting dominates tabular data at this scale" — TabArena beats tuned LightGBM/XGBoost across 700-150k rows and supports native quantile output. Deployment target is `wivie` (measured: i5-7200U, 4 threads, 7.6GB RAM, no discrete GPU), against TabFM's own stated ~40k-row/24GB-GPU ceiling. Nothing measured yet; salvaging a piece (its representation, not the whole model) is on the table alongside full adoption |
 
 ---
 
@@ -7765,3 +7766,118 @@ row is allowed to claim statistically.
 history and measuring how many ticker-quarters and how much market cap the
 route actually admits, the same way ADR 149 measured `history` (6 tickers,
 $1.18T) and `pullback` (22 tickers, $2.75T) before calling either settled.
+
+## 169. TabFM evaluated against ADR 063's LightGBM baseline, gated on running on `wivie`
+
+**Status.** Proposed 2026-09-03, not started. Does not amend ADR 063 or
+ADR 028 — both stay Pinned until this is measured. No `config_hash` move.
+
+**Context.**
+
+Google Research released TabFM 2026-06-30: a zero-shot tabular foundation
+model, alternating row/column attention over the whole table (training and
+query rows together) in a single forward pass through frozen weights, no
+per-dataset gradient training. Trained on synthetic data generated from
+structural causal models. On TabArena (38 classification, 13 regression
+datasets, 700-150,000 rows) it beat heavily-tuned XGBoost and LightGBM
+zero-shot, including on every fold-matched regression dataset against
+Optuna-tuned XGBoost. The `TabPFNRegressor` family it descends from
+supports `output_type="quantiles"` natively — one call for a distribution,
+not eleven separate heads.
+
+**This directly contests ADR 063's stated basis, not just its conclusion.**
+ADR 063 reads: *"Gradient boosting dominates tabular data at this
+scale... The GPU stays idle through Phase 6. That is the correct outcome,
+not a waste."* TabArena's own numbers are the strongest argument against
+that claim as written, at a scale (40k rows sits inside 700-150,000)
+matching this project's own event count. ADR 063 also excluded "sequence
+models" — TabFM is a transformer, the family that ADR specifically ruled
+out, but on the same pre-computed tabular features (`bb_pctb`, `k_full`,
+`rv_pct_252d`, ...) this project already builds, not raw price sequences.
+The objection ADR 063 actually argued — *"feeding raw sequences would
+force the model to relearn indicators already computed"* — does not apply
+to a model reading the same 20-odd tabular columns LightGBM does.
+
+**Where the real objection lands: the deployment target, not the
+architecture family.**
+
+TabFM's own stated ceiling (Prior Labs / Google Research docs, measured by
+others, not by this project): ~40,000 rows on a 24GB GPU with PyTorch and
+activation chunking, ~10,000 rows on JAX before OOM, up to 500 features (no
+issue here — this project uses ~21). ADR 063's own row count, "roughly
+40,000 independent rows," sits at that ceiling, not comfortably under it.
+
+`wivie` is the target research machine after the cutover (CLAUDE.md "The
+three machines"), and per the user's requirement this model must run
+there. Measured 2026-09-03, over SSH:
+
+| | |
+|---|---|
+| CPU | Intel Core i5-7200U, 2 cores / 4 threads, 2.5GHz |
+| RAM | 7.6GB total |
+| GPU | Intel HD Graphics 620 (integrated; no discrete GPU, no CUDA) |
+| Disk | 449GB, 396GB free |
+
+No discrete GPU exists on this box at all, so TabFM's stated GPU path
+cannot run there full stop. Whether CPU-only inference at any usable row
+count fits inside 7.6GB RAM is **unmeasured** — the published ~10k-row JAX
+ceiling "before OOM" was not measured on hardware this modest, and this
+project has never needed to check, because LightGBM's cost here is already
+known: ADR 028 measures "minutes on 16 CPU threads" for the 3M-row bar
+pipeline, and ADR 063 says "seconds" for the ~40k-row model layer itself.
+Both are comfortably inside `wivie`'s 4 logical CPUs and need no GPU at
+all. That contrast — a measured, seconds-scale cost against an unmeasured,
+possibly-infeasible one — is the actual tradeoff, not "gradient boosting
+wins because deep learning doesn't fit tabular data," which TabArena
+already rebuts.
+
+**Decision.**
+
+Evaluate TabFM as a measured arm, in this order, each gating the next:
+
+1. **Does it run on `wivie` at all**, CPU-only, and at what row-count
+   ceiling before OOM — attempted directly on the hardware above, not
+   inferred from a better-provisioned benchmark machine. If it does not
+   run, or only runs on a context small enough to undercut the sample size
+   the shipped model already trains on, full adoption is closed here and
+   the remaining items are moot.
+2. **If it runs, wall-clock and peak RSS on `wivie`**, measured the same
+   way ADR 028/063's "seconds"/"minutes" figures were — a real number
+   against real hardware, not a published range.
+3. **Quantile coverage against ADR 093/167's checks**, on the same
+   validate split the shipped model is scored on. TabArena's aggregate
+   result is not evidence about calibration on this specific dataset.
+4. **Check 5 (ADR 167) and ADR 067's four promotion checks**, same gates,
+   same bar — no separate standard for a foundation model.
+
+**A softer outcome is explicitly in scope, and was the user's own framing:
+salvaging a piece of TabFM rather than replacing the model wholesale.**
+Candidates, unordered and unmeasured: its synthetic-SCM pretraining
+approach as a data-augmentation idea for the existing LightGBM heads; its
+row/column attention representation as a feature-engineering input rather
+than a replacement predictor; using it only for the reachability/adverse
+binary heads (ADR 064) where its zero-shot classification result was
+strongest on TabArena, keeping LightGBM for the quantile heads. None of
+these are decided — they are the fallback this ADR keeps open if item 1
+above rules out full adoption but the underlying representation still
+looks worth having.
+
+**Consequences.**
+
+**No change to the shipped model until measured.** ADR 028 and ADR 063
+stay Pinned. This ADR does not amend either — it only authorizes the
+measurement, the same posture ADR 166 already takes for cluster-robust
+variance.
+
+**The hardware constraint is real and specific to this project's own
+choice to run the research pipeline on modest hardware** (ADR 164's "the
+two research machines are functionally identical, not literally" already
+accepts `wivie` as a real target, not a placeholder). A cloud GPU would
+trivially clear TabFM's stated ceiling; that is not the question this ADR
+asks, because it is not the deployment this project has chosen.
+
+**What would revisit this.** Item 1 above, run for real: attempt TabFM
+inference on `wivie` against the actual ~40k-row training set (or a
+representative subsample if the full set does not fit), and record whether
+it completes, and at what memory and wall-clock cost, before any of items
+2-4 are worth spending time on.
