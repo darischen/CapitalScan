@@ -728,3 +728,43 @@ ssh darischen@192.168.1.30 'cd ~/CapitalScan && git log --oneline -1'
 The same applies to `wivie` and to any `scripts/pi/` or `scripts/systemd/`
 change. Three machines, three clones, and only the workstation's is the one
 you are editing.
+
+## `python3 -m venv` is broken on `wivie`; use its `uv` (2026-09-03)
+
+**Symptom.** `python3 -m venv /tmp/somevenv` on `wivie` exits **0** and
+creates a directory containing `bin/python`, `bin/python3` and
+`bin/python3.13` — and **no `pip`**. Every later install goes to a
+`./venv/bin/pip: No such file or directory`, and the first thing that
+actually runs dies on `ModuleNotFoundError: No module named 'numpy'`.
+
+**Cause.** Debian ships `python3-venv` separately and it is not installed:
+
+```
+python3 -c "import ensurepip"
+ModuleNotFoundError: No module named 'ensurepip'
+```
+
+`venv` still creates the tree; only the bootstrap step is missing. Nothing
+in the exit code says so.
+
+**Fix.** `uv` is already on the box but not on the default non-login PATH:
+
+```
+export PATH=$HOME/.local/bin:$PATH
+uv venv --python 3.13 /tmp/somevenv
+VIRTUAL_ENV=/tmp/somevenv uv pip install <packages>
+```
+
+`sudo apt install python3-venv` would also work and was not done — the box
+already has the tool this project uses everywhere else, and adding a second
+one invites the two to disagree about which interpreter a venv points at.
+
+**The part worth remembering is how it was missed.** The install script
+ended each step with `| tail -3`, which discards the failing command's exit
+status: the pipeline reports `tail`'s success, `set -e` never fires, and the
+script printed `INSTALL_DONE` and exited 0 having installed nothing. That is
+the same trap as "a pipeline throws away every exit code but the last" above
+and the same one that ran a destructive `pg_restore` drop before its
+fallible restore. **A remote install script must end each step with `||
+exit 1` or set `pipefail`, and must finish with an import check that
+actually imports what the next script needs.**
