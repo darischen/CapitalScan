@@ -246,8 +246,6 @@ class TestTheModule:
     def test_the_trunk_is_shared(self) -> None:
         """The whole hypothesis. Four independent networks would be four
         independent fits with extra steps."""
-        import torch
-
         module = neural._build_module(12, len(neural.TASKS), neural.N_BINS)
         assert hasattr(module, "trunk")
         assert len(module.heads) == len(neural.TASKS)

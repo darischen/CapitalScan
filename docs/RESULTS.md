@@ -6072,3 +6072,107 @@ Nothing is promoted, `handlers/predict.py` still returns `NotFound`, and
 one won.** That selection is itself a form of fitting and it cost
 something. Only the holdout can price it, and the holdout (2024-2026,
 82,957 events) stays untouched.
+
+---
+
+## 2026-09-03 — TabFM measured: it does not run on `wivie`, and on a GPU it loses anyway
+
+ADR 169 proposed evaluating Google's TabFM (released 2026-06-30, 1.64
+billion parameters, in-context learning over the whole training table)
+against ADR 063's LightGBM baseline, and gated everything on item 1:
+attempt inference on `wivie` for real. Both halves are now measured.
+
+### Item 1: the hardware gate, and it fails
+
+`wivie`, CPU only, PyTorch 2.14.0+cpu, 4 threads, 7.6 GB RAM:
+
+| | fit | one row | 64 rows | peak RSS |
+|---|---|---|---|---|
+| model load alone | 198 s | — | — | **7.04 GB** |
+| context = 250 rows | 0.63 s | **231 s** | 286 s | 7.04 GB |
+| context = 500 rows | 0.33 s | **455 s** | 502 s | 7.04 GB |
+
+The weights alone are 7.04 GB resident on a 7.6 GB machine, and the box sat
+2.0-2.5 GB into swap throughout. A 250-row context is **0.16%** of the
+157,938 training rows, and a 500-row one is 0.32%.
+
+**The cost scales with the context, as the architecture says it must.**
+Doubling 250 to 500 took one row from 231 s to 455 s. TabFM reads its
+context on every forward pass, so there is no regime where a larger context
+becomes cheap; the 157,938-row training set is 316x the largest context
+measured here.
+
+For scale, on the same class of CPU, ADR 170's multi-task model scores
+**all 34,195 validate events in 91 ms**, against 231 s for TabFM to score
+*one*. That is roughly 385,000x per row, and it is not a tuning gap.
+
+### On the workstation GPU, where it does run, it still loses
+
+Full validate, same baselines, same cluster weighting, scored by the same
+`promotion.score_family`. Context rows sampled by cluster weight, ten bins
+with edges at the reported τ, read as a discrete CDF.
+
+| | beats LightGBM | coverage within 5 pts | cost per target |
+|---|---|---|---|
+| context = 1,000 | **3/20** | 16/20 | 119 s |
+| context = 4,000 | **4/20** | 16/20 | 213 s |
+| ADR 170 multi-task | 16/20 | 17/20 | ~0.01 s |
+
+A 16,000-row arm was planned and **deliberately stopped before it ran**.
+Both completed sweeps answer the question the same way, the hardware gate
+above had already decided it, and ctx=4,000 already occupied 6.6 GB of the
+workstation's 8 GB GPU — so the arm would most likely have recorded an
+out-of-memory error at a cost of about two hours. That is a judgement call
+and is recorded as one rather than left to look like a completed sweep.
+
+**More context helps, and not enough.** Quadrupling it moves 3/20 to 4/20.
+The peak family improves clearly — `peak_h5_q95` goes 2.91% → 7.10%,
+`peak_h5_q75` 9.70% → 14.45%, `peak_h10_q95` 13.03% → 10.75% the other way
+— but LightGBM scores 19.45%, 16.03% and 18.60% on those heads. The
+terminal tails do not improve at all: `terminal_h5_q95` sits at −8.14% and
+−8.37%, and `terminal_h10_q95` actually falls from +4.86% to −1.39%.
+
+**Where it does win it wins narrowly**, and only on the peak family's
+middle: `peak_h10_q25` (5.20 vs 4.90), `peak_h10_q50` (10.89 vs 10.76),
+`terminal_h10_q25` (1.65 vs 0.41) and `terminal_h10_q75` (1.55 vs 1.46).
+Nothing in the tails, which is where the incumbent's whole advantage
+lives.
+
+**Its calibration is genuinely good and its sharpness is not.** 16/20 on
+coverage at both context sizes, against the incumbent's 14/20, while losing
+on 16 to 17 of 20 heads. That is the signature of a model producing honest
+but wide distributions — which is worth noting, because calibration is the
+half ADR 170's model still fails on and TabFM does better there.
+
+### One caveat, stated because it cuts against the conclusion
+
+TabFM caps at **10 classes by a hard architectural limit**, so the fan is
+read from a ten-bin CDF with edges at the reported τ. Recovering τ=0.95
+then depends on interpolating inside the top bin, and the measured q95
+coverage of 0.961-0.970 against a nominal 0.95 says that interpolation
+drags the estimate upward. **The badly negative q95 scores are plausibly an
+artifact of the encoding rather than of the model.** This was not chased
+further: the hardware gate had already decided the question, and no
+encoding makes a 231-second inference usable on the target machine.
+
+### Two claims in ADR 169 were wrong
+
+1. **"Supports native quantile output" is TabPFN, not TabFM.**
+   `TabFMRegressor` returns **point predictions only**. A point is not a
+   fan, so the twenty quantile heads cannot be replaced by it at all. What
+   made TabFM usable here was `TabFMClassifier` over binned returns, which
+   the ADR did not anticipate.
+2. **The published ~40,000-row / 24 GB-GPU ceiling describes the GPU
+   path.** There is no discrete GPU on `wivie`, so the number that mattered
+   was the CPU one, and nobody had measured it.
+
+### What this leaves
+
+**ADR 063's conclusion survives, but not for the reason it gave.** ADR 063
+argued that gradient boosting dominates tabular data at this scale.
+TabArena is real evidence against that as a general claim and ADR 169 was
+right to contest it. What settles it *here* is the deployment target.
+
+**And the architectural idea that did move the result came from the
+opposite direction** — not a larger pretrained model, but a smaller one
+that shares a single trunk across ADR 113's four labels (ADR 170).

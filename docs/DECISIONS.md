@@ -7891,10 +7891,11 @@ it completes, and at what memory and wall-clock cost, before any of items
 
 `wivie`, CPU only, PyTorch 2.14.0+cpu, 4 threads:
 
-| context rows | fit | **one row** | 64 rows | peak RSS |
+| context | fit | **one row** | 64 rows | peak RSS |
 |---|---|---|---|---|
 | model load alone | 198 s | — | — | **7.04 GB** |
-| 250 | 0.63 s | **231 s** | 286 s | 7.04 GB |
+| context = 250 | 0.63 s | **231 s** | 286 s | 7.04 GB |
+| context = 500 | 0.33 s | **455 s** | 502 s | 7.04 GB |
 
 The weights alone are 7.04 GB resident on a 7.6 GB machine, and the box was
 2.5 GB into swap during the run. A 250-row context is **0.16%** of the
