@@ -70,6 +70,29 @@ concentrated in one corner.
   building on it**: one regime episode is thin evidence, and a feature
   fitted to help 2022 may be fitting 2022.
 
+- **Extending train back to 2005 is the obvious fix and it is UNSAFE as it
+  stands.** Checked 2026-09-03. The data looks available -- `bars` holds
+  864 tickers in 2005 rising to 938 by 2009, and SPY fell **37.7% in 2008**,
+  a far longer and deeper decline than 2022's 19.9%. Train starts
+  2010-03-31 and excludes all of it, which is why the model has never seen
+  a year-long bear market.
+
+  **But the pre-2010 universe is survivorship-biased and the bias runs the
+  wrong way.** Lehman, Bear Stearns, Merrill, Wachovia, Fannie, Freddie,
+  Ambac, MBIA and CIT are all **absent from `tickers`**; only **18 of 1,561**
+  rows carry a `delisted_on` at all. `run_tickers_refresh` scrapes the
+  *current* Wikipedia constituent table plus recent changes, so it was never
+  going to recover names that died in 2008. Training on that 2008 would show
+  a bear market with the zeroes removed -- making it look survivable and
+  pushing the model **further** toward under-stating downside, which is the
+  exact failure this is meant to fix.
+
+  **What it would take:** a reconstructed historical membership and price
+  history for delisted names, which is a data-sourcing project, not a
+  config change. Until then this entry is a warning, not a task -- and it
+  is written down because "just extend the history, the bars are already
+  there" is the obvious next idea and it is a trap.
+
 - **A fifth auxiliary task.** ADR 170's gain came from three labels
   supervising a fourth. A `trough_ret_{h}d` label — the mirror of
   `peak_ret` — would add a task whose information is concentrated in
