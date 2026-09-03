@@ -55,6 +55,20 @@ LGBM_PARAMS: dict[str, object] = {
     "bagging_freq": 1,
     "lambda_l2": 5.0,
     "verbose": -1,
+    # **Seeded, because `bagging_fraction` and `feature_fraction` are both
+    # 0.7 and an unseeded fit is not reproducible.** Two runs of identical
+    # code produced 17/20 and 18/20 heads beating the baseline on
+    # 2026-09-02, which makes any A/B comparison of a feature or a
+    # parameter uninterpretable: a +0.6% delta and the noise floor are the
+    # same size.
+    #
+    # Not a study parameter, so it does not move `config_hash` (invariant 9
+    # is about thresholds the engine compares against). It is the
+    # difference between an experiment and an anecdote.
+    "seed": 20260902,
+    "bagging_seed": 20260902,
+    "feature_fraction_seed": 20260902,
+    "deterministic": True,
 }
 
 #: Patience for early stopping on fold loss (DESIGN §7.5).

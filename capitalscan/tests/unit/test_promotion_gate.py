@@ -377,3 +377,110 @@ class TestTheVolatilityScaledBaseline:
         src = inspect.getsource(promotion.scaled_baseline)
         assert "train_frame[label]" in src
         assert "validate_frame[label]" not in src
+
+
+class TestBreachDepth:
+    """ADR 069's deferred feature (Phase 6 refinement item 3).
+
+    `bb_pctb` is `(close - lower) / (upper - lower)` and already reaches
+    -0.588 on train events, so close-based depth ships today. The signal is
+    a *touch* — the low crosses the band and the close can be back inside
+    by the bell — so the low-based depth is a different quantity, and
+    measured on train the two correlate only **-0.054**.
+    """
+
+    def test_it_is_signed_by_side(self) -> None:
+        """A long breaches downward through the lower band, a short upward
+        through the upper. Unsigned, the feature would mean opposite things
+        in the two halves of the population."""
+        from capitalscan.research import features
+
+        frame = pd.DataFrame(
+            {
+                "side": ["long", "short"],
+                # width 10 in both rows
+                "band_lower": [100.0, 100.0],
+                "band_upper": [110.0, 110.0],
+                # long pierces 2 below the lower; short pierces 3 above the upper
+                "bar_low": [98.0, 105.0],
+                "bar_high": [105.0, 113.0],
+            }
+        )
+
+        got = features._breach_depth(frame)
+
+        assert got.iloc[0] == pytest.approx(0.2), "long: (lower - low) / width"
+        assert got.iloc[1] == pytest.approx(0.3), "short: (high - upper) / width"
+
+    def test_a_bar_inside_the_band_is_negative(self) -> None:
+        """Positive means 'further past the band'. A bar that never reached
+        it must not read as a shallow breach."""
+        from capitalscan.research import features
+
+        frame = pd.DataFrame(
+            {
+                "side": ["long"],
+                "band_lower": [100.0],
+                "band_upper": [110.0],
+                "bar_low": [103.0],
+                "bar_high": [108.0],
+            }
+        )
+        assert features._breach_depth(frame).iloc[0] < 0
+
+    def test_a_degenerate_band_is_null_not_infinite(self) -> None:
+        """A zero width is an absent band, not an infinitely deep breach,
+        and `x / 0` would split a tree on something that means nothing."""
+        from capitalscan.research import features
+
+        frame = pd.DataFrame(
+            {
+                "side": ["long", "long"],
+                "band_lower": [100.0, 100.0],
+                "band_upper": [100.0, 90.0],
+                "bar_low": [98.0, 98.0],
+                "bar_high": [102.0, 102.0],
+            }
+        )
+        got = features._breach_depth(frame)
+        assert got.isna().all(), "zero and inverted widths must both be NaN"
+
+    def test_it_reads_the_band_the_signal_saw(self) -> None:
+        """Invariant 3: `detect` compares against t-1's band. Measuring the
+        breach against day t's band would use a boundary the signal never
+        saw."""
+        from capitalscan.research import features
+
+        assert "i.ts < e.signal_date" in features._SQL
+        assert "ORDER BY i.ts DESC" in features._SQL
+
+    def test_it_is_causal_for_the_only_entry_kind_built(self) -> None:
+        """Day t's low is final before day t+1's open, so a `next_open`
+        entry knows it. For a `touch` entry it would be look-ahead, and the
+        frame must not build one."""
+        from capitalscan.research import features
+
+        assert "e.entry_kind = 'next_open'" in features._SQL
+
+    def test_the_raw_inputs_never_reach_the_matrix(self) -> None:
+        """`bar_low` and the rest are meta. A model handed the raw low is
+        handed the signal day's outcome in a different shape."""
+        from capitalscan.research import features
+
+        for col in ("bar_low", "bar_high", "band_lower", "band_upper"):
+            assert col in features.META_COLS
+            assert col not in features.FEATURE_COLS
+
+    def test_side_is_carried_but_not_a_feature(self) -> None:
+        """`signal_type` already encodes direction; a second copy lets the
+        model split on one fact twice."""
+        from capitalscan.research import features
+
+        assert "side" in features.META_COLS
+        assert "side" not in features.FEATURE_COLS
+
+    def test_it_is_in_the_feature_set(self) -> None:
+        from capitalscan.research import features
+
+        assert "breach_depth" in features.DERIVED_FEATURE_COLS
+        assert "breach_depth" in features.FEATURE_COLS

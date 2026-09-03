@@ -81,7 +81,7 @@ RAW_FEATURE_COLS: tuple[str, ...] = (
 )
 
 #: Computed from raw columns, never from anything off-row.
-DERIVED_FEATURE_COLS: tuple[str, ...] = ("k_minus_d", "mcap_log")
+DERIVED_FEATURE_COLS: tuple[str, ...] = ("k_minus_d", "mcap_log", "breach_depth")
 
 FEATURE_COLS: tuple[str, ...] = RAW_FEATURE_COLS + DERIVED_FEATURE_COLS
 
@@ -106,6 +106,16 @@ META_COLS: tuple[str, ...] = (
     "split_key",
     "cluster_id",
     "is_cluster_head",
+    # `side` decides the sign of `breach_depth`: a long breaches downward
+    # through the lower band, a short upward through the upper. Carried, not
+    # a feature -- `signal_type` already encodes direction and a second copy
+    # would let the model split on the same fact twice.
+    "side",
+    # Raw inputs to `breach_depth`, dropped from the matrix once derived.
+    "bar_low",
+    "bar_high",
+    "band_lower",
+    "band_upper",
 )
 
 #: Outcome columns. A feature set that touches one of these is not a model.
@@ -219,6 +229,33 @@ SELECT {cols}
        ORDER BY u.as_of DESC
        LIMIT 1
   ) u ON TRUE
+  -- **The signal day's own bar, for breach depth (ADR 069).**
+  --
+  -- `bb_pctb` already carries close-based depth. This is the other half:
+  -- the signal is a *touch*, the low crosses the band, and the close can be
+  -- back inside by the bell. The two are different quantities and ADR 069
+  -- names the low explicitly.
+  --
+  -- **Causal for a `next_open` entry, which is the only entry kind this
+  -- frame selects.** Day t's low is complete before day t+1's open, so the
+  -- feature is known when the position is taken. It would be look-ahead for
+  -- a `touch` entry, and this frame does not build one.
+  LEFT JOIN LATERAL (
+      SELECT b.low AS bar_low, b.high AS bar_high
+        FROM bars b
+       WHERE b.ticker = e.ticker AND b.ts = e.signal_date AND b."interval" = '1d'
+       LIMIT 1
+  ) bar ON TRUE
+  -- The t-1 band, which is the band `detect` actually compared against
+  -- (invariant 3). Using day t's band would measure the breach against a
+  -- boundary the signal never saw.
+  LEFT JOIN LATERAL (
+      SELECT i.bb_lower AS band_lower, i.bb_upper AS band_upper
+        FROM indicators i
+       WHERE i.ticker = e.ticker AND i."interval" = '1d' AND i.ts < e.signal_date
+       ORDER BY i.ts DESC
+       LIMIT 1
+  ) ind ON TRUE
  WHERE e.config_hash = :chash
    AND e.entry_kind = 'next_open'
    AND e.in_trade
@@ -237,7 +274,17 @@ def _select_columns() -> tuple[str, ...]:
     were nearly shipped as all-NULL features.
     """
     names = dict.fromkeys(META_COLS + RAW_FEATURE_COLS + LABEL_COLS + ("mcap_usd",))
-    source = {"sector": "t", "mcap_usd": "u"}
+    source = {
+        "sector": "t",
+        "mcap_usd": "u",
+        "bar_low": "bar",
+        "bar_high": "bar",
+        "band_lower": "ind",
+        "band_upper": "ind",
+    }
+    # The bar/band laterals already alias their outputs to the target
+    # names, so a `bar.bar_low AS bar_low` would be `bar.bar_low`, which is
+    # what the lateral emits. Written out rather than special-cased.
     return tuple(f"{source[n]}.{n} AS {n}" if n in source else f"e.{n}" for n in names)
 
 
@@ -309,6 +356,51 @@ def build_training_frame(
 BOOL_FEATURE_COLS: tuple[str, ...] = ("above_sma200", "k_cross_up", "k_cross_down")
 
 
+def _breach_depth(frame: pd.DataFrame) -> pd.Series:
+    """How far the signal day's bar pierced past the band, in band widths.
+
+    **ADR 069's deferred feature, and the half `bb_pctb` does not carry.**
+    `bb_pctb` is `(close - lower) / (upper - lower)` and already reaches
+    -0.588 on train events, so close-based depth ships today. But the signal
+    is a *touch*: the low crosses the band and the close can be back inside
+    by the bell. A bar that stabbed 40% of a band width below the lower
+    boundary and closed above it is a different event from one that drifted
+    to the boundary and stopped, and no current feature separates them.
+
+    **Signed by side**, so the number means the same thing in both
+    directions: positive is "further past the band the signal fired on".
+
+        long   (lower-band touch):  (lower - low)  / (upper - lower)
+        short  (upper-band touch):  (high - upper) / (upper - lower)
+
+    **The band is t-1's**, which is the one `detect` compared against
+    (invariant 3). Using day t's band would measure the breach against a
+    boundary the signal never saw.
+
+    **Causal for `next_open`.** Day t's low is final before day t+1's open,
+    so the feature is known when the position is taken. For a `touch` entry
+    it would be look-ahead -- the low is not known while the day is running
+    -- and `build_training_frame` selects only `next_open`.
+
+    NaN where any input is missing, per invariant 4: LightGBM handles a NaN
+    natively as its own split direction, which is the honest encoding of
+    "no bar on file" and is not the same as zero depth.
+    """
+    width = pd.to_numeric(frame["band_upper"], errors="coerce") - pd.to_numeric(
+        frame["band_lower"], errors="coerce"
+    )
+    low = pd.to_numeric(frame["bar_low"], errors="coerce")
+    high = pd.to_numeric(frame["bar_high"], errors="coerce")
+    lower = pd.to_numeric(frame["band_lower"], errors="coerce")
+    upper = pd.to_numeric(frame["band_upper"], errors="coerce")
+
+    is_short = frame["side"].astype(str).str.lower().eq("short")
+    depth = (lower - low).where(~is_short, high - upper)
+
+    # A zero or negative width is a degenerate band, not a deep breach.
+    return depth.where(width > 0) / width.where(width > 0)
+
+
 def _coerce_boolean_features(frame: pd.DataFrame) -> pd.DataFrame:
     """Restore `bool` dtype to boolean columns after the row drops.
 
@@ -349,6 +441,9 @@ def _coerce_boolean_features(frame: pd.DataFrame) -> pd.DataFrame:
 def _add_derived(frame: pd.DataFrame) -> pd.DataFrame:
     """Never mutate in place (project convention).
 
+    `breach_depth` (ADR 069) is derived here rather than stored, so the
+    four raw inputs stay meta and never reach the matrix.
+
     `k_minus_d` is the stochastic spread, which a tree can only express as a
     difference by splitting twice; giving it directly is the standard
     treatment and costs nothing.
@@ -368,4 +463,5 @@ def _add_derived(frame: pd.DataFrame) -> pd.DataFrame:
     # small one, it is an absent or corrupted one, and `log(0)` is `-inf`,
     # which a tree happily splits on as though it meant something.
     out["mcap_log"] = np.log(mcap.where(mcap > 0))
+    out["breach_depth"] = _breach_depth(out)
     return out
