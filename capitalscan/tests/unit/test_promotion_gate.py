@@ -149,9 +149,47 @@ class TestWeighting:
         """DESIGN §7.5's `1/|cluster|`. Unweighted, a four-event cluster
         votes four times in the coverage fraction — the same correlation
         the weights exist to undo in the loss."""
-        src = inspect.getsource(promotion.evaluate_family)
+        src = inspect.getsource(promotion.score_family)
         below = src[src.index("below =") :]
         assert "* w).sum() / w.sum()" in below, "coverage must use the cluster weights"
+
+
+class TestScoringIsSharedWithChallengers:
+    """Session 24 split `score_family` out so a non-LightGBM model is
+    scored by the same code as the incumbent.
+
+    The gate's meaning lives in the baselines and the cluster weighting.
+    A challenger that reimplemented scoring would be comparing two rulers,
+    which is the failure that keeps recurring in this project: a broken
+    instrument agreeing with itself.
+    """
+
+    def test_score_family_fits_nothing(self) -> None:
+        src = inspect.getsource(promotion.score_family)
+        for forbidden in ("lgb.train", "lightgbm", "fit_head", "_fit_and_predict"):
+            assert forbidden not in src, f"{forbidden} makes the scorer a fitter"
+
+    def test_evaluate_family_delegates_to_it(self) -> None:
+        """Not two code paths that agree today."""
+        assert "return score_family(" in inspect.getsource(promotion.evaluate_family)
+
+    def test_it_takes_predictions_rather_than_a_model(self) -> None:
+        params = inspect.signature(promotion.score_family).parameters
+        assert "sorted_pred" in params
+        assert not any(p in params for p in ("model", "booster", "estimator"))
+
+    def test_it_does_not_resort_the_fan(self) -> None:
+        """Sorting is the producer's job (DESIGN §7.4). A model with a
+        monotone parameterisation has nothing to repair, and re-sorting
+        here would hide a challenger whose fan actually crosses."""
+        assert "sort_quantiles" not in inspect.getsource(promotion.score_family)
+
+    def test_rounds_is_optional_and_defaults_to_zero(self) -> None:
+        """A neural or in-context model has no `num_boost_round`. Reporting
+        a fabricated one would read as a fitted hyperparameter."""
+        params = inspect.signature(promotion.score_family).parameters
+        assert params["rounds"].default is None
+        assert "used_rounds.get(tau, 0)" in inspect.getsource(promotion.score_family)
 
 
 class TestWiredIntoTheCli:
@@ -279,9 +317,17 @@ class TestQuantileCrossingIsRepaired:
         assert "sort_quantiles" in inspect.getsource(promotion.evaluate_family)
 
     def test_it_sorts_before_scoring(self) -> None:
-        """Sorting after the loss is computed repairs nothing."""
+        """Sorting after the loss is computed repairs nothing.
+
+        Since Session 24 the loss lives in `score_family`, so the ordering
+        is across the delegation rather than inside one function: sort,
+        then hand the sorted fan over. Asserting both halves keeps the
+        property pinned now that a second caller of the scorer exists.
+        """
         src = inspect.getsource(promotion.evaluate_family)
-        assert src.index("sort_quantiles") < src.index("pinball_loss")
+        assert src.index("sort_quantiles") < src.index("return score_family(")
+        assert "sorted_pred" in src[src.index("return score_family(") :]
+        assert "pinball_loss" in inspect.getsource(promotion.score_family)
 
     def test_the_unit_of_evaluation_is_a_family_and_horizon(self) -> None:
         """Head by head cannot sort: the five taus have to exist together."""
