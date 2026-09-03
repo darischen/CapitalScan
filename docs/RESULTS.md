@@ -5853,3 +5853,73 @@ showed the directional heads losing to a constant while the dispersion
 heads win, and nothing here changes that. It says only that the coverage
 failure is the market moving between 2021 and 2022, not the model
 misreading it.
+
+---
+
+## 2026-09-02 — Four Phase 6 refinements, all refuted
+
+Every idea in the refinement plan was tried the day it was written. None
+improved the result, and the pattern in *how* they failed is the finding.
+
+### The scoreboard
+
+| # | idea | outcome |
+|---|---|---|
+| 1 | volatility-scaled baseline | **vacuous** — the scaled constant has *higher* pinball loss on all 20 heads, up to 3.6x. An easier bar, so passing it means nothing. |
+| 2 | volatility-normalised targets | **no effect** — `peak_h10_q50` coverage error is −0.0509 either way, to four decimals. The tree was already doing the scaling. |
+| 3 | low-based breach depth (ADR 069) | **+0.087% / +0.025%** on the directional heads, against baselines of −1.08% and −2.04%. Real, negligible. |
+| 4 | two-stage: dispersion then direction | **+0.000035 / −0.000012**. Helps one head, hurts the other, both noise. |
+
+### The measurement that had to come first
+
+**The fits were not reproducible.** `bagging_fraction` and
+`feature_fraction` are both 0.7 with no seed, so two runs of identical code
+gave **17/20 and 18/20** heads beating the baseline. Every A/B above was
+initially the same size as that noise floor.
+
+Seeded and re-run, items 3 and 4 became interpretable — and both shrank to
+what they are. Without the seed, item 3's first pass looked like a −0.25%
+*regression* on `terminal_h5_q50`; seeded, it is a +0.087% improvement. The
+sign flipped on noise.
+
+### Why they all fail the same way
+
+**Items 2 and 4 fail because the information was already there.** Item 2
+assumed a tree splits on volatility rather than multiplying by it, so
+rescaling sits outside its hypothesis class. It does not: splitting
+captures enough that explicit normalisation is redundant, which is also why
+the model's coverage error (−0.051) was always far smaller than the
+constant's (−0.163). Item 4 assumed conditioning direction on predicted
+dispersion would add structure — but dispersion is predicted *from features
+the directional model already has*, so the second stage tells it nothing
+new.
+
+**Item 3 fails for the opposite reason and is the more informative
+failure.** It is genuinely new information — low-based depth correlates
+only **−0.054** with the close-based `bb_pctb` already in the set — and it
+still moves the directional heads by less than a tenth of a percent. A new,
+uncorrelated, theoretically-motivated feature aimed squarely at direction
+buys essentially nothing.
+
+### What is left standing
+
+**The directional heads lose to a constant, and nothing moved them.**
+`terminal_h5_q50` −1.13%, `terminal_h10_q50` −2.29% after every refinement.
+The dispersion heads keep their 10-20%, and item 1 could not establish
+whether that is skill or volatility tracking, because the comparison it
+needed does not exist in loss terms.
+
+**The coverage failure is irreducible from train data.** After the model
+absorbs the volatility change, −0.05 to −0.07 remains on the peak family.
+That is a level shift, and no predictor fitted on 2010-2021 can anticipate
+2022-2023's.
+
+**Three independent findings now agree.** ADR 112: no cell survives FDR
+correction. Check 5: no directional head beats a constant out of sample.
+This: four attempts to find directional signal, none of which moves it by
+more than a tenth of a percent.
+
+That is the honest close. ADR 033's deliverable was a rigorous engine and
+an honest result, and one more honest result costs one phase — which is the
+argument ADR 113 used to build Phase 6 at all. It was built, it was gated,
+and it says the same thing the cell grid said.

@@ -111,7 +111,21 @@ def test_the_default_split_is_train():
 
 
 def _frame(**over) -> pd.DataFrame:
-    base = {"k_full": [80.0], "d_full": [75.0], "mcap_usd": [1e9]}
+    # The four breach-depth inputs and `side` are always present on a real
+    # frame -- `build_training_frame` joins them from `bars` and
+    # `indicators` -- so the fixture carries them rather than
+    # `_breach_depth` tolerating their absence. A silently-NaN column would
+    # hide the SQL breaking.
+    base = {
+        "k_full": [80.0],
+        "d_full": [75.0],
+        "mcap_usd": [1e9],
+        "side": ["long"],
+        "bar_low": [98.0],
+        "bar_high": [105.0],
+        "band_lower": [100.0],
+        "band_upper": [110.0],
+    }
     base.update({k: [v] for k, v in over.items()})
     return pd.DataFrame(base)
 
@@ -162,7 +176,7 @@ def test_derived_columns_are_deterministic():
 # ---------------------------------------------------------------------------
 
 
-def test_nineteen_raw_plus_two_derived():
+def test_nineteen_raw_plus_three_derived():
     """DESIGN §7.3 claims twenty-two are on the event row. Three are not —
     `bb_mid`-based distance, `atr_14/close`, and `vix_pct_252d` — and the
     module docstring records why each is blocked rather than dropping them
@@ -170,8 +184,15 @@ def test_nineteen_raw_plus_two_derived():
     change with it.
     """
     assert len(feat.RAW_FEATURE_COLS) == 19
-    assert len(feat.DERIVED_FEATURE_COLS) == 2
-    assert len(feat.FEATURE_COLS) == 21
+    # Three as of 2026-09-02: `breach_depth` joined `k_minus_d` and
+    # `mcap_log`. ADR 069's deferred feature, and the half `bb_pctb` does
+    # not carry -- the signal is a touch, so the low's depth past the band
+    # is a different quantity from the close's (they correlate -0.054).
+    # Measured and kept despite being worth only +0.087% on the directional
+    # heads: it is genuinely new information, and RESULTS 2026-09-02 says
+    # what it bought.
+    assert len(feat.DERIVED_FEATURE_COLS) == 3
+    assert len(feat.FEATURE_COLS) == 22
 
 
 def test_no_duplicate_features():

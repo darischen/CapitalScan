@@ -16,157 +16,47 @@ deleting the entry loses nothing.
 
 ## Open
 
-## Phase 6 refinement
+## ~~Phase 6 refinement~~ — **all four tried and refuted, 2026-09-02**
 
-**Where it stands, 2026-09-02.** Check 5 passes (17/20 heads beat the
-global baseline out of sample) and the kill criterion does not fire.
-Coverage fails 6 of 20 and nothing is promoted. But the pass is not a
-directional edge: `terminal_h*_q50` — the heads that predict *where price
-ends up* — **lose to a constant** (−0.44%, −0.55%), while `peak_h*_q50` —
-*how far it wandered* — gain 10.4% and 10.7%. CV rounds say the same
-independently: 20-41 for the directional heads, 167-218 for the dispersion
-ones.
+Every item was built and measured the day the section was written. None
+improved the result. RESULTS 2026-09-02 has the tables; the summary:
 
-This section is what is worth trying before Phase 6 closes, ordered by
-evidence rather than by appeal. **Everything already ruled out is listed
-too**, so the dead ends are not re-walked.
+| # | idea | outcome |
+|---|---|---|
+| 1 | volatility-scaled baseline | **vacuous** — the scaled constant has *higher* pinball loss on all 20 heads, up to 3.6x, so it is an easier bar and passing it means nothing |
+| 2 | volatility-normalised targets | **no effect** — `peak_h10_q50` coverage error is −0.0509 either way; the tree was already doing the scaling |
+| 3 | low-based breach depth (ADR 069) | **+0.087% / +0.025%** on the directional heads against baselines of −1.08% / −2.04%. Real, negligible. Shipped as a feature anyway |
+| 4 | two-stage, dispersion then direction | **+0.000035 / −0.000012**, noise |
 
----
+**One prerequisite had to be fixed first and it invalidated the earlier
+numbers.** The fits were unseeded with `bagging_fraction` and
+`feature_fraction` at 0.7, so identical code gave 17/20 and 18/20. Item 3's
+first pass read as a −0.25% regression; seeded, it is a +0.087%
+improvement. The sign flipped on noise. Now seeded and deterministic.
 
-### ~~1. Compare against a volatility-normalised baseline~~ — **built 2026-09-02, and the check is vacuous**
+**They fail in two distinct ways, and both are informative.** Items 2 and 4
+fail because the information was already present — a tree's splits capture
+volatility scaling, and predicted dispersion is a function of features the
+directional model already has. Item 3 fails the opposite way: it *is* new
+information (correlation with `bb_pctb` is only −0.054) aimed squarely at
+direction, and it still buys under a tenth of a percent.
 
-**The idea was sound and the implementation could not answer it.**
+**What stands.** The directional heads lose to a constant — `terminal_h5_q50`
+−1.13%, `terminal_h10_q50` −2.29% — after every refinement. The coverage
+failure is irreducible from train data: once the model absorbs the
+volatility change, a level shift remains that nothing fitted on 2010-2021
+can anticipate.
 
-The measured regime shift is a volatility increase (`fwd_ret_5d` sd +12%,
-`peak_ret_5d` q75 +28%), so a raw constant cannot follow it and the peak
-family's 10-20% gains might have been crude rescaling and nothing else.
-`scaled_baseline` fits `quantile(R/sigma)` on train and multiplies by each
-validate row's own sigma.
+**Three independent findings agree**: ADR 112 (no cell survives FDR), check
+5 (no directional head beats a constant), and these four attempts. Phase 6
+can close on that.
 
-**It is an easier bar, not a harder one.** Measured across all twenty
-heads, the scaled constant's pinball loss is *higher* than the raw
-constant's — on every single one, by up to **3.6x** (`peak_h10_q95`,
-0.008052 → 0.029068). Every head that beats global also beats it, and that
-fact carries no information.
-
-**The cause is the trade DESIGN §7.6 keeps two metrics for.** Multiplying
-by a per-row sigma improves **coverage** and worsens **sharpness**: the
-prediction gains variance, which pinball loss charges for and coverage does
-not. The check asked a coverage question with a loss comparison.
-
-Kept, with the loss now emitted beside the boolean so the vacuity is
-visible rather than hidden. **The question stays open** and is answerable
-only by fitting the model in scale-free units so both sides are in the same
-units — which is item 2.
-
-### ~~2. Volatility-normalised targets~~ — **fitted 2026-09-02, and it changes nothing**
-
-**Refuted, and the refutation explains the whole coverage picture.**
-
-The prediction was that a tree *splits* on `rv_pct_252d` rather than
-*multiplying* by it, so rescaling a fan sits outside its hypothesis class.
-Vol-normalising the constant baseline halved its coverage error, which
-looked like confirmation.
-
-Fitted properly — model trained on `R/sigma`, predictions rescaled by each
-validate row's own sigma — it moves nothing:
-
-| | raw loss | scaled loss | raw cov err | scaled cov err |
-|---|---|---|---|---|
-| terminal_h5_q25 | 0.014312 | 0.014344 | +0.0840 | +0.0810 |
-| peak_h10_q50 | 0.017641 | 0.017754 | −0.0509 | **−0.0509** |
-| peak_h10_q75 | 0.016077 | 0.016191 | −0.0689 | −0.0701 |
-
-Loss slightly worse on 8 of 10, coverage unmoved.
-
-**The tree was already doing it.** Splitting on volatility captures enough
-of the scaling that explicit normalisation is redundant — which is exactly
-why the model's coverage error was already far smaller than the constant's
-(peak_h10_q50: model −0.051 against constant −0.163). The constant could
-not adjust; the model always could.
-
-**So the residual is not volatility.** After the model has absorbed the
-scale change, −0.05 to −0.07 remains on the peak family. That is a level
-shift, and no predictor fitted only on 2010-2021 can anticipate it.
-
-**Taken together, items 1 and 2 make gate check 3's failure look
-irreducible from train data**, which is a real result about the study
-rather than a defect to fix.
-
-### 3. Breach depth as a feature (ADR 069) — **narrower than it looks**
-
-**Half of it already ships.** `bb_pctb = (close - lower) / (upper - lower)`
-is in `FEATURE_COLS` and runs to **−0.588** on train events, so a negative
-value already says how far *below* the band the close sat, in band-width
-units. Close-based breach depth is not missing.
-
-**What is missing is depth from the bar's low**, which ADR 069 names
-directly: "Daily bars approximate breach depth from the bar low relative to
-the band. Hourly bars from 2024 forward give it exactly." The signal is a
-*touch* — the low crosses the band — and the close can be back inside by
-the bell, so the two are genuinely different quantities.
-
-`events` carries `close` but not `low`, so this needs a column or a lateral
-to `bars`, plus the documented pre-2024 approximation. That is the real
-cost, and it is the only remaining idea that plausibly carries **direction**
-rather than dispersion — which is the thing the study has twice failed to
-find.
-
-Untested, and worth testing precisely because the directional heads are the
-ones with nothing to learn — CV stops them at 20-41 rounds, which is the
-model saying the current features contain no directional signal.
-
-### 4. Separate the two questions the fan is answering
-
-The terminal and peak families are fitted identically and behave
-oppositely. A two-stage form — predict dispersion, then predict direction
-*conditional on* it — matches what the data says is there. Speculative, no
-measurement supports it yet, and it is a larger change than 1-3.
-
----
-
-### Ruled out, with the measurement
-
-- **Quantile crossing.** `sort_quantiles` had no production caller and is
-  now wired (DESIGN §7.4 requires it), but the measured crossing rate is
-  **0.0000%** and the sorted gate run is byte-identical. Real fix, no
-  effect on the result.
-- **Loosening regularisation.** Tested on the worst head: `lambda_l2` 5→0,
-  leaves 15→63, no depth cap made coverage **worse** (+0.0954 → +0.1054)
-  while raising prediction dispersion. The bias is in the level, not the
-  spread.
-- **Recalibrating the quantile heads on validate.** DESIGN §7.6 is
-  explicit that quantile heads are *checked* by coverage rather than
-  recalibrated, and fitting a correction on the split the gate scores would
-  make the gate circular. Would need a design change, and the honest
-  version fits on train instead — which is what item 2 does.
-- **Mixed populations.** Checked: `build_training_frame` filters
-  `entry_kind = 'next_open' AND in_trade`, so the frame is one population.
-  Purge and embargo in `_fold_masks` are both correct — purge reaches back
-  by `horizon_days`, embargo forward by `DEFAULT_EMBARGO_DAYS`.
-- **`cluster_size` as a feature.** It leaks; the label window and the
-  cluster window overlap. RESULTS 2026-09-02.
-
----
-
-### What none of this may fix, and the standard that holds
-
-ADR 112 found no cell surviving FDR. Check 5 found no *directional* head
-beating a constant. Two independent tests, same answer, and items 1-4 are
-attempts to find something the study has twice failed to find. Item 1 can
-only make the result worse, which is why it goes first.
-
-**The holdout (2024-2026, 82,957 events) stays untouched.** It is spent
-once, at the end, and published whatever it says. Nothing in this section
-may read it.
-
-**Nothing here is promoted without passing the gate.** ADR 067's failure
-path leaves the incumbent serving; there is no incumbent, so nothing
-serves. `handlers/predict.py` returns `NotFound` deliberately, and
-`v_screen_live` already `LEFT JOIN`s `predictions` — so writing that table
-puts model output on the site. A forward log (DESIGN §7.8) that records
-without displaying needs the view changed first, which is a migration and a
-decision.
+**Still not done, and deliberately.** The holdout (2024-2026, 82,957
+events) is untouched and spent once, at the end. Nothing is promoted —
+ADR 067's failure path leaves the incumbent serving and there is no
+incumbent, so `handlers/predict.py` keeps returning `NotFound` and the
+`predictions` table stays empty. Writing it would put model output on the
+site, since `v_screen_live` already joins it.
 
 ---
 
