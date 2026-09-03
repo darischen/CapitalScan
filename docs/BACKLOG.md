@@ -59,39 +59,58 @@ visible rather than hidden. **The question stays open** and is answerable
 only by fitting the model in scale-free units so both sides are in the same
 units — which is item 2.
 
-### 2. Volatility-normalised targets
+### ~~2. Volatility-normalised targets~~ — **fitted 2026-09-02, and it changes nothing**
 
-**Measured at the constant-baseline level and it works.** Coverage error on
-validate, raw target against `R/sigma` rescaled:
+**Refuted, and the refutation explains the whole coverage picture.**
 
-| | raw | vol-normalised |
-|---|---|---|
-| `fwd_ret_5d` q75 | −0.0244 | **−0.0007** |
-| `peak_ret_5d` q75 | −0.1583 | **−0.0828** |
-| `peak_ret_10d` q75 | −0.1598 | **−0.0779** |
-| `peak_ret_10d` q50 | −0.1631 | **−0.1106** |
+The prediction was that a tree *splits* on `rv_pct_252d` rather than
+*multiplying* by it, so rescaling a fan sits outside its hypothesis class.
+Vol-normalising the constant baseline halved its coverage error, which
+looked like confirmation.
 
-Better on 12 of 15 τ. Roughly halves the regime shift.
+Fitted properly — model trained on `R/sigma`, predictions rescaled by each
+validate row's own sigma — it moves nothing:
 
-**Why the model cannot already do this.** `rv_pct_252d` is a feature, but a
-tree **splits** on volatility, it does not **multiply** by it. Rescaling a
-fan is a multiplicative operation outside the hypothesis class, which is
-why 21 features and 200 boosting rounds do not recover what one division
-achieves.
+| | raw loss | scaled loss | raw cov err | scaled cov err |
+|---|---|---|---|---|
+| terminal_h5_q25 | 0.014312 | 0.014344 | +0.0840 | +0.0810 |
+| peak_h10_q50 | 0.017641 | 0.017754 | −0.0509 | **−0.0509** |
+| peak_h10_q75 | 0.016077 | 0.016191 | −0.0689 | −0.0701 |
 
-**It does not fully close the gap** — `peak_h10_q50` is still −0.111 — so
-residual drift remains. Honest framing: this fixes the scale half of the
-shift, not the level half.
+Loss slightly worse on 8 of 10, coverage unmoved.
 
-Needs an ADR: it redefines what the heads predict, and §7.4's fan is then
-in scale-free units until rescaled.
+**The tree was already doing it.** Splitting on volatility captures enough
+of the scaling that explicit normalisation is redundant — which is exactly
+why the model's coverage error was already far smaller than the constant's
+(peak_h10_q50: model −0.051 against constant −0.163). The constant could
+not adjust; the model always could.
 
-### 3. Breach depth as a feature (ADR 069)
+**So the residual is not volatility.** After the model has absorbed the
+scale change, −0.05 to −0.07 remains on the peak family. That is a level
+shift, and no predictor fitted only on 2010-2021 can anticipate it.
 
-The one feature the design already names as deferred, and the one thing
-that plausibly carries *direction* rather than dispersion: how far past the
-band the close sat, rather than merely that it crossed. Every current
-feature is either a level, a width, or a count.
+**Taken together, items 1 and 2 make gate check 3's failure look
+irreducible from train data**, which is a real result about the study
+rather than a defect to fix.
+
+### 3. Breach depth as a feature (ADR 069) — **narrower than it looks**
+
+**Half of it already ships.** `bb_pctb = (close - lower) / (upper - lower)`
+is in `FEATURE_COLS` and runs to **−0.588** on train events, so a negative
+value already says how far *below* the band the close sat, in band-width
+units. Close-based breach depth is not missing.
+
+**What is missing is depth from the bar's low**, which ADR 069 names
+directly: "Daily bars approximate breach depth from the bar low relative to
+the band. Hourly bars from 2024 forward give it exactly." The signal is a
+*touch* — the low crosses the band — and the close can be back inside by
+the bell, so the two are genuinely different quantities.
+
+`events` carries `close` but not `low`, so this needs a column or a lateral
+to `bars`, plus the documented pre-2024 approximation. That is the real
+cost, and it is the only remaining idea that plausibly carries **direction**
+rather than dispersion — which is the thing the study has twice failed to
+find.
 
 Untested, and worth testing precisely because the directional heads are the
 ones with nothing to learn — CV stops them at 20-41 rounds, which is the
