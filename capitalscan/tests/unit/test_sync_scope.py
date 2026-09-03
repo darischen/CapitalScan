@@ -87,8 +87,17 @@ class TestTheUnscopedTablesAreDeliberate:
         for name in ("bars", "indicators"):
             assert "u.config_hash = :config_hash" in _sql_for(name)
 
-    def test_bars_and_indicators_ship_only_tradeable_names(self):
-        """Already narrow: both require `universe.in_trade`, so the store
-        does not carry chart data for names the screener cannot list."""
+    def test_bars_and_indicators_ship_trade_and_watch_names(self):
+        """Narrow, but not to `in_trade` alone (widened 2026-09-03).
+
+        `in_trade OR in_watch` -- excluding a fully out-of-universe name,
+        but not a watch one. `in_trade`-only made every watch ticker's
+        chart blank on the site (ELPC, ULS: real bars and indicators on
+        research, zero on serving), which contradicts the ticker page's
+        own search including non-`in_trade` names and ADR 149's "everything
+        is computed" for a watch row.
+        """
         for name in ("bars", "indicators"):
-            assert "in_trade" in _sql_for(name)
+            sql = _sql_for(name)
+            assert "in_trade" in sql
+            assert "in_watch" in sql

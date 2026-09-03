@@ -254,8 +254,23 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
             ("ticker", "as_of", "config_hash"),
         ),
         SyncTable("serving_config", "SELECT * FROM serving_config", ("only_row",)),
-        # Scoped by trade-universe membership rather than by ticker list:
-        # the deployed chart only ever draws a name the screener can show.
+        # Scoped by trade-*or-watch*-universe membership rather than by
+        # ticker list. **Widened 2026-09-03** (user's finding): this used
+        # to read `u.in_trade` alone, on the stated theory that "the
+        # deployed chart only ever draws a name the screener can show" --
+        # false since before this line was written. The ticker page's own
+        # search explicitly includes names outside the trade universe
+        # (`screen.ts`'s `SEARCH_SQL`: "the ticker page is where you go to
+        # look at a name you are not trading"), and ADR 149 says a watch
+        # row gets "everything computed -- events, indicators, entries,
+        # exits", which is a claim about what serving shows, not just what
+        # research holds. `in_trade`-only sync made every watch name a
+        # blank chart on the site regardless -- found via ELPC and ULS,
+        # both real bars and indicators on research (671 and 600 daily
+        # rows respectively), zero on serving, both `in_watch` and never
+        # `in_trade`. ADR 168's `near_trade` route widened who qualifies
+        # for `in_watch`, which is what surfaced this, not what caused it.
+        #
         # `GREATEST(:cutoff, :bars_from)` -- the cutoff is the history
         # boundary and `bars_from` is the incremental one. Whichever is
         # later wins, so a NULL `bars_from` (an empty or unknown target)
@@ -264,7 +279,8 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
             "bars",
             "SELECT b.* FROM bars b WHERE b.interval = '1d' "
             "AND b.ts >= GREATEST(:cutoff, COALESCE(CAST(:bars_from AS date), :cutoff)) "
-            "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = b.ticker AND u.in_trade "
+            "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = b.ticker "
+            "AND (u.in_trade OR u.in_watch) "
             "AND u.config_hash = :config_hash)",
             ("ticker", "ts", "interval"),
         ),
@@ -272,7 +288,8 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
             "indicators",
             "SELECT i.* FROM indicators i WHERE i.interval = '1d' "
             "AND i.ts >= GREATEST(:cutoff, COALESCE(CAST(:indicators_from AS date), :cutoff)) "
-            "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = i.ticker AND u.in_trade "
+            "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = i.ticker "
+            "AND (u.in_trade OR u.in_watch) "
             "AND u.config_hash = :config_hash)",
             ("ticker", "ts", "interval"),
         ),
