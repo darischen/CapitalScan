@@ -16,6 +16,82 @@ deleting the entry loses nothing.
 
 ## Open
 
+### Coverage is 17/20 and the gate needs 20 — three heads, all failing the same way
+
+**This is the only thing standing between ADR 170's model and a real
+promotion decision**, so it is the first entry rather than a footnote.
+
+ADR 170's multi-task model lifted coverage from the incumbent's 14/20 to
+17/20 (RESULTS 2026-09-03). DESIGN §7.7 check 3 wants all twenty within 5
+points of nominal. The three that fail:
+
+| head | coverage | nominal | error |
+|---|---|---|---|
+| `terminal_h5_q25` | 0.310 | 0.25 | **+0.060** |
+| `terminal_h10_q25` | 0.318 | 0.25 | **+0.068** |
+| `terminal_h10_q50` | 0.550 | 0.50 | **+0.050** |
+
+**All three over-cover, all three are terminal, all three are in the lower
+half of the fan.** That is not three problems. The predicted lower
+quantiles sit too high, so realised returns fall below them more often than
+they should — which is the residual regime shift RESULTS 2026-09-02 already
+found irreducible from train data, now down from six heads to three and
+concentrated in one corner.
+
+**What is worth trying, and what is not.**
+
+- **Not recalibration on validate.** DESIGN §7.6 is explicit that quantile
+  heads are *checked* by coverage rather than recalibrated, and fitting a
+  correction on the split the gate scores makes the gate circular. This was
+  already ruled out on 2026-09-02 and the ruling did not change.
+- **A fifth auxiliary task.** ADR 170's gain came from three labels
+  supervising a fourth. A `trough_ret_{h}d` label — the mirror of
+  `peak_ret` — would add a task whose information is concentrated in
+  exactly the lower tail that is miscovered, and it is the one direction
+  the current four do not cover. It needs a label built, which is a
+  `path_labels.py` change, not a modelling one.
+- **Longer horizons as auxiliaries only.** ADR 113 dropped h=1,2,3
+  deliberately and h=20 was never built. A 20-day head that is trained but
+  never reported would regularise without widening the reported fan.
+
+**Nothing here is promoted regardless of outcome until the holdout is
+spent**, and the holdout is spent once.
+
+### On-demand per-ticker inference — **measured 2026-09-03: not needed for the model we have**
+
+The question was whether a heavier model could be run per ticker behind a
+button on the chart, rather than in batch for the whole universe. Measured,
+the premise does not hold for the model that won:
+
+| | parameters | one row | one ticker (64 events) | all 34,195 validate events |
+|---|---|---|---|---|
+| ADR 170 multi-task, CPU | 259,904 | 0.56 ms | 1.25 ms | **91 ms** |
+| ADR 170 multi-task, GPU | 259,904 | 0.71 ms | 0.74 ms | 9.3 ms |
+| TabFM, GPU (ctx 4000) | 1.64 **billion** | ~8 ms | ~0.5 s | ~4.5 min |
+
+**The model that won scores the entire validate split in 91 milliseconds on
+a CPU.** Batch inference for everything is cheaper than the HTTP round trip
+a single button press would cost, so the on-demand path solves a problem
+this model does not have.
+
+Worth noting from the same measurement: **one row is slower on the GPU than
+on the CPU** (0.71 ms against 0.56 ms), because at this size the whole cost
+is kernel launch overhead. The GPU only starts winning around a thousand
+rows. A per-ticker inference service would therefore want the CPU anyway,
+which removes the last reason the feature would need special hardware.
+
+The button remains the right shape for a *heavy* model, and that is the
+form the entry keeps: it is not rejected, it is unnecessary until something
+expensive is worth serving. If ADR 169's TabFM work or a successor produces
+a model that cannot run in batch, the design is a `web/app/api/predict/
+route.ts` beside the five existing routes, reading a cached fan rather than
+computing one in the request.
+
+**What would have to be true first, in order.** The gate passes (see the
+entry above), the holdout is spent, ADR 067's four promotion checks pass,
+and `v_screen_live`'s `LEFT JOIN predictions` is understood to mean that
+writing that table puts model output on the site.
+
 ## ~~Phase 6 refinement~~ — **all four tried and refuted, 2026-09-02**
 
 Every item was built and measured the day the section was written. None

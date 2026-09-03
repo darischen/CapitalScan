@@ -728,3 +728,92 @@ ssh darischen@192.168.1.30 'cd ~/CapitalScan && git log --oneline -1'
 The same applies to `wivie` and to any `scripts/pi/` or `scripts/systemd/`
 change. Three machines, three clones, and only the workstation's is the one
 you are editing.
+
+## `python3 -m venv` is broken on `wivie`; use its `uv` (2026-09-03)
+
+**Symptom.** `python3 -m venv /tmp/somevenv` on `wivie` exits **0** and
+creates a directory containing `bin/python`, `bin/python3` and
+`bin/python3.13` — and **no `pip`**. Every later install goes to a
+`./venv/bin/pip: No such file or directory`, and the first thing that
+actually runs dies on `ModuleNotFoundError: No module named 'numpy'`.
+
+**Cause.** Debian ships `python3-venv` separately and it is not installed:
+
+```
+python3 -c "import ensurepip"
+ModuleNotFoundError: No module named 'ensurepip'
+```
+
+`venv` still creates the tree; only the bootstrap step is missing. Nothing
+in the exit code says so.
+
+**Fix.** `uv` is already on the box but not on the default non-login PATH:
+
+```
+export PATH=$HOME/.local/bin:$PATH
+uv venv --python 3.13 /tmp/somevenv
+VIRTUAL_ENV=/tmp/somevenv uv pip install <packages>
+```
+
+`sudo apt install python3-venv` would also work and was not done — the box
+already has the tool this project uses everywhere else, and adding a second
+one invites the two to disagree about which interpreter a venv points at.
+
+**The part worth remembering is how it was missed.** The install script
+ended each step with `| tail -3`, which discards the failing command's exit
+status: the pipeline reports `tail`'s success, `set -e` never fires, and the
+script printed `INSTALL_DONE` and exited 0 having installed nothing. That is
+the same trap as "a pipeline throws away every exit code but the last" above
+and the same one that ran a destructive `pg_restore` drop before its
+fallible restore. **A remote install script must end each step with `||
+exit 1` or set `pipefail`, and must finish with an import check that
+actually imports what the next script needs.**
+
+## The fast tier passes locally and fails in CI: CI is Python 3.11 (2026-09-03)
+
+**`.github/workflows/ci.yml` pins `python-version: "3.11"`.** The
+workstation runs 3.14.3 and `wivie` runs 3.13.5, so **no machine anyone
+develops on runs the interpreter CI runs.** `uv sync` then resolves a
+different dependency set for 3.11, and the one that bites is numpy: its
+type stubs differ enough that mypy's `no-any-return` fires on 3.11 and not
+on 3.14.
+
+The concrete case:
+
+```python
+def predict_pmf(self, frame: pd.DataFrame) -> np.ndarray:
+    return np.mean([...], axis=0)  # Any on 3.11, ndarray on 3.14
+```
+
+Clean under `uv run mypy` on the workstation, `error: Returning Any from
+function declared to return "ndarray[...]"` in CI. Clearing `.mypy_cache`
+and running `--no-incremental` did **not** reproduce it, which is the
+misleading part: the natural next step after "passes locally, fails in CI"
+is to suspect the cache, and that suspicion is wrong here.
+
+**Reproduce it directly rather than guessing.** A throwaway 3.11
+environment costs about a minute and gives the exact error:
+
+```
+uv venv --python 3.11 /tmp/py311
+VIRTUAL_ENV=/tmp/py311 uv pip install -e ".[dev]"
+/tmp/py311/bin/python -m mypy
+/tmp/py311/bin/python -m pytest capitalscan/tests/unit capitalscan/tests/property \
+  -p no:randomly --hypothesis-profile=ci_fast
+```
+
+**This is the "verify with a different instrument" rule applied to the
+interpreter.** The local mypy and CI's mypy are different instruments, and
+a green local run is not evidence about the red one. Anything typed against
+numpy or pandas return values is where the two disagree; annotate with an
+explicit `np.asarray(..., dtype=float)` rather than relying on inference.
+
+**One aside that cost a second CI round.** `ruff format` formats fenced
+`python` blocks **inside Markdown**, so a doc file can fail the format gate
+while every `.py` in the repo is clean. The `1 file would be reformatted`
+line names it only if you pass `--diff`.
+
+**Worth considering, not done:** raising CI to 3.13 would close the gap
+against `wivie`, which is the machine that actually has to run this code
+after the cutover. That is a change to the gate and belongs in an ADR, not
+in a session that happened to trip over it.

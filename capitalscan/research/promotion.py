@@ -318,11 +318,6 @@ def evaluate_family(
     wired in. Coverage computed on unsorted predictions is measuring a fan
     the design does not ship.
     """
-    label = train.label_for(family, horizon)
-    y_va = pd.to_numeric(validate_frame[label], errors="coerce").to_numpy(float)
-    va_ok = ~np.isnan(y_va)
-    w_va = np.asarray(core_folds.cluster_weights(list(validate_frame["cluster_id"])))
-
     raw: dict[float, np.ndarray] = {}
     used_rounds: dict[float, int] = {}
     for tau in train.TAUS:
@@ -340,6 +335,41 @@ def evaluate_family(
         used_rounds[tau] = n_rounds
 
     sorted_pred = train.sort_quantiles(raw)
+    return score_family(
+        train_frame, validate_frame, family, horizon, sorted_pred, rounds=used_rounds
+    )
+
+
+def score_family(
+    train_frame: pd.DataFrame,
+    validate_frame: pd.DataFrame,
+    family: str,
+    horizon: int,
+    sorted_pred: dict[float, np.ndarray],
+    rounds: dict[float, int] | None = None,
+) -> list[HeadEvaluation]:
+    """Score an already-built fan against every baseline. Fits nothing.
+
+    **Split out of `evaluate_family` so a challenger is scored by the same
+    code as the incumbent.** The gate's meaning lives in these baselines
+    and in the cluster weighting, not in LightGBM, and an experiment that
+    reimplements the scoring is comparing two measurements rather than two
+    models. Session 24 needed exactly that: TabFM and the neural fans
+    produce `sorted_pred` by entirely different means and then arrive here.
+
+    `sorted_pred` must already be monotone across τ (DESIGN §7.4). Sorting
+    is the *producer's* job because a model with a monotone parameterisation
+    has nothing to repair, and silently re-sorting here would hide a
+    challenger whose fan crosses.
+
+    `rounds` is LightGBM's `num_boost_round` and is reported, never used.
+    A model with no such notion passes nothing and records 0.
+    """
+    label = train.label_for(family, horizon)
+    y_va = pd.to_numeric(validate_frame[label], errors="coerce").to_numpy(float)
+    va_ok = ~np.isnan(y_va)
+    w_va = np.asarray(core_folds.cluster_weights(list(validate_frame["cluster_id"])))
+    used_rounds = rounds or {}
 
     out: list[HeadEvaluation] = []
     for tau in train.TAUS:
@@ -386,7 +416,7 @@ def evaluate_family(
                 tau=tau,
                 n_train=int((~np.isnan(y_tr)).sum()),
                 n_validate=int(va_ok.sum()),
-                rounds=used_rounds[tau],
+                rounds=int(used_rounds.get(tau, 0)),
                 model_loss=model_loss,
                 baseline_global=b_global,
                 baseline_sector=b_sector,

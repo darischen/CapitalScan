@@ -5923,3 +5923,284 @@ That is the honest close. ADR 033's deliverable was a rigorous engine and
 an honest result, and one more honest result costs one phase — which is the
 argument ADR 113 used to build Phase 6 at all. It was built, it was gated,
 and it says the same thing the cell grid said.
+
+---
+
+## 2026-09-03 — Multi-task beats twenty independent heads; the directional heads finally clear a constant
+
+Session 23 closed with three independent findings agreeing that this
+study's hypothesis was dead: ADR 112 (no cell survives FDR), check 5 (no
+directional head beats a constant), and four refinements that moved
+nothing. All four of those refinements kept **twenty independent fits** and
+looked for a better feature, target scaling or baseline.
+
+Changing the architecture instead moves the result.
+
+### What changed
+
+One shared trunk, four softmax-over-32-bins heads, trained jointly on
+summed CRPS. `fwd_ret_5d`, `fwd_ret_10d`, `peak_ret_5d` and `peak_ret_10d`
+are four views of the same price path after the same signal; ADR 113's
+twenty boosters discard that twenty times. ADR 170 has the reasoning.
+
+### The result
+
+Three seeds, ensembled by averaging pmfs. Same purged walk-forward ladder,
+same median-across-folds step selection LightGBM gets for its rounds, same
+baselines, same cluster weighting, scored by the same
+`promotion.score_family`.
+
+| | incumbent | multi-task |
+|---|---|---|
+| beats the global constant | 18/20 | 18/20 |
+| beats the incumbent | — | 16/20, **14 beyond the seed spread** |
+| coverage within 5 points | 14/20 | **17/20** |
+
+Per head, improvement over the global constant (%), and the seed spread
+that any claim has to clear:
+
+| head | incumbent | multi-task | delta | spread | beyond noise |
+|---|---|---|---|---|---|
+| `terminal_h5_q05` | 4.49 | 6.54 | +2.05 | 1.07 | yes |
+| `terminal_h5_q25` | 1.28 | 2.27 | +0.99 | 1.18 | no |
+| **`terminal_h5_q50`** | **−0.43** | **+0.43** | **+0.86** | 0.50 | **yes** |
+| `terminal_h5_q75` | 2.57 | 3.55 | +0.98 | 0.29 | yes |
+| `terminal_h5_q95` | 12.02 | 11.81 | −0.21 | 0.69 | no |
+| `terminal_h10_q05` | 4.10 | 5.45 | +1.35 | 1.57 | no |
+| `terminal_h10_q25` | 0.41 | 2.54 | +2.13 | 1.00 | yes |
+| **`terminal_h10_q50`** | **−0.64** | **+0.78** | **+1.42** | 0.85 | **yes** |
+| `terminal_h10_q75` | 1.46 | 3.41 | +1.95 | 0.30 | yes |
+| `terminal_h10_q95` | 10.90 | 10.67 | −0.23 | 0.35 | no |
+| `peak_h5_q05` | 0.05 | −0.98 | −1.03 | 0.29 | yes |
+| `peak_h5_q25` | 4.08 | 4.34 | +0.26 | 0.44 | no |
+| `peak_h5_q50` | 10.28 | 11.01 | +0.73 | 0.73 | yes |
+| `peak_h5_q75` | 16.03 | 17.54 | +1.51 | 0.93 | yes |
+| `peak_h5_q95` | 19.45 | 22.97 | +3.52 | 0.79 | yes |
+| `peak_h10_q05` | 0.27 | −0.53 | −0.80 | 0.25 | yes |
+| `peak_h10_q25` | 4.90 | 5.49 | +0.59 | 0.61 | no |
+| `peak_h10_q50` | 10.76 | 11.91 | +1.15 | 0.88 | yes |
+| `peak_h10_q75` | 15.95 | 17.99 | +2.04 | 0.95 | yes |
+| `peak_h10_q95` | 18.60 | 23.12 | +4.52 | 1.15 | yes |
+
+**Both directional heads beat a constant, and both beyond the seed
+spread.** That has not happened before in Phase 6.
+
+**Where it loses is where the incumbent barely won.** The two `peak_*_q05`
+heads go slightly negative (−0.98, −0.53) against an incumbent that scored
++0.05 and +0.27. The extreme lower tail of a peak-return distribution sits
+close to a constant by construction, so neither model has anything there.
+
+**Coverage is the more useful gain.** 14/20 to 17/20, and the three
+remaining failures — `terminal_h5_q25`, `terminal_h10_q25`,
+`terminal_h10_q50` — all over-cover in the same direction, which is the
+residual regime shift the 2026-09-02 entry already found irreducible from
+train data.
+
+### Seed sensitivity is a result in its own right
+
+Two other neural architectures were run alongside, three seeds each. The
+spread across seeds differs by an order of magnitude and the cause is the
+loss, not the model:
+
+| model | loss | mean per-head seed spread | worst head |
+|---|---|---|---|
+| `hist` (softmax over bins) | CRPS | **0.59** | 1.44 |
+| `multitask` | summed CRPS | 0.74 | 1.57 |
+| `sqr` (five monotone outputs) | joint pinball | **2.00** | **6.71** |
+
+(All twenty heads. An earlier read of `terminal_h5` alone showed a wider
+gap — 0.28 against 2.62 — which is itself worth noting: four heads are not
+twenty, and the summary that matters is the one over everything measured.)
+
+Pinball at five $\tau$ takes gradient from five thin slices of the
+distribution, so the tails are shaped by relatively few effective
+observations. CRPS scores the whole CDF against every observation. On a
+population whose effective sample is near 8,000 that conditioning
+difference dominates — and a single unseeded `sqr` run would have reported
+a 6.7-point swing as a finding.
+
+This is the same lesson as 2026-09-02's seeding fix, one level up: there,
+an unseeded LightGBM A/B gave 17/20 and 18/20 from identical code. Here the
+architecture choice itself changes how large that noise is.
+
+### Three methodology errors, each of which produced a plausible wrong answer
+
+Recorded because none of them raised an exception, and two were caught only
+by looking at a number that seemed off.
+
+**Equal-mass CRPS bins put 71.5% of the integral in two bins.** Reusing the
+quantile grid that is right for *reading* a fan is wrong for *integrating*
+one. Returns are concentrated, so equal-mass edges are ~0.003 wide inside
+and ~0.18 at the ends. The symptom: the model reached its best inner score
+at **epoch 1** and never improved, having matched the marginal tails
+immediately with no gradient pointing anywhere else. Equal-width bins fixed
+it.
+
+**Epoch-granular early stopping cannot see inside an epoch.** One pass over
+158k rows at batch 1024 is 154 optimiser steps. Every configuration
+reported its best at epoch 1 — not because nothing was learned, but
+because the optimum sat inside the first pass. A patience whose unit is
+coarser than the thing it watches always returns the first value.
+
+**Selecting on one inner split selected badly, and the direction was
+predictable in hindsight.** Train's last year is 2021, which is calm;
+validate is 2022-2023, which is not. Stopping when 2021 fits well means
+fitting until the fan is too narrow for the later regime: the selected
+model scored **−5.9%** on `terminal_h5_q05` where a shorter fit scored
++1.6%. `promotion._fit_and_predict` already had the right protocol — the
+median across the whole walk-forward ladder. Copying LightGBM's model but
+not its selection procedure compares two procedures, not two models.
+
+### Blending with the incumbent buys loss and costs calibration
+
+The two models fail differently, so averaging them was worth one cheap
+test. Both fans were already saved, so this needed no refitting.
+
+| | mean improvement | beats the constant | coverage ok | mean abs coverage error |
+|---|---|---|---|---|
+| LightGBM | +6.83 | 18/20 | 14/20 | 0.0365 |
+| multi-task | +8.02 | 18/20 | **17/20** | **0.0269** |
+| 50/50 blend | **+8.04** | **19/20** | 15/20 | 0.0307 |
+
+**The blend wins on loss by 0.02 points and loses two heads of coverage.**
+It also rescues `peak_h10_q05` and `peak_h5_q05`, the two heads where the
+multi-task model goes slightly negative, which is exactly what a blend
+should do for a head where the incumbent was the better of two weak
+predictors.
+
+**Take the multi-task model, not the blend.** Coverage is the gate (DESIGN
+§7.7 check 3) and the blend moves in the wrong direction on it, for a gain
+that is a quarter of the multi-task model's own seed spread. A 0.02-point
+mean improvement is not a result.
+
+**Averaging fans is also the weaker of the two combinations available**, and
+the stronger one cannot include LightGBM. Averaging pmfs and inverting
+gives a distribution; averaging quantiles gives five numbers with no CDF
+behind them, so `exceedance` and `p_touch_*` have nothing to read. The
+incumbent has no pmf to average.
+
+### What a distribution buys that a fan does not
+
+`handlers.types.Prediction` has always asked for `p_touch_2/3/5/10` and
+`p_adverse_3/5` beside `q05..q95`, and the twenty-head architecture cannot
+produce them: a fan gives values at fixed probabilities, those fields need
+probabilities at fixed values. Read off a predicted CDF they are one
+interpolation. Measured on five validate events, `P(peak_5d > 3%)` came
+back as 0.41, 0.31, 0.64, 0.62, 0.73 — a real conditional probability that
+varies across events, from a model that was never fitted for it.
+
+### What this does not do
+
+**It does not pass the gate.** Coverage is 17/20, not 20/20, so DESIGN §7.7
+check 3 fails and ADR 067's failure path leaves the incumbent serving.
+Nothing is promoted, `handlers/predict.py` still returns `NotFound`, and
+`predictions` stays empty.
+
+**Five architectures were compared on the split the gate scores, and this
+one won.** That selection is itself a form of fitting and it cost
+something. Only the holdout can price it, and the holdout (2024-2026,
+82,957 events) stays untouched.
+
+---
+
+## 2026-09-03 — TabFM measured: it does not run on `wivie`, and on a GPU it loses anyway
+
+ADR 169 proposed evaluating Google's TabFM (released 2026-06-30, 1.64
+billion parameters, in-context learning over the whole training table)
+against ADR 063's LightGBM baseline, and gated everything on item 1:
+attempt inference on `wivie` for real. Both halves are now measured.
+
+### Item 1: the hardware gate, and it fails
+
+`wivie`, CPU only, PyTorch 2.14.0+cpu, 4 threads, 7.6 GB RAM:
+
+| | fit | one row | 64 rows | peak RSS |
+|---|---|---|---|---|
+| model load alone | 198 s | — | — | **7.04 GB** |
+| context = 250 rows | 0.63 s | **231 s** | 286 s | 7.04 GB |
+| context = 500 rows | 0.33 s | **455 s** | 502 s | 7.04 GB |
+
+The weights alone are 7.04 GB resident on a 7.6 GB machine, and the box sat
+2.0-2.5 GB into swap throughout. A 250-row context is **0.16%** of the
+157,938 training rows, and a 500-row one is 0.32%.
+
+**The cost scales with the context, as the architecture says it must.**
+Doubling 250 to 500 took one row from 231 s to 455 s. TabFM reads its
+context on every forward pass, so there is no regime where a larger context
+becomes cheap; the 157,938-row training set is 316x the largest context
+measured here.
+
+For scale, on the same class of CPU, ADR 170's multi-task model scores
+**all 34,195 validate events in 91 ms**, against 231 s for TabFM to score
+*one*. That is roughly 385,000x per row, and it is not a tuning gap.
+
+### On the workstation GPU, where it does run, it still loses
+
+Full validate, same baselines, same cluster weighting, scored by the same
+`promotion.score_family`. Context rows sampled by cluster weight, ten bins
+with edges at the reported τ, read as a discrete CDF.
+
+| | beats LightGBM | coverage within 5 pts | cost per target |
+|---|---|---|---|
+| context = 1,000 | **3/20** | 16/20 | 119 s |
+| context = 4,000 | **4/20** | 16/20 | 213 s |
+| ADR 170 multi-task | 16/20 | 17/20 | ~0.01 s |
+
+A 16,000-row arm was planned and **deliberately stopped before it ran**.
+Both completed sweeps answer the question the same way, the hardware gate
+above had already decided it, and ctx=4,000 already occupied 6.6 GB of the
+workstation's 8 GB GPU — so the arm would most likely have recorded an
+out-of-memory error at a cost of about two hours. That is a judgement call
+and is recorded as one rather than left to look like a completed sweep.
+
+**More context helps, and not enough.** Quadrupling it moves 3/20 to 4/20.
+The peak family improves clearly — `peak_h5_q95` goes 2.91% → 7.10%,
+`peak_h5_q75` 9.70% → 14.45%, `peak_h10_q95` 13.03% → 10.75% the other way
+— but LightGBM scores 19.45%, 16.03% and 18.60% on those heads. The
+terminal tails do not improve at all: `terminal_h5_q95` sits at −8.14% and
+−8.37%, and `terminal_h10_q95` actually falls from +4.86% to −1.39%.
+
+**Where it does win it wins narrowly**, and only on the peak family's
+middle: `peak_h10_q25` (5.20 vs 4.90), `peak_h10_q50` (10.89 vs 10.76),
+`terminal_h10_q25` (1.65 vs 0.41) and `terminal_h10_q75` (1.55 vs 1.46).
+Nothing in the tails, which is where the incumbent's whole advantage
+lives.
+
+**Its calibration is genuinely good and its sharpness is not.** 16/20 on
+coverage at both context sizes, against the incumbent's 14/20, while losing
+on 16 to 17 of 20 heads. That is the signature of a model producing honest
+but wide distributions — which is worth noting, because calibration is the
+half ADR 170's model still fails on and TabFM does better there.
+
+### One caveat, stated because it cuts against the conclusion
+
+TabFM caps at **10 classes by a hard architectural limit**, so the fan is
+read from a ten-bin CDF with edges at the reported τ. Recovering τ=0.95
+then depends on interpolating inside the top bin, and the measured q95
+coverage of 0.961-0.970 against a nominal 0.95 says that interpolation
+drags the estimate upward. **The badly negative q95 scores are plausibly an
+artifact of the encoding rather than of the model.** This was not chased
+further: the hardware gate had already decided the question, and no
+encoding makes a 231-second inference usable on the target machine.
+
+### Two claims in ADR 169 were wrong
+
+1. **"Supports native quantile output" is TabPFN, not TabFM.**
+   `TabFMRegressor` returns **point predictions only**. A point is not a
+   fan, so the twenty quantile heads cannot be replaced by it at all. What
+   made TabFM usable here was `TabFMClassifier` over binned returns, which
+   the ADR did not anticipate.
+2. **The published ~40,000-row / 24 GB-GPU ceiling describes the GPU
+   path.** There is no discrete GPU on `wivie`, so the number that mattered
+   was the CPU one, and nobody had measured it.
+
+### What this leaves
+
+**ADR 063's conclusion survives, but not for the reason it gave.** ADR 063
+argued that gradient boosting dominates tabular data at this scale.
+TabArena is real evidence against that as a general claim and ADR 169 was
+right to contest it. What settles it *here* is the deployment target.
+
+**And the architectural idea that did move the result came from the
+opposite direction** — not a larger pretrained model, but a smaller one
+that shares a single trunk across ADR 113's four labels (ADR 170).
