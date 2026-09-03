@@ -165,8 +165,9 @@ export interface TickerEvent {
   /**
    * The `$10k` compounding replay (`lib/equity.ts`), evaluated as of this
    * event -- `null` for any event the replay never took: outside the
-   * ~500-session lookback, not a confluence, not a cluster head, not yet
-   * backtested, or skipped because an earlier trade was still held.
+   * ~500-session lookback, not a confluence, not yet backtested, or
+   * skipped because an earlier trade was still held (`compoundEquity`'s
+   * own overlap rule, not `is_cluster_head` -- see `EQUITY_TRADES_SQL`).
    */
   equity10k: number | null;
   /** The poller recorded this fire and `cscan backtest` has not reached it
@@ -578,24 +579,34 @@ const EVENTS_COUNT_SQL = `
 
 /**
  * Every confluence trade the `$10k` replay (`lib/equity.ts`) is allowed to
- * take, for one ticker: a resolved cluster head within the lookback window.
+ * take, for one ticker: every resolved confluence event within the
+ * lookback window -- deduplication is `compoundEquity`'s job, not this
+ * query's.
+ *
+ * **Deliberately does not filter on `is_cluster_head`.** That flag comes
+ * from `research/candidates.py::tag_clusters`, which clusters on
+ * `(ticker, side)` alone (DESIGN §5.3, ADR 056) -- a `bb_lower_touch` then
+ * a `confluence_low` on the same ticker/side chain into one cluster, and
+ * the confluence event can inherit `is_cluster_head = false` for a reason
+ * that has nothing to do with confluences. Filtering on it here silently
+ * dropped a real confluence trade the account was trading (user's finding,
+ * 2026-09-02). `compoundEquity`'s own overlap rule already deduplicates,
+ * on each trade's actual resolved `entry_date`/`exit_date` rather than the
+ * cluster job's fixed `max_hold_days` gap from an unrelated head -- so it
+ * is both the more precise mechanism for this replay and the one already
+ * scoped to confluence, since every candidate here already is one.
  *
  * **Ascending and unpaginated, unlike `EVENTS_SQL`.** The display table
  * pages newest-first in chunks of `EVENT_PAGE`, but the replay has to walk
  * the *whole* window in order to know the balance at any one row -- a
  * later page cannot be compounded without the earlier ones. "A few hundred
  * rows" for one ticker (`EVENTS_SQL`'s own comment) is cheap to read whole.
- *
- * `is_cluster_head IS NOT FALSE` keeps NULL (poller wrote it, clustering
- * has not run) and excludes only a confirmed repeat -- a cluster's second
- * and third days are the same underlying move, not a second trade to take.
  */
 const EQUITY_TRADES_SQL = `
   SELECT id, entry_date::date AS entry_date, exit_date::date AS exit_date, net_ret
     FROM v_ticker_events
    WHERE ticker = $1
      AND signal_types_all && ARRAY['confluence_high','confluence_low']
-     AND is_cluster_head IS NOT FALSE
      AND net_ret IS NOT NULL
      AND entry_date IS NOT NULL
      AND exit_date IS NOT NULL

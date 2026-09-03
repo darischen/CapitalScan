@@ -16,6 +16,136 @@ deleting the entry loses nothing.
 
 ## Open
 
+## Phase 6 refinement
+
+**Where it stands, 2026-09-02.** Check 5 passes (17/20 heads beat the
+global baseline out of sample) and the kill criterion does not fire.
+Coverage fails 6 of 20 and nothing is promoted. But the pass is not a
+directional edge: `terminal_h*_q50` — the heads that predict *where price
+ends up* — **lose to a constant** (−0.44%, −0.55%), while `peak_h*_q50` —
+*how far it wandered* — gain 10.4% and 10.7%. CV rounds say the same
+independently: 20-41 for the directional heads, 167-218 for the dispersion
+ones.
+
+This section is what is worth trying before Phase 6 closes, ordered by
+evidence rather than by appeal. **Everything already ruled out is listed
+too**, so the dead ends are not re-walked.
+
+---
+
+### 1. Compare against a volatility-normalised baseline — do this first
+
+**Not an improvement to the model: a check on whether its wins are real.**
+
+The measured regime shift between train (2010-2021) and validate
+(2022-2023) is a volatility increase: `fwd_ret_5d` sd +12%,
+`peak_ret_5d` q75 +28%, `peak_ret_10d` q95 +19%. The peak family's 10-20%
+gains are exactly what a model would show if it were doing crude
+volatility scaling and nothing else.
+
+ADR 167's baseline is a **raw** constant, so it cannot scale. Rebuild it as
+`quantile(R/sigma) * sigma_now` — a constant in scale-free units,
+rescaled at prediction time — and re-run check 5 against that.
+
+**If the peak heads stop beating it, their 10-20% was volatility scaling,
+and the "dispersion not direction" reading becomes "nothing at all".** That
+is the single most informative test available, it needs no model change,
+and it can only lower the reported result.
+
+Cost: hours. It is the same shape as `grouped_baseline`.
+
+### 2. Volatility-normalised targets
+
+**Measured at the constant-baseline level and it works.** Coverage error on
+validate, raw target against `R/sigma` rescaled:
+
+| | raw | vol-normalised |
+|---|---|---|
+| `fwd_ret_5d` q75 | −0.0244 | **−0.0007** |
+| `peak_ret_5d` q75 | −0.1583 | **−0.0828** |
+| `peak_ret_10d` q75 | −0.1598 | **−0.0779** |
+| `peak_ret_10d` q50 | −0.1631 | **−0.1106** |
+
+Better on 12 of 15 τ. Roughly halves the regime shift.
+
+**Why the model cannot already do this.** `rv_pct_252d` is a feature, but a
+tree **splits** on volatility, it does not **multiply** by it. Rescaling a
+fan is a multiplicative operation outside the hypothesis class, which is
+why 21 features and 200 boosting rounds do not recover what one division
+achieves.
+
+**It does not fully close the gap** — `peak_h10_q50` is still −0.111 — so
+residual drift remains. Honest framing: this fixes the scale half of the
+shift, not the level half.
+
+Needs an ADR: it redefines what the heads predict, and §7.4's fan is then
+in scale-free units until rescaled.
+
+### 3. Breach depth as a feature (ADR 069)
+
+The one feature the design already names as deferred, and the one thing
+that plausibly carries *direction* rather than dispersion: how far past the
+band the close sat, rather than merely that it crossed. Every current
+feature is either a level, a width, or a count.
+
+Untested, and worth testing precisely because the directional heads are the
+ones with nothing to learn — CV stops them at 20-41 rounds, which is the
+model saying the current features contain no directional signal.
+
+### 4. Separate the two questions the fan is answering
+
+The terminal and peak families are fitted identically and behave
+oppositely. A two-stage form — predict dispersion, then predict direction
+*conditional on* it — matches what the data says is there. Speculative, no
+measurement supports it yet, and it is a larger change than 1-3.
+
+---
+
+### Ruled out, with the measurement
+
+- **Quantile crossing.** `sort_quantiles` had no production caller and is
+  now wired (DESIGN §7.4 requires it), but the measured crossing rate is
+  **0.0000%** and the sorted gate run is byte-identical. Real fix, no
+  effect on the result.
+- **Loosening regularisation.** Tested on the worst head: `lambda_l2` 5→0,
+  leaves 15→63, no depth cap made coverage **worse** (+0.0954 → +0.1054)
+  while raising prediction dispersion. The bias is in the level, not the
+  spread.
+- **Recalibrating the quantile heads on validate.** DESIGN §7.6 is
+  explicit that quantile heads are *checked* by coverage rather than
+  recalibrated, and fitting a correction on the split the gate scores would
+  make the gate circular. Would need a design change, and the honest
+  version fits on train instead — which is what item 2 does.
+- **Mixed populations.** Checked: `build_training_frame` filters
+  `entry_kind = 'next_open' AND in_trade`, so the frame is one population.
+  Purge and embargo in `_fold_masks` are both correct — purge reaches back
+  by `horizon_days`, embargo forward by `DEFAULT_EMBARGO_DAYS`.
+- **`cluster_size` as a feature.** It leaks; the label window and the
+  cluster window overlap. RESULTS 2026-09-02.
+
+---
+
+### What none of this may fix, and the standard that holds
+
+ADR 112 found no cell surviving FDR. Check 5 found no *directional* head
+beating a constant. Two independent tests, same answer, and items 1-4 are
+attempts to find something the study has twice failed to find. Item 1 can
+only make the result worse, which is why it goes first.
+
+**The holdout (2024-2026, 82,957 events) stays untouched.** It is spent
+once, at the end, and published whatever it says. Nothing in this section
+may read it.
+
+**Nothing here is promoted without passing the gate.** ADR 067's failure
+path leaves the incumbent serving; there is no incumbent, so nothing
+serves. `handlers/predict.py` returns `NotFound` deliberately, and
+`v_screen_live` already `LEFT JOIN`s `predictions` — so writing that table
+puts model output on the site. A forward log (DESIGN §7.8) that records
+without displaying needs the view changed first, which is a migration and a
+decision.
+
+---
+
 ### Depositary listings have no pre-2018 history — **investigated 2026-09-02: the proposed fix would fabricate numbers**
 
 Not a wrong number — a missing one, and the distinction matters when
