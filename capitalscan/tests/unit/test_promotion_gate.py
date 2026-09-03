@@ -30,6 +30,7 @@ def _evaluation(**overrides) -> promotion.HeadEvaluation:
         "baseline_global": 2.0,
         "baseline_sector": 1.5,
         "baseline_ticker": 1.8,
+        "baseline_scaled": 1.6,
         "coverage": 0.50,
     }
     return promotion.HeadEvaluation(**{**base, **overrides})
@@ -313,3 +314,58 @@ class TestQuantileCrossingIsRepaired:
 
         every = {0.25: np.array([0.9]), 0.5: np.array([0.5]), 0.75: np.array([0.1])}
         assert promotion.crossing_rate(every) == 1.0
+
+
+class TestTheVolatilityScaledBaseline:
+    """The bar that separates volatility scaling from skill (item 1 of the
+    Phase 6 refinement plan).
+
+    The measured train->validate shift is a volatility increase --
+    `fwd_ret_5d` sd +12%, `peak_ret_5d` q75 +28%. ADR 167's raw constant
+    cannot follow it, so *any* predictor that scales with volatility beats
+    it whether or not it knows anything about direction. The peak family's
+    10-20% gains are exactly that shape.
+    """
+
+    def test_it_is_reported_but_does_not_gate(self) -> None:
+        """ADR 167 fixed what the kill criterion reads. Widening the gate
+        after seeing the numbers would be choosing the bar to suit the
+        result."""
+        report = promotion.GateReport(
+            evaluations=(_evaluation(model_loss=1.0, baseline_global=2.0, baseline_scaled=0.5),)
+        )
+        assert report.check5_passes
+        assert not report.evaluations[0].beats_scaled
+
+    def test_it_rescales_per_row(self) -> None:
+        """A constant in scale-free units times each row's own sigma."""
+        train_frame = pd.DataFrame({"y": [1.0, 2.0, 3.0, 4.0], "rv_pct_252d": [1.0, 1.0, 1.0, 1.0]})
+        val_frame = pd.DataFrame({"rv_pct_252d": [1.0, 2.0]})
+
+        out = promotion.scaled_baseline(train_frame, val_frame, "y", 0.5)
+
+        assert out[1] == pytest.approx(2 * out[0]), "double the scale, double the quantile"
+
+    def test_a_missing_scale_falls_back_rather_than_dropping(self) -> None:
+        """Both baselines must be measured on the same rows. A NaN here
+        would silently drop rows from one side of the comparison -- the
+        ADR 165 lesson about which rows are averaged."""
+        train_frame = pd.DataFrame({"y": [1.0, 2.0, 3.0], "rv_pct_252d": [1.0, 1.0, 1.0]})
+        val_frame = pd.DataFrame({"rv_pct_252d": [1.0, float("nan"), 0.0, -1.0]})
+
+        out = promotion.scaled_baseline(train_frame, val_frame, "y", 0.5)
+
+        assert len(out) == 4
+        assert not np.isnan(out).any()
+
+    def test_it_reads_the_scale_the_model_already_has(self) -> None:
+        """Giving the baseline a feature the model lacks would make it an
+        unfair bar. `rv_pct_252d` is in FEATURE_COLS."""
+        from capitalscan.research import features
+
+        assert promotion.SCALE_COL in features.FEATURE_COLS
+
+    def test_the_baseline_never_reads_validate_labels(self) -> None:
+        src = inspect.getsource(promotion.scaled_baseline)
+        assert "train_frame[label]" in src
+        assert "validate_frame[label]" not in src

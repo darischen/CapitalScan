@@ -68,12 +68,26 @@ class HeadEvaluation:
     baseline_global: float
     baseline_sector: float
     baseline_ticker: float
+    baseline_scaled: float
     coverage: float
 
     @property
     def beats_global(self) -> bool:
         """Check 5. The only comparison the kill criterion may read."""
         return self.model_loss < self.baseline_global
+
+    @property
+    def beats_scaled(self) -> bool:
+        """The bar that tells volatility scaling from skill.
+
+        A raw constant cannot follow a regime whose volatility rose 12-28%,
+        so beating it is compatible with the model doing nothing but crude
+        rescaling. This asks whether it beats a constant that *can* rescale.
+        Diagnostic, not gating -- ADR 167 fixed what the kill criterion
+        reads, and widening it after seeing the numbers would be choosing
+        the bar to suit the result.
+        """
+        return self.model_loss < self.baseline_scaled
 
     @property
     def beats_sector(self) -> bool:
@@ -134,6 +148,7 @@ class GateReport:
                 "improve_pct": round(e.improvement * 100, 2),
                 "beats_global": e.beats_global,
                 "beats_sector": e.beats_sector,
+                "beats_scaled": e.beats_scaled,
                 "coverage": round(e.coverage, 4),
                 "cov_err": round(e.coverage_error, 4),
                 "cov_ok": e.coverage_ok,
@@ -217,6 +232,52 @@ def _fit_and_predict(
     return np.asarray(booster.predict(_matrix(validate_frame)), dtype=float), int(rounds)
 
 
+#: Feature carrying the volatility scale, known at entry. Used to build a
+#: baseline that can *rescale*, which a tree cannot: it splits on
+#: `rv_pct_252d`, it does not multiply by it.
+SCALE_COL = "rv_pct_252d"
+
+
+def scaled_baseline(
+    train_frame: pd.DataFrame,
+    validate_frame: pd.DataFrame,
+    label: str,
+    tau: float,
+) -> np.ndarray:
+    """A constant in scale-free units, rescaled per validate row.
+
+    **Why check 5 needs this and ADR 167's raw constant is not enough.**
+    The measured shift from train (2010-2021) to validate (2022-2023) is a
+    volatility increase -- `fwd_ret_5d` sd +12%, `peak_ret_5d` q75 +28%. A
+    raw constant cannot follow it, so *any* predictor that scales with
+    volatility beats it, whether or not it knows anything about direction.
+    The peak family's 10-20% gains are exactly that shape.
+
+    This baseline removes the excuse: `quantile(R / sigma)` fitted on
+    train, multiplied by each validate row's own `sigma`. It is still
+    featureless in every sense that matters -- one number, plus a scale the
+    model already has as an input.
+
+    Rows with a missing or non-positive scale fall back to the raw
+    constant rather than being dropped, so both baselines are measured on
+    the same rows (the ADR 165 lesson: which rows are averaged is where the
+    errors live).
+    """
+    y_tr = pd.to_numeric(train_frame[label], errors="coerce")
+    s_tr = pd.to_numeric(train_frame[SCALE_COL], errors="coerce")
+    ok = y_tr.notna() & s_tr.notna() & (s_tr > 0)
+
+    raw_constant = pinball.unconditional_quantile(list(y_tr.dropna()), tau)
+    if not ok.any():
+        return np.full(len(validate_frame), raw_constant, dtype=float)
+
+    z_constant = pinball.unconditional_quantile(list((y_tr[ok] / s_tr[ok])), tau)
+
+    s_va = pd.to_numeric(validate_frame[SCALE_COL], errors="coerce").to_numpy(float)
+    usable = ~np.isnan(s_va) & (s_va > 0)
+    return np.where(usable, z_constant * np.nan_to_num(s_va), raw_constant)
+
+
 def evaluate_family(
     train_frame: pd.DataFrame,
     validate_frame: pd.DataFrame,
@@ -286,6 +347,12 @@ def evaluate_family(
             tau,
             weights=w,
         )
+        b_scaled = pinball.pinball_loss(
+            scaled_baseline(train_frame, validate_frame, label, tau)[va_ok],
+            y,
+            tau,
+            weights=w,
+        )
 
         # Coverage: the weighted fraction of realised returns at or below
         # the predicted quantile (DESIGN §7.6). Cluster-weighted for the
@@ -307,6 +374,7 @@ def evaluate_family(
                 baseline_global=b_global,
                 baseline_sector=b_sector,
                 baseline_ticker=b_ticker,
+                baseline_scaled=b_scaled,
                 coverage=coverage,
             )
         )
