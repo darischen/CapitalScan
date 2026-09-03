@@ -211,6 +211,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 167 | Check 5's baseline is global, not per-ticker-year | **Decided 2026-09-02.** Amends ADR 113. Ticker-year overlap across a temporal split is zero, and the faithful reconstruction would be an oracle; per-sector and per-ticker reported beside it, gating nothing |
 | 168 | `watch_reason` gains `near_trade`: `crit_rel_return` alone barring `in_trade` | **Decided 2026-09-02.** Amends ADR 149. `crit_mcap`, `crit_above_sma200`, `crit_sma200_slope` all true, `crit_rel_return` not true (`False` or `None`) — the same "one named failure" shape as `pullback`. No `config_hash` move; existing rows unbackfilled until the next `cscan universe --quarter` |
 | 169 | TabFM evaluated against ADR 063's LightGBM baseline, gated on running on `wivie` | **Proposed 2026-09-03, not started.** Google's zero-shot tabular transformer (released 2026-06-30) directly contests ADR 063's "gradient boosting dominates tabular data at this scale" — TabArena beats tuned LightGBM/XGBoost across 700-150k rows and supports native quantile output. Deployment target is `wivie` (measured: i5-7200U, 4 threads, 7.6GB RAM, no discrete GPU), against TabFM's own stated ~40k-row/24GB-GPU ceiling. Nothing measured yet; salvaging a piece (its representation, not the whole model) is on the table alongside full adoption |
+| 170 | The distributional model is multi-task: one trunk, four heads, CRPS | **Measured 2026-09-03, not promoted.** One shared trunk, four softmax-over-bins heads, summed CRPS. Beats ADR 113's twenty independent LightGBM heads on 16/20 (14 beyond seed spread) and lifts coverage 14/20 -> 17/20; **both directional q50 heads beat a constant for the first time**. Gate still fails (coverage 17/20, not 20/20), so nothing is promoted. Adds `core/distributions.py` and `research/neural.py`; torch is an optional extra |
 
 ---
 
@@ -7881,3 +7882,126 @@ inference on `wivie` against the actual ~40k-row training set (or a
 representative subsample if the full set does not fit), and record whether
 it completes, and at what memory and wall-clock cost, before any of items
 2-4 are worth spending time on.
+
+## 170. The distributional model is multi-task: one trunk, four heads, CRPS
+
+**Status.** Measured 2026-09-03 on validate. **Not promoted.** Adds
+`core/distributions.py` and `research/neural.py`; amends nothing. No
+`config_hash` move. ADR 113's twenty LightGBM heads stay the incumbent
+until the gate passes, which it does not.
+
+**Context.**
+
+ADR 113 fits twenty independent boosters: five $\tau$ by two horizons, for
+the terminal and peak families. Three sessions of results agree on where
+that fails. ADR 112 found no cell surviving FDR correction. Check 5 found
+the *dispersion* heads beating a constant by 10-20% and the *directional*
+heads — `terminal_h5_q50` and `terminal_h10_q50` — **losing** to one, at
+−0.43% and −0.64%. Four refinements in Session 23 (volatility-scaled
+baseline, volatility-normalised targets, breach depth, two-stage
+dispersion-then-direction) moved the directional heads by less than a tenth
+of a percent between them.
+
+**What every one of those attempts had in common is the thing this ADR
+changes.** They all kept twenty independent fits and looked for a better
+feature, a better target scaling, or a better baseline. But
+`fwd_ret_5d`, `fwd_ret_10d`, `peak_ret_5d` and `peak_ret_10d` are four
+views of the *same price path after the same signal*. Twenty independent
+fits discard that relationship twenty times, and the effective sample
+after cluster weighting is near 8,000 — thin enough that discarding
+structure is expensive.
+
+**Decision.**
+
+Fit one shared trunk with four distributional heads, jointly, on summed
+CRPS. Each head emits a softmax over 32 equal-width return bins, so the
+fitted object is a **distribution** rather than five points of one.
+
+Three consequences follow from that shape, and each is a reason on its own:
+
+1. **Multi-task learning regularises the representation.** The trunk must
+   explain four outcomes with one set of features instead of memorising
+   one. The arrangement is favourable rather than incidental: the peak
+   heads work and the terminal q50 heads do not, so **the tasks that work
+   supervise the representation the failing task has to use.**
+
+2. **The fan cannot cross.** DESIGN §7.4 sorts because twenty independent
+   heads carry no monotonicity constraint. A fan read off one CDF is
+   monotone by construction, so `sort_quantiles` has nothing to repair.
+
+3. **`Prediction`'s other fields become reachable.**
+   `handlers.types.Prediction` has always asked for `p_touch_2/3/5/10` and
+   `p_adverse_3/5` beside `q05..q95`. A quantile fan gives values at fixed
+   probabilities; those fields need probabilities at fixed values.
+   `distributions.exceedance` reads them off a predicted CDF. The
+   twenty-head architecture cannot produce them without fitting more heads.
+
+**Measured, on validate, against the incumbent.** Three seeds, ensembled by
+averaging pmfs; the same purged walk-forward ladder for selection, the same
+median-across-folds protocol `promotion._fit_and_predict` uses for
+LightGBM's rounds; the same baselines and cluster weighting, scored by the
+same `promotion.score_family`.
+
+| | incumbent | multi-task |
+|---|---|---|
+| beats the global constant | 18/20 | 18/20 |
+| beats the incumbent | — | 16/20, **14 beyond the seed spread** |
+| coverage within 5 points | 14/20 | **17/20** |
+| `terminal_h5_q50` | −0.43% | **+0.43%** |
+| `terminal_h10_q50` | −0.64% | **+0.78%** |
+| `peak_h10_q95` | 18.60% | **23.12%** |
+
+**The directional heads beat a constant for the first time in Phase 6.**
+Both, and both by more than the seed spread. Where the model loses is the
+two `peak_*_q05` heads (−0.98%, −0.53%), which were the incumbent's weakest
+too (+0.05%, +0.27%) — the extreme lower tail of a peak distribution is
+close to a constant by construction.
+
+**Three methodology errors were found and corrected by measurement**, and
+they are recorded because each produced a plausible wrong answer first:
+
+- **Equal-mass CRPS bins.** Reusing the quantile grid that is right for
+  reading a fan put **71.5% of the integral's $dz$ in two outer bins**. The
+  model matched the marginal tails in one pass and never improved.
+- **Epoch-granular early stopping.** One pass over 158k rows at batch 1024
+  is 154 steps, so the optimum sat *inside* the first epoch and the
+  selector could not see there. Every configuration reported its best at
+  epoch 1.
+- **A single inner split for selection.** Train's last year is 2021, which
+  is calm; validate is 2022-2023, which is not. Selecting there kept
+  fitting until the fan was too narrow for the later regime — **−5.9%** on
+  `terminal_h5_q05` where a shorter fit scored +1.6%. Copying LightGBM's
+  model but not its selection protocol compares two procedures, not two
+  models.
+
+**Consequences.**
+
+**Nothing is promoted, and the gate is the reason, not caution.** Coverage
+is 17/20, not 20/20, so DESIGN §7.7 check 3 fails. ADR 067's failure path
+leaves the incumbent serving. `handlers/predict.py` still returns
+`NotFound`, `predictions` stays empty, and `v_screen_live` — which already
+`LEFT JOIN`s that table — shows nothing.
+
+**Selecting among challengers on the split the gate scores is itself
+fitting.** Five architectures were compared on validate and this one won.
+That comparison cost something, and only the holdout can price it. **The
+holdout (2024-2026, 82,957 events) stays untouched** and is spent once.
+
+**torch is an optional extra** (`uv sync --extra neural`). All the
+arithmetic — grids, CDF inversion, exceedance, CRPS — lives in
+`core/distributions.py` and imports only numpy, so it is covered by the
+90% `core/` gate and CI needs no GPU stack. `research/neural.py` imports
+torch lazily.
+
+**Invariant 4 is respected, not bent.** Two features carry NaNs a network
+cannot consume. They are mean-imputed **with a companion indicator
+column**, so the fact of missingness survives into the matrix. The
+invariant forbids inventing a value and then forgetting you invented it.
+
+**What would revisit this.** Coverage reaching 20/20 — the three failures
+are `terminal_h5_q25`, `terminal_h10_q25` and `terminal_h10_q50`, all
+over-covering in the same direction, which is the residual regime shift
+Session 23 already found irreducible from train data. If a fourth auxiliary
+task or a longer horizon closes them, the gate becomes reachable and the
+promotion question becomes real. Until then this is a recorded result and a
+research module, not a model.

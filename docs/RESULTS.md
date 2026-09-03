@@ -5923,3 +5923,152 @@ That is the honest close. ADR 033's deliverable was a rigorous engine and
 an honest result, and one more honest result costs one phase — which is the
 argument ADR 113 used to build Phase 6 at all. It was built, it was gated,
 and it says the same thing the cell grid said.
+
+---
+
+## 2026-09-03 — Multi-task beats twenty independent heads; the directional heads finally clear a constant
+
+Session 23 closed with three independent findings agreeing that this
+study's hypothesis was dead: ADR 112 (no cell survives FDR), check 5 (no
+directional head beats a constant), and four refinements that moved
+nothing. All four of those refinements kept **twenty independent fits** and
+looked for a better feature, target scaling or baseline.
+
+Changing the architecture instead moves the result.
+
+### What changed
+
+One shared trunk, four softmax-over-32-bins heads, trained jointly on
+summed CRPS. `fwd_ret_5d`, `fwd_ret_10d`, `peak_ret_5d` and `peak_ret_10d`
+are four views of the same price path after the same signal; ADR 113's
+twenty boosters discard that twenty times. ADR 170 has the reasoning.
+
+### The result
+
+Three seeds, ensembled by averaging pmfs. Same purged walk-forward ladder,
+same median-across-folds step selection LightGBM gets for its rounds, same
+baselines, same cluster weighting, scored by the same
+`promotion.score_family`.
+
+| | incumbent | multi-task |
+|---|---|---|
+| beats the global constant | 18/20 | 18/20 |
+| beats the incumbent | — | 16/20, **14 beyond the seed spread** |
+| coverage within 5 points | 14/20 | **17/20** |
+
+Per head, improvement over the global constant (%), and the seed spread
+that any claim has to clear:
+
+| head | incumbent | multi-task | delta | spread | beyond noise |
+|---|---|---|---|---|---|
+| `terminal_h5_q05` | 4.49 | 6.54 | +2.05 | 1.07 | yes |
+| `terminal_h5_q25` | 1.28 | 2.27 | +0.99 | 1.18 | no |
+| **`terminal_h5_q50`** | **−0.43** | **+0.43** | **+0.86** | 0.50 | **yes** |
+| `terminal_h5_q75` | 2.57 | 3.55 | +0.98 | 0.29 | yes |
+| `terminal_h5_q95` | 12.02 | 11.81 | −0.21 | 0.69 | no |
+| `terminal_h10_q05` | 4.10 | 5.45 | +1.35 | 1.57 | no |
+| `terminal_h10_q25` | 0.41 | 2.54 | +2.13 | 1.00 | yes |
+| **`terminal_h10_q50`** | **−0.64** | **+0.78** | **+1.42** | 0.85 | **yes** |
+| `terminal_h10_q75` | 1.46 | 3.41 | +1.95 | 0.30 | yes |
+| `terminal_h10_q95` | 10.90 | 10.67 | −0.23 | 0.35 | no |
+| `peak_h5_q05` | 0.05 | −0.98 | −1.03 | 0.29 | yes |
+| `peak_h5_q25` | 4.08 | 4.34 | +0.26 | 0.44 | no |
+| `peak_h5_q50` | 10.28 | 11.01 | +0.73 | 0.73 | yes |
+| `peak_h5_q75` | 16.03 | 17.54 | +1.51 | 0.93 | yes |
+| `peak_h5_q95` | 19.45 | 22.97 | +3.52 | 0.79 | yes |
+| `peak_h10_q05` | 0.27 | −0.53 | −0.80 | 0.25 | yes |
+| `peak_h10_q25` | 4.90 | 5.49 | +0.59 | 0.61 | no |
+| `peak_h10_q50` | 10.76 | 11.91 | +1.15 | 0.88 | yes |
+| `peak_h10_q75` | 15.95 | 17.99 | +2.04 | 0.95 | yes |
+| `peak_h10_q95` | 18.60 | 23.12 | +4.52 | 1.15 | yes |
+
+**Both directional heads beat a constant, and both beyond the seed
+spread.** That has not happened before in Phase 6.
+
+**Where it loses is where the incumbent barely won.** The two `peak_*_q05`
+heads go slightly negative (−0.98, −0.53) against an incumbent that scored
++0.05 and +0.27. The extreme lower tail of a peak-return distribution sits
+close to a constant by construction, so neither model has anything there.
+
+**Coverage is the more useful gain.** 14/20 to 17/20, and the three
+remaining failures — `terminal_h5_q25`, `terminal_h10_q25`,
+`terminal_h10_q50` — all over-cover in the same direction, which is the
+residual regime shift the 2026-09-02 entry already found irreducible from
+train data.
+
+### Seed sensitivity is a result in its own right
+
+Two other neural architectures were run alongside, three seeds each. The
+spread across seeds differs by an order of magnitude and the cause is the
+loss, not the model:
+
+| model | loss | mean per-head seed spread | worst head |
+|---|---|---|---|
+| `hist` (softmax over bins) | CRPS | **0.59** | 1.44 |
+| `multitask` | summed CRPS | 0.74 | 1.57 |
+| `sqr` (five monotone outputs) | joint pinball | **2.00** | **6.71** |
+
+(All twenty heads. An earlier read of `terminal_h5` alone showed a wider
+gap — 0.28 against 2.62 — which is itself worth noting: four heads are not
+twenty, and the summary that matters is the one over everything measured.)
+
+Pinball at five $\tau$ takes gradient from five thin slices of the
+distribution, so the tails are shaped by relatively few effective
+observations. CRPS scores the whole CDF against every observation. On a
+population whose effective sample is near 8,000 that conditioning
+difference dominates — and a single unseeded `sqr` run would have reported
+a 6.7-point swing as a finding.
+
+This is the same lesson as 2026-09-02's seeding fix, one level up: there,
+an unseeded LightGBM A/B gave 17/20 and 18/20 from identical code. Here the
+architecture choice itself changes how large that noise is.
+
+### Three methodology errors, each of which produced a plausible wrong answer
+
+Recorded because none of them raised an exception, and two were caught only
+by looking at a number that seemed off.
+
+**Equal-mass CRPS bins put 71.5% of the integral in two bins.** Reusing the
+quantile grid that is right for *reading* a fan is wrong for *integrating*
+one. Returns are concentrated, so equal-mass edges are ~0.003 wide inside
+and ~0.18 at the ends. The symptom: the model reached its best inner score
+at **epoch 1** and never improved, having matched the marginal tails
+immediately with no gradient pointing anywhere else. Equal-width bins fixed
+it.
+
+**Epoch-granular early stopping cannot see inside an epoch.** One pass over
+158k rows at batch 1024 is 154 optimiser steps. Every configuration
+reported its best at epoch 1 — not because nothing was learned, but
+because the optimum sat inside the first pass. A patience whose unit is
+coarser than the thing it watches always returns the first value.
+
+**Selecting on one inner split selected badly, and the direction was
+predictable in hindsight.** Train's last year is 2021, which is calm;
+validate is 2022-2023, which is not. Stopping when 2021 fits well means
+fitting until the fan is too narrow for the later regime: the selected
+model scored **−5.9%** on `terminal_h5_q05` where a shorter fit scored
++1.6%. `promotion._fit_and_predict` already had the right protocol — the
+median across the whole walk-forward ladder. Copying LightGBM's model but
+not its selection procedure compares two procedures, not two models.
+
+### What a distribution buys that a fan does not
+
+`handlers.types.Prediction` has always asked for `p_touch_2/3/5/10` and
+`p_adverse_3/5` beside `q05..q95`, and the twenty-head architecture cannot
+produce them: a fan gives values at fixed probabilities, those fields need
+probabilities at fixed values. Read off a predicted CDF they are one
+interpolation. Measured on five validate events, `P(peak_5d > 3%)` came
+back as 0.41, 0.31, 0.64, 0.62, 0.73 — a real conditional probability that
+varies across events, from a model that was never fitted for it.
+
+### What this does not do
+
+**It does not pass the gate.** Coverage is 17/20, not 20/20, so DESIGN §7.7
+check 3 fails and ADR 067's failure path leaves the incumbent serving.
+Nothing is promoted, `handlers/predict.py` still returns `NotFound`, and
+`predictions` stays empty.
+
+**Five architectures were compared on the split the gate scores, and this
+one won.** That selection is itself a form of fitting and it cost
+something. Only the holdout can price it, and the holdout (2024-2026,
+82,957 events) stays untouched.
