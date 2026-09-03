@@ -210,7 +210,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 166 | Cluster-robust variance replaces the mean-size `n_eff` correction | **Proposed 2026-09-02, not started.** Two-way clustering by date and `cluster_id`; `n_eff` becomes derived. Validate against current intervals before migrating. After Phase 6 and after the move |
 | 167 | Check 5's baseline is global, not per-ticker-year | **Decided 2026-09-02.** Amends ADR 113. Ticker-year overlap across a temporal split is zero, and the faithful reconstruction would be an oracle; per-sector and per-ticker reported beside it, gating nothing |
 | 168 | `watch_reason` gains `near_trade`: `crit_rel_return` alone barring `in_trade` | **Decided 2026-09-02.** Amends ADR 149. `crit_mcap`, `crit_above_sma200`, `crit_sma200_slope` all true, `crit_rel_return` not true (`False` or `None`) — the same "one named failure" shape as `pullback`. No `config_hash` move; existing rows unbackfilled until the next `cscan universe --quarter` |
-| 169 | TabFM evaluated against ADR 063's LightGBM baseline, gated on running on `wivie` | **Proposed 2026-09-03, not started.** Google's zero-shot tabular transformer (released 2026-06-30) directly contests ADR 063's "gradient boosting dominates tabular data at this scale" — TabArena beats tuned LightGBM/XGBoost across 700-150k rows and supports native quantile output. Deployment target is `wivie` (measured: i5-7200U, 4 threads, 7.6GB RAM, no discrete GPU), against TabFM's own stated ~40k-row/24GB-GPU ceiling. Nothing measured yet; salvaging a piece (its representation, not the whole model) is on the table alongside full adoption |
+| 169 | TabFM evaluated against ADR 063's LightGBM baseline, gated on running on `wivie` | **Measured 2026-09-03. The gate fails.** On `wivie`, a 250-row context takes **231 s for one row** of inference at 7.04GB RSS on a 7.6GB box; ADR 170's model scores all 34,195 validate events in 91 ms on a CPU. On the workstation GPU it runs but loses to LightGBM. Two claims in the original text were wrong and are corrected below. Originally proposed: Google's zero-shot tabular transformer (released 2026-06-30) directly contests ADR 063's "gradient boosting dominates tabular data at this scale" — TabArena beats tuned LightGBM/XGBoost across 700-150k rows and supports native quantile output. Deployment target is `wivie` (measured: i5-7200U, 4 threads, 7.6GB RAM, no discrete GPU), against TabFM's own stated ~40k-row/24GB-GPU ceiling. Nothing measured yet; salvaging a piece (its representation, not the whole model) is on the table alongside full adoption |
 | 170 | The distributional model is multi-task: one trunk, four heads, CRPS | **Measured 2026-09-03, not promoted.** One shared trunk, four softmax-over-bins heads, summed CRPS. Beats ADR 113's twenty independent LightGBM heads on 16/20 (14 beyond seed spread) and lifts coverage 14/20 -> 17/20; **both directional q50 heads beat a constant for the first time**. Gate still fails (coverage 17/20, not 20/20), so nothing is promoted. Adds `core/distributions.py` and `research/neural.py`; torch is an optional extra |
 
 ---
@@ -7882,6 +7882,70 @@ inference on `wivie` against the actual ~40k-row training set (or a
 representative subsample if the full set does not fit), and record whether
 it completes, and at what memory and wall-clock cost, before any of items
 2-4 are worth spending time on.
+
+
+
+### Addendum, 2026-09-03: measured, and two of the claims above were wrong
+
+**Item 1 was the gate and item 1 fails.**
+
+`wivie`, CPU only, PyTorch 2.14.0+cpu, 4 threads:
+
+| context rows | fit | **one row** | 64 rows | peak RSS |
+|---|---|---|---|---|
+| model load alone | 198 s | — | — | **7.04 GB** |
+| 250 | 0.63 s | **231 s** | 286 s | 7.04 GB |
+
+The weights alone are 7.04 GB resident on a 7.6 GB machine, and the box was
+2.5 GB into swap during the run. A 250-row context is **0.16%** of the
+157,938 training rows; the smallest context that was competitive on the
+workstation was 1,000, and even that lost badly.
+
+For scale, on the same class of CPU, ADR 170's multi-task model scores
+**all 34,195 validate events in 91 ms** — against 231 s for TabFM to score
+*one*. That is not a tuning gap.
+
+**ADR 063's conclusion survives, but not for the reason it gave.** ADR 063
+argued "gradient boosting dominates tabular data at this scale". TabArena
+is real evidence against that as a general claim, and this ADR was right to
+contest it. What actually settles the question here is the deployment
+target: a 1.64-billion-parameter model reading its whole training set as
+context on every forward pass cannot run on a 2-core laptop, and `wivie` is
+the research machine after the cutover.
+
+**On the workstation GPU, where it does run, it also loses.** Measured on
+validate against the same baselines (RESULTS 2026-09-03), at a 1,000-row
+context TabFM scored −2.12% / +1.30% / −1.39% / +2.47% / −8.14% across
+`terminal_h5`'s five τ, against LightGBM's +4.49 / +1.28 / −0.43 / +2.57 /
++12.02. So the hardware constraint is not the only thing standing in the
+way.
+
+**Two factual errors in the text above, corrected.**
+
+1. **"supports native quantile output" is wrong.** That is `TabPFNRegressor`,
+   which TabFM descends from. `TabFMRegressor` returns **point predictions
+   only** — no quantiles, no distribution. A point is not a fan, so the
+   quantile heads cannot be replaced by it at all. What made TabFM usable
+   here was `TabFMClassifier` over binned returns, read as a discrete CDF,
+   which is a workaround this ADR did not anticipate and which is capped at
+   **10 classes by a hard architectural limit**.
+
+2. **"~40,000 rows on a 24GB GPU" understates the real constraint.** The
+   published figure is about the GPU path. There is no discrete GPU on
+   `wivie` at all, so the number that matters is the CPU one, which nobody
+   had measured. Now measured: unusable at 250 rows.
+
+**The softer outcome this ADR kept open is also closed, for a specific
+reason.** Salvaging "its representation rather than the whole model" needed
+the model to run somewhere it could be queried cheaply. It cannot, on the
+target machine. And the architectural idea that *did* move the result came
+from the opposite direction — not a larger pretrained model, but a smaller
+model that shares one trunk across ADR 113's four labels (ADR 170).
+
+**What would revisit this.** A discrete GPU on the research machine, or a
+TabFM distillation small enough to run on a CPU. Neither is planned, and
+neither is worth planning until ADR 170's coverage gap closes, because that
+is what currently blocks a promotion decision.
 
 ## 170. The distributional model is multi-task: one trunk, four heads, CRPS
 
