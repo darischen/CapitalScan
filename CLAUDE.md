@@ -270,7 +270,7 @@ the Pi are Debian. Code must run on both — that is what `scripts/run_job.ps1`
 and `scripts/run_job.sh` exist for, and why no script under `scripts/` may
 contain an absolute path to the repo, the venv or `psql`.
 
-**`ProcessPoolExecutor` uses spawn on the workstation and fork on `wivie`** (Python 3.14.3 against 3.13.5, accepted — ADR 164). Write for spawn: it is the stricter of the two, and code
+**`ProcessPoolExecutor` uses spawn on the workstation and fork on `wivie`** — a *platform* difference, Windows against Linux, not a version one. **Every environment now runs Python 3.13** (workstation venv, `wivie`, the Pi, and CI), pinned by `.python-version` and `requires-python = ">=3.13"` (ADR 171); the system interpreter behind the workstation venv is still 3.14.3. Write for spawn: it is the stricter of the two, and code
 that quietly depends on fork breaks only on Windows. Every job module must
 be importable with no side effects, every entry point needs
 `if __name__ == "__main__":`, and workers open their own database

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "capitalscan"
 version = "0.2.0"
 description = "Bollinger Band + Stochastic Oscillator event-study engine for US mega-cap equities"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 authors = [{name = "Daris Chen", email = "arcriumurnior@gmail.com"}]
 license = {text = "MIT"}
 
@@ -26,7 +26,6 @@ dependencies = [
     "lxml>=4.9.0",  # pandas.read_html backend for the Wikipedia membership fetcher
     "pyarrow>=13.0.0",
     "python-dotenv>=1.0.0",
-    "tomli>=2.0.0; python_version < '3.11'",
     "mcp>=1.2.0",
     "lightgbm>=4.7.0",
     "scikit-learn>=1.9.0",
@@ -75,11 +74,14 @@ markers = [
 ]
 
 [tool.mypy]
-# 3.12, not the project's 3.11 floor (requires-python above): numpy 2.5's
-# bundled stubs use PEP 695 `type` statements that mypy only parses at this
-# target. This affects stub parsing only, not the runtime Python version
-# the project supports.
-python_version = "3.12"
+# Matches `requires-python` and every machine that runs this code. It did
+# not always: this read 3.12 against a 3.11 floor, to parse numpy 2.5's
+# PEP 695 `type` statements in its bundled stubs -- but CI ran the 3.11
+# *interpreter*, which resolves numpy 2.4.6 and never sees those stubs at
+# all. `python_version` tells mypy which syntax to assume; it does not
+# change which numpy `uv` installs. Those are separate knobs and only the
+# interpreter moves the dependency set.
+python_version = "3.13"
 packages = ["capitalscan"]
 mypy_path = "."
 explicit_package_bases = true
@@ -96,7 +98,7 @@ ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 # `extend-exclude`, not `exclude`: the latter REPLACES ruff's defaults
 # (.venv, build, dist, __pycache__, ...) rather than adding to them.
 #

@@ -31,6 +31,17 @@ points of nominal. The three that fail:
 | `terminal_h10_q25` | 0.318 | 0.25 | **+0.068** |
 | `terminal_h10_q50` | 0.550 | 0.50 | **+0.050** |
 
+**Measured 2026-09-03: all three failures are entirely 2022.** Split by
+year, every one passes on 2023 -- `terminal_h10_q50` by six thousandths --
+and fails on 2022 by 10 to 12 points. Validate is 2022-01-03 to 2023-12-29,
+and 2022's realised 5-day q25 is −3.34% against the model's fitted −1.63%.
+The model is well calibrated in an ordinary year and understates downside
+in a bear market. RESULTS 2026-09-03 has both tables, and the implication
+for the fix: `rv_pct_252d` and `vix_close` are **already features**, so the
+model has the inputs to recognise a high-volatility regime and is not
+widening its lower tail enough on them. Measure that before building a new
+label.
+
 **All three over-cover, all three are terminal, all three are in the lower
 half of the fan.** That is not three problems. The predicted lower
 quantiles sit too high, so realised returns fall below them more often than
@@ -44,12 +55,29 @@ concentrated in one corner.
   heads are *checked* by coverage rather than recalibrated, and fitting a
   correction on the split the gate scores makes the gate circular. This was
   already ruled out on 2026-09-02 and the ruling did not change.
+- **Market-level trend features — do this first, it is nearly free.**
+  Root-caused 2026-09-03 (RESULTS): of 22 features **only three are
+  market-level**, and none spans more than a day — `vix_close` is a level,
+  `spx_ret_1d` is one day, `cofire_count` is same-day breadth. Every trend
+  feature (`above_sma200`, `sma200_slope_60`, `dd_52w`) is **per ticker**.
+  So the model can see that a stock is in a downtrend and cannot see that
+  the market is. 2022 spent **185 days** more than 10% below the high
+  against a previous record of 68, and the coverage error is **worst on
+  shallow-drawdown events** (+0.118) and mildest on deep ones (+0.039) —
+  the events that looked ordinary per-ticker while the index ground down.
+  `SPY` is already in `bars` from 2004-09-29, so the index analogues of
+  those three features need no new data source. **Measure before
+  building on it**: one regime episode is thin evidence, and a feature
+  fitted to help 2022 may be fitting 2022.
+
 - **A fifth auxiliary task.** ADR 170's gain came from three labels
   supervising a fourth. A `trough_ret_{h}d` label — the mirror of
   `peak_ret` — would add a task whose information is concentrated in
-  exactly the lower tail that is miscovered, and it is the one direction
-  the current four do not cover. It needs a label built, which is a
-  `path_labels.py` change, not a modelling one.
+  exactly the lower tail that is miscovered. **Demoted below the feature
+  work by the root cause above**: the miscovered events are the ones whose
+  *per-ticker* features look benign, and a better lower-tail label does not
+  tell the model it is in a market downtrend. It needs a label built, which
+  is a `path_labels.py` change, not a modelling one.
 - **Longer horizons as auxiliaries only.** ADR 113 dropped h=1,2,3
   deliberately and h=20 was never built. A 20-day head that is trained but
   never reported would regularise without widening the reported fan.

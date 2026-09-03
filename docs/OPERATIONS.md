@@ -813,7 +813,28 @@ explicit `np.asarray(..., dtype=float)` rather than relying on inference.
 while every `.py` in the repo is clean. The `1 file would be reformatted`
 line names it only if you pass `--diff`.
 
-**Worth considering, not done:** raising CI to 3.13 would close the gap
-against `wivie`, which is the machine that actually has to run this code
-after the cutover. That is a change to the gate and belongs in an ADR, not
-in a session that happened to trip over it.
+**Done, same day, as ADR 171.** CI moved to 3.13, `requires-python` moved
+to `>=3.13` with it (a floor nothing tests is not a floor), and the
+workstation's project venv was rebuilt on 3.13 so `uv run` matches CI
+exactly. All four environments now run 3.13; the spawn-vs-fork difference
+that ADR 164 valued is a *platform* difference and is untouched.
+
+**Rebuilding the venv on Windows hits the lock this file already warns
+about, from an unexpected holder.** VS Code's Python extension runs its
+language server *from the project venv* and respawns it within seconds of
+being killed, so `uv venv --clear` fails with `Access is denied (os error
+5)` on `.venv\Scripts` even after you kill the process you can see. Killing
+once and immediately deleting in the same command wins the race:
+
+```
+for i in 1 2 3; do
+  powershell -NoProfile -Command "Get-Process | Where-Object { \$_.Path -like '*CapitalScan\.venv*' } | Stop-Process -Force -ErrorAction SilentlyContinue"
+  rm -rf .venv && break
+done
+uv venv --python 3.13 && uv sync --extra dev
+```
+
+**Do not write `.python-version` before the venv can actually be
+rebuilt.** `uv run` reads it immediately and then refuses to run at all
+until the venv matches, which turns a cosmetic mismatch into a broken
+toolchain.
