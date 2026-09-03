@@ -55,7 +55,17 @@ concentrated in one corner.
   heads are *checked* by coverage rather than recalibrated, and fitting a
   correction on the split the gate scores makes the gate circular. This was
   already ruled out on 2026-09-02 and the ruling did not change.
-- **Market-level trend features — do this first, it is nearly free.**
+- **~~Market-level trend features~~ — MEASURED 2026-09-03 AND THEY MAKE IT
+  WORSE.** Coverage 17/20 → **13/20**, mean improvement +8.01 → **+3.54**,
+  and worse in *both* years, not just 2022. Cause, measured: the index was
+  above its 200-day SMA on **90.9% of train signal-days and 58.8% of
+  validate's**, so the downtrend regime is 9% of train against 41% of
+  validate. A feature that identifies the regime correctly is useless when
+  the training set barely contains it. **The blocker is training-data
+  coverage of bear regimes, not the feature set** — which routes back to the
+  2005 extension and its survivorship problem below. RESULTS 2026-09-03.
+
+- **~~Market-level trend features (original entry)~~**
   Root-caused 2026-09-03 (RESULTS): of 22 features **only three are
   market-level**, and none spans more than a day — `vix_close` is a level,
   `spx_ret_1d` is one day, `cofire_count` is same-day breadth. Every trend

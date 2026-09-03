@@ -6179,6 +6179,68 @@ licenses tuning on validate -- the measurement says where the error lives,
 not what to fit on. The holdout (2024-2026) contains its own regimes and is
 still the only clean test.
 
+### Market-trend features were the obvious fix and they make it worse
+
+The root cause above says the model cannot see that the *market* is in a
+downtrend. The obvious response is to tell it. Measured the same day, and
+it is a clear negative.
+
+Three index analogues of features the model already has per ticker, built
+from `SPY` (already in `bars`), lagged one day like everything else:
+`mkt_above_sma200`, `mkt_sma200_slope_60`, `mkt_dd_52w`. Joined at 100%
+coverage on both splits. ADR 170's model otherwise unchanged, three seeds.
+
+| | beats the constant | coverage ok | mean abs cov err | mean improvement |
+|---|---|---|---|---|
+| baseline, 22 features | 18/20 | **17/20** | 0.0269 | **+8.01** |
+| + market, 25 features | 12/20 | **13/20** | 0.0490 | **+3.54** |
+
+**Worse on every measure, and worse in both years:**
+
+| mean abs coverage error | 2022 | 2023 |
+|---|---|---|
+| baseline | 0.0436 | 0.0213 |
+| + market | 0.0689 | 0.0312 |
+
+The degradation dwarfs the ~0.74 seed spread, so this is not noise.
+
+**Why, in one measurement.** The index was above its 200-day SMA on:
+
+    train      90.9% of signal-days
+    validate   58.8% of signal-days
+
+**The downtrend regime is 9% of train and 41% of validate.** A feature that
+identifies the regime correctly is still useless when the training set
+barely contains it -- the model has almost no examples of what follows a
+signal in that state, so the feature adds an input that is nearly constant
+where it was fitted, dilutes the rest, and generalises nothing.
+
+**This closes the loop and the conclusion is uncomfortable.**
+
+1. 2022 fails because it is a sustained decline.
+2. The model cannot see market trend -- but *giving* it market trend makes
+   things worse.
+3. Because 91% of training days are uptrend, so there is nothing to learn.
+4. The fix is more bear-regime training data, which means 2008.
+5. Which is blocked by survivorship: Lehman, Bear Stearns, Merrill and
+   Wachovia are absent from `tickers`, so training on 2008 would show a
+   bear market with the zeroes removed and push the model *further* toward
+   under-stating downside.
+
+**So this is accounted for by disclosure, not by a fix.** The honest
+statement about ADR 170's model is: *calibrated for uptrending and choppy
+markets, understates downside in a sustained decline, because it was fitted
+on twelve years containing no sustained decline.* For an advisory system
+that is a publishable limitation, and it is more useful to a reader than a
+feature fitted to the single bear episode in the data.
+
+**What is NOT ruled out.** Reconstructing the delisted universe and
+extending history is a real project with a real payoff, and it is the only
+route measured here that addresses the cause rather than the symptom. A
+regime feature might also work *once there are two bear episodes to learn
+from* -- this result says it does not work with one, not that the idea is
+wrong.
+
 ### Blending with the incumbent buys loss and costs calibration
 
 The two models fail differently, so averaging them was worth one cheap
