@@ -6051,6 +6051,34 @@ model scored **−5.9%** on `terminal_h5_q05` where a shorter fit scored
 median across the whole walk-forward ladder. Copying LightGBM's model but
 not its selection procedure compares two procedures, not two models.
 
+### Blending with the incumbent buys loss and costs calibration
+
+The two models fail differently, so averaging them was worth one cheap
+test. Both fans were already saved, so this needed no refitting.
+
+| | mean improvement | beats the constant | coverage ok | mean abs coverage error |
+|---|---|---|---|---|
+| LightGBM | +6.83 | 18/20 | 14/20 | 0.0365 |
+| multi-task | +8.02 | 18/20 | **17/20** | **0.0269** |
+| 50/50 blend | **+8.04** | **19/20** | 15/20 | 0.0307 |
+
+**The blend wins on loss by 0.02 points and loses two heads of coverage.**
+It also rescues `peak_h10_q05` and `peak_h5_q05`, the two heads where the
+multi-task model goes slightly negative, which is exactly what a blend
+should do for a head where the incumbent was the better of two weak
+predictors.
+
+**Take the multi-task model, not the blend.** Coverage is the gate (DESIGN
+§7.7 check 3) and the blend moves in the wrong direction on it, for a gain
+that is a quarter of the multi-task model's own seed spread. A 0.02-point
+mean improvement is not a result.
+
+**Averaging fans is also the weaker of the two combinations available**, and
+the stronger one cannot include LightGBM. Averaging pmfs and inverting
+gives a distribution; averaging quantiles gives five numbers with no CDF
+behind them, so `exceedance` and `p_touch_*` have nothing to read. The
+incumbent has no pmf to average.
+
 ### What a distribution buys that a fan does not
 
 `handlers.types.Prediction` has always asked for `p_touch_2/3/5/10` and

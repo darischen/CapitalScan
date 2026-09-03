@@ -768,3 +768,52 @@ and the same one that ran a destructive `pg_restore` drop before its
 fallible restore. **A remote install script must end each step with `||
 exit 1` or set `pipefail`, and must finish with an import check that
 actually imports what the next script needs.**
+
+## The fast tier passes locally and fails in CI: CI is Python 3.11 (2026-09-03)
+
+**`.github/workflows/ci.yml` pins `python-version: "3.11"`.** The
+workstation runs 3.14.3 and `wivie` runs 3.13.5, so **no machine anyone
+develops on runs the interpreter CI runs.** `uv sync` then resolves a
+different dependency set for 3.11, and the one that bites is numpy: its
+type stubs differ enough that mypy's `no-any-return` fires on 3.11 and not
+on 3.14.
+
+The concrete case:
+
+```python
+def predict_pmf(self, frame: pd.DataFrame) -> np.ndarray:
+    return np.mean([...], axis=0)  # Any on 3.11, ndarray on 3.14
+```
+
+Clean under `uv run mypy` on the workstation, `error: Returning Any from
+function declared to return "ndarray[...]"` in CI. Clearing `.mypy_cache`
+and running `--no-incremental` did **not** reproduce it, which is the
+misleading part: the natural next step after "passes locally, fails in CI"
+is to suspect the cache, and that suspicion is wrong here.
+
+**Reproduce it directly rather than guessing.** A throwaway 3.11
+environment costs about a minute and gives the exact error:
+
+```
+uv venv --python 3.11 /tmp/py311
+VIRTUAL_ENV=/tmp/py311 uv pip install -e ".[dev]"
+/tmp/py311/bin/python -m mypy
+/tmp/py311/bin/python -m pytest capitalscan/tests/unit capitalscan/tests/property \
+  -p no:randomly --hypothesis-profile=ci_fast
+```
+
+**This is the "verify with a different instrument" rule applied to the
+interpreter.** The local mypy and CI's mypy are different instruments, and
+a green local run is not evidence about the red one. Anything typed against
+numpy or pandas return values is where the two disagree; annotate with an
+explicit `np.asarray(..., dtype=float)` rather than relying on inference.
+
+**One aside that cost a second CI round.** `ruff format` formats fenced
+`python` blocks **inside Markdown**, so a doc file can fail the format gate
+while every `.py` in the repo is clean. The `1 file would be reformatted`
+line names it only if you pass `--diff`.
+
+**Worth considering, not done:** raising CI to 3.13 would close the gap
+against `wivie`, which is the machine that actually has to run this code
+after the cutover. That is a change to the gate and belongs in an ADR, not
+in a session that happened to trip over it.

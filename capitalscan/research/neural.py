@@ -307,7 +307,11 @@ class Ensemble:
         return self.members[0].grids
 
     def predict_pmf(self, frame: pd.DataFrame) -> np.ndarray:
-        return np.mean([m.predict_pmf(frame) for m in self.members], axis=0)
+        # `np.asarray` is not decoration: numpy's stubs type `np.mean` as
+        # `Any` under the numpy that resolves for Python 3.11, which is what
+        # CI runs, and mypy's `no-any-return` fires there and not on 3.14.
+        stacked = np.mean([m.predict_pmf(frame) for m in self.members], axis=0)
+        return np.asarray(stacked, dtype=float)
 
     def fan(
         self, frame: pd.DataFrame, family: str, horizon: int, taus: Sequence[float] | None = None
