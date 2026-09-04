@@ -1,0 +1,95 @@
+{
+  "model": "ADR 170 multi-task distributional model",
+  "module": "capitalscan.research.neural",
+  "entry_point": "neural.fit(train_frame, calendar) -> Ensemble",
+  "git_sha": "ba3ebb7d09ca8f2da31f6f23911d0209d4181d1b",
+  "config_hash": "0523841076f47293",
+  "measured_on": "2026-09-03",
+  "splits": {
+    "train": "2010-03-31..2021-12-31, 157938 events",
+    "validate": "2022-01-03..2023-12-29, 34195 events",
+    "holdout": "2024-01-02..2026-08-28, 82957 events, UNSPENT"
+  },
+  "architecture": {
+    "trunk": "Linear(d_in,384) GELU Dropout -> Linear(384,384) GELU Dropout -> Linear(384,192) GELU",
+    "heads": "4 x Linear(192,32) -> softmax",
+    "tasks": [
+      "terminal_h5",
+      "terminal_h10",
+      "peak_h5",
+      "peak_h10"
+    ],
+    "n_bins": 32,
+    "params": 259904,
+    "objective": "summed CRPS over equal-width bins"
+  },
+  "hyperparameters": {
+    "width": 384,
+    "dropout": 0.15,
+    "lr": 0.001,
+    "weight_decay": 0.0001,
+    "batch_size": 1024,
+    "max_steps": 6000,
+    "patience": 25,
+    "eval_every": 25
+  },
+  "seeds": [
+    20260903,
+    20260904,
+    20260905
+  ],
+  "ensemble": "mean of per-seed pmfs, then invert (NOT mean of quantiles)",
+  "selection": "median best-step across the purged walk-forward ladder at horizon_days=10, then refit on all of train",
+  "features": {
+    "n": 22,
+    "cols": [
+      "bb_pctb",
+      "bb_width_pct",
+      "k_full",
+      "d_full",
+      "k_fast",
+      "k_cross_up",
+      "k_cross_down",
+      "rv_pct_252d",
+      "vix_close",
+      "above_sma200",
+      "sma200_slope_60",
+      "dd_52w",
+      "vol_z_20d",
+      "spx_ret_1d",
+      "cofire_count",
+      "signal_strength",
+      "seq_in_cluster",
+      "days_to_earnings",
+      "sector",
+      "k_minus_d",
+      "mcap_log",
+      "breach_depth"
+    ],
+    "categorical": [
+      "sector"
+    ],
+    "mean_imputed_with_indicator": [
+      "days_to_earnings",
+      "spx_ret_1d"
+    ]
+  },
+  "grid": {
+    "fn": "core.distributions.crps_grid",
+    "span": [
+      0.005,
+      0.995
+    ],
+    "equal_width": true
+  },
+  "measured_on_validate": {
+    "beats_global_constant": "18/20",
+    "coverage_within_5pts": "17/20",
+    "mean_improvement_pct": 8.015,
+    "terminal_h5_q50_pct": 0.43,
+    "terminal_h10_q50_pct": 0.78,
+    "incumbent_lgbm_coverage": "14/20"
+  },
+  "gate": "FAILS DESIGN 7.7 check 3 (coverage 17/20, needs 20/20). NOT promoted.",
+  "known_limitation": "Calibrated for uptrending and choppy markets. All three coverage failures are 2022, the only sustained decline in train+validate. Train is 90.9% uptrend by index-above-200SMA; validate is 58.8%."
+}

@@ -10,16 +10,15 @@ in `core/distributions.py` and is tested there unconditionally.
 
 from __future__ import annotations
 
-import ast
 import importlib.util
 import inspect
-import textwrap
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from capitalscan.research import neural
+from capitalscan.tests.unit._probe import code_of
 
 #: Only the two behavioural classes at the bottom need a network to exist.
 #: Everything above them reads the module, so the decisions stay pinned in
@@ -29,31 +28,6 @@ needs_torch = pytest.mark.skipif(
     importlib.util.find_spec("torch") is None,
     reason="optional extra: uv sync --extra neural",
 )
-
-
-def code_of(obj) -> str:
-    """Source with docstrings and comments removed.
-
-    **A substring probe that reads prose is not a probe.** Three tests in
-    this file failed on their first run because `predictions`,
-    `sort_quantiles` and `sync` all appear in the module's own docstring
-    explaining why they are absent from its code. The same mistake has
-    landed twice before in this repo. Stripping the prose is the fix; the
-    alternative -- choosing substrings no docstring would ever contain --
-    means writing worse documentation to satisfy a test.
-    """
-    tree = ast.parse(textwrap.dedent(inspect.getsource(obj)))
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            body = node.body
-            if (
-                body
-                and isinstance(body[0], ast.Expr)
-                and isinstance(body[0].value, ast.Constant)
-                and isinstance(body[0].value.value, str)
-            ):
-                node.body = body[1:] or [ast.Pass()]
-    return ast.unparse(ast.fix_missing_locations(tree))
 
 
 class TestTheTaskSet:
