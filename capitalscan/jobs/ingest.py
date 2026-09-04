@@ -28,10 +28,12 @@ from capitalscan.core import universe as core_universe
 from capitalscan.core.config import (
     DEFAULT_HOURLY_SPLIT_DETECTION,
     DEFAULT_HOURLY_SPLIT_GUARD,
+    Config,
     SharesPlausibility,
     SplitParams,
 )
 from capitalscan.jobs import db_io
+from capitalscan.jobs.config import resolve_config
 from capitalscan.jobs.fetch import finnhub, sec, wikipedia, yahoo
 from capitalscan.jobs.fetch.base import NotFoundError
 from capitalscan.jobs.provenance import git_sha, new_run_id
@@ -175,13 +177,30 @@ def run_job(engine: Engine, job: str, params: dict) -> Iterator[IngestReport]:
 # ============ calendar ============
 
 
-def run_calendar(through_year: int, engine: Engine | None = None) -> IngestReport:
+def run_calendar(
+    through_year: int,
+    engine: Engine | None = None,
+    config: Config | None = None,
+) -> IngestReport:
+    """Populate `trading_days` from `ingest_start` through `through_year`.
+
+    **`config`, not a hardcoded `SplitParams()`** -- the same fix
+    `compute.run_events` already carries, for the same reason. Reading the
+    default dataclass ignores `config.splits` entirely, so an override that
+    moves `ingest_start` produces a calendar that silently stops where the
+    default said and every downstream job is bounded by a window nobody
+    asked for. Found 2026-09-03 building an extended-history store: the
+    override moved `ingest_start` to 1999 and `trading_days` still began
+    2009, while `market_days` (which does not read this) reached 1998.
+
+    With no override this resolves to the same date the hardcoded call
+    produced, so production behaviour is unchanged.
+    """
     engine = engine or db_io.get_engine()
+    splits = (config or resolve_config()).splits
     with run_job(engine, "calendar", {"through": through_year}) as report:
         cal = mcal.get_calendar("NYSE")
-        schedule = cal.schedule(
-            start_date=SplitParams().ingest_start, end_date=f"{through_year}-12-31"
-        )
+        schedule = cal.schedule(start_date=splits.ingest_start, end_date=f"{through_year}-12-31")
         session_len = schedule["market_close"] - schedule["market_open"]
         rows = pd.DataFrame(
             {
