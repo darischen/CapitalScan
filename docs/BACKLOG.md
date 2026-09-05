@@ -16,7 +16,61 @@ deleting the entry loses nothing.
 
 ## Open
 
-### Where Session 25 left off — read this first
+### Where Session 26 left off — read this first
+
+**2026-09-05. The target was the problem, not the features.** The median
+5-day return is unpredictable (SNR 0.100, ceiling +0.281%). `p_touch` --
+the same already-fitted peak head, read through
+`distributions.exceedance` -- is **calibrated, monotone and skilful**:
+AUC 0.607/0.638/0.689/0.771 at the 2/3/5/10% thresholds, Brier skill up to
++9.33%, and `p_touch_3` deciles run 0.284 realised at the bottom to 0.755
+at the top against a 0.516 base rate. **No retraining was involved.**
+
+**Next, in cost order:**
+
+1. **Ship `p_touch` (cheapest, highest value).** It needs no model work at
+   all -- `exceedance()` on the peak head fills `Prediction.p_touch_2/3/5/10`,
+   which the contract has wanted since Phase 5. What is missing is only the
+   plumbing: a writer into `predictions`, and a UI surface. `v_screen`
+   already `LEFT JOIN`s that table and the user has accepted display
+   (single-user, LAN-only), so no shadow flag is needed.
+
+2. **Add an MAE head for `p_adverse_*`.** `mae` is already on `events` and
+   side-adjusted (longs −2.455%, shorts −2.041%), and the model currently
+   fits favourable excursion and nothing adverse. This is the missing half
+   of an expected value, which is what turns a probability into an
+   actionable number:
+
+       E[net_ret] ~ P(target) x +5.30% + P(stop) x −4.38% + P(timeout) x −0.05%
+
+   measured from 163,424 train exits. **This supersedes the old
+   `trough_ret` entry**, which was twice demoted as a marginal
+   tail-calibration idea and now has a specific job.
+
+3. **Adopt arm D's config, with a caveat.** Sector-relative features
+   (`rel_dd`, `rel_pctb`) plus `net_ret`/`mae` tasks beat base on Brier
+   skill at all three thresholds (t3 +5.54% -> +6.22%) and do not
+   interfere. **But AUC is flat** (0.6379 -> 0.6411), so this is better
+   calibration, not new predictive power, and one seed-triple each --
+   reproducible, but not shown to exceed seed choice. Measure the seed
+   spread before treating the ~0.7pp as real.
+
+**Two findings that constrain the strategy, not the model:**
+
+- **The signal times the market; it does not select stocks.**
+  Cross-sectional demeaning collapses SNR from 0.100 to **0.024** and the
+  ceiling from +0.281% to +0.003%, because the signal *is* the shared
+  market move. **It cannot be run market-neutral.**
+- **Relative weakness is momentum, not reversion.** A name doing much worse
+  than its sector has `net_ret` **−0.165%**; one holding up has **+0.166%**,
+  monotone across quintiles. "Everyone is down but this one is down more"
+  is a reason to avoid, not to buy.
+- **The short book loses money**: `net_ret` −0.175% over 101,153 short
+  events against +0.233% over 62,271 longs, with stops firing at the same
+  rate (0.219 vs 0.215) but targets at half (0.116 vs 0.198). A strategy
+  question, measurable independently of any model.
+
+### Where Session 25 left off
 
 **2026-09-04.** The holdout was spent (ADR 172) and the directional question
 turned out to be mis-posed (ADR 173). Priorities, in the user's order:

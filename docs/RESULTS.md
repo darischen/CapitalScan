@@ -6646,3 +6646,137 @@ directional heads is no longer provisional.
 contaminated, and post-date the seeding fix so they are not directly
 comparable to the figures in ADR 170. The *direction* of the effect and the
 failed mechanism prediction are the evidence, not the decimals.
+
+---
+
+## 2026-09-05 — The target was the problem: `p_touch` works, the median never could
+
+Session 25 closed with the directional heads retired and a 0.281% ceiling on
+what `signal_type` could buy. This asks a different question: was the
+*target* wrong rather than the features?
+
+### 1. `p_touch` works, and it needed no new model
+
+`touched_3pct` is **exactly** `peak_ret_5d >= 0.03` -- agreement 1.000 on
+163,424 train events. So `distributions.exceedance(peak_pmf, grid, 0.03)`
+*is* the `Prediction.p_touch_3` the contract has asked for since Phase 5.
+Read off the already-fitted peak head, no retraining:
+
+| target | threshold | base rate | Brier skill | AUC |
+|---|---|---|---|---|
+| `p_touch_2` | 2% | 0.652 | +3.15% | 0.607 |
+| `p_touch_3` | 3% | 0.516 | +5.54% | 0.638 |
+| `p_touch_5` | 5% | 0.298 | **+9.33%** | **0.689** |
+| `p_touch_10` | 10% | 0.071 | +4.32% | **0.771** |
+
+**AUC rises with the threshold.** The bigger the move asked about, the
+better the model discriminates.
+
+**Reliability of `p_touch_3`, by predicted decile** -- the table that
+matters for anything shown to a reader:
+
+| decile | predicted | realised | gap |
+|---|---|---|---|
+| 0 | 0.213 | 0.284 | +0.071 |
+| 3 | 0.382 | 0.469 | +0.087 |
+| 6 | 0.540 | 0.562 | +0.021 |
+| 9 | 0.742 | 0.755 | +0.013 |
+
+**Monotone across all ten deciles.** Top decile realises **0.755** against
+the bottom's **0.284**, base rate 0.516 -- a 2.7x separation. Slightly
+under-confident at the low end, near-exact at the high end.
+
+**The same fitted model scores −0.72% on the median forward return.** The
+model was never the problem; the gate was reading the one quantity these
+features cannot produce.
+
+### 2. Signal-to-noise by target, which explains everything above
+
+| target | spread of per-`signal_type` means | sd | SNR |
+|---|---|---|---|
+| `fwd_ret_5d` demeaned | 0.0010 | 0.0381 | **0.024** |
+| `fwd_ret_5d` | 0.0041 | 0.0411 | 0.100 |
+| `net_ret` | 0.0062 | 0.0358 | 0.173 |
+| `touched_5pct` | 0.1373 | 0.3704 | 0.371 |
+| `mfe` | 0.0105 | 0.0277 | 0.378 |
+| **`touched_3pct`** | 0.1859 | 0.4729 | **0.393** |
+
+`touched_3pct` carries **4x** the signal-to-noise of the median return, on
+identical features and events.
+
+`net_ret` is the better *continuous* target: side-adjusted (longs +0.233%,
+shorts −0.175%) and it includes the exits, giving 1.7x the SNR of
+`fwd_ret_5d` and a ceiling of +0.318% against +0.281%.
+
+### 3. Market-demeaning destroys the signal, and that is informative
+
+Subtracting each `signal_date`'s cross-sectional mean from `fwd_ret_5d`:
+sd falls 4.66% -> 3.81%, but **SNR falls 0.100 -> 0.024** and the
+`signal_type` ceiling collapses from +0.281% to **+0.003%**.
+
+**The signal is the market move.** When many names fire together and the
+market bounces, they all share that bounce; demeaning subtracts exactly
+what is being predicted. **This is a market-timing signal, not a
+stock-selection one**, and it therefore cannot be run market-neutral.
+
+### 4. Sector-relative position is real, and points the opposite way to reversion
+
+`rel_dd` = this ticker's `dd_52w` minus the median `dd_52w` of its sector
+that day. Known at signal time, no look-ahead:
+
+| `rel_dd` quintile | vs sector | `net_ret` | P(touch 5%) |
+|---|---|---|---|
+| 0 (much worse than peers) | −13.0% | **−0.165%** | 0.187 |
+| 2 (in line) | −3.7% | −0.016% | **0.138** |
+| 4 (better than peers) | +5.3% | **+0.166%** | 0.223 |
+
+**`net_ret` is monotone**: the name doing *especially* badly against its
+sector keeps doing badly. That is relative-strength **momentum**, not
+reversion -- "everyone is down but this one is down more" is a reason to
+avoid, not to buy. **P(touch 5%) is U-shaped**: unusual in either direction
+predicts a bigger move.
+
+It is genuine but weak information -- `rel_dd` correlates with `mfe` at
+**+0.045** against raw `dd_52w`'s **+0.236**, the same dilution
+market-demeaning showed.
+
+### 5. Combined beats individual, but only on calibration
+
+Four arms, scored on `p_touch`:
+
+| arm | t3 skill | t5 skill | t10 skill | t3 AUC | t5 AUC | t10 AUC |
+|---|---|---|---|---|---|---|
+| A base (23 feat, 4 tasks) | +5.54% | +9.33% | +9.24% | 0.6379 | 0.6889 | 0.7341 |
+| B +sector (25 feat) | +5.97% | +9.49% | +9.35% | 0.6403 | 0.6887 | 0.7309 |
+| C +tasks (`net_ret`, `mae`) | +5.47% | +9.28% | +9.45% | 0.6383 | 0.6868 | 0.7328 |
+| **D both** | **+6.22%** | **+9.63%** | **+9.46%** | 0.6411 | 0.6883 | 0.7342 |
+
+**D wins on all three thresholds and the two additions do not interfere**,
+which was the live risk on ~8,000 effective samples.
+
+**But AUC is flat everywhere** -- 0.6379 -> 0.6411, 0.6889 -> 0.6883,
+0.7341 -> 0.7342. The model is not discriminating better; it is calibrated
+slightly better. For a page that displays a probability that is worth
+having, and it is not new predictive power.
+
+**Two predictions written before the run were wrong.** C (multi-task) was
+expected to help most and was the weakest; D was expected to risk
+interference and did not.
+
+**Arm A reproduced `p_touch.py` to four decimals** (t3 AUC 0.6379, t5
+0.6889), confirming the 2026-09-04 seeding fix: identical inputs now give
+identical outputs. The remaining unmeasured quantity is how much a
+*different* seed triple would move these, so the ~0.7pp skill differences
+are reproducible but not yet shown to exceed seed choice.
+
+### What this changes
+
+**The shippable product is a probability, not a fan midpoint.**
+`p_touch_2/3/5/10` are calibrated, monotone, and already in the
+`Prediction` contract. `p_adverse_*` needs an MAE head, which `mae` on
+`events` already supports -- and that is the missing half of an expected
+value:
+
+    E[net_ret] ~ P(target) x +5.30%  +  P(stop) x −4.38%  +  P(timeout) x −0.05%
+
+measured from 163,424 train exits.
