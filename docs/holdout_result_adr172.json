@@ -1,0 +1,27 @@
+{
+  "model": "ADR 170 multi-task",
+  "config_hash": "0523841076f47293",
+  "fitted_on": "train 2010-03-31..2021-12-31",
+  "holdout_window": "2024-01-02..2026-09-03",
+  "seeds": [
+    20260903,
+    20260904,
+    20260905
+  ],
+  "summary": {
+    "validate": {
+      "n_events": 34195,
+      "beats_constant": "18/20",
+      "coverage_ok": "14/20",
+      "mean_improve_pct": 7.979,
+      "mean_abs_cov_err": 0.0298
+    },
+    "holdout": {
+      "n_events": 79956,
+      "beats_constant": "17/20",
+      "coverage_ok": "17/20",
+      "mean_improve_pct": 7.705,
+      "mean_abs_cov_err": 0.0293
+    }
+  }
+}

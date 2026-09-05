@@ -6394,3 +6394,184 @@ right to contest it. What settles it *here* is the deployment target.
 **And the architectural idea that did move the result came from the
 opposite direction** — not a larger pretrained model, but a smaller one
 that shares a single trunk across ADR 113's four labels (ADR 170).
+
+---
+
+## 2026-09-04 — The holdout is spent, and the directional question was mis-posed
+
+Three results, in the order they were found. The third explains the first.
+
+### 1. The holdout: dispersion generalises, direction does not
+
+ADR 170's multi-task model, fitted on train (2010-2021) with the same
+seeds and protocol as the validate run, scored on the holdout
+(2024-01-02..2026-09-03, **79,956 events after label resolution**) which had
+never been read.
+
+| | validate 2022-23 | **holdout 2024-26** |
+|---|---|---|
+| events | 34,195 | **79,956** |
+| beats the global constant | 18/20 | **17/20** |
+| coverage within 5 points | 14/20 | **17/20** |
+| mean improvement | +7.98% | **+7.71%** |
+| mean abs coverage error | 0.0298 | **0.0293** |
+
+**The dispersion family held.** `peak_h5_q95` 22.72% → **23.34%**,
+`peak_h10_q95` 22.32% → **22.59%** — the tails improved out of sample.
+
+**The directional heads did not.** Both went negative:
+
+| head | validate | holdout |
+|---|---|---|
+| `terminal_h5_q50` | +0.36 | **−0.72** |
+| `terminal_h10_q50` | +0.66 | **−0.99** |
+| `terminal_h10_q25` | +2.51 | **−0.05** |
+
+**Session 24's headline does not replicate.** "Both directional heads clear
+a constant for the first time in Phase 6" was measured on validate after
+choosing the best of five architectures on that same split. The holdout put
+them back where LightGBM had them. That is what a holdout is for.
+
+**Calibration decays with distance from the training window:**
+
+| year | mean abs coverage error |
+|---|---|
+| 2024 | 0.0182 |
+| 2025 | 0.0311 |
+| 2026 | **0.0480** |
+
+Approaching the 0.05 tolerance, which argues for scheduled refits rather
+than a fit-and-forget model.
+
+### 2. More history helps, measured
+
+An isolated store (`capitalscan_hist`, `config_hash 70b036b3660f21dc`) was
+built back to 1999: bars 7,230,415, indicators 7,225,096, universe 106,275
+across 99 quarters, events 3,618,270. `crit_mcap` was dropped because
+`shares_outstanding` begins 2008-12-31 — the SEC XBRL floor — so nothing
+before 2009 can otherwise be `in_trade`. **That makes these numbers
+internal to the store and NOT comparable to production's.**
+
+Two arms, identical config and identical validate, differing only in where
+train begins:
+
+| | A: train 2010 | **B: train 2002** |
+|---|---|---|
+| train events | 265,175 | 375,190 |
+| beats the constant | 19/20 | **20/20** |
+| coverage ok | 16/20 | **19/20** |
+| mean abs coverage error | 0.0294 | **0.0206** |
+
+Per year, which is the question it was built to answer:
+
+| | 2022 | 2023 |
+|---|---|---|
+| A: train 2010 | 0.0503 | 0.0181 |
+| B: train 2002 | **0.0385** | **0.0101** |
+
+**2022 coverage error falls 23%** when the model has seen the dot-com tail
+and 2007-09, and 2023 improves too, so this is better calibration generally
+rather than a 2022-specific fit. The gain is **understated**: the added bear
+years are survivorship-biased (Lehman, Bear Stearns, Merrill and Wachovia
+are absent from `tickers`), so 2008 in this store looks milder than 2008
+was, which biases against the hypothesis.
+
+**It also resolves the contradiction with the market-feature result.**
+Telling the model "the market is falling" made things worse (RESULTS
+2026-09-03); *showing* it falling markets makes things better. The blocker
+was training-data coverage, exactly as that experiment concluded.
+
+### 3. The model was never told which way the signal points
+
+The user's observation, and it reframes result 1 entirely: a
+`confluence_low` is a long and a `confluence_high` is a short. The strategy
+assigns sides for that reason.
+
+**Neither `signal_type` nor `side` is in `FEATURE_COLS`.** `side` is carried
+in `META_COLS` and used only to sign `breach_depth`; `signal_type` is absent
+altogether.
+
+**And `fwd_ret_*` is the raw price return, not the position return:**
+
+| side | n (train) | median raw `fwd_ret_5d` |
+|---|---|---|
+| long | 62,271 | **+0.549%** |
+| short | 101,153 | **+0.282%** |
+
+Every side shows a positive mean because the label measures price, not
+profit. So `terminal_h*_q50` is asked to predict the median price move of a
+pool that is 38% longs and 62% shorts, **without being told which**, when
+the study's own premise is that those two move in opposite directions. That
+question has no answer, and "direction is unpredictable" was never the
+finding — the question was mis-posed.
+
+**It also explains why dispersion works.** `peak_ret_*` **is**
+side-adjusted: shorts show a mean `peak_ret_5d` of +2.28%, positive because
+a downward move is favourable to a short. Consistent labels, learnable
+target. The difference between the two families is not magnitude against
+sign; it is a side-adjusted label against one that is not.
+
+**The signal is visible in the data the model cannot see:** longs median
++0.549% against shorts +0.282%, a 0.27-point separation over five days.
+
+**What this costs.** The holdout is spent. A side-aware model can be
+measured on validate, but validate has been scored many times and the
+clean out-of-sample estimate is gone. Any further result is weaker evidence
+than result 1 above, and must be reported as such.
+
+### 4. Telling the model the side does not recover direction
+
+ADR 173 predicted that `signal_type` would rescue the directional heads.
+Measured on validate the same day, and it does not.
+
+| | blind, 22 features | aware, 23 features |
+|---|---|---|
+| beats the constant | 18/20 | 18/20 |
+| coverage within 5 points | **17/20** | 15/20 |
+| mean improvement | **+7.93%** | +7.75% |
+| `terminal_h5_q50` | +0.356% | **+0.111%** |
+| `terminal_h10_q50` | +0.579% | **+0.061%** |
+
+**The two heads the question turns on went down.**
+
+**The pre-registered prediction failed in the informative direction.** The
+run's docstring said, before it ran: terminal should improve because that is
+the head whose question was unanswerable, and peak should barely move
+because `peak_ret_*` is already side-adjusted. If peak moved as much as
+terminal, the change would be capacity or noise rather than mechanism.
+
+Measured: **peak fell 0.245 and terminal fell 0.111.** Peak moved *more*.
+That is the capacity signature, not the mechanism one, and it is the reason
+this is read as a null rather than as a small loss to be tuned away.
+
+**The most likely explanation is redundancy.** The other 22 features
+already encode the side implicitly: `bb_pctb` near 0 with a low `k_full`
+*is* a confluence-low, and near 1 with a high `k_full` *is* a
+confluence-high. `signal_type` told the model something it could already
+derive, and a seven-level categorical on an effective sample near 8,000
+costs a little to carry.
+
+**A bug found by an impossible number, and worth recording as a method.**
+The first run of this A/B returned a delta of **exactly 0.000 on all twenty
+heads** with identical step counts. `DesignMatrix.transform` one-hot encoded
+`frame["sector"]` *by name* while `_numeric_block` excluded *every*
+categorical, so `signal_type` was dropped from one side and never added to
+the other -- it vanished with no error and both arms trained on identical
+inputs. A small positive delta would have been reported as a gain. Only the
+exact zero was obviously impossible.
+
+`DesignMatrix` now carries `categorical_levels` and encodes each
+categorical by name; `test_every_categorical_feature_is_encoded` and
+`test_no_categorical_leaks_into_the_numeric_block` guard the shape, and the
+test fixture reads `feat.CATEGORICAL_COLS` rather than hardcoding `sector`
+-- a fixture with the same assumption as the bug could not have caught it.
+
+**What this closes.** Direction has now failed three independent ways:
+across five architectures on validate, on 79,956 unseen holdout events, and
+with the side explicitly supplied. ADR 172's retirement of the directional
+heads is no longer provisional.
+
+**What it does not close.** These numbers are on validate, which is
+contaminated, and post-date the seeding fix so they are not directly
+comparable to the figures in ADR 170. The *direction* of the effect and the
+failed mechanism prediction are the evidence, not the decimals.

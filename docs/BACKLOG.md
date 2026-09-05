@@ -16,6 +16,119 @@ deleting the entry loses nothing.
 
 ## Open
 
+### Where Session 25 left off — read this first
+
+**2026-09-04.** The holdout was spent (ADR 172) and the directional question
+turned out to be mis-posed (ADR 173). Priorities, in the user's order:
+
+1. **~~Side-blindness fix~~ — MEASURED, AND IT DOES NOT HELP.** `signal_type`
+   is now a feature (23 features, two categoricals) and the A/B is done:
+   `terminal_h5_q50` **+0.356% -> +0.111%**, `terminal_h10_q50` **+0.579% ->
+   +0.061%**, coverage 17/20 -> 15/20. Both target heads went *down*, and
+   the pre-registered prediction failed in the informative direction (peak
+   fell more than terminal, the capacity signature rather than the mechanism
+   one). Likely redundancy: `bb_pctb` near 0 with a low `k_full` already *is*
+   a confluence-low. **The feature is kept anyway** -- free, faithful to the
+   strategy, and its absence was a real defect in the spec. **ADR 172's
+   retirement of the directional heads is now final.** RESULTS 2026-09-04 §4.
+2. **More history — measured, real, second priority.** RESULTS 2026-09-04
+   has the numbers: 2022 coverage error falls 23% (0.0503 -> 0.0385) when
+   train starts 2002 instead of 2010. Blocked from reaching production by
+   the two data walls below.
+
+**The dispersion model is the shipping checkpoint.** It held out of sample:
++7.71% mean improvement on 79,956 unseen events, coverage 17/20. What must
+not ship with it is a directional midpoint -- `terminal_h*_q50` is negative
+out of sample as currently specified.
+
+**`capitalscan_hist` (11 GB) still exists** and holds the extended-history
+store: bars back to 1998-09-30, events 2002-2026, `config_hash
+70b036b3660f21dc`, `crit_mcap` dropped. Rollback is `dropdb
+capitalscan_hist`. Keep it if the history work continues; drop it freely if
+not, since `scratchpad/hist/*.sh` rebuilds it.
+
+### Bugs found in flight and NOT fixed
+
+- **`fetch_membership_changes()` returns a navigation box, not the changes
+  table.** Wikipedia deleted the "Selected changes to the list" section, so
+  `tables[1]` is now a sector navbox and the function returns 11 rows of
+  garbage. Its one caller is `run_membership()` (`cscan membership
+  --backfill`), which raises a clear error rather than corrupting anything,
+  and **nightly is unaffected** -- `run_tickers_refresh` uses only
+  `fetch_current_constituents` and the SEC CIK lookup. The user's decision
+  (2026-09-04) is to **retire it**: the universe has expanded past the S&P
+  500 into NYSE, Nasdaq and ETFs, so an S&P-membership-changes scraper is
+  vestigial. Not done; needs an ADR because ADR 035 leans on it.
+
+- **`cscan events` has no `--workers` and no progress output.** A single
+  pass over 2002-2026 ran **4h40m at ~99% of one core and wrote nothing**,
+  because it accumulates and upserts once. There is no way to distinguish
+  20% done from 80%, and a failure at hour nine loses everything. The
+  workaround that worked is ticker chunking
+  (`scratchpad/hist/build_events_chunked.sh`, 25 chunks of 60, each writing
+  on completion, with a done-file for restarts). **Chunk by ticker, never by
+  date**: `cofire_count` is the one cross-ticker feature and
+  `cscan backtest --phase finalize` computes it separately, which cli.py
+  says "cannot live inside a resumable per-chunk loop".
+
+- **CLAUDE.md says `cscan indicators` "writes nothing until it finishes".**
+  Measured 2026-09-04: it writes incrementally (270k -> 614k -> 7.2M rows
+  observed mid-run). The warning is stale and misleads anyone diagnosing a
+  slow run.
+
+- **All model numbers before 2026-09-04 came from unseeded initialisations.**
+  `_run` called `module_factory()` *before* `torch.manual_seed(seed)`, so
+  seeds controlled only the batch shuffle. Fixed, with cuDNN pinned. **The
+  ADR 170 validate figures (17/20 coverage) were measured under the bug and
+  a re-run gave 14/20**, so the recorded spread understates run-to-run
+  variance. `docs/model_spec_adr170.json` needs re-recording against the
+  fixed code, and its "seeds" field currently implies a reproducibility the
+  measurements did not have.
+
+### Data walls that block the history work
+
+- **`shares_outstanding` starts 2008-12-31** -- the SEC XBRL mandate floor,
+  not a fetcher setting (`yahoo_shares_full` carries 181,662 rows with a
+  NULL `period_end`: current shares, no history). `crit_mcap` is in
+  `required_criteria`, so **nothing before 2009 can ever be `in_trade`** in
+  production. The hist store works around this by dropping `crit_mcap`,
+  which is why its numbers are internal to that store.
+
+- **The pre-2010 universe is survivorship-biased and the bias runs the wrong
+  way.** Lehman, Bear Stearns, Merrill, Wachovia, Fannie, Freddie, Ambac,
+  MBIA and CIT are absent from `tickers`; only **18 of 1,561** rows carry a
+  `delisted_on`. Training on that 2008 shows a bear market with the zeroes
+  removed. **Symbol reuse is a live hazard**: `WM` is Waste Management
+  today and was Washington Mutual until 2008.
+
+- **Both walls are cleared by the same purchase** (Norgate ~$70-100/mo,
+  Sharadar, or CRSP): historical fundamentals *and* delisted securities.
+  The user's decision 2026-09-04 is **free sources only for now**, so this
+  stays closed.
+
+### Deferred by the 2026-09-04 pivot
+
+- **Ship the dispersion model to the site.** The checkpoint the user asked
+  for. Needs: a UI surface for the fan, `n_eff` and an interval per
+  invariant 8, and the calibration caveat below. `predictions` is still
+  empty and `v_screen` already `LEFT JOIN`s it, so writing that table
+  displays it -- which the user has accepted (single-user, LAN-only), so no
+  shadow flag is needed.
+
+- **The calibration caveat, still unwritten.** Mean absolute coverage error
+  by year: 2024 **0.0182**, 2025 **0.0311**, 2026 **0.0480**. At that rate
+  it crosses DESIGN §7.7's 0.05 tolerance during 2027. Whatever surfaces the
+  fan should say so, and **refits should be scheduled** rather than
+  fit-and-forget.
+
+- **A `trough_ret_{h}d` auxiliary task.** Demoted twice: first by the
+  market-trend root cause, then by ADR 173. If the side fix works, this is
+  probably unnecessary; if it does not, it returns.
+
+- **Re-measure the ADR 170 baseline under the seeding fix**, since every
+  published figure predates it.
+
+
 ### Coverage is 17/20 and the gate needs 20 — three heads, all failing the same way
 
 **This is the only thing standing between ADR 170's model and a real

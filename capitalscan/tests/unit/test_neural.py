@@ -106,10 +106,18 @@ class TestTheDesignMatrix:
         from capitalscan.research import features as feat
 
         rng = np.random.default_rng(seed)
+        # Categoricals are driven off `feat.CATEGORICAL_COLS`, not a
+        # hardcoded `== "sector"`. The production code had exactly that
+        # hardcoding and it silently dropped `signal_type`; a fixture with
+        # the same assumption could not have caught it.
+        levels = {
+            "sector": ["Technology", "Energy", "Utilities"],
+            "signal_type": ["confluence_low", "confluence_high", "stoch_oversold"],
+        }
         data: dict[str, object] = {}
         for col in feat.FEATURE_COLS:
-            if col == "sector":
-                data[col] = rng.choice(["Technology", "Energy"], size=n)
+            if col in feat.CATEGORICAL_COLS:
+                data[col] = rng.choice(levels.get(col, [f"{col}_a", f"{col}_b"]), size=n)
             elif col in feat.BOOL_FEATURE_COLS:
                 data[col] = rng.random(n) > 0.5
             else:
@@ -140,9 +148,34 @@ class TestTheDesignMatrix:
         assert indicator[:10].sum() == 10
         assert indicator[10:].sum() == 0
 
-    def test_the_width_accounts_for_sector_and_indicators(self) -> None:
+    def test_the_width_accounts_for_every_categorical_and_the_indicators(self) -> None:
+        """Every categorical, not just `sector`.
+
+        Until 2026-09-04 `transform` one-hot encoded `frame["sector"]` by
+        name while `_numeric_block` excluded *all* categoricals, so a second
+        categorical was dropped from one side and never added to the other.
+        Adding `signal_type` produced two arms with byte-identical inputs
+        and a delta of exactly 0.000 on all twenty heads. This asserts the
+        width accounts for each categorical's own level count.
+        """
         design = neural.fit_design(self._frame())
-        assert design.n_features == len(design.columns) + 2 + len(neural.IMPUTE_COLS)
+        widths = sum(len(levels) for _, levels in design.categorical_levels)
+        assert design.n_features == len(design.columns) + widths + len(neural.IMPUTE_COLS)
+
+    def test_every_categorical_feature_is_encoded(self) -> None:
+        """The guard against the silent dropper returning."""
+        from capitalscan.research import features as feat
+
+        design = neural.fit_design(self._frame())
+        encoded = {col for col, _ in design.categorical_levels}
+        expected = {c for c in feat.CATEGORICAL_COLS if c in feat.FEATURE_COLS}
+        assert encoded == expected, f"unencoded categoricals: {expected - encoded}"
+
+    def test_no_categorical_leaks_into_the_numeric_block(self) -> None:
+        from capitalscan.research import features as feat
+
+        design = neural.fit_design(self._frame())
+        assert not set(design.columns) & set(feat.CATEGORICAL_COLS)
 
 
 class TestTheFanIsMonotoneWithoutSorting:

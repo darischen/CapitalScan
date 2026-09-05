@@ -138,21 +138,39 @@ class DesignMatrix:
     columns: tuple[str, ...]
     mean: pd.Series
     std: pd.Series
-    sector_levels: tuple[str, ...]
+    #: One entry per categorical, in `feat.CATEGORICAL_COLS` order, each
+    #: mapping the column to its train-observed levels.
+    #:
+    #: **Was `sector_levels` until 2026-09-04, and that was a silent
+    #: dropper.** `transform` one-hot encoded `frame["sector"]` by name
+    #: while `_numeric_block` excluded *every* categorical, so a second
+    #: categorical was removed from the numeric side and never encoded on
+    #: the other -- it vanished with no error. Adding `signal_type` (ADR
+    #: 173) produced two arms with byte-identical inputs: the same step
+    #: counts [406, 404, 372] and a delta of exactly 0.000 on all twenty
+    #: heads. Only that impossible-looking zero exposed it.
+    categorical_levels: tuple[tuple[str, tuple[str, ...]], ...]
 
     def transform(self, frame: pd.DataFrame) -> np.ndarray:
         numeric = _numeric_block(frame, self.columns)
         indicators = [numeric[c].isna().to_numpy(float)[:, None] for c in IMPUTE_COLS]
         scaled = ((numeric - self.mean) / self.std).fillna(0.0)
-        onehot = np.stack(
-            [(frame["sector"].to_numpy() == lv).astype(float) for lv in self.sector_levels],
-            axis=1,
-        )
-        return np.concatenate([scaled.to_numpy(float), onehot, *indicators], axis=1)
+
+        # Every categorical, by name from the fitted encoding -- not one
+        # hardcoded column. A level unseen in train encodes as all-zero,
+        # which is the honest representation of "not a level this model
+        # was fitted on" and is what an unknown sector already did.
+        blocks = [scaled.to_numpy(float)]
+        for col, levels in self.categorical_levels:
+            values = frame[col].to_numpy()
+            blocks.append(np.stack([(values == lv).astype(float) for lv in levels], axis=1))
+        blocks.extend(indicators)
+        return np.concatenate(blocks, axis=1)
 
     @property
     def n_features(self) -> int:
-        return len(self.columns) + len(self.sector_levels) + len(IMPUTE_COLS)
+        widths = sum(len(levels) for _, levels in self.categorical_levels)
+        return len(self.columns) + widths + len(IMPUTE_COLS)
 
 
 def _numeric_block(frame: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
@@ -167,11 +185,16 @@ def fit_design(train_frame: pd.DataFrame) -> DesignMatrix:
     """Learn the encoding from train, once."""
     columns = tuple(c for c in feat.FEATURE_COLS if c not in feat.CATEGORICAL_COLS)
     numeric = _numeric_block(train_frame, columns)
+    levels = tuple(
+        (col, tuple(sorted(train_frame[col].dropna().unique())))
+        for col in feat.CATEGORICAL_COLS
+        if col in feat.FEATURE_COLS
+    )
     return DesignMatrix(
         columns=columns,
         mean=numeric.mean(),
         std=numeric.std().replace(0.0, 1.0),
-        sector_levels=tuple(sorted(train_frame["sector"].dropna().unique())),
+        categorical_levels=levels,
     )
 
 
@@ -354,8 +377,22 @@ def _labels_matrix(frame: pd.DataFrame) -> np.ndarray:
 def _run(module_factory, x, y, w, n_steps, seed, watch, grids_t, device):
     torch = _require_torch()
 
-    module = module_factory().to(device)
+    # **Seed BEFORE the module is built, not after.** Until 2026-09-04 this
+    # read `module_factory()` first and seeded second, so the initial
+    # weights were drawn from whatever RNG state happened to be current and
+    # `DEFAULT_SEEDS` controlled only the batch shuffle. Two runs of
+    # identical code with identical seeds chose different step counts --
+    # [364, 384, 372] against [437, 323, 510] -- and the "seed spread" the
+    # session reported was measuring shuffles across three *unseeded*
+    # initialisations, which is not what it claimed to measure.
     torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    # cuDNN picks algorithms by benchmarking unless told not to; two runs
+    # can otherwise pick different kernels with different float ordering.
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    module = module_factory().to(device)
     optimiser = torch.optim.AdamW(
         module.parameters(), lr=float(TRAINING["lr"]), weight_decay=float(TRAINING["weight_decay"])
     )

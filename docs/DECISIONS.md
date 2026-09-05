@@ -213,6 +213,8 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 169 | TabFM evaluated against ADR 063's LightGBM baseline, gated on running on `wivie` | **Measured 2026-09-03. The gate fails.** On `wivie`, a 250-row context takes **231 s for one row** of inference at 7.04GB RSS on a 7.6GB box; ADR 170's model scores all 34,195 validate events in 91 ms on a CPU. On the workstation GPU it runs but loses to LightGBM. Two claims in the original text were wrong and are corrected below. Originally proposed: Google's zero-shot tabular transformer (released 2026-06-30) directly contests ADR 063's "gradient boosting dominates tabular data at this scale" — TabArena beats tuned LightGBM/XGBoost across 700-150k rows and supports native quantile output. Deployment target is `wivie` (measured: i5-7200U, 4 threads, 7.6GB RAM, no discrete GPU), against TabFM's own stated ~40k-row/24GB-GPU ceiling. Nothing measured yet; salvaging a piece (its representation, not the whole model) is on the table alongside full adoption |
 | 170 | The distributional model is multi-task: one trunk, four heads, CRPS | **Measured 2026-09-03, not promoted.** One shared trunk, four softmax-over-bins heads, summed CRPS. Beats ADR 113's twenty independent LightGBM heads on 16/20 (14 beyond seed spread) and lifts coverage 14/20 -> 17/20; **both directional q50 heads beat a constant for the first time**. Gate still fails (coverage 17/20, not 20/20), so nothing is promoted. Adds `core/distributions.py` and `research/neural.py`; torch is an optional extra |
 | 171 | CI moves to Python 3.13 and the floor moves with it | **Decided 2026-09-03.** Invokes ADR 164's reopening clause; amends it for CI only. mypy failed in CI and nowhere else because the 3.11 interpreter resolves numpy 2.4.6 (stubs type `np.mean` as `Any`) against 2.5.1 on the workstation. **CI was the outlier**: `wivie` and the Pi both run 3.13.5. Dropping `wivie` to 3.11 was rejected, it relocates the mismatch and imports the old numpy into production. `requires-python` moves to `>=3.13` because a floor nothing tests is not a floor |
+| 172 | The holdout is spent: dispersion ships, direction does not | **Decided 2026-09-04.** 79,956 holdout events, 2024-2026. Dispersion generalises (mean improvement +7.98% -> **+7.71%**, coverage 14/20 -> **17/20**, `peak_h5_q95` 22.72 -> **23.34**); the directional heads go negative (`terminal_h5_q50` +0.36 -> **−0.72**). Session 24's directional headline is withdrawn. Calibration decays 0.018/0.031/0.048 across 2024/25/26, so refits must be scheduled. **ADR 019's "once" is used** |
+| 173 | `signal_type` must be a feature: the model was never told the direction | **Decided 2026-09-04.** Neither `signal_type` nor `side` is in `FEATURE_COLS`, and `fwd_ret_*` is the raw price return, not the position return (train medians: longs +0.549%, shorts +0.282%, both positive). So the directional head predicted a 38/62 mix of opposing populations without being told which — **mis-posed, not unanswerable**. Explains why `peak_ret_*`, which IS side-adjusted, works. Measurable only on validate now |
 
 ---
 
@@ -8166,3 +8168,143 @@ resolves a different dependency set from `wivie`'s, reproducing the same
 class of defect in the other direction. The rule that follows from this ADR
 is the general one: **when a gate disagrees across environments, compare
 the resolved dependency versions before the source.**
+
+## 172. The holdout is spent: dispersion ships, direction does not
+
+**Status.** Decided 2026-09-04. **The holdout is spent and cannot be reused
+as a clean estimate.** Answers ADR 113's kill criterion at the model layer.
+No `config_hash` move. Nothing is promoted to serving yet.
+
+**Context.**
+
+ADR 019 assigns splits at event creation and says the holdout is evaluated
+exactly once, at the end, and published whatever it says. On 2026-09-04, at
+the user's instruction, it was read: 79,956 events, 2024-01-02 to
+2026-09-03, against ADR 170's multi-task model fitted on train alone.
+
+**Decision.**
+
+**The dispersion family is the deliverable. The directional family is
+retired at the model layer.**
+
+| | validate | holdout |
+|---|---|---|
+| beats the constant | 18/20 | 17/20 |
+| coverage within 5 points | 14/20 | **17/20** |
+| mean improvement | +7.98% | **+7.71%** |
+| `peak_h5_q95` | 22.72% | **23.34%** |
+| `terminal_h5_q50` | +0.36% | **−0.72%** |
+| `terminal_h10_q50` | +0.66% | **−0.99%** |
+
+Mean improvement fell 0.27 points on data never seen, and calibration was
+*better* on the holdout than on validate. **How far price travels after a
+signal is genuinely predictable and generalises.**
+
+**Session 24's directional headline is withdrawn.** "Both directional heads
+clear a constant for the first time" was chosen on validate from five
+architectures scored on validate. It did not replicate.
+
+**Consequences.**
+
+**What may be published.** The peak family, as a range, with `n_eff` and an
+interval (invariant 8). Not a directional call: `terminal_h*_q50` is
+negative out of sample and must not be presented as a midpoint the reader
+can lean on.
+
+**Calibration decays and refits must be scheduled.** Mean absolute coverage
+error by year: 2024 **0.0182**, 2025 **0.0311**, 2026 **0.0480**. At that
+rate it crosses DESIGN §7.7's 0.05 tolerance during 2027.
+
+**The estimate is now weaker for everything that follows.** Every later
+model is selected against validate, which has been scored many times. ADR
+019's "once" has been used. This is stated so no future session quotes a
+validate figure as if it carried holdout weight.
+
+**What this does NOT retire.** The directional question was **mis-posed**,
+not answered — see ADR 173. This ADR retires the directional heads *as
+currently specified*, on labels that are not position-relative and a feature
+set that omits the side.
+
+---
+
+## 173. `signal_type` must be a feature: the model was never told the direction
+
+**Status.** Decided 2026-09-04. Amends ADR 113's feature set. Does not move
+`config_hash` (features are not config). Supersedes the directional reading
+of ADR 172, which measured a mis-posed question.
+
+**Context.**
+
+The user's observation: a `confluence_low` is a long and a
+`confluence_high` is a short, and the strategy assigns sides for exactly
+that reason. Checked, and the model has never been told:
+
+- **Neither `signal_type` nor `side` is in `FEATURE_COLS`.** `side` sits in
+  `META_COLS`, used only to sign `breach_depth`; `signal_type` is absent.
+- **`fwd_ret_*` is the raw price return, not the position return.** Train
+  medians: longs **+0.549%**, shorts **+0.282%** — both positive, because
+  the label measures price movement rather than profit.
+
+So `terminal_h*_q50` predicts the median price move of a pool that is 38%
+longs and 62% shorts, without being told which, while the study's premise
+is that the two move oppositely. **The question has no answer as posed.**
+
+**It also explains the dispersion result.** `peak_ret_*` *is*
+side-adjusted — shorts average **+2.28%**, positive because a fall is
+favourable to a short. The two families differ by whether the label is
+position-relative, not by magnitude against sign.
+
+**Decision.**
+
+**Add `signal_type` to `FEATURE_COLS` as a categorical**, rather than
+`side`. It encodes the side and also distinguishes `confluence_low` from
+`stoch_oversold`, which the premise says are different signals; `side`
+would collapse that. The existing `META_COLS` comment declining to make
+`side` a feature — "`signal_type` already encodes direction" — is correct
+about the encoding and wrong that anything therefore carries it, because
+`signal_type` was never a feature either.
+
+**Consequences.**
+
+**Measurable only on validate.** The holdout was spent one commit earlier
+(ADR 172), so a side-aware model has no clean out-of-sample estimate. Any
+gain must be reported with that caveat attached. This ordering was the
+user's call, made with the cost stated.
+
+**Position-relative labels are deliberately NOT changed here.** Rewriting
+`fwd_ret_*` to mean profit would change what every consumer reads --
+`cell_stats`, the screener, `research/returns.py` -- and break the
+convention that a DataFrame column means what the SQL column means. Giving
+the model `signal_type` lets it learn the sign conditionally instead. If
+that proves insufficient, a *separate* position-relative label is the next
+step, not a redefinition of an existing one.
+
+**What would revisit this.** A side-aware fit that still fails on the
+directional heads. That would be evidence about the signal rather than
+about the feature set, and it is the measurement ADR 113's kill criterion
+actually wanted.
+
+### Measured the same day: it fails
+
+`signal_type` does not recover direction. On validate, blind against aware:
+`terminal_h5_q50` **+0.356% -> +0.111%**, `terminal_h10_q50` **+0.579% ->
++0.061%**, coverage 17/20 -> 15/20. Both heads went *down*.
+
+**The pre-registered prediction failed in the informative direction.** The
+run said in advance that terminal should move and peak should not. Peak fell
+0.245 and terminal fell 0.111 -- peak moved *more*, which is the signature
+of added capacity rather than of a mechanism engaging.
+
+The likely reason is redundancy: `bb_pctb` near 0 with a low `k_full` already
+*is* a confluence-low. The feature told the model nothing it could not
+derive, and a seven-level categorical on ~8,000 effective samples costs a
+little to carry.
+
+**`signal_type` is kept as a feature anyway.** It is free to compute,
+faithful to what the strategy actually does, and its absence was a genuine
+defect in the specification even though repairing it changed no outcome. The
+cost is inside the run-to-run noise.
+
+**ADR 172's retirement of the directional heads is therefore final**, not
+provisional. Direction has failed across five architectures on validate, on
+79,956 unseen holdout events, and with the side explicitly supplied.

@@ -2,7 +2,7 @@
   "model": "ADR 170 multi-task distributional model",
   "module": "capitalscan.research.neural",
   "entry_point": "neural.fit(train_frame, calendar) -> Ensemble",
-  "git_sha": "ba3ebb7d09ca8f2da31f6f23911d0209d4181d1b",
+  "git_sha": "c8cb27a3922a864816279a20c1f0e5e138b821e3",
   "config_hash": "0523841076f47293",
   "measured_on": "2026-09-03",
   "splits": {
@@ -41,7 +41,7 @@
   "ensemble": "mean of per-seed pmfs, then invert (NOT mean of quantiles)",
   "selection": "median best-step across the purged walk-forward ladder at horizon_days=10, then refit on all of train",
   "features": {
-    "n": 22,
+    "n": 23,
     "cols": [
       "bb_pctb",
       "bb_width_pct",
@@ -61,13 +61,15 @@
       "signal_strength",
       "seq_in_cluster",
       "days_to_earnings",
+      "signal_type",
       "sector",
       "k_minus_d",
       "mcap_log",
       "breach_depth"
     ],
     "categorical": [
-      "sector"
+      "sector",
+      "signal_type"
     ],
     "mean_imputed_with_indicator": [
       "days_to_earnings",
@@ -91,5 +93,17 @@
     "incumbent_lgbm_coverage": "14/20"
   },
   "gate": "FAILS DESIGN 7.7 check 3 (coverage 17/20, needs 20/20). NOT promoted.",
-  "known_limitation": "Calibrated for uptrending and choppy markets. All three coverage failures are 2022, the only sustained decline in train+validate. Train is 90.9% uptrend by index-above-200SMA; validate is 58.8%."
+  "known_limitation": "Calibrated for uptrending and choppy markets. All three coverage failures are 2022, the only sustained decline in train+validate. Train is 90.9% uptrend by index-above-200SMA; validate is 58.8%.",
+  "revised": "2026-09-04",
+  "revision_notes": "signal_type added as a categorical feature (ADR 173): the model was never told whether a signal is a long or a short, and fwd_ret_* is the raw price return rather than the position return. The measured_on_validate figures below PREDATE both that change and the seeding fix, and are retained only as the record of what ADR 172's holdout run scored.",
+  "reproducibility_warning": "Every figure here was measured before 2026-09-04, when `_run` built the module BEFORE calling torch.manual_seed -- so initial weights were unseeded and the seeds controlled only the batch shuffle. Two runs of identical code gave step counts [364, 384, 372] and [437, 323, 510], and validate coverage 17/20 and 14/20. Seeding order is fixed and cuDNN pinned as of that date; these numbers have NOT been re-measured under the fix.",
+  "holdout": {
+    "spent_on": "2026-09-04 (ADR 172)",
+    "window": "2024-01-02..2026-09-03",
+    "n_events": 79956,
+    "beats_constant": "17/20",
+    "coverage_ok": "17/20",
+    "mean_improve_pct": 7.705,
+    "note": "dispersion generalised; terminal_h5_q50 -0.72% and terminal_h10_q50 -0.99%"
+  }
 }

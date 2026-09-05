@@ -176,14 +176,21 @@ def test_derived_columns_are_deterministic():
 # ---------------------------------------------------------------------------
 
 
-def test_nineteen_raw_plus_three_derived():
+def test_twenty_raw_plus_three_derived():
     """DESIGN §7.3 claims twenty-two are on the event row. Three are not —
     `bb_mid`-based distance, `atr_14/close`, and `vix_pct_252d` — and the
     module docstring records why each is blocked rather than dropping them
     silently. If that count ever changes, the docstring and BACKLOG entry
     change with it.
+
+    **Twenty raw as of 2026-09-04**: `signal_type` joined them (ADR 173).
+    It is the feature that says which way the signal points -- a
+    `confluence_low` is a long, a `confluence_high` a short -- and until
+    that date neither it nor `side` was a feature at all, so the
+    directional heads were predicting the median price move of a mixed
+    long/short pool without being told which. See RESULTS 2026-09-04.
     """
-    assert len(feat.RAW_FEATURE_COLS) == 19
+    assert len(feat.RAW_FEATURE_COLS) == 20
     # Three as of 2026-09-02: `breach_depth` joined `k_minus_d` and
     # `mcap_log`. ADR 069's deferred feature, and the half `bb_pctb` does
     # not carry -- the signal is a touch, so the low's depth past the band
@@ -192,7 +199,7 @@ def test_nineteen_raw_plus_three_derived():
     # heads: it is genuinely new information, and RESULTS 2026-09-02 says
     # what it bought.
     assert len(feat.DERIVED_FEATURE_COLS) == 3
-    assert len(feat.FEATURE_COLS) == 22
+    assert len(feat.FEATURE_COLS) == 23
 
 
 def test_no_duplicate_features():

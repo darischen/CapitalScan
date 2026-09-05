@@ -76,6 +76,18 @@ RAW_FEATURE_COLS: tuple[str, ...] = (
     "signal_strength",
     "seq_in_cluster",
     "days_to_earnings",
+    # **Which signal fired, and therefore which way it points (ADR 173).**
+    # A `confluence_low` is a long and a `confluence_high` is a short; the
+    # strategy assigns sides for that reason. Until 2026-09-04 neither this
+    # nor `side` was a feature, so the directional heads were asked to
+    # predict the median *price* move of a pool that is 38% longs and 62%
+    # shorts without being told which -- a question with no answer, on
+    # labels that are not position-relative.
+    #
+    # `signal_type` rather than `side`: it carries the side and also keeps
+    # `confluence_low` distinct from `stoch_oversold`, which the premise
+    # says are different signals. `side` would collapse that.
+    "signal_type",
     # Static
     "sector",
 )
@@ -85,10 +97,12 @@ DERIVED_FEATURE_COLS: tuple[str, ...] = ("k_minus_d", "mcap_log", "breach_depth"
 
 FEATURE_COLS: tuple[str, ...] = RAW_FEATURE_COLS + DERIVED_FEATURE_COLS
 
-#: `sector` is the only categorical. DESIGN §7.3 excludes `ticker` identity
-#: deliberately: 60 names over 40k events permits memorising individual
-#: histories, and sector is the right granularity.
-CATEGORICAL_COLS: tuple[str, ...] = ("sector",)
+#: `sector` and `signal_type` are the categoricals. DESIGN §7.3 excludes
+#: `ticker` identity deliberately: 60 names over 40k events permits
+#: memorising individual histories, and sector is the right granularity.
+#: `signal_type` joined them on 2026-09-04 (ADR 173) -- seven levels, and
+#: the one feature that says which way the signal points.
+CATEGORICAL_COLS: tuple[str, ...] = ("sector", "signal_type")
 
 #: ADR 113's four labels. `fwd_ret_{h}d` is R_h, `peak_ret_{h}d` is M_h.
 LABEL_COLS: tuple[str, ...] = (
@@ -330,7 +344,11 @@ def build_training_frame(
             f"{len(missing)} event(s) carry a blank or non-canonical sector, "
             f"e.g. {sample}. ADR 147 stops the build rather than training on "
             "a categorical with a NULL level. Repair with "
-            "`cscan sector-backfill` (ADR 148)."
+            "`ingest.run_sector_backfill` (ADR 148) -- note there is no "
+            "`cscan sector-backfill` CLI command; this message named one "
+            "until 2026-09-04. If the names are ETFs or structured products "
+            "(QQQ, SPY, VOO, IBIT, GJS), they have no sector by nature and "
+            "the repair is to exclude them, not to backfill."
         )
 
     kept = frame.iloc[trainable].reset_index(drop=True)
