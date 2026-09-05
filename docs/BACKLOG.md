@@ -31,6 +31,24 @@ turned out to be mis-posed (ADR 173). Priorities, in the user's order:
    a confluence-low. **The feature is kept anyway** -- free, faithful to the
    strategy, and its absence was a real defect in the spec. **ADR 172's
    retirement of the directional heads is now final.** RESULTS 2026-09-04 §4.
+
+   **The ceiling was 0.281% all along**, computed rather than fitted:
+   per-`signal_type` medians from train applied to validate, which is the
+   best any predictor using that feature could reach at tau=0.5. Your
+   hypothesis IS in the data and correctly ordered -- `confluence_low`
+   +0.672%, `confluence_high` +0.226%, longs above shorts -- but the spread
+   is 0.446 pp against a 5-day sd of 4.66%, a signal-to-noise ratio of
+   **0.096**. **Do not re-open this by adding another directional feature**
+   unless it carries information `signal_type` does not; the prize is
+   bounded and small. RESULTS 2026-09-04 §5.
+
+   **Why width is predictable and location is not** (§6): the terminal
+   family is U-shaped on the holdout -- +7.49 / +0.32 / **−0.72** / +3.22 /
+   +13.30 across tau. The model reads the *spread* of the signed return and
+   not its *centre*, because volatility is autocorrelated and returns are
+   not. **This does not mean the strategy has no edge**: asymmetric exits
+   (5% target, ATR x2 stop) turn predictable dispersion into P&L without
+   predictable direction.
 2. **More history — measured, real, second priority.** RESULTS 2026-09-04
    has the numbers: 2022 coverage error falls 23% (0.0503 -> 0.0385) when
    train starts 2002 instead of 2010. Blocked from reaching production by

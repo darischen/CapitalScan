@@ -6566,10 +6566,81 @@ categorical by name; `test_every_categorical_feature_is_encoded` and
 test fixture reads `feat.CATEGORICAL_COLS` rather than hardcoding `sector`
 -- a fixture with the same assumption as the bug could not have caught it.
 
+### 5. The ceiling on knowing the side is 0.281%, computed not fitted
+
+The A/B above measures what a *model* extracted. This computes what was
+available to extract, which is the number that actually closes the
+question. Take the per-`signal_type` median from train, apply it to
+validate: no learning, no estimation error, the best any predictor using
+only `signal_type` could achieve at tau=0.5.
+
+    global constant q50       +0.3602%    loss 0.016959
+    per-signal_type medians               loss 0.016911
+    CEILING from knowing side            +0.281%
+
+**So the feature could never have bought more than 0.281%**, and carrying a
+seven-level categorical on an effective sample near 8,000 costs more than
+that. The A/B's −0.245% is not a failure to exploit the feature; there was
+almost nothing to exploit.
+
+**The hypothesis is visible in the data and correctly ordered**, which is
+worth stating plainly because it means the signal design is sound:
+
+| signal_type | train median `fwd_ret_5d` |
+|---|---|
+| `confluence_low` | **+0.672%** |
+| `stoch_oversold` | +0.499% |
+| `bb_lower_touch` | +0.493% |
+| `bear_close_above_upper` | +0.333% |
+| `bb_upper_touch` | +0.324% |
+| `stoch_overbought` | +0.277% |
+| `confluence_high` | **+0.226%** |
+
+`confluence_low` highest, `confluence_high` lowest, longs above shorts.
+**The spread is 0.446 pp against a 5-day sd of 4.66% -- a signal-to-noise
+ratio of 0.096.** The direction is real, correctly signed, and about ten
+times smaller than the noise it sits in.
+
+**Every median is positive, including the shorts.** Over 2010-2021 the
+market drifted up hard enough that a short setup's median 5-day *price*
+move was still +0.226%. The directional effect modulates a strong upward
+drift rather than flipping its sign, which is why a head predicting the
+raw-return median cannot express it.
+
+### 6. Why width is predictable and location is not
+
+The terminal family's improvement is **U-shaped on the holdout** --
+`terminal_h5` scores +7.49 / +0.32 / **−0.72** / +3.22 / +13.30 across
+tau = 0.05 to 0.95. The model predicts the 5th and 95th percentiles of the
+*signed* return well and fails only in the middle. It is not blind to the
+return distribution; it is blind to its **location**.
+
+That points at a fact about markets rather than about this study:
+**volatility is autocorrelated and returns are not.** Vol clustering is
+among the most robust empirical regularities; return autocorrelation at
+daily-to-weekly horizons is approximately zero. Every feature here --
+`rv_pct_252d`, `bb_width_pct`, `vix_close`, `dd_52w` -- is a *state*
+measure. They predict spread because spread is predictable, and cannot
+predict drift because drift is not.
+
+**This does not mean the strategy has no edge**, and the distinction
+matters. The backtest's exits are asymmetric (5% target against an ATR x2
+stop), which converts predictable *dispersion* into P&L without requiring
+predictable direction: a wider-than-expected distribution reaches a fixed
+target more often. A strategy can be profitable while the median forward
+return is unpredictable, and ADR 165's returns work is the measurement of
+that, not this.
+
+**The honest statement is therefore narrower than "direction does not
+work":** the median 5-day return is not predictable from these features,
+and the directional signal that exists is 0.281% -- real, correctly signed,
+and too small to be worth a feature.
+
 **What this closes.** Direction has now failed three independent ways:
 across five architectures on validate, on 79,956 unseen holdout events, and
-with the side explicitly supplied. ADR 172's retirement of the directional
-heads is no longer provisional.
+with the side explicitly supplied -- and the fourth line of evidence is
+that the ceiling was 0.281% all along. ADR 172's retirement of the
+directional heads is no longer provisional.
 
 **What it does not close.** These numbers are on validate, which is
 contaminated, and post-date the seeding fix so they are not directly
