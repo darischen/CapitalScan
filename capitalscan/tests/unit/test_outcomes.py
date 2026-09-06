@@ -114,3 +114,44 @@ class TestItIsSafeToScheduleNightly:
 
         params = list(inspect.signature(oc.run_outcomes).parameters)
         assert params == ["engine"]
+
+
+class TestEveryLabelFamilyHasAWriter:
+    """A label column with no writer is the `events.giveback` failure.
+
+    That column was added by migration `699cb410d219` and stayed NULL on
+    all 5.57M rows because nothing ever wrote it. ADR 175 nearly repeated
+    it: `trough_ret_*` went into `features.LABEL_COLS`, and both the
+    `path peak-labels` command and the `nightly` chain refreshed only the
+    peak family. New events would have carried a NULL trough forever, and
+    `build_training_frame` drops any row missing a label -- so the training
+    set would have shrunk silently, with no error anywhere.
+    """
+
+    @staticmethod
+    def _cli_source() -> str:
+        from pathlib import Path
+
+        return (Path(__file__).resolve().parents[2] / "jobs" / "cli.py").read_text(encoding="utf-8")
+
+    def test_the_cli_backfills_every_family(self) -> None:
+        src = self._cli_source()
+        assert "backfill_peak_labels" not in src, (
+            "the peak-only writer refreshes one of two label families"
+        )
+        assert src.count("backfill_extremum_labels") >= 2, (
+            "both the path command and the nightly chain must refresh labels"
+        )
+        assert src.count("for family in FAMILIES") >= 2
+
+    def test_every_label_column_belongs_to_a_writable_family(self) -> None:
+        """The real invariant: nothing in `LABEL_COLS` is unwritable."""
+        from capitalscan.research import features as feat
+        from capitalscan.research.peak_labels import FAMILIES
+
+        writable = {
+            template.format(h=h) for _, _, template in FAMILIES.values() for h in (1, 2, 3, 5, 10)
+        } | {f"fwd_ret_{h}d" for h in (1, 2, 3, 5, 10)}
+
+        for col in feat.LABEL_COLS:
+            assert col in writable, f"{col} is a label no writer produces"

@@ -47,7 +47,27 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
 
 **Next, in cost order:**
 
-1. **Re-run `cscan outcomes` and read it. Free.** It is idempotent and
+1. **Re-run `cscan outcomes` and read it. Free, but it has a chain in
+   front of it.** Measured 2026-09-06: the resolver is idempotent and
+   correct, and it resolved nothing on its second run because the labels it
+   needs were not there. The dependency, which nothing documented:
+
+       events -> backtest (writes entry_price) -> path backfill
+              -> extremum labels -> outcomes
+
+   `path_backfill` scopes to `entry_price IS NOT NULL`, and `entry_price`
+   is written by the backtest. The last backtest ran 2026-08-30, so of the
+   125 unresolved predictions **112 have a NULL `entry_price`** and cannot
+   be pathed, labelled or scored until one runs again (~2 h). The other 13
+   have partial paths whose forward windows are genuinely still filling.
+
+   **Predicting before `entry_price` exists is correct**, not a bug: the
+   prediction is made at signal time and the entry is a later fact. Only
+   resolution waits.
+
+   So the forward log advances at the pace of `nightly`, not of the clock.
+   Put `cscan outcomes` at the end of that chain once it has been watched a
+   few more times by hand. It is idempotent and
    already installed. Every day it runs, more predictions resolve on data
    nothing has iterated against. It is the only uncontaminated measurement
    in the project, so check it before trusting any other number. Put it in

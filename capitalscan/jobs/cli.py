@@ -2004,17 +2004,27 @@ def path_peak_labels_cmd(
     """
     from capitalscan.jobs import db_io, ingest
     from capitalscan.jobs.config import config_hash as compute_config_hash
-    from capitalscan.research.peak_labels import backfill_peak_labels
+    from capitalscan.research.peak_labels import FAMILIES, backfill_extremum_labels
 
     config = _resolve_config_or_exit()
     chash = config_hash or compute_config_hash(config)
     engine = db_io.get_engine()
 
     with ingest.run_job(engine, "peak_labels", {"config_hash": chash}) as job:
-        updated = backfill_peak_labels(engine, chash, config.stats.fwd_ret_horizons)
+        # **Every family, not just `peak`.** ADR 175 added the trough family
+        # and `features.LABEL_COLS` now requires it, so a writer that
+        # refreshed only the peak columns would leave every new event with a
+        # NULL trough and `build_training_frame` would silently drop it -- a
+        # training set that shrinks with no error. That is the
+        # `events.giveback` failure exactly: a column added by migration
+        # with no writer ever run.
+        updated = sum(
+            backfill_extremum_labels(engine, chash, config.stats.fwd_ret_horizons, family)
+            for family in FAMILIES
+        )
         job.rows_written = updated
 
-    console.print(f"peak labels: config_hash={chash} rows_updated={updated:,}")
+    console.print(f"extremum labels: config_hash={chash} rows_updated={updated:,}")
 
 
 @path_app.command("backfill")
@@ -2917,11 +2927,17 @@ def nightly() -> None:
     # exactly how `events.giveback` ended up NULL on all 5.57M rows —
     # migration 699cb410d219 added the column and no writer ever ran.
     from capitalscan.jobs.config import config_hash as _compute_config_hash
-    from capitalscan.research.peak_labels import backfill_peak_labels
+    from capitalscan.research.peak_labels import FAMILIES, backfill_extremum_labels
 
     chash = _compute_config_hash(config)
     with ingest.run_job(engine, "peak_labels", {"trigger": "nightly", "config_hash": chash}) as pk:
-        pk.rows_written = backfill_peak_labels(engine, chash, config.stats.fwd_ret_horizons)
+        # Both families. See the note in the `path peak-labels` command: a
+        # peak-only refresh freezes ADR 175's trough columns and quietly
+        # removes every new event from the training frame.
+        pk.rows_written = sum(
+            backfill_extremum_labels(engine, chash, config.stats.fwd_ret_horizons, family)
+            for family in FAMILIES
+        )
     # Closes the slot `record` opened above. Without it the row stays
     # `'started'` forever and `cscan system-status` cannot tell a chain that
     # finished from one that died halfway (ADR 080 lists `status` and
