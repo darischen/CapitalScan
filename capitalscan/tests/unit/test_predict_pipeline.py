@@ -19,6 +19,7 @@ import pytest
 
 from capitalscan.core import calibration as calib
 from capitalscan.research import features as feat
+from capitalscan.research import neural
 from capitalscan.research import predict as rp
 from capitalscan.tests.unit._probe import code_of
 
@@ -27,7 +28,7 @@ REPO = Path(__file__).resolve().parents[3]
 
 class TestTheTargetsAreChosenNotDefaulted:
     def test_the_headline_is_a_real_target(self) -> None:
-        assert rp.HEADLINE in {suffix for suffix, _, _ in rp.TOUCH_TARGETS}
+        assert rp.HEADLINE in {t.field for t in rp.TARGETS}
 
     def test_ten_percent_reads_the_ten_day_head(self) -> None:
         """A 10% excursion in five sessions is 1.4% of events.
@@ -37,14 +38,59 @@ class TestTheTargetsAreChosenNotDefaulted:
         where the rate is 7.1%. This asserts the horizon is picked per
         threshold rather than fixed, which is easy to "simplify" away.
         """
-        horizons = {suffix: h for suffix, _, h in rp.TOUCH_TARGETS}
-        assert horizons[10] == 10
-        assert horizons[2] == horizons[3] == horizons[5] == 5
+        horizons = {t.field: t.horizon for t in rp.TARGETS}
+        assert horizons["p_touch_10"] == 10
+        assert horizons["p_touch_2"] == horizons["p_touch_3"] == horizons["p_touch_5"] == 5
 
     def test_the_thresholds_match_the_field_names(self) -> None:
-        """`p_touch_3` must mean 3%, or the column is a lie."""
-        for suffix, threshold, _ in rp.TOUCH_TARGETS:
-            assert threshold == pytest.approx(suffix / 100.0)
+        """`p_touch_3` must mean 3% and `p_adverse_3` must mean -3%."""
+        for t in rp.TARGETS:
+            magnitude = int(t.field.rsplit("_", 1)[1]) / 100.0
+            assert abs(t.threshold) == pytest.approx(magnitude)
+
+    def test_the_adverse_targets_are_negative_and_read_the_trough_head(self) -> None:
+        """ADR 175. Sign and family must agree, or the field is a lie.
+
+        `trough_ret_5d` is negative when the position went against you, so
+        an adverse threshold is a negative number and the question is a
+        shortfall. A positive threshold on a trough head would ask how
+        likely it is that the position went against you by *less* than
+        nothing, which is nearly always true and looks like a probability.
+        """
+        adverse = [t for t in rp.TARGETS if t.field.startswith("p_adverse")]
+        assert adverse, "ADR 175 fields are missing"
+        for t in adverse:
+            assert t.family == "trough"
+            assert t.threshold < 0
+            assert t.direction == "below"
+
+    def test_the_touch_targets_are_positive_and_read_the_peak_head(self) -> None:
+        for t in rp.TARGETS:
+            if t.field.startswith("p_touch"):
+                assert t.family == "peak"
+                assert t.threshold > 0
+                assert t.direction == "above"
+
+    def test_every_target_names_a_head_the_model_actually_fits(self) -> None:
+        """A target whose `(family, horizon)` is not in `TASKS` raises deep
+        inside inference. Catching it here names the target."""
+        for t in rp.TARGETS:
+            assert (t.family, t.horizon) in neural.TASKS, t.field
+
+    def test_direction_decides_both_the_probability_and_the_outcome(self) -> None:
+        """The two must agree, or calibration fits a probability against
+        the complement of what it predicts and still looks monotone."""
+        labels = np.array([-0.05, -0.01, 0.04])
+        above = rp.Target("x", "peak", 5, 0.03, "above")
+        below = rp.Target("y", "trough", 5, -0.03, "below")
+        assert above.realised(labels).tolist() == [0.0, 0.0, 1.0]
+        assert below.realised(labels).tolist() == [1.0, 0.0, 0.0]
+
+        grid = np.linspace(-0.2, 0.2, 33)
+        pmf = np.full((1, 32), 1 / 32)
+        assert above.probability(pmf, grid)[0] == pytest.approx(
+            1.0 - below.probability(pmf, grid)[0], abs=0.2
+        )
 
 
 class TestTheCaveatTravels:
@@ -148,19 +194,43 @@ def _frame() -> pd.DataFrame:
 
 
 def _applied(p3: list[float]) -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "p_touch_2": [0.7, 0.7],
-            "p_touch_3": p3,
-            "p_touch_5": [0.3, 0.3],
-            "p_touch_10": [0.08, 0.08],
-            "p_touch_3_raw": [0.61, 0.61],
-            "calib_bucket": ["p_touch_3:b5", "p_touch_3:b5"],
-            "calib_n_eff": [800.0, 800.0],
-            "ci_low": [0.58, 0.58],
-            "ci_high": [0.66, 0.66],
-        }
-    )
+    """The shape `FittedPredictor.apply` returns, generated from `TARGETS`.
+
+    Built from the target list rather than written out, so adding a
+    published field cannot leave this fixture describing the old set while
+    the tests below still pass.
+    """
+    n = len(p3)
+    defaults = {
+        "p_touch_2": 0.70,
+        "p_touch_3": None,  # filled from the argument
+        "p_touch_5": 0.30,
+        "p_touch_10": 0.08,
+        "p_adverse_3": 0.41,
+        "p_adverse_5": 0.22,
+    }
+    frame = pd.DataFrame(index=range(n))
+    for target in rp.TARGETS:
+        values = p3 if target.field == rp.HEADLINE else [defaults[target.field]] * n
+        frame[target.field] = values
+        frame[f"{target.field}_raw"] = [0.61] * n
+        # Bracket each field's OWN value. `core.calibration` guarantees a
+        # published probability sits inside its bucket's interval, so a
+        # fixture that shares one interval across fields would be a shape
+        # the real pipeline cannot produce.
+        frame[f"{target.field}__lo"] = [
+            (v - 0.02) if v is not None and v == v else 0.0 for v in values
+        ]
+        frame[f"{target.field}__hi"] = [
+            (v + 0.02) if v is not None and v == v else 1.0 for v in values
+        ]
+        frame[f"{target.field}__n_eff"] = [800.0] * n
+        frame[f"{target.field}__bucket"] = [5] * n
+    frame["calib_bucket"] = [f"{rp.HEADLINE}:b5"] * n
+    frame["calib_n_eff"] = [800.0] * n
+    frame["ci_low"] = [0.58] * n
+    frame["ci_high"] = [0.66] * n
+    return frame
 
 
 class TestBuildRows:
@@ -196,6 +266,24 @@ class TestBuildRows:
             _fake(_applied([0.62, 0.62])), _frame(), "chash123", "run-1", "abc1234"
         )
         assert all(r["features_json"]["caveat"] == calib.MODEL_CAVEAT for r in rows)
+
+    def test_every_published_field_carries_its_own_interval(self) -> None:
+        """Invariant 8 attaches to each probability, not to the row.
+
+        Before ADR 175 the row held one interval, from `p_touch_3`'s
+        bucket. Surfacing `p_adverse_3` beside that interval would render
+        correctly and describe a different quantity computed over a
+        different reliability table.
+        """
+        rows = rp.build_rows(
+            _fake(_applied([0.62, 0.62])), _frame(), "chash123", "run-1", "abc1234"
+        )
+        for row in rows:
+            evidence = row["calibration_json"]
+            assert {t.field for t in rp.TARGETS} == set(evidence)
+            for field, block in evidence.items():
+                assert block["lo"] <= block["p"] <= block["hi"], field
+                assert block["n_eff"] > 0
 
     def test_the_published_probability_is_inside_its_published_interval(self) -> None:
         rows = rp.build_rows(

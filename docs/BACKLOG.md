@@ -26,44 +26,49 @@ AUC 0.607/0.638/0.689/0.771 at the 2/3/5/10% thresholds, Brier skill up to
 +9.33%, and `p_touch_3` deciles run 0.284 realised at the bottom to 0.755
 at the top against a 0.516 base rate. **No retraining was involved.**
 
-**Session 27 shipped item 1** (ADR 174, 2026-09-05). `cscan predict` fits,
-calibrates and writes `predictions`; `handlers.predict` returns a real
-`Prediction` instead of `NotFound` for the first time since Phase 5; the
-screener shows `P(+3%)` with its interval. What follows is what remains.
+**Session 27 shipped items 1 and 2** (ADR 174 and ADR 175, 2026-09-05).
+`cscan predict` fits, calibrates and writes `predictions`;
+`handlers.predict` returns a real `Prediction` instead of `NotFound` for
+the first time since Phase 5; the screener shows `P(+3%)` with its
+interval; and the adverse half now exists as two more heads.
+
+**ADR 175 did not use `events.mae`, and that was the decision.** `mae` is
+adverse excursion *until the trade exits*, so `ExitParams` is baked into
+it and every sweep of `stop_atr_k` would silently redefine the training
+target. `trough_ret_{1,2,3,5,10}d` was added instead as the exact mirror
+of `peak_ret_*`, computed from `path.adverse` (already side-adjusted).
+Backfill: 489,914 rows in 67s, and peak/trough NULL patterns agree
+exactly, so the training population did not change.
 
 **Next, in cost order:**
 
-1. **Add an MAE head for `p_adverse_*`.** `mae` is already on `events` and
-   side-adjusted (longs -2.455%, shorts -2.041%), and the model currently
-   fits favourable excursion and nothing adverse. This is the missing half
-   of an expected value, which is what turns a probability into an
-   actionable number:
+1. **Measure `P(stop)`, which is not `p_adverse_*`.** The expected value
 
        E[net_ret] ~ P(target) x +5.30% + P(stop) x -4.38% + P(timeout) x -0.05%
 
-   measured from 163,424 train exits. **This supersedes the old
-   `trough_ret` entry**, which was twice demoted as a marginal
-   tail-calibration idea and now has a specific job. The columns
-   (`p_adverse_3`, `p_adverse_5`) already exist on `predictions` and are
-   written NULL today, so this is a fitting change and not a schema one.
+   needs the probability the stop is hit *first*. A trade can reach the
+   target before it reaches the stop, so the two are not independent and
+   `P(stop) != P(trough <= stop)`. The ordering is already in `path` --
+   this is a measurement over existing rows, not a new label.
+   `research.predict.expected_net_return` is written and takes both
+   probabilities from the caller precisely so it cannot pretend otherwise;
+   nothing in the serving path calls it yet.
 
 2. **Adopt arm D's config, with a caveat.** Sector-relative features
    (`rel_dd`, `rel_pctb`) plus `net_ret`/`mae` tasks beat base on Brier
    skill at all three thresholds (t3 +5.54% -> +6.22%) and do not
    interfere. **But AUC is flat** (0.6379 -> 0.6411), so this is better
-   calibration, not new predictive power, and one seed-triple each --
-   reproducible, but not shown to exceed seed choice. Measure the seed
-   spread before treating the ~0.7pp as real. Note this now interacts with
-   item 1: arm D already carries an `mae` task, so doing 1 first makes the
-   comparison cleaner.
+   calibration, not new predictive power, and one seed-triple each.
+   Measure the seed spread before treating the ~0.7pp as real. Note ADR
+   175 already added an adverse family, so re-derive the comparison
+   against the six-head model rather than reusing the four-head numbers.
 
-3. **Refit the reliability table on data that was never used for selection.**
+3. **Refit the reliability tables on data never used for selection.**
    ADR 174's intervals are fitted on validate, which has been scored many
-   times across many architectures, so they are a **lower bound** on the
-   true uncertainty and every surface says so. The holdout is spent
-   (ADR 172). The forward log is the only clean source left, and it
-   accumulates at ~15k events a month -- so this becomes possible around
-   2026-12 without spending anything.
+   times, so they are a **lower bound** on the true uncertainty and every
+   surface says so. The holdout is spent (ADR 172). The forward log is the
+   only clean source left and accumulates ~15k events a month, so this
+   becomes possible around 2026-12 without spending anything.
 
 **Three loose ends left by session 27**, none blocking:
 

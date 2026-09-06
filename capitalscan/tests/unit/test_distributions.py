@@ -221,3 +221,55 @@ class TestUnconditionalPmf:
     def test_it_refuses_labels_that_all_miss_the_grid(self) -> None:
         with pytest.raises(ValueError, match="outside the grid"):
             dist.unconditional_pmf(np.array([50.0, 60.0]), np.linspace(0.0, 1.0, 5))
+
+
+class TestShortfall:
+    """ADR 175's `P(Y <= threshold)`, which fills `Prediction.p_adverse_*`.
+
+    The reason this is a function rather than `1 - exceedance(...)` written
+    at four call sites is that the complement is easy to forget and a
+    forgotten one does not crash. It reports the probability the trade did
+    *not* go against you -- a plausible number in the same range, monotone
+    in the same direction, which would survive a reliability check and be
+    wrong.
+    """
+
+    @staticmethod
+    def _uniform(n_rows: int = 3, n_bins: int = 32):
+        grid = np.linspace(-0.2, 0.2, n_bins + 1)
+        pmf = np.full((n_rows, n_bins), 1.0 / n_bins)
+        return pmf, grid
+
+    def test_it_is_the_exact_complement_of_exceedance(self) -> None:
+        pmf, grid = self._uniform()
+        for threshold in (-0.15, -0.05, 0.0, 0.07, 0.19):
+            got = dist.shortfall(pmf, grid, threshold)
+            assert got == pytest.approx(1.0 - dist.exceedance(pmf, grid, threshold))
+
+    def test_it_increases_with_the_threshold(self) -> None:
+        """More permissive threshold, more probability below it."""
+        pmf, grid = self._uniform()
+        values = [dist.shortfall(pmf, grid, t)[0] for t in np.linspace(-0.19, 0.19, 25)]
+        assert all(b >= a - 1e-12 for a, b in zip(values, values[1:]))
+
+    def test_a_uniform_distribution_splits_at_its_midpoint(self) -> None:
+        pmf, grid = self._uniform()
+        assert dist.shortfall(pmf, grid, 0.0)[0] == pytest.approx(0.5, abs=1e-9)
+
+    def test_it_stays_in_the_unit_interval_past_both_edges(self) -> None:
+        pmf, grid = self._uniform()
+        assert dist.shortfall(pmf, grid, -10.0)[0] == pytest.approx(0.0, abs=1e-9)
+        assert dist.shortfall(pmf, grid, 10.0)[0] == pytest.approx(1.0, abs=1e-9)
+
+    def test_a_mass_concentrated_low_makes_an_adverse_move_likely(self) -> None:
+        """The shape the trough head produces when a name is in trouble."""
+        grid = np.linspace(-0.2, 0.2, 33)
+        pmf = np.zeros((1, 32))
+        pmf[0, :8] = 1.0 / 8  # all mass below -0.10
+        assert dist.shortfall(pmf, grid, -0.05)[0] == pytest.approx(1.0, abs=1e-9)
+        assert dist.shortfall(pmf, grid, -0.15)[0] > 0.4
+
+    def test_it_rejects_a_grid_that_does_not_describe_the_pmf(self) -> None:
+        pmf, grid = self._uniform()
+        with pytest.raises(ValueError, match="bins"):
+            dist.shortfall(pmf, grid[:-1], 0.0)

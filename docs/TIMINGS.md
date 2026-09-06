@@ -280,6 +280,7 @@ before quoting this: a step has regimes and one measurement is one regime.
 | first | failed — torch absent from the rebuilt 3.13 venv | 32s |
 | second | failed — `CardinalityViolation` on the `(ticker, as_of)` key | 10m26s |
 | third | ok — 3,604 rows, 242 tickers | **9m41s** |
+| fourth (ADR 175, six heads) | ok — 4,264 rows, 242 tickers | **10m46s** |
 
 The two completed runs agree at ~10 minutes, and the failure in the second
 happened at the very end (the write), so both figures time essentially the
@@ -289,6 +290,17 @@ reliability tables, and 3,604 rows of inference.
 **Almost all of it is the fit.** The job refits every run rather than
 loading a pickle (ADR 174), which is what makes a fit unable to outlive the
 feature code that produced it.
+
+**Two more heads cost about a minute.** ADR 175 took the architecture from
+four heads to six and the run from 9m41s to 10m46s, +11%. The trunk is
+shared and unchanged, so the added work is two 192x32 output layers and
+two more CRPS terms in the summed objective -- the forward pass over the
+trunk, which dominates, is paid once either way.
+
+**The `trough_ret_*` backfill is separate and cheap.** One set-based
+`UPDATE ... FROM` aggregating 52.8M `path` rows onto 489,914 events: **67s**,
+measured 2026-09-05. It is idempotent and only needs re-running as forward
+windows close.
 
 **An earlier draft of `CLAUDE.md` said ~50 min.** That was wrong and never
 measured — it came from reading wall-clock across two overlapping

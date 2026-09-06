@@ -160,6 +160,25 @@ export interface Reversal {
 }
 
 /**
+ * One field's calibrated probability and the evidence behind it, out of
+ * `predictions.calibration_json`.
+ *
+ * Returns `null` rather than a partial band whenever anything is missing
+ * or unparseable. The column arrived with ADR 175 and older rows do not
+ * have it, so absence is an expected state and not an error — and a band
+ * with a probability but no interval must never reach the screen.
+ */
+function band(payload: Record<string, unknown> | null, field: string): Band | null {
+  if (!payload) return null;
+  const raw = payload[field];
+  if (!raw || typeof raw !== "object") return null;
+  const b = raw as Record<string, unknown>;
+  const nums = [b.p, b.lo, b.hi, b.n_eff].map((v) => (typeof v === "number" ? v : NaN));
+  if (nums.some((v) => !Number.isFinite(v))) return null;
+  return { p: nums[0], lo: nums[1], hi: nums[2], nEff: Math.round(nums[3]) };
+}
+
+/**
  * The ADR 174 caveat, shown wherever a probability is.
  *
  * Kept verbatim in step with `research/predict.MODEL_CAVEAT`, which writes
@@ -168,6 +187,19 @@ export interface Reversal {
  * tooltip, and a caveat that loads asynchronously is a caveat that is
  * sometimes absent.
  */
+/**
+ * The adverse column's tooltip (ADR 175).
+ *
+ * Says the one thing a reader could get backwards: this is a move
+ * *against* the position, so a long and a short are asking opposite
+ * questions of the price and both are answered here in position terms.
+ */
+export const ADVERSE_CAVEAT =
+  "Probability the position moves 3% against you within five sessions — " +
+  "down for a long, up for a short. Calibrated separately from P(+3%), " +
+  "with its own interval. Same caveat: the calibration split was reused " +
+  "during model selection, so the interval is a lower bound.";
+
 export const PREDICTION_CAVEAT =
   "Calibrated on the validate split, which was scored repeatedly during " +
   "model selection, so the interval is a lower bound on the true " +
@@ -187,12 +219,31 @@ export const PREDICTION_CAVEAT =
  * guarantees that by publishing the bucket's realised rate rather than the
  * raw model output, and a renderer may rely on it.
  */
+export interface Band {
+  p: number;
+  lo: number;
+  hi: number;
+  nEff: number;
+}
+
 export interface Prediction {
   pTouch3: number | null;
   ciLow: number | null;
   ciHigh: number | null;
   nEff: number | null;
   modelVersion: string | null;
+  /**
+   * The adverse side (ADR 175): probability of a 3% move **against** the
+   * position within five sessions, with its own interval.
+   *
+   * Its own, not the headline's. Invariant 8 attaches to each published
+   * probability, and `p_adverse_3` is calibrated against a different
+   * reliability table than `p_touch_3` — borrowing the headline's interval
+   * would render correctly and describe a different quantity. `null` when
+   * the row predates the field, which is why the renderer must handle it
+   * rather than assuming a shipped prediction has one.
+   */
+  adverse3: Band | null;
 }
 
 export interface CellStats {
@@ -604,7 +655,7 @@ const feedSql = (order: string) => `
          s.rev_confirmed, s.rev_above_band, s.rev_open_gap_atr, s.rev_ts,
          s.in_watch, s.watch_reason,
          s.p_touch_3, s.pred_ci_low, s.pred_ci_high, s.pred_n_eff,
-         s.model_version
+         s.model_version, s.calibration_json
     FROM v_screen_live s
    WHERE s.signal_date = $1::date
      AND ($4::boolean IS NOT TRUE OR s.is_cluster_head IS NOT FALSE)
@@ -663,6 +714,7 @@ interface FeedRowRaw {
   pred_ci_high: string | null;
   pred_n_eff: string | null;
   model_version: string | null;
+  calibration_json: Record<string, unknown> | null;
 }
 
 export async function screen(
@@ -778,6 +830,7 @@ export async function screen(
             ciHigh: num(r.pred_ci_high),
             nEff: r.pred_n_eff === null ? null : Math.round(Number(r.pred_n_eff)),
             modelVersion: r.model_version,
+            adverse3: band(r.calibration_json, "p_adverse_3"),
           },
   }));
 

@@ -186,6 +186,25 @@ def exceedance(pmf: np.ndarray, grid: np.ndarray, threshold: float) -> np.ndarra
     return 1.0 - below
 
 
+def shortfall(pmf: np.ndarray, grid: np.ndarray, threshold: float) -> np.ndarray:
+    """`P(Y <= threshold)` per row. The mirror of `exceedance`.
+
+    **This is what fills `Prediction.p_adverse_*`** (ADR 175).
+    `trough_ret_5d` is the worst entry-anchored return in the window and is
+    negative when the position went against you, so the question a reader
+    has is "how likely is a drop past -3%" -- a probability of being *below*
+    a threshold, not above one.
+
+    Written as its own function rather than left as `1 - exceedance(...)` at
+    four call sites. The complement is easy to write and easy to forget,
+    and a forgotten one is not a crash: it silently reports the probability
+    that the trade did *not* go against you, which is a plausible number in
+    the same range and monotone in the same direction. It would survive a
+    reliability check and be wrong.
+    """
+    return 1.0 - exceedance(pmf, grid, threshold)
+
+
 def crps(
     pmf: np.ndarray,
     targets: Floats,

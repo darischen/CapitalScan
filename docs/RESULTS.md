@@ -6649,6 +6649,107 @@ failed mechanism prediction are the evidence, not the decimals.
 
 ---
 
+## 2026-09-05 — the adverse half: `p_adverse` ships (ADR 175)
+
+Heads went from four to six, `cscan predict` wrote **4,264 rows across 242
+tickers in 10m46s**, and `Prediction.p_adverse_3/5` are populated for the
+first time. Both fields had been declared and empty since Phase 5.
+
+### The label decision, which was the whole problem
+
+`events.mae` already existed and was the obvious thing to fit. It is the
+wrong target: it measures adverse excursion **until the trade exits**, so
+`ExitParams` is inside the label. A head fitted on it would be predicting
+"how far against me before *this exit policy* closes the position", and
+every sweep of `stop_atr_k` or `target_pct` would silently redefine what
+the head was trained to say. Nothing would error; the head would just
+degrade whenever a sweep ran.
+
+DESIGN §7.4 already forbade exactly this — *"Training on exit returns would
+couple the model to config, forcing a retrain on every stop or target
+change"* — written for the terminal family and never applied to the adverse
+one, because the adverse one did not exist.
+
+So `trough_ret_{1,2,3,5,10}d` was added as the exact mirror of
+`peak_ret_*`:
+
+    m_h = min over t in [1, h] of the entry-anchored return
+
+from `path.adverse`, which is **already side-adjusted in position
+convention** (long `(low - entry) / entry`, short `(entry - high) / entry`),
+so negative means "against the position" for both sides with no sign fix.
+
+| | |
+|---|---|
+| backfill | 489,914 rows in 67s |
+| peak/trough NULL disagreement | **0** |
+| `trough_ret_5d` on the live config | min −0.811, mean −0.0284, max 0.795 |
+
+The zero disagreement is the number that mattered: peak and trough share a
+completeness gate, so adding the troughs to `LABEL_COLS` dropped no
+additional rows and the training population is unchanged from ADR 174's.
+
+### Three existing guards caught real defects
+
+**1. `FORBIDDEN_COLS` caught a perfect leak.** The troughs went into
+`LABEL_COLS` without being added to the forbidden set, which would have
+allowed the outcome of a signal to be used as a feature predicting it.
+`test_the_labels_are_forbidden_as_features` refused the commit.
+
+**2. `test_events_in_trade_filter` caught an unscoped read.** After
+`_touch_labels` was deleted, `latest_signal_date` became the module's only
+`events` read and had no `in_trade` predicate. It anchors the lookback
+window, so an unfiltered max could sit ahead of the newest scorable event
+and shrink the window toward nothing.
+
+**3. The locked model spec refused to describe the wrong architecture.**
+`docs/model_spec_adr170.json` now records six heads, and every
+`measured_on_validate` and `holdout` figure in it is explicitly marked as
+describing the **four**-head model, since none of them were re-measured.
+
+### A sanity check that is not a validation
+
+Sorting the written predictions by `p_adverse_3` and looking at what
+actually happened:
+
+| `p_adverse_3` | n | realised mean trough | realised rate |
+|---|---|---|---|
+| 0.229 | 585 | −2.17% | 0.297 |
+| 0.259 | 438 | −2.38% | 0.326 |
+| 0.278 | 426 | −2.41% | 0.338 |
+| 0.316 | 402 | −2.47% | 0.353 |
+| 0.335 | 343 | −2.97% | 0.391 |
+| 0.351 | 300 | −3.45% | 0.463 |
+| 0.395 | 288 | −4.14% | 0.521 |
+| 0.418 | 309 | −3.78% | 0.479 |
+| 0.463 | 372 | −4.52% | 0.538 |
+| 0.524 | 676 | −6.23% | 0.660 |
+
+Monotone in both columns but for one inversion at 0.418, and the spread is
+wide: the top band's realised trough is nearly three times the bottom's.
+
+**This is not an out-of-sample result and must not be quoted as one.**
+Those rows are holdout-dated, and ADR 174's own rule is that predicting on
+holdout rows is fine while *scoring* them is what spends the budget. The
+budget was already exhausted by ADR 172, so nothing further was spent —
+but the numbers above are a sanity check that the head is wired up the
+right way round, not evidence of generalisation. A clean measurement needs
+the forward log.
+
+### What is still missing
+
+`p_adverse_*` is **not** `P(stop)`. A trade can reach its target before it
+reaches its stop, so the two are not independent and
+
+    P(stop) != P(trough_ret_5d <= stop)
+
+`research.predict.expected_net_return` is written and takes both
+probabilities from its caller precisely so it cannot pretend otherwise.
+Nothing in the serving path calls it. The ordering is already in `path`, so
+closing this is a measurement over existing rows. → `BACKLOG.md`
+
+---
+
 ## 2026-09-05 — `p_touch` shipped: the second checkpoint (ADR 174)
 
 `cscan predict` wrote **3,604 predictions across 242 tickers in 9m41s**, and

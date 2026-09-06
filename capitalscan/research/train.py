@@ -86,13 +86,21 @@ def head_name(family: str, horizon: int, tau: float) -> str:
 def label_for(family: str, horizon: int) -> str:
     """The `events` column backing a head.
 
-    `terminal` -> `fwd_ret_{h}d` ($R_h$), `peak` -> `peak_ret_{h}d` ($M_h$).
+    `terminal` -> `fwd_ret_{h}d` ($R_h$), `peak` -> `peak_ret_{h}d` ($M_h$),
+    `trough` -> `trough_ret_{h}d` ($m_h$, ADR 175).
+
+    **`trough` is not `mae`.** `events.mae` is the adverse excursion until
+    the trade *exits*, so `ExitParams` is baked into it and a sweep of
+    `stop_atr_k` would redefine the target underneath the head. The trough
+    family is a fixed window, matching the other two.
     """
     if family == "terminal":
         return f"fwd_ret_{horizon}d"
     if family == "peak":
         return f"peak_ret_{horizon}d"
-    raise ValueError(f"unknown family {family!r}; expected 'terminal' or 'peak'")
+    if family == "trough":
+        return f"trough_ret_{horizon}d"
+    raise ValueError(f"unknown family {family!r}; expected 'terminal', 'peak' or 'trough'")
 
 
 def all_heads() -> tuple[tuple[str, int, float], ...]:

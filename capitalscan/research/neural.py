@@ -66,7 +66,17 @@ from capitalscan.research import train
 
 #: The four labels, in a fixed order so a saved model's head index means
 #: the same thing on every load.
-TASKS: tuple[tuple[str, int], ...] = (("terminal", 5), ("terminal", 10), ("peak", 5), ("peak", 10))
+TASKS: tuple[tuple[str, int], ...] = (
+    ("terminal", 5),
+    ("terminal", 10),
+    ("peak", 5),
+    ("peak", 10),
+    # ADR 175. The adverse half, without which `p_touch` cannot become
+    # an expected value. A fixed window, deliberately not `events.mae`,
+    # which bakes `ExitParams` into the target.
+    ("trough", 5),
+    ("trough", 10),
+)
 
 #: Bins per task. Enough resolution to read tau=0.05 without the
 #: interpolation dominating, few enough that each bin keeps real mass.

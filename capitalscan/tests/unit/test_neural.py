@@ -31,8 +31,15 @@ needs_torch = pytest.mark.skipif(
 
 
 class TestTheTaskSet:
-    def test_the_four_labels_are_adr_113s(self) -> None:
-        assert neural.TASKS == (("terminal", 5), ("terminal", 10), ("peak", 5), ("peak", 10))
+    def test_the_task_set_is_adr_113s_plus_adr_175s_adverse_half(self) -> None:
+        assert neural.TASKS == (
+            ("terminal", 5),
+            ("terminal", 10),
+            ("peak", 5),
+            ("peak", 10),
+            ("trough", 5),
+            ("trough", 10),
+        )
 
     def test_the_order_is_fixed(self) -> None:
         """A head index means nothing unless the order does. A saved model

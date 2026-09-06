@@ -10,7 +10,7 @@ import {
   sessionsBetween,
   vol,
 } from "@/lib/format";
-import { watchLabel, nextDir, PREDICTION_CAVEAT } from "@/lib/screen";
+import { watchLabel, nextDir, PREDICTION_CAVEAT, ADVERSE_CAVEAT } from "@/lib/screen";
 import type {
   CellStats,
   Meta,
@@ -272,7 +272,12 @@ function StatsCell({ stats }: { stats: CellStats | Suppressed | null }) {
  * and a probability is not a judgement about whether the row is good.
  */
 function PredictionCell({ prediction }: { prediction: Prediction | null }) {
-  if (prediction === null || prediction.pTouch3 === null) {
+  // Truthiness, not `=== null`. The prop is typed `Prediction | null`, and
+  // at runtime it also arrives `undefined` -- from any `ScreenRow` built
+  // before this column existed, which includes every fixture in the web
+  // suite. TypeScript cannot see that, so the strict check compiled
+  // cleanly and threw on render.
+  if (!prediction || prediction.pTouch3 === null) {
     return <span className="dim">—</span>;
   }
   return (
@@ -281,6 +286,35 @@ function PredictionCell({ prediction }: { prediction: Prediction | null }) {
       <span className="dim">
         {" "}
         [{fmt(prediction.ciLow)}–{fmt(prediction.ciHigh)}] n={prediction.nEff ?? "—"}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * The adverse side (ADR 175): P(3% move against the position in 5 days).
+ *
+ * **Its own interval, never the touch column's.** Invariant 8 attaches to
+ * each published probability, and this one is calibrated against a
+ * different reliability table. `band()` returns null unless the row
+ * carries a complete one, so a probability can never reach the screen
+ * without its evidence.
+ *
+ * Still no colour. A reader comparing this against `P(+3%)` is doing the
+ * comparison the two columns exist for, and tinting one of them would
+ * make that judgement for them.
+ */
+function AdverseCell({ prediction }: { prediction: Prediction | null }) {
+  if (!prediction || !prediction.adverse3) {
+    return <span className="dim">—</span>;
+  }
+  const { p, lo, hi, nEff } = prediction.adverse3;
+  return (
+    <span className="num">
+      {pct(p)}
+      <span className="dim">
+        {" "}
+        [{fmt(lo)}–{fmt(hi)}] n={nEff}
       </span>
     </span>
   );
@@ -532,6 +566,7 @@ export function ScreenerTable({
             className="r"
           />
           <th title={PREDICTION_CAVEAT}>P(+3%)</th>
+          <th title={ADVERSE_CAVEAT}>P(−3%)</th>
           {withStats && <th>Cell</th>}
         </tr>
       </thead>
@@ -698,6 +733,9 @@ export function ScreenerTable({
             </td>
             <td data-label="P(+3%)" title={PREDICTION_CAVEAT}>
               <PredictionCell prediction={row.prediction} />
+            </td>
+            <td data-label="P(−3%)" title={ADVERSE_CAVEAT}>
+              <AdverseCell prediction={row.prediction} />
             </td>
             {withStats && (
               <td data-label="Cell">

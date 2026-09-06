@@ -1,36 +1,40 @@
-"""Fit, calibrate, and turn the peak head into publishable `p_touch` rows.
+"""Fit, calibrate, and turn the excursion heads into publishable probabilities.
 
-ADR 174. This is the whole shipping path for Phase 6's first product, and
-it is short because the model already existed -- what was missing was never
-a network, it was the three steps between a softmax and a number a reader
-can act on.
+ADR 174 (`p_touch`) and ADR 175 (`p_adverse`). This is the whole shipping
+path for Phase 6's product, and it is short because the model already
+existed -- what was missing was never a network, it was the three steps
+between a softmax and a number a reader can act on.
 
-    fit          the existing four-task ensemble, on train only
-    calibrate    reliability tables on validate, one per threshold
-    apply        raw exceedance -> calibrated probability + interval
+    fit          the multi-task ensemble, on train only
+    calibrate    reliability tables on validate, one per published field
+    apply        raw probability -> calibrated probability + interval
 
-**`touched_3pct` is exactly `peak_ret_5d >= 0.03`.** Agreement 1.000 across
-163,424 train events, which is not a coincidence: the label is defined that
-way. So `exceedance(peak_pmf, grid, 0.03)` is not an approximation of
-`Prediction.p_touch_3`, it *is* that quantity, and the same holds at 2%, 5%
-and 10%. Four fields the contract has declared empty since Phase 5 get
-filled without fitting anything new.
+**Every published field is read off a predicted CDF, not fitted as its own
+classifier.** `touched_3pct` is exactly `peak_ret_5d >= 0.03` -- agreement
+1.000 across 163,424 train events, because that is how the label is defined
+-- so `exceedance(peak_pmf, grid, 0.03)` is not an approximation of
+`Prediction.p_touch_3`, it *is* that quantity. The same holds at every
+other threshold, above and below. Six contract fields, no extra heads
+beyond the two ADR 175 adds for the adverse family.
 
-**Why the thresholds map onto two different horizons.** 2/3/5% read the
-5-day peak head; 10% reads the 10-day. A 10% favourable excursion inside
-five sessions happens in 1.4% of events, and a probability estimated
-against a base rate that thin is dominated by its own sampling noise. At
-ten days it is 7.1%, which the calibration buckets can actually resolve.
-The horizon is chosen per threshold rather than fixed, and the row records
-which one answered.
+**Why the thresholds map onto two horizons.** 2/3/5% read the 5-day peak
+head; 10% reads the 10-day. A 10% favourable excursion inside five sessions
+happens in 1.4% of events, and a probability estimated against a base rate
+that thin is dominated by its own sampling noise. At ten days it is 7.1%,
+which the calibration buckets can resolve.
+
+**The realised outcome is computed from the label, never queried
+separately.** An earlier version read `events.touched_*pct` by id. That is
+a second definition of the same fact, and two definitions can disagree
+after a config change while both look fine. The frame already carries
+`peak_ret_5d` and `trough_ret_5d`; thresholding them *is* the definition.
 
 **Calibration is fitted on validate and never on train.** A reliability
-table fitted on the same rows the network minimised its loss on measures
-how well it memorised them. Validate is the only split available: the
-holdout was spent under ADR 172, and its numbers are therefore optimistic
-by an unmeasured amount because validate has been scored many times across
-many architectures. That caveat is not decoration -- it travels into every
-row through `MODEL_CAVEAT` and out to the UI.
+table fitted on the rows the network minimised its loss on measures how
+well it memorised them. Validate is the only split available -- the holdout
+was spent under ADR 172 -- and its numbers are optimistic by an unmeasured
+amount because validate has been scored many times across many
+architectures. That caveat travels into every row through `MODEL_CAVEAT`.
 """
 
 from __future__ import annotations
@@ -44,25 +48,68 @@ import pandas as pd
 from sqlalchemy import Engine, text
 
 from capitalscan.core import calibration as calib
+from capitalscan.core import distributions as dist
 from capitalscan.core import folds as core_folds
 from capitalscan.research import features as feat
-from capitalscan.research import neural
+from capitalscan.research import neural, train
 
-#: `(field suffix, threshold, peak horizon)`. See the module docstring for
-#: why 10% reads a different horizon than the rest.
-TOUCH_TARGETS: tuple[tuple[int, float, int], ...] = (
-    (2, 0.02, 5),
-    (3, 0.03, 5),
-    (5, 0.05, 5),
-    (10, 0.10, 10),
+
+@dataclass(frozen=True)
+class Target:
+    """One published probability, and everything needed to compute it.
+
+    `direction` is the reason this is a dataclass rather than a tuple.
+    "above" and "below" produce numbers in the same range, monotone in the
+    same direction, so a swapped one is not a crash -- it silently reports
+    the probability that the trade did *not* go against you, which would
+    survive a reliability check and be wrong. Naming the field makes its
+    pairing with `family` explicit: a peak head is asked how likely a rise
+    past a threshold is, a trough head how likely a fall past one.
+    """
+
+    field: str
+    family: str
+    horizon: int
+    threshold: float
+    direction: str
+
+    def realised(self, labels: np.ndarray) -> np.ndarray:
+        """The 0/1 outcome for this target, from its own label column."""
+        if self.direction == "above":
+            return (labels >= self.threshold).astype(float)
+        return (labels <= self.threshold).astype(float)
+
+    def probability(self, pmf: np.ndarray, grid: np.ndarray) -> np.ndarray:
+        """The raw model probability, read off the predicted CDF."""
+        if self.direction == "above":
+            return dist.exceedance(pmf, grid, self.threshold)
+        return dist.shortfall(pmf, grid, self.threshold)
+
+    @property
+    def label_column(self) -> str:
+        return train.label_for(self.family, self.horizon)
+
+
+#: The six fields `Prediction` declares and Phase 5 left empty.
+TARGETS: tuple[Target, ...] = (
+    Target("p_touch_2", "peak", 5, 0.02, "above"),
+    Target("p_touch_3", "peak", 5, 0.03, "above"),
+    Target("p_touch_5", "peak", 5, 0.05, "above"),
+    Target("p_touch_10", "peak", 10, 0.10, "above"),
+    # ADR 175. `trough_ret_5d` is negative when the position went against
+    # you, so these are shortfall probabilities and their thresholds are
+    # negative. Both read the 5-day head, because the adverse question a
+    # reader has is about the window the exit policy acts on.
+    Target("p_adverse_3", "trough", 5, -0.03, "below"),
+    Target("p_adverse_5", "trough", 5, -0.05, "below"),
 )
 
-#: The field whose interval becomes the row's headline `ci_low`/`ci_high`.
+#: The field whose bucket becomes the row's headline `ci_low`/`ci_high`.
 #: 3% is the strongest combination of skill and sample: +5.54% Brier skill
 #: on a 0.516 base rate, so both outcomes are well populated in every
-#: bucket. 10% has the higher AUC but a 0.071 base rate, which makes its
-#: lower buckets nearly empty of positives.
-HEADLINE = 3
+#: bucket. `p_touch_10` has the higher AUC but a 0.071 base rate, which
+#: leaves its lower buckets nearly empty of positives.
+HEADLINE = "p_touch_3"
 
 #: Re-exported from `core`, which is where it lives so that `handlers`
 #: can reach it without importing this module. See the definition there.
@@ -75,12 +122,13 @@ class FittedPredictor:
 
     The two travel together on purpose. A table fitted against a different
     ensemble miscalibrates silently -- it produces plausible numbers, never
-    an error -- so `model_version` covers both and any surface displaying a
-    probability records which version produced it.
+    an error -- so `model_version` covers both, and ADR 175's move from
+    four heads to six invalidates ADR 174's tables rather than letting them
+    be reused.
     """
 
     ensemble: neural.Ensemble
-    tables: dict[int, calib.ReliabilityTable]
+    tables: dict[str, calib.ReliabilityTable]
     model_version: str
     n_train: int
     n_calibrate: int
@@ -88,50 +136,33 @@ class FittedPredictor:
     def apply(self, frame: pd.DataFrame) -> pd.DataFrame:
         """Raw and calibrated probabilities for every row of `frame`.
 
-        Returns one row per input row, indexed alike, with `p_touch_N`,
-        `p_touch_N_raw`, and for the headline threshold the bucket identity
-        and interval that satisfy invariant 8.
+        One `predict_pmf` for all six fields rather than one per field:
+        the ensemble runs every head in a single forward pass, and calling
+        it per target would repeat that six times for identical output.
         """
+        pmf = self.ensemble.predict_pmf(frame)
         out = pd.DataFrame(index=frame.index)
-        for suffix, threshold, horizon in TOUCH_TARGETS:
-            raw = self.ensemble.exceedance(frame, "peak", horizon, threshold)
-            table = self.tables[suffix]
-            out[f"p_touch_{suffix}_raw"] = raw
-            out[f"p_touch_{suffix}"] = [table.calibrate(float(v)) for v in raw]
-            if suffix == HEADLINE:
-                buckets = [table.lookup(float(v)) for v in raw]
-                out["calib_bucket"] = [f"p_touch_{suffix}:b{b.index}" for b in buckets]
+        for target in TARGETS:
+            k = neural.TASKS.index((target.family, target.horizon))
+            raw = target.probability(pmf[:, k, :], self.ensemble.grids[k])
+            table = self.tables[target.field]
+            buckets = [table.lookup(float(v)) for v in raw]
+            out[f"{target.field}_raw"] = raw
+            out[target.field] = [table.calibrate(float(v)) for v in raw]
+            # Every field keeps its own bucket, not just the headline.
+            # Invariant 8 attaches to each published probability, and an
+            # interval borrowed from another field's reliability table is
+            # an interval for a different quantity that renders correctly.
+            out[f"{target.field}__lo"] = [b.ci_low for b in buckets]
+            out[f"{target.field}__hi"] = [b.ci_high for b in buckets]
+            out[f"{target.field}__n_eff"] = [b.n_eff for b in buckets]
+            out[f"{target.field}__bucket"] = [b.index for b in buckets]
+            if target.field == HEADLINE:
+                out["calib_bucket"] = [f"{target.field}:b{b.index}" for b in buckets]
                 out["calib_n_eff"] = [b.n_eff for b in buckets]
                 out["ci_low"] = [b.ci_low for b in buckets]
                 out["ci_high"] = [b.ci_high for b in buckets]
         return out
-
-
-def _touch_labels(engine: Engine, config_hash: str, ids: Sequence[int]) -> pd.DataFrame:
-    """The realised `touched_*pct` flags, joined by event id.
-
-    They are not in `features._select_columns()`, so they are fetched here
-    rather than assumed present on the frame. Joining by id rather than by
-    `(ticker, signal_date)` because that pair is not unique -- 14 ticker-days
-    in the last two months carry two events, and they are **opposite
-    sides**.
-
-    `in_trade` is redundant here, since every id comes from a frame that
-    already filtered it, and it is written anyway: `test_events_in_trade_
-    filter.py` sweeps every read of `events` and requires the predicate or
-    an allowlist entry, on the grounds that losing the study population
-    looks completely normal in the output.
-    """
-    params: dict[str, Any] = {"c": config_hash, "ids": list(ids)}
-    with engine.connect() as conn:
-        return pd.read_sql(
-            text(
-                "SELECT id, touched_2pct, touched_3pct, touched_5pct, touched_10pct "
-                "FROM events WHERE config_hash = :c AND in_trade AND id = ANY(:ids)"
-            ),
-            conn,
-            params=params,
-        ).set_index("id")
 
 
 def fit_and_calibrate(
@@ -144,9 +175,9 @@ def fit_and_calibrate(
     """Fit on train, calibrate on validate, and return both together.
 
     Raises:
-        ValueError: if a threshold's label is absent or constant on
-            validate. That is a mis-joined label rather than a hard
-            problem, and shipping an uncalibrated probability because the
+        ValueError: if a target's label is missing from the frame, or is
+            constant on validate. Both mean a mis-joined or unbackfilled
+            label, and shipping an uncalibrated probability because the
             calibration step quietly no-opped is the failure this prevents.
     """
     with engine.connect() as conn:
@@ -157,23 +188,26 @@ def fit_and_calibrate(
 
     ensemble = neural.fit(train_frame, calendar, seeds=seeds)
 
-    labels = _touch_labels(engine, config_hash, list(valid_frame["id"]))
+    pmf = ensemble.predict_pmf(valid_frame)
     weights = np.asarray(core_folds.cluster_weights(list(valid_frame["cluster_id"])))
 
-    tables: dict[int, calib.ReliabilityTable] = {}
-    for suffix, threshold, horizon in TOUCH_TARGETS:
-        column = f"touched_{suffix}pct"
-        if column not in labels.columns:
-            raise ValueError(f"{column} is not on events; cannot calibrate p_touch_{suffix}")
-        realised = (
-            valid_frame["id"].map(labels[column]).astype("float64").to_numpy()  # NaN where absent
-        )
-        raw = ensemble.exceedance(valid_frame, "peak", horizon, threshold)
-        keep = ~np.isnan(realised)
-        tables[suffix] = calib.build_reliability(
-            f"p_touch_{suffix}",
+    tables: dict[str, calib.ReliabilityTable] = {}
+    for target in TARGETS:
+        if target.label_column not in valid_frame.columns:
+            raise ValueError(
+                f"{target.label_column} is not on the frame, so {target.field} "
+                "cannot be calibrated. It reaches the frame through "
+                "`features.LABEL_COLS` only once backfilled -- see "
+                "`peak_labels.backfill_extremum_labels`."
+            )
+        labels = pd.to_numeric(valid_frame[target.label_column], errors="coerce").to_numpy(float)
+        k = neural.TASKS.index((target.family, target.horizon))
+        raw = target.probability(pmf[:, k, :], ensemble.grids[k])
+        keep = ~np.isnan(labels)
+        tables[target.field] = calib.build_reliability(
+            target.field,
             raw[keep],
-            realised[keep],
+            target.realised(labels[keep]),
             weights=weights[keep],
             n_buckets=n_buckets,
         )
@@ -181,7 +215,7 @@ def fit_and_calibrate(
     return FittedPredictor(
         ensemble=ensemble,
         tables=tables,
-        model_version=f"adr174-{config_hash[:8]}-{git_sha[:7]}",
+        model_version=f"adr175-{config_hash[:8]}-{git_sha[:7]}",
         n_train=len(train_frame),
         n_calibrate=len(valid_frame),
     )
@@ -196,11 +230,16 @@ def build_rows(
 ) -> list[dict[str, Any]]:
     """Rows ready for `predictions`, one per event in `frame`.
 
-    `as_of` is the event's `signal_date`, matching the join both screener
-    views already use. A row whose headline probability is NaN is dropped
-    rather than written as NULL: `v_screen` LEFT JOINs this table, and a
-    row of NULLs is indistinguishable on screen from no prediction at all
-    while still consuming the unique key that a later good prediction needs.
+    Keyed on `event_id`, not on `(ticker, as_of)`. A ticker can fire twice
+    in one day and the two can be **opposite sides**, and `p_touch` is the
+    probability of a favourable excursion *for the side the signal
+    assigned* -- so collapsing them would let the screener render one
+    side's row beside the other side's probability.
+
+    A row whose headline probability is not finite is dropped rather than
+    written as NULL: the screener views LEFT JOIN this table, and a row of
+    NULLs is indistinguishable on screen from no prediction at all while
+    still occupying the key a later good prediction needs.
     """
     applied = predictor.apply(frame)
 
@@ -213,64 +252,112 @@ def build_rows(
     event_ids = frame["id"].astype("int64").tolist()
     signal_types = frame["signal_type"].astype(str).tolist()
     sides = frame["side"].astype(str).tolist()
-    probs = {
-        name: applied[name].astype("float64").to_numpy()
-        for name in (
-            "p_touch_2",
-            "p_touch_3",
-            "p_touch_5",
-            "p_touch_10",
-            "p_touch_3_raw",
-            "calib_n_eff",
-            "ci_low",
-            "ci_high",
-        )
-    }
+    columns = [t.field for t in TARGETS] + [
+        f"{HEADLINE}_raw",
+        "calib_n_eff",
+        "ci_low",
+        "ci_high",
+    ]
+    for t in TARGETS:
+        columns += [f"{t.field}__lo", f"{t.field}__hi", f"{t.field}__n_eff", f"{t.field}__bucket"]
+        # `apply` names the raw column `<field>_raw`; the per-field block
+        # below reads it under a double-underscore alias so one loop can
+        # pull every column it needs by a single naming rule.
+        applied[f"{t.field}__raw"] = applied[f"{t.field}_raw"]
+        columns.append(f"{t.field}__raw")
+    probs = {name: applied[name].astype("float64").to_numpy() for name in columns}
     buckets = applied["calib_bucket"].astype(str).tolist()
 
     rows: list[dict[str, Any]] = []
     for i in range(len(frame)):
-        headline = probs[f"p_touch_{HEADLINE}"][i]
-        if not np.isfinite(headline):
+        if not np.isfinite(probs[HEADLINE][i]):
             continue
-        rows.append(
-            {
-                "ticker": tickers[i],
-                "as_of": dates[i],
-                "event_id": event_ids[i],
-                "model_version": predictor.model_version,
-                "config_hash": config_hash,
-                "run_id": run_id,
-                "git_sha": git_sha,
-                "p_touch_2": float(probs["p_touch_2"][i]),
-                "p_touch_3": float(probs["p_touch_3"][i]),
-                "p_touch_5": float(probs["p_touch_5"][i]),
-                "p_touch_10": float(probs["p_touch_10"][i]),
-                "p_touch_3_raw": float(probs["p_touch_3_raw"][i]),
-                "calib_bucket": buckets[i],
-                "calib_n_eff": float(probs["calib_n_eff"][i]),
-                "ci_low": float(probs["ci_low"][i]),
-                "ci_high": float(probs["ci_high"][i]),
-                # The fan stays in the payload because DESIGN §7.4 defines
-                # it and it costs nothing to read off the same CDF. It is
-                # NOT the product: `terminal_h5_q50` is negative out of
-                # sample (ADR 172) and no surface displays it.
-                "features_json": {
-                    "signal_type": signal_types[i],
-                    "side": sides[i],
-                    "caveat": MODEL_CAVEAT,
-                    "n_train": predictor.n_train,
-                    "n_calibrate": predictor.n_calibrate,
-                },
+        row: dict[str, Any] = {
+            "ticker": tickers[i],
+            "as_of": dates[i],
+            "event_id": event_ids[i],
+            "model_version": predictor.model_version,
+            "config_hash": config_hash,
+            "run_id": run_id,
+            "git_sha": git_sha,
+            "p_touch_3_raw": float(probs[f"{HEADLINE}_raw"][i]),
+            "calib_bucket": buckets[i],
+            "calib_n_eff": float(probs["calib_n_eff"][i]),
+            "ci_low": float(probs["ci_low"][i]),
+            "ci_high": float(probs["ci_high"][i]),
+            # The fan stays in the payload because DESIGN §7.4 defines it
+            # and it costs nothing to read off the same CDF. It is NOT the
+            # product: `terminal_h5_q50` is negative out of sample
+            # (ADR 172) and no surface displays it.
+            "features_json": {
+                "signal_type": signal_types[i],
+                "side": sides[i],
+                "caveat": MODEL_CAVEAT,
+                "n_train": predictor.n_train,
+                "n_calibrate": predictor.n_calibrate,
+            },
+        }
+        calibration: dict[str, Any] = {}
+        for target in TARGETS:
+            value = probs[target.field][i]
+            if not np.isfinite(value):
+                row[target.field] = None
+                continue
+            row[target.field] = float(value)
+            calibration[target.field] = {
+                "p": float(value),
+                "raw": float(probs[f"{target.field}__raw"][i]),
+                "lo": float(probs[f"{target.field}__lo"][i]),
+                "hi": float(probs[f"{target.field}__hi"][i]),
+                "n_eff": float(probs[f"{target.field}__n_eff"][i]),
+                "bucket": int(probs[f"{target.field}__bucket"][i]),
             }
-        )
+        row["calibration_json"] = calibration
+        rows.append(row)
     return rows
 
 
+def expected_net_return(
+    p_target: float,
+    p_stop: float,
+    target_pct: float,
+    stop_pct: float,
+    timeout_pct: float,
+) -> float:
+    """`E[net_ret]`, which is the reason ADR 175 exists.
+
+        E[net_ret] = P(target) x target_pct
+                   + P(stop) x stop_pct
+                   + P(neither) x timeout_pct
+
+    Measured over 163,424 train exits the three payoffs are +5.30%, -4.38%
+    and -0.05%. With only `p_touch` fitted, two of the three terms were
+    unavailable and a probability could not become a number to act on.
+
+    **`p_stop` is not `p_adverse_*` unmodified**, and this function does
+    not pretend otherwise -- it takes both probabilities from the caller.
+    A trade can reach the target before it reaches the stop, so the two
+    events are not independent and `P(stop)` is not `P(trough <= stop)`.
+    The ordering is in `path` and measuring it is separate work. Until
+    then this is the arithmetic, not an estimate, and nothing calls it from
+    the serving path. → `BACKLOG.md`
+    """
+    p_neither = max(0.0, 1.0 - p_target - p_stop)
+    return p_target * target_pct + p_stop * stop_pct + p_neither * timeout_pct
+
+
 def latest_signal_date(engine: Engine, config_hash: str) -> date | None:
-    """The most recent `signal_date` with events, for the default window."""
+    """The most recent `signal_date` with events, for the default window.
+
+    Scoped to `in_trade`, matching the population `build_serving_frame`
+    scores. An unfiltered max could sit days ahead of the newest scorable
+    event and silently shrink the lookback window to nothing.
+    """
     with engine.connect() as conn:
         return conn.execute(
-            text("SELECT max(signal_date) FROM events WHERE config_hash = :c"),
+            text(
+                "SELECT max(signal_date) FROM events "
+                "WHERE config_hash = :c AND in_trade AND entry_kind = 'next_open'"
+            ),
             {"c": config_hash},
         ).scalar()

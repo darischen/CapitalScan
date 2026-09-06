@@ -112,6 +112,10 @@ LABEL_COLS: tuple[str, ...] = (
     "fwd_ret_10d",
     "peak_ret_5d",
     "peak_ret_10d",
+    # ADR 175. Same completeness gate as the peak family, so these drop
+    # the same rows and the training population is unchanged.
+    "trough_ret_5d",
+    "trough_ret_10d",
 )
 
 #: Carried for folds, weights and provenance. Never features.
@@ -141,6 +145,14 @@ META_COLS: tuple[str, ...] = (
 #: regime and is unavailable for a future prediction anyway.
 FORBIDDEN_COLS: frozenset[str] = frozenset(
     {
+        # ADR 175. Outcomes like every other label here: the worst
+        # excursion in the forward window is not knowable at signal
+        # time, and one of these as a feature is a perfect leak.
+        "trough_ret_1d",
+        "trough_ret_2d",
+        "trough_ret_3d",
+        "trough_ret_5d",
+        "trough_ret_10d",
         "entry_price",
         "entry_date",
         "entry_gapped",

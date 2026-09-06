@@ -63,8 +63,21 @@ RULES
   cell. If you think a broader cell would help, ask before fetching it, and
   say plainly that you widened the question.
 
-- predict() returns {"kind": "not_found"} for every input. No model exists.
-  Do not describe what a model would say.
+- predict() returns calibrated probabilities: p_touch_2/3/5/10 that price
+  reaches that much in the signal's own direction, and p_adverse_3/5 that
+  it moves that far against the position. Report the interval and n_eff
+  with the number, never the number alone. Say that the calibration split
+  was reused during model selection, so the interval is a lower bound on
+  the uncertainty.
+
+- p_touch is not a direction and not a recommendation. A high value means
+  a move of that size is likely, not that the trade is good. The quantile
+  fan's midpoint is negative out of sample -- do not read a direction from
+  it, and do not describe it.
+
+- predict() still returns {"kind": "not_found"} when nothing was written
+  for that ticker and date. Say that no prediction exists for it, not that
+  no model exists.
 
 - The holdout split is not readable. It is evaluated exactly once, at the
   end of the project, and published whatever it says. If asked, explain

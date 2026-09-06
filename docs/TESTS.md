@@ -1101,6 +1101,30 @@ not take.
   the published probability lies inside its own interval, that no
   directional call is published (ADR 172 stands), and that the query is
   scoped to the live config generation.
+- **(ADR 175)** Three guards caught real defects when the adverse family
+  landed, and all three are worth knowing about because none of them was
+  written for this change:
+  - `test_the_labels_are_forbidden_as_features` refused `trough_ret_*` in
+    `LABEL_COLS` until they were also in `FORBIDDEN_COLS`. Without that,
+    the outcome of a signal could have been used as a feature predicting
+    it — a perfect leak, and one nothing else would have flagged.
+  - `test_every_events_read_filters_in_trade_or_is_allowlisted` caught
+    `latest_signal_date` reading `events` unscoped after the module's only
+    other read was deleted.
+  - `test_model_spec` refused to let `docs/model_spec_adr170.json` keep
+    describing four heads. It now records six, with every measured figure
+    explicitly marked as belonging to the four-head model.
+- **(ADR 175)** `Target.direction` is asserted against `Target.family`:
+  a peak head must be asked an "above" question and a trough head a
+  "below" one. A swapped pair is not a crash — it reports the probability
+  that the trade did *not* go against you, a plausible number in the same
+  range and monotone in the same direction, which would pass a reliability
+  check and be wrong.
+- **(ADR 175)** Every published field carries its **own** interval, checked
+  in `test_every_published_field_carries_its_own_interval`. Before this,
+  the row held one interval from `p_touch_3`'s bucket; rendering
+  `p_adverse_3` beside it would have satisfied invariant 8 on paper while
+  describing a different quantity from a different reliability table.
 - `Prediction` carries the four invariant-8 companions, so a Phase 6 model
   that cannot say how much data stands behind its fan cannot ship through
   this layer.

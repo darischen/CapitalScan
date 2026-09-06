@@ -1759,6 +1759,30 @@ underlying path; exit policy is a separate layer on top. Training on exit
 returns would couple the model to config, forcing a retrain on every stop
 or target change.
 
+**A third family, ADR 175 (2026-09-05): trough.** $m_h = \min_{t \le h} R_t$,
+the worst entry-anchored return in the window, from `path.adverse` over
+`day_offset <= h`. It is the exact mirror of the peak family and it fills
+`Prediction.p_adverse_*`, without which `p_touch` cannot become an expected
+value:
+
+    E[net_ret] ~ P(target) x +5.30% + P(stop) x -4.38% + P(timeout) x -0.05%
+
+**The paragraph above is why it is not `events.mae`.** `mae` is the worst
+excursion *until the trade exits*, so `ExitParams` is inside the label and
+a sweep of `stop_atr_k` would redefine the target underneath the head --
+precisely the coupling this section already forbids. `trough_ret_{h}d` is a
+fixed window like the other two families.
+
+`path.adverse` is **side-adjusted in position convention** (long
+`(low - entry) / entry`, short `(entry - high) / entry`), so negative means
+"against the position" for both sides and no sign fix is needed at read
+time.
+
+The architecture is therefore six heads, not four. Note that the shipped
+product reads probabilities off these CDFs rather than publishing the
+quantiles: `p_touch_*` is `exceedance` on the peak head and `p_adverse_*`
+is `shortfall` on the trough head (ADR 174).
+
 **Quantile crossing is fixed post-fit by sorting.** Independent heads have
 no monotonicity constraint across $\tau$, so a fitted $\hat{Q}_{0.25}$ can
 exceed $\hat{Q}_{0.50}$ on some feature vectors. Sorting is the standard

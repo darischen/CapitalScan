@@ -216,6 +216,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 172 | The holdout is spent: dispersion ships, direction does not | **Decided 2026-09-04.** 79,956 holdout events, 2024-2026. Dispersion generalises (mean improvement +7.98% -> **+7.71%**, coverage 14/20 -> **17/20**, `peak_h5_q95` 22.72 -> **23.34**); the directional heads go negative (`terminal_h5_q50` +0.36 -> **−0.72**). Session 24's directional headline is withdrawn. Calibration decays 0.018/0.031/0.048 across 2024/25/26, so refits must be scheduled. **ADR 019's "once" is used** |
 | 173 | `signal_type` must be a feature: the model was never told the direction | **Decided 2026-09-04.** Neither `signal_type` nor `side` is in `FEATURE_COLS`, and `fwd_ret_*` is the raw price return, not the position return (train medians: longs +0.549%, shorts +0.282%, both positive). So the directional head predicted a 38/62 mix of opposing populations without being told which — **mis-posed, not unanswerable**. Explains why `peak_ret_*`, which IS side-adjusted, works. Measurable only on validate now |
 | 174 | `p_touch` is the shipped product, and its interval is empirical | **Decided 2026-09-05.** Second checkpoint after ADR 172. `touched_3pct` is exactly `peak_ret_5d >= 0.03`, so `exceedance()` on the fitted peak head IS `Prediction.p_touch_3` -- calibrated, monotone across ten deciles, AUC 0.607-0.771, **no retraining**. Ships the probability rather than the fan. Invariant 8's interval is **empirical** (Wilson on the reliability bucket's realised rate at its `n_eff`), not the ensemble spread, which measures seed choice rather than uncertainty. `predict()` stops returning `NotFound` |
+| 175 | The adverse head reads a fixed window, not `mae` | **Decided 2026-09-05.** Completes `p_adverse_*` and the other two terms of `E[net_ret]`. `events.mae` is adverse excursion **until exit**, so `ExitParams` is baked into it and every sweep would silently redefine the target. Adds `trough_ret_{1,2,3,5,10}d` as the exact mirror of `peak_ret_*` from `path.adverse`, which is already side-adjusted. `p_adverse_3 = P(trough_ret_5d <= -0.03)`, read off the same CDF. Heads 4 -> 6, so ADR 174's tables refit |
 
 ---
 
@@ -8417,3 +8418,79 @@ Both views now join `p.event_id = e.id` (migration `e7b4c92f1a08`).
 knowingly ambiguous: given a ticker and a date it cannot name a side and
 resolves by `(as_of DESC, id DESC)`, which is deterministic rather than
 correct. → `BACKLOG.md`
+
+## 175. The adverse head reads a fixed window, not `mae`
+
+**Status.** Decided 2026-09-05. Extends ADR 174. Completes ADR 093's
+`p_adverse_*` fields, empty since Phase 5.
+
+**Context.**
+
+ADR 174 ships `p_touch` and says plainly what it does not claim: it is the
+probability of a *favourable* excursion given the side the signal assigned,
+and it is not a statement that the trade will be profitable. That needs the
+other side, which is the expected value
+
+    E[net_ret] ~ P(target) x +5.30% + P(stop) x -4.38% + P(timeout) x -0.05%
+
+measured over 163,424 train exits. The model currently fits favourable
+excursion and nothing adverse, so two of the three terms are unavailable.
+
+**`events.mae` exists and is the wrong label.** It is the minimum adverse
+excursion **until the trade exits**, and the exit is decided by
+`ExitParams` -- `target_pct`, `stop_atr_k`, `max_hold_days`. A head fitted
+on it would be predicting "how far against me before *this exit policy*
+closes the position", so every sweep of a threshold silently redefines the
+training target. `peak_ret_5d` has no such coupling: it is a fixed
+five-session window, and the model's other three heads are all of that
+shape.
+
+Two labels that differ in whether a config parameter is baked into them
+cannot be compared, and the asymmetry would not show up as an error. It
+would show up as an adverse head that degrades whenever a sweep runs.
+
+**Decision.**
+
+**Add `trough_ret_{1,2,3,5,10}d`, the exact mirror of `peak_ret_*`.**
+
+    m_h = min over t in [1, h] of the entry-anchored return
+
+`path.adverse` already holds the per-day series and is **side-adjusted in
+position convention** -- a long uses `(low - entry) / entry`, a short uses
+`(entry - high) / entry`, so negative means "against the position" on both
+sides. The label is therefore directly meaningful for longs and shorts
+without a sign fix, exactly as `favorable` is.
+
+`p_adverse_3 = P(trough_ret_5d <= -0.03)`, and 5% likewise. That is
+`1 - exceedance`, read off the same predicted CDF, so the adverse
+probability costs one head and no new machinery.
+
+**Why not reuse `mae` anyway, given it is already there.** Because the
+failure is silent and slow. A sweep of `stop_atr_k` moves the label, the
+head refits against the moved label, calibration still looks fine, and the
+number on screen changes for a reason no reader could infer. The extra
+columns cost one migration and one set-based UPDATE over a table that
+already exists.
+
+**Consequences.**
+
+**`peak_labels.py` generalises rather than gaining a sibling.** The two
+families differ in one aggregate (`max(favorable)` against
+`min(adverse)`) and share the entry-offset rule, the closed-at-both-ends
+window, and the completeness gate. Two copies of that SQL is two places for
+the `next_open` offset bug to be reintroduced -- the one that mislabelled
+80,273 of 155,344 events before it was caught.
+
+**`mae` stays on `events` and stays useful.** It is the right quantity for
+measuring what actually happened to a trade under the policy that ran,
+which is what the backtest reports. It is only wrong as a *model target*.
+
+**The heads go from four to six**, so `model_version` changes and the ADR
+174 reliability tables must be refitted rather than reused. A table fitted
+against a different ensemble miscalibrates silently.
+
+**This does not make the system predict profit.** With both sides fitted,
+the expected value above becomes computable from model output rather than
+from historical cell frequencies. Whether it is *accurate* is a separate
+measurement, and validate is contaminated (ADR 174), so it is a lead until
+the forward log can score it.
