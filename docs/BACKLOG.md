@@ -40,35 +40,64 @@ of `peak_ret_*`, computed from `path.adverse` (already side-adjusted).
 Backfill: 489,914 rows in 67s, and peak/trough NULL patterns agree
 exactly, so the training population did not change.
 
+**Session 28 (2026-09-06) built the forward log and diagnosed the coverage
+failures.** `cscan outcomes` resolves predictions against what actually
+happened; 3,482 resolved on the first run. The coverage diagnosis refuted
+the market-regime hypothesis and located the real cause. See `RESULTS.md`.
+
 **Next, in cost order:**
 
-1. **Measure `P(stop)`, which is not `p_adverse_*`.** The expected value
+1. **Re-run `cscan outcomes` and read it. Free.** It is idempotent and
+   already installed. Every day it runs, more predictions resolve on data
+   nothing has iterated against. It is the only uncontaminated measurement
+   in the project, so check it before trusting any other number. Put it in
+   `nightly` once it has been watched a few times by hand.
 
-       E[net_ret] ~ P(target) x +5.30% + P(stop) x -4.38% + P(timeout) x -0.05%
+2. **Fix `peak_h10_q0.75`, the one regime-independent failure.** Coverage
+   0.6856 against a nominal 0.75, and it misses by roughly the same amount
+   in 2022, 2023, above the 200-day line and below it. That uniformity
+   makes it a shape error in one head rather than anything to do with
+   market conditions -- more history will not touch it. Cheapest probe:
+   check whether the CRPS grid's upper span truncates the peak
+   distribution, since `DEFAULT_CRPS_SPAN` is (0.005, 0.995) and the peak
+   family is one-sided and right-skewed. A grid that ends too low cannot
+   place mass where the outcomes are.
 
-   needs the probability the stop is hit *first*. A trade can reach the
-   target before it reaches the stop, so the two are not independent and
-   `P(stop) != P(trough <= stop)`. The ordering is already in `path` --
-   this is a measurement over existing rows, not a new label.
+3. **Extend the training window, which is now an evidence-backed change
+   rather than a hunch.** Train (2010-2021) contains no sustained decline:
+   its worst year is 2011 at 0.603 of sessions above the 200-day SMA,
+   against 2022's 0.151. **2008 is 0.000 and is excluded** because
+   `ingest_start` is 2010. All four terminal coverage failures are 2022 and
+   all four are fine in 2023. `capitalscan_hist` (11 GB) is still on disk
+   and was built for exactly this; it was shelved after being evaluated
+   against a different question, so the earlier negative result does not
+   apply here. Verify 2008 and 2000-2002 events exist in it before
+   re-running anything.
+
+   **Do NOT add a market-regime feature for this.** It was the obvious fix
+   and the data says no: the coverage error is the same size with SPX above
+   its 200-day SMA (+0.0876) as below it (+0.0631). A regime feature has
+   nothing to learn from when 90.8% of train is one regime.
+
+4. **Measure `P(stop)`, which is not `p_adverse_*`.** A trade can reach its
+   target before its stop, so the two are not independent and
+   `P(stop) != P(trough <= stop)`. The ordering is already in `path`, so
+   this is a measurement over existing rows.
    `research.predict.expected_net_return` is written and takes both
-   probabilities from the caller precisely so it cannot pretend otherwise;
-   nothing in the serving path calls it yet.
+   probabilities from its caller so it cannot pretend otherwise; nothing in
+   the serving path calls it.
 
-2. **Adopt arm D's config, with a caveat.** Sector-relative features
-   (`rel_dd`, `rel_pctb`) plus `net_ret`/`mae` tasks beat base on Brier
-   skill at all three thresholds (t3 +5.54% -> +6.22%) and do not
-   interfere. **But AUC is flat** (0.6379 -> 0.6411), so this is better
-   calibration, not new predictive power, and one seed-triple each.
-   Measure the seed spread before treating the ~0.7pp as real. Note ADR
-   175 already added an adverse family, so re-derive the comparison
-   against the six-head model rather than reusing the four-head numbers.
+5. **Adopt arm D's config, with a caveat.** Sector-relative features plus
+   `net_ret`/`mae` tasks beat base on Brier skill at all three thresholds
+   (t3 +5.54% -> +6.22%) and do not interfere, **but AUC is flat**
+   (0.6379 -> 0.6411), so it is better calibration rather than new
+   predictive power, on one seed-triple each. Re-derive against the
+   six-head model; the four-head numbers no longer describe the code.
 
-3. **Refit the reliability tables on data never used for selection.**
-   ADR 174's intervals are fitted on validate, which has been scored many
-   times, so they are a **lower bound** on the true uncertainty and every
-   surface says so. The holdout is spent (ADR 172). The forward log is the
-   only clean source left and accumulates ~15k events a month, so this
-   becomes possible around 2026-12 without spending anything.
+6. **Refit the reliability tables on clean data.** Blocked until item 1 has
+   accumulated enough resolved rows -- roughly 2026-12 at ~15k events a
+   month. The current intervals are fitted on validate and are a lower
+   bound on the true uncertainty.
 
 **Three loose ends left by session 27**, none blocking:
 

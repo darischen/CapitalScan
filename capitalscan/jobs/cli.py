@@ -312,6 +312,44 @@ def predict(
 
 
 @app.command()
+def outcomes(
+    show: bool = typer.Option(False, help="Print the forward log's score and exit"),
+) -> None:
+    """Score written predictions against what actually happened (DESIGN 7.8).
+
+    The forward log. Every other number about this model comes from a split
+    that has been reused; a prediction recorded before its outcome existed
+    is the one kind of evidence that cannot be contaminated. Idempotent and
+    cheap -- safe to run nightly.
+    """
+    from capitalscan.jobs import outcomes as oc
+
+    if show:
+        s = oc.score()
+        if not s["n"]:
+            console.print("outcomes: nothing resolved yet")
+            return
+
+        # Every aggregate is nullable and for different reasons: `pinball`
+        # is NULL for rows written before the quantile fan was stored, and
+        # `brier` is NULL if a prediction carried no `p_touch_3`. Printing
+        # "n/a" says which is missing; a crash says nothing.
+        def num(key: str, places: int) -> str:
+            value = s[key]
+            return "n/a" if value is None else f"{value:.{places}f}"
+
+        console.print(
+            f"outcomes: n={s['n']}  Brier={num('brier', 5)}  "
+            f"base={num('base_rate', 4)}  pinball={num('pinball', 6)}  "
+            f"({s['first_pred']} to {s['last_pred']})"
+        )
+        return
+
+    report = oc.run_outcomes()
+    console.print(f"outcomes: {report.summary()}")
+
+
+@app.command()
 def universe(
     quarter: Optional[str] = typer.Option(None, help="Quarter to evaluate (e.g. 2026Q3)"),
     tickers: Optional[str] = typer.Option(None, help="Comma-separated ticker list"),

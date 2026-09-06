@@ -6649,6 +6649,127 @@ failed mechanism prediction are the evidence, not the decimals.
 
 ---
 
+## 2026-09-06 — why coverage fails, and the forward log that can finally check
+
+Two pieces of work. The second answers a question the first made askable.
+
+### The forward log exists now (`cscan outcomes`)
+
+DESIGN §7.8 defined an `outcomes` table in Phase 5 and nothing ever wrote
+it. It does now: a set-based join from `predictions` to closed `events`
+windows, `ON CONFLICT DO NOTHING` so a recorded outcome is never rewritten,
+and no tuneable parameter of any kind. **3,482 predictions resolved**, 125
+windows still open.
+
+This matters because every other number about this model comes from a split
+that has been reused. A prediction recorded before its outcome existed is
+the one kind of evidence that cannot be contaminated.
+
+**First reading, and it is not flattering:**
+
+| predicted | n | realised | gap |
+|---|---|---|---|
+| 0.282 | 244 | 0.430 | **+0.148** |
+| 0.371 | 412 | 0.442 | +0.071 |
+| 0.396 | 448 | 0.464 | +0.068 |
+| 0.474 | 401 | 0.511 | +0.037 |
+| 0.596 | 283 | 0.625 | +0.029 |
+| 0.758 | 530 | 0.796 | +0.038 |
+
+Realised climbs monotonically 0.430 → 0.796, so **the ranking is real**.
+But the model under-predicts in nine of ten bands. The sample's base rate is
+0.5658 against validate's 0.516: July–August 2026 was a friendlier tape than
+the 2022–23 window the calibration was fitted on, and the model carried the
+old base rate forward.
+
+**Also fixed:** ADR 174 claimed the quantile fan "stays in the payload" and
+`build_rows` never wrote it — all 4,264 rows had NULL `q05..q95`. The
+documentation described code that did not exist. Now written, which is what
+lets `outcomes` score a pinball loss at all.
+
+### Which heads fail coverage, and why — the hypothesis was wrong
+
+At six heads the gate reads **25/30 within 5 points**. The five failures
+split into two unrelated problems.
+
+**Problem A: the terminal heads are biased high at the middle.**
+
+| head | nominal | coverage | error |
+|---|---|---|---|
+| `terminal_h5_q0.25` | 0.25 | 0.3273 | +0.0773 |
+| `terminal_h5_q0.50` | 0.50 | 0.5576 | +0.0576 |
+| `terminal_h10_q0.25` | 0.25 | 0.3311 | +0.0811 |
+| `terminal_h10_q0.50` | 0.50 | 0.5644 | +0.0644 |
+
+Over-coverage means the predicted quantile sits **too high** — more
+outcomes fall below it than should. The terminal distribution is shifted
+up, which is the same defect ADR 172 found from the other side when
+`terminal_h5_q50` came back negative out of sample.
+
+Sliced by year, it is almost entirely 2022:
+
+| head | 2022 | 2023 |
+|---|---|---|
+| `terminal_h5_q0.25` | +0.1188 **MISS** | +0.0360 OK |
+| `terminal_h5_q0.50` | +0.1064 **MISS** | +0.0090 OK |
+| `terminal_h10_q0.25` | +0.1337 **MISS** | +0.0287 OK |
+| `terminal_h10_q0.50` | +0.1182 **MISS** | +0.0108 OK |
+
+**The regime hypothesis was tested and refuted.** The prediction going in
+was that the model fails because it cannot see the *market's* trend —
+`above_sma200` is the ticker's, not the index's, and the known limitation
+measures the train/validate imbalance on a variable the model has no access
+to. Splitting validate on SPX above/below its own 200-day SMA:
+
+| head | SPX above | SPX below |
+|---|---|---|
+| `terminal_h5_q0.25` | +0.0876 | +0.0631 |
+| `terminal_h5_q0.50` | +0.0612 | +0.0528 |
+| `terminal_h10_q0.25` | +0.0872 | +0.0727 |
+| `terminal_h10_q0.50` | +0.0720 | +0.0539 |
+
+**The error is the same size in both regimes.** If the model were blind to
+a regime it could otherwise exploit, the two columns would diverge. They do
+not. Adding a market-trend feature would not have fixed this.
+
+**What it actually is: train contains no sustained decline at all.**
+Fraction of sessions with SPX above its own 200-day SMA, by year:
+
+| 2010 | 2011 | 2012 | 2013 | 2014 | 2015 | 2016 | 2017 | 2018 | 2019 | 2020 | 2021 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0.738 | 0.603 | 0.960 | 1.000 | 0.976 | 0.742 | 0.806 | 1.000 | 0.809 | 0.873 | 0.755 | 1.000 |
+
+The worst year in train is 2011 at 0.603. **2022 is 0.151.** Nothing in the
+training window resembles it. **2008 is 0.000** — an entire year below the
+line — and it is excluded because `ingest_start` is 2010.
+
+So this is a *training-data coverage* problem, not a feature problem, and
+that also explains why the regime slices agree: a regime feature has almost
+nothing to learn from when 90.8% of train is one regime. The fix is more
+history, not more columns — and `capitalscan_hist` (11 GB, still on disk)
+was built for exactly that and shelved after being evaluated for a
+different question.
+
+**Problem B: `peak_h10_q0.75` is a different fault.**
+
+| slice | coverage | error |
+|---|---|---|
+| 2022 | 0.6785 | −0.0715 MISS |
+| 2023 | 0.6927 | −0.0573 MISS |
+| SPX above | 0.6854 | −0.0646 MISS |
+| SPX below | 0.6859 | −0.0641 MISS |
+
+Uniform across every slice: both years, both regimes. Under-coverage means
+the predicted quantile is too **low** — the model under-states how high the
+peak gets in the upper-middle of the distribution. This is a shape error in
+one head, owes nothing to 2022, and more history will not touch it.
+
+**The trough family passes all ten**, on its first outing. It also shows the
+only clean regime asymmetry in the table (+0.025 to +0.056 above the line,
+−0.003 to −0.029 below), staying inside tolerance throughout.
+
+---
+
 ## 2026-09-05 — the adverse half: `p_adverse` ships (ADR 175)
 
 Heads went from four to six, `cscan predict` wrote **4,264 rows across 242
