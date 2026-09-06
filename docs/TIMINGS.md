@@ -269,3 +269,32 @@ One quarter: **~18 seconds** on the 1,563-ticker universe, so a full
   resumes (`-StartFrom 2017Q3`), times each quarter, and collects failures
   instead of dying on one bad quarter.
 - **Never run it while a backtest is running** (ADR 060, see above).
+
+## `cscan predict` (ADR 174)
+
+**One regime, three runs, all on the workstation 2026-09-05.** Read `runs`
+before quoting this: a step has regimes and one measurement is one regime.
+
+| run | outcome | duration |
+|---|---|---|
+| first | failed — torch absent from the rebuilt 3.13 venv | 32s |
+| second | failed — `CardinalityViolation` on the `(ticker, as_of)` key | 10m26s |
+| third | ok — 3,604 rows, 242 tickers | **9m41s** |
+
+The two completed runs agree at ~10 minutes, and the failure in the second
+happened at the very end (the write), so both figures time essentially the
+same work: two frame builds, a three-seed fit with the fold ladder, four
+reliability tables, and 3,604 rows of inference.
+
+**Almost all of it is the fit.** The job refits every run rather than
+loading a pickle (ADR 174), which is what makes a fit unable to outlive the
+feature code that produced it.
+
+**An earlier draft of `CLAUDE.md` said ~50 min.** That was wrong and never
+measured — it came from reading wall-clock across two overlapping
+background jobs rather than from `runs`. Corrected 2026-09-05, and it is
+exactly the mistake the header of this file warns about.
+
+**`wivie` is unmeasured**, and this job is not scheduled anywhere. It needs
+the `neural` extra (a 2GB torch wheel) and stays on the workstation until
+someone benchmarks it. → `BACKLOG.md`

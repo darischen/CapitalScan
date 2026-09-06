@@ -26,34 +26,72 @@ AUC 0.607/0.638/0.689/0.771 at the 2/3/5/10% thresholds, Brier skill up to
 +9.33%, and `p_touch_3` deciles run 0.284 realised at the bottom to 0.755
 at the top against a 0.516 base rate. **No retraining was involved.**
 
+**Session 27 shipped item 1** (ADR 174, 2026-09-05). `cscan predict` fits,
+calibrates and writes `predictions`; `handlers.predict` returns a real
+`Prediction` instead of `NotFound` for the first time since Phase 5; the
+screener shows `P(+3%)` with its interval. What follows is what remains.
+
 **Next, in cost order:**
 
-1. **Ship `p_touch` (cheapest, highest value).** It needs no model work at
-   all -- `exceedance()` on the peak head fills `Prediction.p_touch_2/3/5/10`,
-   which the contract has wanted since Phase 5. What is missing is only the
-   plumbing: a writer into `predictions`, and a UI surface. `v_screen`
-   already `LEFT JOIN`s that table and the user has accepted display
-   (single-user, LAN-only), so no shadow flag is needed.
-
-2. **Add an MAE head for `p_adverse_*`.** `mae` is already on `events` and
-   side-adjusted (longs −2.455%, shorts −2.041%), and the model currently
+1. **Add an MAE head for `p_adverse_*`.** `mae` is already on `events` and
+   side-adjusted (longs -2.455%, shorts -2.041%), and the model currently
    fits favourable excursion and nothing adverse. This is the missing half
    of an expected value, which is what turns a probability into an
    actionable number:
 
-       E[net_ret] ~ P(target) x +5.30% + P(stop) x −4.38% + P(timeout) x −0.05%
+       E[net_ret] ~ P(target) x +5.30% + P(stop) x -4.38% + P(timeout) x -0.05%
 
    measured from 163,424 train exits. **This supersedes the old
    `trough_ret` entry**, which was twice demoted as a marginal
-   tail-calibration idea and now has a specific job.
+   tail-calibration idea and now has a specific job. The columns
+   (`p_adverse_3`, `p_adverse_5`) already exist on `predictions` and are
+   written NULL today, so this is a fitting change and not a schema one.
 
-3. **Adopt arm D's config, with a caveat.** Sector-relative features
+2. **Adopt arm D's config, with a caveat.** Sector-relative features
    (`rel_dd`, `rel_pctb`) plus `net_ret`/`mae` tasks beat base on Brier
    skill at all three thresholds (t3 +5.54% -> +6.22%) and do not
    interfere. **But AUC is flat** (0.6379 -> 0.6411), so this is better
    calibration, not new predictive power, and one seed-triple each --
    reproducible, but not shown to exceed seed choice. Measure the seed
-   spread before treating the ~0.7pp as real.
+   spread before treating the ~0.7pp as real. Note this now interacts with
+   item 1: arm D already carries an `mae` task, so doing 1 first makes the
+   comparison cleaner.
+
+3. **Refit the reliability table on data that was never used for selection.**
+   ADR 174's intervals are fitted on validate, which has been scored many
+   times across many architectures, so they are a **lower bound** on the
+   true uncertainty and every surface says so. The holdout is spent
+   (ADR 172). The forward log is the only clean source left, and it
+   accumulates at ~15k events a month -- so this becomes possible around
+   2026-12 without spending anything.
+
+**Three loose ends left by session 27**, none blocking:
+
+- **`handlers.predict(ticker, as_of)` cannot name a side.** `predictions`
+  keys on `event_id`, because a name can fire a long and a short on one day
+  and `p_touch` is directional. The handler takes a ticker and a date, which
+  does not identify which, and returns the newest by `(as_of DESC, id DESC)`
+  -- deterministic, not correct. Either add an optional `side` argument or
+  return both. The screener is unaffected: it joins on the event.
+- **`clear_predictions` does not clear serving.** `sync` copies
+  `predictions` keyed on `id`. Clearing research and re-running produces
+  new ids for the same `(ticker, as_of)`, which the unique index added in
+  migration `c3f8a1e07b26` will reject on the serving side. Either clear
+  both or teach `sync` to delete-then-copy for this table.
+- **`cscan predict` is not in `nightly`, deliberately.** It needs the
+  `neural` extra (a 2GB torch wheel) and refits every run, and `wivie`'s
+  multiplier for that workload is unmeasured. It is a workstation job until
+  someone benchmarks it there. The consequence is that predictions go stale
+  unless run by hand.
+- **Watch-universe rows never get a prediction, and that is correct today.**
+  `build_serving_frame` filters `in_trade`, matching what the model was
+  trained on, while `v_screen_live` shows `in_trade OR in_watch`. Watch
+  rows therefore render `—` in the `P(+3%)` column. Extending to `in_watch`
+  means training on it, not just widening the filter: a name below its
+  SMA200 is a different population and scoring it with this model would be
+  extrapolation dressed as a probability.
+- **`p_touch_2/5/10` are written but only `p_touch_3` is displayed.** The
+  screener shows one column. The ticker page shows none.
 
 **Two findings that constrain the strategy, not the model:**
 

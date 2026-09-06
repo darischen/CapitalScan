@@ -184,11 +184,21 @@ Budgets, so nobody starts one blind. Per-step tables, regimes, and the history o
 | `cscan bars --daily --lookback 8000` | ~11 min / 521 tickers |
 | `cscan bars --hourly --backfill`, all tickers | ~4.5-5.5 h, no incremental path |
 | `cscan universe --quarter` x 66 | ~20 min |
+| `cscan predict` (ADR 174) | **~10 min** measured, workstation only — refits three seeds every run |
 
 - **Use `--phase` for anything long.** `compute` is resumable, checkpointed per `--chunk-size` (default 25); `_chunk_already_done` keys on `(config_hash, chunk, of)`, so **keep `--chunk-size` identical across restarts** or every chunk re-runs. Each phase writes its own `runs` row (`backtest_compute` per chunk, `backtest_finalize`, `backtest_harness`); `notes` carries `harness passed` or the failing check.
 - **`compute`'s `cofire_count` is only correct within a chunk** and is excluded from that write. `finalize` is the whole-universe pass that corrects it, and only if `compute` finished for the config.
 - **`cscan indicators` writes nothing until it finishes** -- it collects across all tickers then upserts once. Querying mid-run returns the pre-run count and looks exactly like a hang. Pass `--workers 8`; it defaults to 1.
 - **Never run `cscan universe --quarter` while a backtest runs.** Not locking -- determinism: workers resolving eligibility against a `universe` that changes mid-run violate ADR 060.
+- **`cscan predict` needs the optional `neural` extra and is deliberately
+  not in `nightly`.** `uv sync --extra neural --extra dev` — the plain
+  `--extra neural` **prunes the dev group**, which silently removes pytest's
+  `testcontainers` and breaks the integration tier. It refits rather than
+  loading a pickle, so a fit can never outlive the feature code that built
+  it; the cost is **9m41s measured 2026-09-05** (one run, one regime — check
+  `runs` before quoting it) and a 2GB wheel, which is why it stays on the
+  workstation until someone benchmarks it on `wivie`. Predictions go stale
+  unless it is run by hand. → `BACKLOG.md`
 - **`runs` timed the write phase only before 2026-08-18.** Check `started_at` before quoting an old duration.
 
 ---

@@ -39,6 +39,8 @@ priced at *t*. Recorded in `BACKLOG.md`; the nineteen below are clean.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
+from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
@@ -273,7 +275,7 @@ SELECT {cols}
  WHERE e.config_hash = :chash
    AND e.entry_kind = 'next_open'
    AND e.in_trade
-   AND e.split_key = :split
+   {row_filter}
 """
 
 
@@ -300,6 +302,20 @@ def _select_columns() -> tuple[str, ...]:
     # names, so a `bar.bar_low AS bar_low` would be `bar.bar_low`, which is
     # what the lateral emits. Written out rather than special-cased.
     return tuple(f"{source[n]}.{n} AS {n}" if n in source else f"e.{n}" for n in names)
+
+
+def training_sql(cols: Sequence[str]) -> str:
+    """The training query, rendered.
+
+    `_SQL` became a template when `build_serving_frame` arrived, because
+    the two paths differ only in how they choose rows -- by split for
+    training, by date for serving. That left the split predicate at the
+    call site, where `test_model_features.py` could no longer see it.
+
+    This is where it lives now, so the guard has one thing to assert on
+    and there is still exactly one copy of the string.
+    """
+    return _SQL.format(cols=", ".join(cols), row_filter="AND e.split_key = :split")
 
 
 def build_training_frame(
@@ -330,7 +346,7 @@ def build_training_frame(
     cols = _select_columns()
     with engine.connect() as conn:
         frame = pd.read_sql(
-            text(_SQL.format(cols=", ".join(cols))),
+            text(training_sql(cols)),
             conn,
             params={"chash": config_hash, "split": split},
         )
@@ -367,6 +383,63 @@ def build_training_frame(
         dropped_no_label=dropped_no_label,
     )
     return kept, report
+
+
+def build_serving_frame(
+    engine: Engine,
+    config_hash: str,
+    since: date,
+    require_sector: bool = False,
+) -> tuple[pd.DataFrame, FrameReport]:
+    """Recent events, ready for inference, with the labels removed.
+
+    **Predicting on holdout rows is not spending the holdout. Scoring them
+    is.** Every event after 2024-01-02 carries `split_key = 'holdout'` by
+    date (ADR 019), so anything that serves live predictions necessarily
+    runs over holdout rows. That is fine: the holdout is a measurement
+    budget, and producing a number for display measures nothing. What would
+    spend it is comparing those numbers against their realised outcomes.
+
+    So this frame **drops `LABEL_COLS` entirely** rather than carrying them
+    as NULLs. A caller cannot accidentally score it, because the columns a
+    loss would need are not present and the failure is an immediate
+    `KeyError` instead of a quiet number in a report. `build_training_frame`
+    keeps its `split == "holdout"` refusal for the same reason; this is the
+    other half of that guard, and the two together mean no code path reaches
+    a holdout label without deleting one of them on purpose.
+
+    `require_sector` defaults False, the reverse of the training path. A
+    name with an unresolved sector must not silently stop the nightly
+    prediction write for every other name; it is dropped and counted in the
+    report. Training raises instead, because there the same row would enter
+    a categorical as a NULL level and corrupt the fit.
+    """
+    cols = _select_columns()
+    params: dict[str, Any] = {"chash": config_hash, "since": since}
+    with engine.connect() as conn:
+        frame = pd.read_sql(
+            text(_SQL.format(cols=", ".join(cols), row_filter="AND e.signal_date >= :since")),
+            conn,
+            params=params,
+        )
+
+    trainable, etf, missing = partition_for_training(
+        list(zip(frame["ticker"], frame["sector"], strict=True))
+    )
+    if missing and require_sector:
+        sample = sorted({frame["ticker"].iloc[i] for i in missing})[:10]
+        raise ValueError(f"{len(missing)} event(s) carry a blank sector, e.g. {sample}")
+
+    kept = frame.iloc[trainable].reset_index(drop=True)
+    kept = _coerce_boolean_features(kept)
+    kept = _add_derived(kept)
+    kept = kept.drop(columns=[c for c in LABEL_COLS if c in kept.columns])
+    return kept, FrameReport(
+        rows=len(kept),
+        dropped_etf=len(etf),
+        dropped_missing_sector=len(missing),
+        dropped_no_label=0,
+    )
 
 
 #: Feature columns that are `boolean` in Postgres. Named rather than

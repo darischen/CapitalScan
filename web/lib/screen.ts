@@ -100,6 +100,18 @@ export interface ScreenRow {
   watchReason: WatchReason | null;
   /** Populated only when `withStats` is requested. See ADR 114. */
   stats: CellStats | Suppressed | null;
+  /**
+   * The calibrated model probability, or `null` when no prediction was
+   * written for this ticker and date (ADR 174).
+   *
+   * Distinct from `stats`, and the distinction matters on screen. `stats`
+   * is the historical frequency of the *cell* this event falls in -- a
+   * count over past events sharing its signal type, side and drawdown
+   * bucket. This is a per-event model output conditioned on 23 features.
+   * They answer different questions and will disagree; showing them in one
+   * column would make that disagreement look like an error.
+   */
+  prediction: Prediction | null;
 }
 
 /**
@@ -145,6 +157,42 @@ export interface Reversal {
   openGapAtr: number | null;
   /** The quote this judgement was made on. */
   ts: string;
+}
+
+/**
+ * The ADR 174 caveat, shown wherever a probability is.
+ *
+ * Kept verbatim in step with `research/predict.MODEL_CAVEAT`, which writes
+ * the same words into every `predictions` row. Two copies is one more than
+ * ideal; the alternative is a round trip to the database to render a
+ * tooltip, and a caveat that loads asynchronously is a caveat that is
+ * sometimes absent.
+ */
+export const PREDICTION_CAVEAT =
+  "Calibrated on the validate split, which was scored repeatedly during " +
+  "model selection, so the interval is a lower bound on the true " +
+  "uncertainty. Coverage decays with distance from the training window. " +
+  "Advisory only: this is what historically followed signals like this " +
+  "one, not what will happen.";
+
+/**
+ * A calibrated `p_touch` and the evidence behind it (ADR 174).
+ *
+ * `nEff` and the interval come from the reliability bucket this prediction
+ * fell into -- how predictions of this magnitude actually resolved on the
+ * validate split -- not from the model's own confidence. A network states
+ * a narrow distribution just as readily when it is wrong.
+ *
+ * `pTouch3` is always inside `[ciLow, ciHigh]`. `core/calibration.py`
+ * guarantees that by publishing the bucket's realised rate rather than the
+ * raw model output, and a renderer may rely on it.
+ */
+export interface Prediction {
+  pTouch3: number | null;
+  ciLow: number | null;
+  ciHigh: number | null;
+  nEff: number | null;
+  modelVersion: string | null;
 }
 
 export interface CellStats {
@@ -554,7 +602,9 @@ const feedSql = (order: string) => `
          s.open, s.high, s.low, s.close, s.volume,
          s.live_price, s.live_price_ts, s.fired_at,
          s.rev_confirmed, s.rev_above_band, s.rev_open_gap_atr, s.rev_ts,
-         s.in_watch, s.watch_reason
+         s.in_watch, s.watch_reason,
+         s.p_touch_3, s.pred_ci_low, s.pred_ci_high, s.pred_n_eff,
+         s.model_version
     FROM v_screen_live s
    WHERE s.signal_date = $1::date
      AND ($4::boolean IS NOT TRUE OR s.is_cluster_head IS NOT FALSE)
@@ -608,6 +658,11 @@ interface FeedRowRaw {
   rev_ts: Date | null;
   in_watch: boolean | null;
   watch_reason: string | null;
+  p_touch_3: string | null;
+  pred_ci_low: string | null;
+  pred_ci_high: string | null;
+  pred_n_eff: string | null;
+  model_version: string | null;
 }
 
 export async function screen(
@@ -711,6 +766,19 @@ export async function screen(
     inWatch: r.in_watch === true,
     watchReason: (r.watch_reason as WatchReason | null) ?? null,
     stats: null,
+    // Presence keys on the probability, not on `model_version`: a row that
+    // somehow carried a version with no probability is not a prediction,
+    // and rendering it would put an empty confidence next to a ticker.
+    prediction:
+      r.p_touch_3 === null
+        ? null
+        : {
+            pTouch3: num(r.p_touch_3),
+            ciLow: num(r.pred_ci_low),
+            ciHigh: num(r.pred_ci_high),
+            nEff: r.pred_n_eff === null ? null : Math.round(Number(r.pred_n_eff)),
+            modelVersion: r.model_version,
+          },
   }));
 
   await attachLiveBars(rows);

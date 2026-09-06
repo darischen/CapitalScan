@@ -6649,6 +6649,97 @@ failed mechanism prediction are the evidence, not the decimals.
 
 ---
 
+## 2026-09-05 — `p_touch` shipped: the second checkpoint (ADR 174)
+
+`cscan predict` wrote **3,604 predictions across 242 tickers in 9m41s**, and
+`handlers.predict` returned a `Prediction` instead of `NotFound` for the
+first time since Phase 5. No model was trained for this. `touched_3pct` is
+exactly `peak_ret_5d >= 0.03`, so `distributions.exceedance` on the peak
+head the dispersion model already fits *is* `Prediction.p_touch_3`.
+
+### The shipped calibration table
+
+Ten equal-mass buckets, isotonic-pooled, fitted on validate (157,938 train
+rows, 34,195 calibration rows).
+
+| bucket | rows | `p_touch_3` | interval | `n_eff` | `p_touch_2` | `p_touch_5` | `p_touch_10` |
+|---|---|---|---|---|---|---|---|
+| b0 | 246 | 0.285 | 0.269–0.303 | 2658 | 0.451 | 0.097 | 0.007 |
+| b1 | 419 | 0.376 | 0.357–0.395 | 2499 | 0.451 | 0.097 | 0.007 |
+| b2 | 453 | 0.408 | 0.388–0.427 | 2448 | 0.546 | 0.097 | 0.007 |
+| b3 | 437 | 0.470 | 0.450–0.490 | 2413 | 0.581 | 0.156 | 0.007 |
+| b4 | 374 | 0.503 | 0.483–0.523 | 2329 | 0.629 | 0.176 | 0.019 |
+| b5 | 346 | 0.507 | 0.487–0.528 | 2317 | 0.646 | 0.228 | 0.025 |
+| b6 | 292 | 0.559 | 0.539–0.579 | 2355 | 0.650 | 0.270 | 0.036 |
+| b7 | 324 | 0.593 | 0.574–0.613 | 2406 | 0.690 | 0.315 | 0.047 |
+| b8 | 237 | 0.649 | 0.630–0.668 | 2335 | 0.714 | 0.360 | 0.099 |
+| b9 | 476 | 0.750 | 0.732–0.766 | 2479 | 0.736 | 0.450 | 0.125 |
+
+Monotone across all ten by construction, and **0.285 to 0.750 against a
+0.516 base rate** — which independently reproduces the 0.284–0.755 range
+measured the day before through a completely different code path
+(`p_touch.py`, no calibration layer). Two instruments, one answer.
+
+All 3,604 rows satisfy `ci_low <= p_touch_3 <= ci_high`. Exactly **10
+distinct values** of `p_touch_3` exist, which is the design working rather
+than a bug: the published probability is piecewise constant because
+interpolating between bucket centres would let a point estimate fall
+outside its own interval.
+
+### Three defects the shipping work exposed
+
+**1. `run_id` was declared `bigint`.** All thirteen other tables that carry
+it use `text`, as does `runs.run_id`. Caught before the first write.
+
+**2. `n_eff` came out larger than `n`**, which is impossible for Kish.
+After pool-adjacent-violators merges buckets, the code was reporting the
+merged block's effective count beside a single bucket's row count — two
+populations on one record. Both now pool. Found by an assertion written
+because the relationship *should* be an invariant, not because anything
+looked wrong.
+
+**3. The screener views joined `predictions` without `config_hash`.** Events
+are filtered to the live generation by the GUC and predictions were not, so
+a prediction from an earlier generation would have attached to a current
+event and displayed as current. It had never fired because the table had
+always been empty; it would have fired on the first sweep.
+
+### The key was wrong, and the loud failure hid a quiet one
+
+The first real write died with `ON CONFLICT DO UPDATE command cannot affect
+row a second time`. **A ticker can fire twice in one day, and the two can be
+opposite sides.** Fourteen ticker-days in two months do:
+
+| ticker | date | signal | side | `p_touch_3` |
+|---|---|---|---|---|
+| BNS | 2026-08-25 | `bb_upper_touch` | short | 0.408 |
+| BNS | 2026-08-25 | `stoch_oversold` | long | 0.470 |
+
+The obvious repair — deduplicate, keep one row per ticker-day — would have
+passed every test and been wrong. `p_touch` is the probability of a
+favourable excursion *for the side the signal assigned*, so the screener
+would have rendered BNS's long row beside the short's 0.408. A number
+confidently about the opposite trade is worse than no number, and nothing
+on screen distinguishes them.
+
+`predictions` now keys on `event_id` (migration `e7b4c92f1a08`) and both
+views join on it. The crash was the good outcome here: a dedupe rule would
+have shipped silently.
+
+### What this does not claim
+
+**No directional call.** ADR 172 retired the directional heads and they
+stay retired; `q50` is negative out of sample and no surface displays it.
+
+**The intervals are a lower bound on the uncertainty.** They are fitted on
+validate, which has been scored repeatedly across many architectures, and
+the holdout was spent under ADR 172. Every surface that renders a
+probability renders that caveat with it. A clean refit needs data never
+used for selection, which the forward log accumulates at ~15k events a
+month.
+
+---
+
 ## 2026-09-05 — The target was the problem: `p_touch` works, the median never could
 
 Session 25 closed with the directional heads retired and a 0.281% ceiling on

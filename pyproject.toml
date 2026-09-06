@@ -42,10 +42,21 @@ dev = [
     "mypy>=1.5.0",
     "pandas-stubs>=2.0.0",
 ]
-# The multi-task distributional model (research/neural.py). Optional
-# because nothing in the shipped pipeline needs it: the pure distribution
-# arithmetic lives in core/distributions.py and imports only numpy, so the
-# CLI, the fast test tier and CI all run without a 2GB wheel.
+# The multi-task distributional model (research/neural.py) and the
+# `cscan predict` job that fits it (ADR 174).
+#
+# Still optional, but the reason narrowed on 2026-09-05. It used to be that
+# nothing shipped needed torch. Now `cscan predict` does -- it refits every
+# run rather than loading a pickle, so the fit can never outlive the
+# feature code. Everything else still runs without the 2GB wheel: the pure
+# distribution arithmetic is in core/distributions.py and the calibration
+# in core/calibration.py, both numpy-only, so the rest of the CLI, the fast
+# test tier and CI are unaffected.
+#
+# The practical consequence is that `cscan predict` is a workstation job
+# and is deliberately NOT in `nightly`. Putting it there would make a 2GB
+# wheel and a CPU fit a hard requirement on `wivie`, whose multiplier for
+# this workload is unmeasured.
 neural = [
     "torch>=2.6.0",
 ]
