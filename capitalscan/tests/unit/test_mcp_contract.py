@@ -300,9 +300,26 @@ def test_the_screener_tool_says_the_default_is_the_feed():
     assert "with_stats" in (tools.screen_signals.__doc__ or "")
 
 
-def test_predict_says_no_model_exists():
+def test_the_predict_tool_describes_what_it_returns_and_what_it_does_not_claim():
+    """**Edited deliberately 2026-09-05 (ADR 174/175).**
+
+    This asserted the description said "no model exists". A model exists
+    now, and the tool description is not documentation -- it is the text an
+    LLM client reads to decide whether and how to call the tool. Leaving
+    the old sentence would have told every client the tool was useless.
+
+    What replaces it pins the three things a caller can get wrong:
+    that the probabilities are directional (favourable *for the side the
+    signal assigned*), that a high `p_touch` is not a recommendation, and
+    that the calibration split was reused so the interval is a lower bound.
+    """
     doc = (tools.predict.__doc__ or "").lower()
-    assert "no model exists" in doc
+    assert "no model exists" not in doc
+    assert "p_touch" in doc and "p_adverse" in doc
+    assert "not a directional forecast" in doc
+    assert "n_eff" in doc and "confidence interval" in doc
+    assert "lower bound" in doc
+    assert "get_stats" in doc
 
 
 def test_serialize_exposes_the_union_tag():

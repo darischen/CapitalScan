@@ -10,10 +10,11 @@ import {
   sessionsBetween,
   vol,
 } from "@/lib/format";
-import { watchLabel, nextDir } from "@/lib/screen";
+import { watchLabel, nextDir, PREDICTION_CAVEAT, ADVERSE_CAVEAT } from "@/lib/screen";
 import type {
   CellStats,
   Meta,
+  Prediction,
   ScreenRow,
   SortDir,
   SortKey,
@@ -247,6 +248,74 @@ function StatsCell({ stats }: { stats: CellStats | Suppressed | null }) {
           q={stats.qValue.toFixed(3)}
         </span>
       )}
+    </span>
+  );
+}
+
+/**
+ * The calibrated model probability, with the evidence behind it (ADR 174).
+ *
+ * **Deliberately shaped like `StatsCell` and deliberately a separate
+ * column.** The two are different claims about the same row: `Cell` is the
+ * historical frequency of every past event sharing this signal type, side
+ * and drawdown bucket, and this is a per-event model output conditioned on
+ * 23 features. They will disagree, and a reader who saw them merged would
+ * read that disagreement as a bug. Matching the visual idiom says "same
+ * kind of quantity"; separating the columns says "different question".
+ *
+ * `pTouch3` is guaranteed to lie inside its interval -- `core/calibration.py`
+ * publishes the reliability bucket's realised rate rather than the raw
+ * model output precisely so this never renders as a number outside its own
+ * bounds.
+ *
+ * No colour. The palette carries meaning here (side, staleness, breach),
+ * and a probability is not a judgement about whether the row is good.
+ */
+function PredictionCell({ prediction }: { prediction: Prediction | null }) {
+  // Truthiness, not `=== null`. The prop is typed `Prediction | null`, and
+  // at runtime it also arrives `undefined` -- from any `ScreenRow` built
+  // before this column existed, which includes every fixture in the web
+  // suite. TypeScript cannot see that, so the strict check compiled
+  // cleanly and threw on render.
+  if (!prediction || prediction.pTouch3 === null) {
+    return <span className="dim">—</span>;
+  }
+  return (
+    <span className="num">
+      {pct(prediction.pTouch3)}
+      <span className="dim">
+        {" "}
+        [{fmt(prediction.ciLow)}–{fmt(prediction.ciHigh)}] n={prediction.nEff ?? "—"}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * The adverse side (ADR 175): P(3% move against the position in 5 days).
+ *
+ * **Its own interval, never the touch column's.** Invariant 8 attaches to
+ * each published probability, and this one is calibrated against a
+ * different reliability table. `band()` returns null unless the row
+ * carries a complete one, so a probability can never reach the screen
+ * without its evidence.
+ *
+ * Still no colour. A reader comparing this against `P(+3%)` is doing the
+ * comparison the two columns exist for, and tinting one of them would
+ * make that judgement for them.
+ */
+function AdverseCell({ prediction }: { prediction: Prediction | null }) {
+  if (!prediction || !prediction.adverse3) {
+    return <span className="dim">—</span>;
+  }
+  const { p, lo, hi, nEff } = prediction.adverse3;
+  return (
+    <span className="num">
+      {pct(p)}
+      <span className="dim">
+        {" "}
+        [{fmt(lo)}–{fmt(hi)}] n={nEff}
+      </span>
     </span>
   );
 }
@@ -496,6 +565,8 @@ export function ScreenerTable({
             ctx={sortCtx}
             className="r"
           />
+          <th title={PREDICTION_CAVEAT}>P(+3%)</th>
+          <th title={ADVERSE_CAVEAT}>P(−3%)</th>
           {withStats && <th>Cell</th>}
         </tr>
       </thead>
@@ -659,6 +730,12 @@ export function ScreenerTable({
               ) : (
                 <span className="dim">—</span>
               )}
+            </td>
+            <td data-label="P(+3%)" title={PREDICTION_CAVEAT}>
+              <PredictionCell prediction={row.prediction} />
+            </td>
+            <td data-label="P(−3%)" title={ADVERSE_CAVEAT}>
+              <AdverseCell prediction={row.prediction} />
             </td>
             {withStats && (
               <td data-label="Cell">

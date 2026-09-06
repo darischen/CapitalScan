@@ -15,7 +15,7 @@ import pytest
 from capitalscan.handlers.errors import DateOutOfWindow, InvalidEnum
 from capitalscan.handlers.explain import SignalNotFound, explain_signal
 from capitalscan.handlers.indicators import DEFAULT_FIELDS, get_indicators
-from capitalscan.handlers.predict import NO_MODEL_REASON, predict
+from capitalscan.handlers.predict import NO_ROW_REASON, predict
 from capitalscan.handlers.types import NotFound, Prediction, is_probability_field
 from capitalscan.handlers.universe import get_universe
 
@@ -115,6 +115,30 @@ def test_indicator_limit_caps_at_two_hundred(series):
 # ---------------------------------------------------------------------------
 
 
+#: A `predictions` row as the handler reads it, with the ADR 174 columns.
+_ROW = {
+    "ticker": "TSM",
+    "as_of": date(2026, 8, 14),
+    "model_version": "adr174-05238410-abc1234",
+    "cell_id": None,
+    "q05": -0.061,
+    "q25": -0.019,
+    "q50": 0.002,
+    "q75": 0.024,
+    "q95": 0.071,
+    "p_touch_2": 0.71,
+    "p_touch_3": 0.62,
+    "p_touch_5": 0.34,
+    "p_touch_10": 0.09,
+    "p_adverse_3": None,
+    "p_adverse_5": None,
+    "calib_bucket": "p_touch_3:b7",
+    "calib_n_eff": 812.4,
+    "ci_low": 0.58,
+    "ci_high": 0.66,
+}
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -123,17 +147,95 @@ def test_indicator_limit_caps_at_two_hundred(series):
         {"ticker": "nvda"},
     ],
 )
-def test_predict_returns_not_found_for_every_input(fake_db, kwargs):
-    """**This test is meant to fail when Phase 6 changes it.**
+def test_predict_returns_not_found_when_no_row_was_written(fake_db, kwargs):
+    """**The deliberate edit ADR 113 asked for, made on 2026-09-05.**
 
-    No model exists. ADR 093 is Provisional and ADR 113 opened Phase 6
-    conditionally on ADR 112's negative result. When a model ships, this
-    assertion breaks, and breaking it should be a deliberate edit that says
-    why - not a stub quietly starting to return a plausible fan.
+    This test used to assert `NotFound` for *every* input, because no model
+    existed and a stub returning a plausible fan would have been forgotten
+    and then trusted. ADR 174 ships `p_touch`, so the assertion changes
+    shape rather than disappearing: the refusal is now about a missing
+    **row**, not a missing **model**.
+
+    That distinction is the whole point of keeping the test. A ticker with
+    no recent event, a date before the first `cscan predict` run, and an
+    unscored config generation are all real and all still refuse.
     """
     result = predict(engine=object(), **kwargs)
     assert isinstance(result, NotFound)
-    assert result.reason == NO_MODEL_REASON
+    assert result.reason == NO_ROW_REASON
+
+
+def test_predict_returns_the_calibrated_probability_when_a_row_exists(fake_db):
+    """ADR 174's product, end to end through the handler."""
+    fake_db.on("FROM predictions", [_ROW])
+    result = predict("tsm", engine=object())
+    assert isinstance(result, Prediction)
+    assert result.ticker == "TSM"
+    assert result.p_touch_3 == pytest.approx(0.62)
+    assert result.p_touch_10 == pytest.approx(0.09)
+    assert result.model_version == "adr174-05238410-abc1234"
+
+
+def test_the_interval_comes_from_the_calibration_bucket_not_the_model(fake_db):
+    """Invariant 8, ADR 174's version.
+
+    `n_eff` is the reliability bucket's effective sample and the interval
+    is Wilson on the realised rate in that bucket. Neither is the ensemble
+    seed spread, which would describe the optimiser rather than the world.
+    """
+    fake_db.on("FROM predictions", [_ROW])
+    result = predict("TSM", engine=object())
+    assert result.n_eff == 812
+    assert result.ci_low == pytest.approx(0.58)
+    assert result.ci_high == pytest.approx(0.66)
+    assert result.cell_id == "p_touch_3:b7"
+
+
+def test_the_published_probability_lies_inside_its_own_interval(fake_db):
+    """The coherence property `core.calibration` exists to guarantee.
+
+    A point estimate outside its own interval is nonsense on screen, and it
+    is exactly what shipping the raw model output with an empirically
+    measured interval would produce.
+    """
+    fake_db.on("FROM predictions", [_ROW])
+    result = predict("TSM", engine=object())
+    assert result.ci_low <= result.p_touch_3 <= result.ci_high
+
+
+def test_it_does_not_publish_a_directional_call(fake_db):
+    """ADR 172 retired the directional heads and ADR 174 did not revive them.
+
+    `q50` is returned because DESIGN §7.4 defines the field, but it is not
+    the product: it is negative out of sample and no surface displays it.
+    The guard here is that nothing has quietly started deriving a direction
+    from the fan.
+    """
+    fake_db.on("FROM predictions", [_ROW])
+    result = predict("TSM", engine=object())
+    assert result.q50 is not None
+    # p_touch is not a signed forecast, and must not be derived from q50.
+    assert result.p_touch_3 != pytest.approx(result.q50)
+
+
+def test_the_query_is_scoped_to_the_live_config_generation(fake_db):
+    """A prediction made under another generation is not comparable.
+
+    `predictions` gained `config_hash` in migration `c3f8a1e07b26` for this
+    reason, and a handler that read the newest row regardless would mix
+    generations the moment a sweep lands.
+    """
+    predict("TSM", engine=object())
+    sql = fake_db.sql_containing("FROM predictions")[0]
+    assert "config_hash = :chash" in sql
+    assert "ORDER BY as_of DESC" in sql
+
+
+def test_an_as_of_never_reads_a_later_prediction(fake_db):
+    """`as_of` bounds above. Reading a later row would be look-ahead."""
+    predict("TSM", as_of=date(2026, 8, 14), engine=object())
+    sql = fake_db.sql_containing("FROM predictions")[0]
+    assert "as_of <= :as_of" in sql
 
 
 def test_the_not_found_still_carries_meta(fake_db):
@@ -145,7 +247,8 @@ def test_the_not_found_still_carries_meta(fake_db):
 
 
 def test_the_reason_points_somewhere_useful(fake_db):
-    assert "get_stats" in NO_MODEL_REASON
+    assert "get_stats" in NO_ROW_REASON
+    assert "cscan predict" in NO_ROW_REASON
 
 
 def test_the_prediction_type_carries_the_invariant_eight_companions():

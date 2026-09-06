@@ -277,6 +277,41 @@ def indicators(
 
 
 @app.command()
+def predict(
+    since: Optional[str] = typer.Option(None, help="Earliest signal_date to score (YYYY-MM-DD)"),
+    lookback: int = typer.Option(45, help="Days back from the newest event, when --since is unset"),
+    clear: bool = typer.Option(False, help="Delete this config's predictions and exit"),
+) -> None:
+    """Write calibrated p_touch predictions for recent events (ADR 174).
+
+    Fits the four-task model on train, calibrates on validate, and upserts
+    one row per recent event. Takes a few minutes: the model is refitted
+    every run rather than loaded, so the fit can never outlive the feature
+    code that produced it.
+    """
+    from datetime import date as _date
+
+    from capitalscan.jobs import db_io
+    from capitalscan.jobs import predict as jp
+
+    config = _resolve_config_or_exit()
+    from capitalscan.jobs.config import config_hash as _hash
+
+    chash = _hash(config)
+
+    if clear:
+        removed = jp.clear_predictions(db_io.get_engine(), chash)
+        console.print(f"predict: deleted {removed} predictions for config {chash}")
+        return
+
+    parsed = _date.fromisoformat(since) if since else None
+    report = jp.run_predict(config_hash=chash, since=parsed, lookback_days=lookback)
+    console.print(f"predict: {report.summary()}")
+    if report.rows_written == 0:
+        console.print("[yellow]warning[/yellow]: no predictions written")
+
+
+@app.command()
 def universe(
     quarter: Optional[str] = typer.Option(None, help="Quarter to evaluate (e.g. 2026Q3)"),
     tickers: Optional[str] = typer.Option(None, help="Comma-separated ticker list"),

@@ -197,11 +197,30 @@ def get_events(
 
 
 def predict(ticker: str, as_of: date | None = None) -> dict[str, Any]:
-    """No model exists. Always returns `"kind": "not_found"` with the reason.
+    """Calibrated probabilities that price reaches a threshold, for one ticker.
 
-    Kept in the tool set so the contract is settled before Phase 6 builds
-    the model, rather than negotiated across three clients afterwards. Use
-    `get_stats` for historical frequencies.
+    Returns `p_touch_2/3/5/10` -- the probability of a favourable excursion
+    of that size within the horizon, **in the direction the signal already
+    assigned** -- and `p_adverse_3/5`, the probability of a move that far
+    against the position. Each carries `n_eff` and a confidence interval
+    measured from how past predictions in the same reliability bucket
+    actually resolved, not from the model's own confidence.
+
+    **This is not a directional forecast.** The quantile fan is returned
+    because the contract defines it, and its midpoint is negative out of
+    sample; do not read a direction from it. A high `p_touch_3` means a
+    move of that size is likely, not that the trade is good.
+
+    Returns `"kind": "not_found"` when no prediction has been written for
+    the ticker and date -- a name with no recent signal, or a date before
+    the predictions were generated. That is an operational gap, not a
+    statement that prediction is impossible. Use `get_stats` for historical
+    cell frequencies, which answer a different question: the base rate for
+    every past event of this shape, rather than a model output for this one.
+
+    Probabilities are calibrated on a split that was reused during model
+    selection, so the intervals are a lower bound on the true uncertainty.
+    Say so when reporting one.
     """
     return to_wire_dict(handlers.predict(ticker=ticker, as_of=as_of))
 

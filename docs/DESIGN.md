@@ -1759,6 +1759,30 @@ underlying path; exit policy is a separate layer on top. Training on exit
 returns would couple the model to config, forcing a retrain on every stop
 or target change.
 
+**A third family, ADR 175 (2026-09-05): trough.** $m_h = \min_{t \le h} R_t$,
+the worst entry-anchored return in the window, from `path.adverse` over
+`day_offset <= h`. It is the exact mirror of the peak family and it fills
+`Prediction.p_adverse_*`, without which `p_touch` cannot become an expected
+value:
+
+    E[net_ret] ~ P(target) x +5.30% + P(stop) x -4.38% + P(timeout) x -0.05%
+
+**The paragraph above is why it is not `events.mae`.** `mae` is the worst
+excursion *until the trade exits*, so `ExitParams` is inside the label and
+a sweep of `stop_atr_k` would redefine the target underneath the head --
+precisely the coupling this section already forbids. `trough_ret_{h}d` is a
+fixed window like the other two families.
+
+`path.adverse` is **side-adjusted in position convention** (long
+`(low - entry) / entry`, short `(entry - high) / entry`), so negative means
+"against the position" for both sides and no sign fix is needed at read
+time.
+
+The architecture is therefore six heads, not four. Note that the shipped
+product reads probabilities off these CDFs rather than publishing the
+quantiles: `p_touch_*` is `exceedance` on the peak head and `p_adverse_*`
+is `shortfall` on the trough head (ADR 174).
+
 **Quantile crossing is fixed post-fit by sorting.** Independent heads have
 no monotonicity constraint across $\tau$, so a fitted $\hat{Q}_{0.25}$ can
 exceed $\hat{Q}_{0.50}$ on some feature vectors. Sorting is the standard
@@ -1810,6 +1834,13 @@ Isotonic regression fit on the **validation** split, never train, applied to eve
 
 **Against a baseline of the cell rate.** If the model does not beat "just report the cell frequency" on Brier, the lookup ships alone (ADR 067).
 
+**Built 2026-09-05 as `core/calibration.py` (ADR 174), and it does one more job than this section asked for.** The plan here was isotonic regression on validate, which is what ships: predictions are bucketed equal-mass, pooled by pool-adjacent-violators, and each bucket publishes its realised rate. The addition is that the same buckets supply **invariant 8's interval** — a Wilson interval on the bucket's realised rate at its Kish `n_eff`. That closes a gap this section left open: §7.6 said how to make the number right and never said where its interval comes from, and the tempting answer (the ensemble's seed spread) measures the optimiser rather than the world.
+
+Two consequences worth stating plainly:
+
+- **The published probability is piecewise constant**, ten distinct values rather than a continuum. Interpolating between bucket centres would look smoother and would let the point estimate fall outside its own interval, which is the one thing a displayed probability may never do.
+- **The interval is a lower bound on the uncertainty, not an estimate of it.** Validate has been scored repeatedly across many architectures, and the holdout was spent under ADR 172. Every surface that renders a probability renders this caveat with it (`core.calibration.MODEL_CAVEAT`). A clean refit needs data that was never used for selection, which is what the §7.8 forward log accumulates.
+
 ### 7.7 Promotion gate
 
 All four checks, on validation, against the incumbent (ADR 067):
@@ -1854,6 +1885,8 @@ Predictions are **immutable** (ADR 029). Resolution runs nightly at T+6. A rolli
 
 ### 7.9 Serving
 
+**What this section describes was the plan, and ADR 174 shipped something narrower. Read the note at the end before relying on any row of it.**
+
 Two paths (ADR 069):
 
 | Path | When | Features | Purpose |
@@ -1864,6 +1897,14 @@ Two paths (ADR 069):
 The poller loads all 11 artifacts at 09:15. Inference on one row across 11 models is well under a millisecond on CPU, so it fits inside the polling tick.
 
 **Vercel never runs a model.** Artifacts live in `models/{version}/` in LightGBM native format with isotonic calibrators pickled alongside, plus `metadata.json` (training window, feature list, hyperparameters, calibration metrics) and `features.parquet` (the training snapshot needed for gate check 4).
+
+**As built, 2026-09-05 (ADR 174).** Three differences from the table above, all deliberate:
+
+- **There is one path, not two.** `cscan predict` is a batch job on the workstation; it fits, calibrates, writes `predictions`, and `cscan sync` copies the table to serving. **The poller runs no model** and loads no artifacts. Live inference at trigger time was never built and is not on the near list.
+- **Nothing is serialised.** There is no `models/{version}/` directory, no pickled calibrator, no `features.parquet`. The job refits three seeds every run, which costs ~50 minutes and buys the guarantee a pickle cannot give: a stored model can outlive the feature code that produced it and fail silently, while a refit cannot. `docs/model_spec_adr170.json` is what makes a fit reproducible.
+- **It is not LightGBM and there are not 11 models.** It is one torch network with four distributional heads (ADR 170), and `p_touch_2/3/5/10` are read off two of them by `distributions.exceedance` rather than fitted as separate classifiers.
+
+The consequence to remember: **predictions go stale unless someone runs the job.** It is not in `nightly`, because that would put a 2GB torch wheel and an unmeasured CPU cost on `wivie`. → `BACKLOG.md`
 
 ### 7.10 Failure modes
 

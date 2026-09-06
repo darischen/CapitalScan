@@ -31,8 +31,15 @@ needs_torch = pytest.mark.skipif(
 
 
 class TestTheTaskSet:
-    def test_the_four_labels_are_adr_113s(self) -> None:
-        assert neural.TASKS == (("terminal", 5), ("terminal", 10), ("peak", 5), ("peak", 10))
+    def test_the_task_set_is_adr_113s_plus_adr_175s_adverse_half(self) -> None:
+        assert neural.TASKS == (
+            ("terminal", 5),
+            ("terminal", 10),
+            ("peak", 5),
+            ("peak", 10),
+            ("trough", 5),
+            ("trough", 10),
+        )
 
     def test_the_order_is_fixed(self) -> None:
         """A head index means nothing unless the order does. A saved model
@@ -62,14 +69,31 @@ class TestItDoesNotPromote:
         for forbidden in ("read_sql", "requests", "sqlalchemy", "get_engine"):
             assert forbidden not in code
 
-    def test_predict_still_returns_not_found(self) -> None:
-        """The gate has not passed: coverage is 17/20, not 20/20. This is
-        the test that must be edited deliberately if that ever changes."""
-        # `capitalscan.handlers` re-exports the function under the module's
-        # own name, so `from ... import predict` binds the function.
+    def test_predict_returns_a_prediction_and_not_only_not_found(self) -> None:
+        """**Edited deliberately on 2026-09-05.** ADR 174 shipped `p_touch`.
+
+        This asserted that `predict` could return nothing but `NotFound`,
+        and it was right for as long as no model was calibrated. What
+        replaced it is narrower rather than weaker: the handler must be
+        able to return a `Prediction`, and must still refuse when no row
+        exists. A handler that could only ever refuse, and one that could
+        never refuse, are both wrong now.
+        """
         from capitalscan.handlers.predict import predict as predict_fn
 
-        assert "NotFound" in code_of(predict_fn)
+        code = code_of(predict_fn)
+        assert "Prediction(" in code, "ADR 174 requires a real prediction path"
+        assert "NotFound(" in code, "a missing row must still refuse"
+
+    def test_the_fitter_is_not_what_serves(self) -> None:
+        """`neural` fits; `jobs.predict` writes; `handlers.predict` reads.
+
+        Keeping the three apart is why a fitter can be rerun without
+        touching serving state, and it is asserted rather than assumed
+        because the shortest path from a fitted model to a screen is a
+        write inside the fit.
+        """
+        assert "predictions" not in code_of(neural)
 
 
 class TestTheSelectionProtocol:

@@ -215,6 +215,8 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 171 | CI moves to Python 3.13 and the floor moves with it | **Decided 2026-09-03.** Invokes ADR 164's reopening clause; amends it for CI only. mypy failed in CI and nowhere else because the 3.11 interpreter resolves numpy 2.4.6 (stubs type `np.mean` as `Any`) against 2.5.1 on the workstation. **CI was the outlier**: `wivie` and the Pi both run 3.13.5. Dropping `wivie` to 3.11 was rejected, it relocates the mismatch and imports the old numpy into production. `requires-python` moves to `>=3.13` because a floor nothing tests is not a floor |
 | 172 | The holdout is spent: dispersion ships, direction does not | **Decided 2026-09-04.** 79,956 holdout events, 2024-2026. Dispersion generalises (mean improvement +7.98% -> **+7.71%**, coverage 14/20 -> **17/20**, `peak_h5_q95` 22.72 -> **23.34**); the directional heads go negative (`terminal_h5_q50` +0.36 -> **−0.72**). Session 24's directional headline is withdrawn. Calibration decays 0.018/0.031/0.048 across 2024/25/26, so refits must be scheduled. **ADR 019's "once" is used** |
 | 173 | `signal_type` must be a feature: the model was never told the direction | **Decided 2026-09-04.** Neither `signal_type` nor `side` is in `FEATURE_COLS`, and `fwd_ret_*` is the raw price return, not the position return (train medians: longs +0.549%, shorts +0.282%, both positive). So the directional head predicted a 38/62 mix of opposing populations without being told which — **mis-posed, not unanswerable**. Explains why `peak_ret_*`, which IS side-adjusted, works. Measurable only on validate now |
+| 174 | `p_touch` is the shipped product, and its interval is empirical | **Decided 2026-09-05.** Second checkpoint after ADR 172. `touched_3pct` is exactly `peak_ret_5d >= 0.03`, so `exceedance()` on the fitted peak head IS `Prediction.p_touch_3` -- calibrated, monotone across ten deciles, AUC 0.607-0.771, **no retraining**. Ships the probability rather than the fan. Invariant 8's interval is **empirical** (Wilson on the reliability bucket's realised rate at its `n_eff`), not the ensemble spread, which measures seed choice rather than uncertainty. `predict()` stops returning `NotFound` |
+| 175 | The adverse head reads a fixed window, not `mae` | **Decided 2026-09-05.** Completes `p_adverse_*` and the other two terms of `E[net_ret]`. `events.mae` is adverse excursion **until exit**, so `ExitParams` is baked into it and every sweep would silently redefine the target. Adds `trough_ret_{1,2,3,5,10}d` as the exact mirror of `peak_ret_*` from `path.adverse`, which is already side-adjusted. `p_adverse_3 = P(trough_ret_5d <= -0.03)`, read off the same CDF. Heads 4 -> 6, so ADR 174's tables refit |
 
 ---
 
@@ -8308,3 +8310,187 @@ cost is inside the run-to-run noise.
 **ADR 172's retirement of the directional heads is therefore final**, not
 provisional. Direction has failed across five architectures on validate, on
 79,956 unseen holdout events, and with the side explicitly supplied.
+
+## 174. `p_touch` is the shipped product, and its interval is empirical
+
+**Status.** Decided 2026-09-05. Second checkpoint, after ADR 172's
+dispersion result. Amends ADR 093's framing of what a `Prediction` carries.
+Does not move `config_hash`.
+
+**Context.**
+
+ADR 172 shipped a dispersion model and retired the directional heads. The
+product implied by that was a *fan* -- five quantiles, with the midpoint
+suppressed because it is negative out of sample. That is an awkward object
+to put in front of a reader: a range with a hole in the middle.
+
+Measured 2026-09-05, a better one already exists and required no new model.
+`touched_3pct` is **exactly** `peak_ret_5d >= 0.03` (agreement 1.000 on
+163,424 train events), so `distributions.exceedance` on the fitted peak head
+*is* `Prediction.p_touch_3` -- a field the contract has carried since Phase
+5 and which nothing has ever filled.
+
+| target | base rate | Brier skill | AUC |
+|---|---|---|---|
+| `p_touch_2` | 0.652 | +3.15% | 0.607 |
+| `p_touch_3` | 0.516 | +5.54% | 0.638 |
+| `p_touch_5` | 0.298 | **+9.33%** | **0.689** |
+| `p_touch_10` | 0.071 | +4.32% | **0.771** |
+
+Calibration is monotone across all ten deciles, 0.284 realised at the
+bottom against 0.755 at the top on a 0.516 base rate.
+
+**Decision.**
+
+**Ship the probability, not the fan.** `p_touch_2/3/5/10` is the primary
+output. The quantiles stay in the payload because they are computed anyway
+and DESIGN §7.4 defines them, but the reader-facing claim is the
+probability, which is the quantity that is calibrated.
+
+**Invariant 8's interval is empirical, from the reliability table, not from
+the model.** This is the substantive decision.
+
+A probability read off a predicted CDF has no natural confidence interval:
+the model emits a point, and the ensemble spread across three seeds
+measures seed choice rather than uncertainty about the world. Reporting
+that spread would be reporting the wrong quantity confidently.
+
+Instead the interval comes from what was **measured**: bucket validate
+predictions by decile, count the realised rate in each, and attach that
+bucket's cluster-weighted `n_eff` with a Wilson interval on the realised
+rate. The claim then reads as it should -- *"predictions in this band
+historically resolved at 0.755, on n_eff observations, interval x to y"* --
+rather than as an unearned statement about this one event.
+
+**Wilson, not normal-approximation.** The bands near `p_touch_10`'s 0.071
+base rate are far enough from 0.5 that a symmetric interval would cross
+zero or exceed one.
+
+**Consequences.**
+
+**`handlers/predict.py` stops returning `NotFound`.** That refusal was
+correct for as long as nothing was calibrated. `test_handlers_predict.py`
+pins the old behaviour and must be edited deliberately, which is the intent
+recorded in that module's docstring.
+
+**Writing `predictions` displays it.** `v_screen` already `LEFT JOIN`s the
+table. The user has accepted display (single-user, LAN-only, 2026-09-04),
+so no shadow flag is built.
+
+**The calibration table is fitted on validate, which is contaminated.**
+Validate has been scored many times across many architectures, so the
+reliability numbers are optimistic by an unknown amount, and the holdout
+was spent under ADR 172. The interval is therefore a *lower bound on
+uncertainty*, and must be labelled as measured-on-validate wherever it
+surfaces. Rebuilding it on genuinely fresh data is what the forward log is
+for.
+
+**The known limitation travels with the prediction.** Coverage decays with
+distance from the training window -- 2024 0.0182, 2025 0.0311, 2026 0.0480
+-- so anything displaying this says so, and refits are scheduled rather
+than assumed.
+
+**What this does NOT claim.** No directional call. `terminal_h*_q50` is
+negative out of sample and stays unpublished (ADR 172). `p_touch` is the
+probability of a *favourable* excursion given the side the signal already
+assigned; it is not a statement that the trade will be profitable, which
+additionally needs the adverse side (ADR 175).
+
+**Amended the same day: a prediction keys on `event_id`, not on
+`(ticker, as_of)`.** The first implementation keyed on the pair, because
+that is what both screener views join on. The real data refused it --
+fourteen ticker-days in the two months to 2026-09-05 carry two `next_open`
+events, and they are **opposite sides**: BNS on 2026-08-25 has a
+`bb_upper_touch` short and a `stoch_oversold` long; DDOG on 2026-08-06 has
+a `bb_lower_touch` long and a `stoch_overbought` short.
+
+The loud symptom was a `CardinalityViolation` on the first real write. The
+symptom that mattered was the one a dedupe rule would have produced
+instead: `p_touch` is the probability of a favourable excursion *for the
+side the signal assigned*, so collapsing a ticker-day to one row would let
+the screener render a long row beside the short's probability. A number
+confidently about the opposite trade is worse than no number, and nothing
+on screen distinguishes them.
+
+Both views now join `p.event_id = e.id` (migration `e7b4c92f1a08`).
+`(ticker, as_of)` remains as a non-unique index because
+`handlers.predict` still looks up that way, and that lookup is now
+knowingly ambiguous: given a ticker and a date it cannot name a side and
+resolves by `(as_of DESC, id DESC)`, which is deterministic rather than
+correct. → `BACKLOG.md`
+
+## 175. The adverse head reads a fixed window, not `mae`
+
+**Status.** Decided 2026-09-05. Extends ADR 174. Completes ADR 093's
+`p_adverse_*` fields, empty since Phase 5.
+
+**Context.**
+
+ADR 174 ships `p_touch` and says plainly what it does not claim: it is the
+probability of a *favourable* excursion given the side the signal assigned,
+and it is not a statement that the trade will be profitable. That needs the
+other side, which is the expected value
+
+    E[net_ret] ~ P(target) x +5.30% + P(stop) x -4.38% + P(timeout) x -0.05%
+
+measured over 163,424 train exits. The model currently fits favourable
+excursion and nothing adverse, so two of the three terms are unavailable.
+
+**`events.mae` exists and is the wrong label.** It is the minimum adverse
+excursion **until the trade exits**, and the exit is decided by
+`ExitParams` -- `target_pct`, `stop_atr_k`, `max_hold_days`. A head fitted
+on it would be predicting "how far against me before *this exit policy*
+closes the position", so every sweep of a threshold silently redefines the
+training target. `peak_ret_5d` has no such coupling: it is a fixed
+five-session window, and the model's other three heads are all of that
+shape.
+
+Two labels that differ in whether a config parameter is baked into them
+cannot be compared, and the asymmetry would not show up as an error. It
+would show up as an adverse head that degrades whenever a sweep runs.
+
+**Decision.**
+
+**Add `trough_ret_{1,2,3,5,10}d`, the exact mirror of `peak_ret_*`.**
+
+    m_h = min over t in [1, h] of the entry-anchored return
+
+`path.adverse` already holds the per-day series and is **side-adjusted in
+position convention** -- a long uses `(low - entry) / entry`, a short uses
+`(entry - high) / entry`, so negative means "against the position" on both
+sides. The label is therefore directly meaningful for longs and shorts
+without a sign fix, exactly as `favorable` is.
+
+`p_adverse_3 = P(trough_ret_5d <= -0.03)`, and 5% likewise. That is
+`1 - exceedance`, read off the same predicted CDF, so the adverse
+probability costs one head and no new machinery.
+
+**Why not reuse `mae` anyway, given it is already there.** Because the
+failure is silent and slow. A sweep of `stop_atr_k` moves the label, the
+head refits against the moved label, calibration still looks fine, and the
+number on screen changes for a reason no reader could infer. The extra
+columns cost one migration and one set-based UPDATE over a table that
+already exists.
+
+**Consequences.**
+
+**`peak_labels.py` generalises rather than gaining a sibling.** The two
+families differ in one aggregate (`max(favorable)` against
+`min(adverse)`) and share the entry-offset rule, the closed-at-both-ends
+window, and the completeness gate. Two copies of that SQL is two places for
+the `next_open` offset bug to be reintroduced -- the one that mislabelled
+80,273 of 155,344 events before it was caught.
+
+**`mae` stays on `events` and stays useful.** It is the right quantity for
+measuring what actually happened to a trade under the policy that ran,
+which is what the backtest reports. It is only wrong as a *model target*.
+
+**The heads go from four to six**, so `model_version` changes and the ADR
+174 reliability tables must be refitted rather than reused. A table fitted
+against a different ensemble miscalibrates silently.
+
+**This does not make the system predict profit.** With both sides fitted,
+the expected value above becomes computable from model output rather than
+from historical cell frequencies. Whether it is *accurate* is a separate
+measurement, and validate is contaminated (ADR 174), so it is a lead until
+the forward log can score it.

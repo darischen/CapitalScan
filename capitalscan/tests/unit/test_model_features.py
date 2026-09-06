@@ -261,11 +261,19 @@ def test_the_query_scopes_config_split_grain_and_population():
     grain, unpriced and unresolved. `in_trade` — the study population
     (`test_events_in_trade_filter.py` exists because losing this looks
     normal). `split_key` — ADR 019.
+
+    Asserted against the **rendered** training query, not the template.
+    `_SQL` gained a `{row_filter}` placeholder when `build_serving_frame`
+    arrived (ADR 174), because the two paths differ only in how they pick
+    rows -- by split for training, by date for serving. The split predicate
+    therefore is not in the template any more, and reading it there would
+    make this guard pass on a query that never had it.
     """
+    rendered = feat.training_sql(feat._select_columns())
     for fragment in (
         "e.config_hash = :chash",
         "e.entry_kind = 'next_open'",
         "e.in_trade",
         "e.split_key = :split",
     ):
-        assert fragment in feat._SQL
+        assert fragment in rendered

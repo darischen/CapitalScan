@@ -1,5 +1,5 @@
 {
-  "model": "ADR 170 multi-task distributional model",
+  "model": "ADR 170 multi-task distributional model, extended by ADR 175",
   "module": "capitalscan.research.neural",
   "entry_point": "neural.fit(train_frame, calendar) -> Ensemble",
   "git_sha": "c8cb27a3922a864816279a20c1f0e5e138b821e3",
@@ -12,16 +12,25 @@
   },
   "architecture": {
     "trunk": "Linear(d_in,384) GELU Dropout -> Linear(384,384) GELU Dropout -> Linear(384,192) GELU",
-    "heads": "4 x Linear(192,32) -> softmax",
+    "heads": "6 x Linear(192,32) -> softmax",
     "tasks": [
       "terminal_h5",
       "terminal_h10",
       "peak_h5",
-      "peak_h10"
+      "peak_h10",
+      "trough_h5",
+      "trough_h10"
     ],
     "n_bins": 32,
-    "params": 259904,
-    "objective": "summed CRPS over equal-width bins"
+    "params": 272256,
+    "objective": "summed CRPS over equal-width bins",
+    "params_note": "Trunk unchanged from ADR 170; the delta is exactly the two heads ADR 175 added, at 6176 parameters each. The absolute count depends on d_in, which depends on the one-hot width of sector and signal_type and therefore on the data.",
+    "previous_tasks_adr170": [
+      "terminal_h5",
+      "terminal_h10",
+      "peak_h5",
+      "peak_h10"
+    ]
   },
   "hyperparameters": {
     "width": 384,
@@ -90,12 +99,13 @@
     "mean_improvement_pct": 8.015,
     "terminal_h5_q50_pct": 0.43,
     "terminal_h10_q50_pct": 0.78,
-    "incumbent_lgbm_coverage": "14/20"
+    "incumbent_lgbm_coverage": "14/20",
+    "applies_to": "the 4-head ADR 170 model, before ADR 173 and ADR 175. Retained as the record of what ADR 172's holdout run scored, not as a claim about the current architecture."
   },
   "gate": "FAILS DESIGN 7.7 check 3 (coverage 17/20, needs 20/20). NOT promoted.",
   "known_limitation": "Calibrated for uptrending and choppy markets. All three coverage failures are 2022, the only sustained decline in train+validate. Train is 90.9% uptrend by index-above-200SMA; validate is 58.8%.",
-  "revised": "2026-09-04",
-  "revision_notes": "signal_type added as a categorical feature (ADR 173): the model was never told whether a signal is a long or a short, and fwd_ret_* is the raw price return rather than the position return. The measured_on_validate figures below PREDATE both that change and the seeding fix, and are retained only as the record of what ADR 172's holdout run scored.",
+  "revised": "2026-09-05",
+  "revision_notes": "ADR 175 added the adverse family: heads went from 4 to 6 with ('trough', 5) and ('trough', 10), reading the new events.trough_ret_{h}d columns. Those are the exact mirror of peak_ret_* computed from path.adverse, NOT events.mae -- mae is adverse excursion until the trade exits, so ExitParams would be baked into the target and every sweep of stop_atr_k would silently redefine it. Earlier, ADR 173 added signal_type as a categorical (the model was never told whether a signal is a long or a short). EVERY measured_on_validate and holdout figure below predates BOTH changes and the seeding fix: they describe the 4-head model listed as previous_tasks, not the model this file now specifies.",
   "reproducibility_warning": "Every figure here was measured before 2026-09-04, when `_run` built the module BEFORE calling torch.manual_seed -- so initial weights were unseeded and the seeds controlled only the batch shuffle. Two runs of identical code gave step counts [364, 384, 372] and [437, 323, 510], and validate coverage 17/20 and 14/20. Seeding order is fixed and cuDNN pinned as of that date; these numbers have NOT been re-measured under the fix.",
   "holdout": {
     "spent_on": "2026-09-04 (ADR 172)",
@@ -104,6 +114,23 @@
     "beats_constant": "17/20",
     "coverage_ok": "17/20",
     "mean_improve_pct": 7.705,
-    "note": "dispersion generalised; terminal_h5_q50 -0.72% and terminal_h10_q50 -0.99%"
+    "note": "dispersion generalised; terminal_h5_q50 -0.72% and terminal_h10_q50 -0.99%",
+    "applies_to": "the 4-head ADR 170 model, before ADR 173 and ADR 175. Retained as the record of what ADR 172's holdout run scored, not as a claim about the current architecture."
+  },
+  "calibration_adr174": {
+    "module": "capitalscan/core/calibration.py",
+    "method": "equal-mass buckets, isotonic (PAVA) pooling, Wilson interval on Kish n_eff",
+    "n_buckets": 10,
+    "fitted_on": "validate",
+    "published_fields": [
+      "p_touch_2",
+      "p_touch_3",
+      "p_touch_5",
+      "p_touch_10",
+      "p_adverse_3",
+      "p_adverse_5"
+    ],
+    "interval_source": "the realised rate of past predictions in the same reliability bucket, NOT the ensemble seed spread, which measures the optimiser rather than the world",
+    "caveat": "fitted on a split reused during model selection, so the interval is a lower bound on the true uncertainty"
   }
 }

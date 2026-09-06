@@ -34,7 +34,31 @@ from __future__ import annotations
 
 from sqlalchemy import Engine, text
 
-__all__ = ["backfill_peak_labels", "peak_label_sql"]
+__all__ = [
+    "FAMILIES",
+    "backfill_extremum_labels",
+    "backfill_peak_labels",
+    "extremum_label_sql",
+    "peak_label_sql",
+]
+
+#: `family -> (aggregate, path column, events column template)`.
+#:
+#: **ADR 175 generalised this module rather than adding a sibling.** The
+#: two families differ in one aggregate and share everything that is easy
+#: to get wrong: the entry-offset rule, the closed-at-both-ends window,
+#: and the completeness gate. A second copy of that SQL would be a second
+#: place for the `next_open` offset bug to return -- the one that
+#: mislabelled 80,273 of 155,344 events, mean overstatement 1.1pp.
+#:
+#: `path.adverse` is already side-adjusted in position convention (a long
+#: uses `(low - entry) / entry`, a short `(entry - high) / entry`), so
+#: `min` over it is the adverse excursion for the position on both sides
+#: and needs no sign fix.
+FAMILIES: dict[str, tuple[str, str, str]] = {
+    "peak": ("max", "favorable", "peak_ret_{h}d"),
+    "trough": ("min", "adverse", "trough_ret_{h}d"),
+}
 
 # `NEXT_OPEN` fills one trading day after the signal; every other kind
 # fills on the signal bar. Mirrors `core.returns.entry_offset_for`, which
@@ -44,8 +68,8 @@ __all__ = ["backfill_peak_labels", "peak_label_sql"]
 _ENTRY_OFFSET_SQL = "CASE WHEN entry_kind = 'next_open' THEN 1 ELSE 0 END"
 
 
-def peak_label_sql(horizons: tuple[int, ...]) -> str:
-    """The UPDATE statement, built from `horizons` rather than hardcoded.
+def extremum_label_sql(horizons: tuple[int, ...], family: str = "peak") -> str:
+    """The UPDATE statement, built from `horizons` and `family`.
 
     `StatsParams.fwd_ret_horizons` is sweepable (invariant 9), so the
     column list follows it. A horizon with no matching `peak_ret_{h}d`
@@ -64,8 +88,12 @@ def peak_label_sql(horizons: tuple[int, ...]) -> str:
     # and the population `v_screen`/`v_chart` serve. Measured live before the
     # fix: 80,273 of 155,344 labelled `next_open` events wrong, mean
     # overstatement 1.1pp, max 44pp.
+    if family not in FAMILIES:
+        raise ValueError(f"unknown family {family!r}; expected one of {sorted(FAMILIES)}")
+    agg_fn, path_col, column = FAMILIES[family]
+
     peaks = ",\n           ".join(
-        f"max(p.favorable) FILTER (WHERE p.day_offset BETWEEN eo.entry_offset + 1 "
+        f"{agg_fn}(p.{path_col}) FILTER (WHERE p.day_offset BETWEEN eo.entry_offset + 1 "
         f"AND eo.entry_offset + {h}) AS pk{h}"
         for h in horizons
     )
@@ -76,9 +104,12 @@ def peak_label_sql(horizons: tuple[int, ...]) -> str:
     )
     # `CASE WHEN n{h} = {h}` is the completeness gate: the window
     # [off+1, off+h] holds exactly h offsets, so a smaller count means the
-    # forward window is still filling. NULL, never a partial maximum.
+    # forward window is still filling. NULL, never a partial extremum --
+    # for the trough family a partial window gives a value too close to
+    # zero, which reads as a safer trade rather than an incomplete one.
     sets = ",\n        ".join(
-        f"peak_ret_{h}d = CASE WHEN agg.n{h} = {h} THEN agg.pk{h} ELSE NULL END" for h in horizons
+        f"{column.format(h=h)} = CASE WHEN agg.n{h} = {h} THEN agg.pk{h} ELSE NULL END"
+        for h in horizons
     )
     return f"""
     WITH eo AS (
@@ -102,8 +133,10 @@ def peak_label_sql(horizons: tuple[int, ...]) -> str:
     """
 
 
-def backfill_peak_labels(engine: Engine, config_hash: str, horizons: tuple[int, ...]) -> int:
-    """Write `peak_ret_*d` for one `config_hash`. Returns rows updated.
+def backfill_extremum_labels(
+    engine: Engine, config_hash: str, horizons: tuple[int, ...], family: str = "peak"
+) -> int:
+    """Write one family's labels for one `config_hash`. Returns rows updated.
 
     Scoped to a single config deliberately (user's decision, 2026-08-09):
     only the live hash is in use, and the superseded generations in
@@ -116,5 +149,21 @@ def backfill_peak_labels(engine: Engine, config_hash: str, horizons: tuple[int, 
     partial maximum.
     """
     with engine.begin() as conn:
-        result = conn.execute(text(peak_label_sql(horizons)), {"config_hash": config_hash})
+        result = conn.execute(
+            text(extremum_label_sql(horizons, family)), {"config_hash": config_hash}
+        )
     return int(result.rowcount)
+
+
+def peak_label_sql(horizons: tuple[int, ...]) -> str:
+    """`extremum_label_sql` for the peak family. Kept as the original name."""
+    return extremum_label_sql(horizons, "peak")
+
+
+def backfill_peak_labels(engine: Engine, config_hash: str, horizons: tuple[int, ...]) -> int:
+    """`backfill_extremum_labels` for the peak family.
+
+    The two callers in `cli.py` and four tests name this, and ADR 175 is
+    about adding a family rather than renaming the existing one.
+    """
+    return backfill_extremum_labels(engine, config_hash, horizons, "peak")

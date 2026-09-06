@@ -230,9 +230,24 @@ def test_meta_survives_the_wire(client, session):
 
 
 def test_predict_is_not_found_over_the_wire(client, session):
+    """**Edited deliberately 2026-09-05 (ADR 174).**
+
+    The reason string changed from "No model exists" to a missing *row*,
+    because a model now exists and `handlers.predict` returns a real
+    `Prediction` when one has been written. This fixture's database has no
+    `predictions` rows, so the wire answer is still `not_found` -- and the
+    assertion has to move with the reason or it pins a sentence rather than
+    a behaviour.
+
+    What is worth keeping is that the wire *shape* did not change when
+    ADR 174 filled it. Defining `Prediction` empty in Phase 5 is what
+    bought that.
+    """
     payload = _call(client, session, "predict", {"ticker": "TSM"})["result"]["structuredContent"]
     assert payload["kind"] == "not_found"
-    assert "No model exists" in payload["reason"]
+    assert "No prediction has been written" in payload["reason"]
+    assert "cscan predict" in payload["reason"]
+    assert "get_stats" in payload["reason"]
 
 
 # ---------------------------------------------------------------------------

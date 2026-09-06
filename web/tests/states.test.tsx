@@ -933,3 +933,74 @@ describe("opening the charts resets the picker", () => {
     expect(syncBody).toContain("setBlocked([])");
   });
 });
+
+/* --- ADR 174 / 175: the two probability columns ------------------------ */
+
+describe("the prediction columns", () => {
+  const render = (over: Partial<ScreenRow> = {}) =>
+    renderToStaticMarkup(
+      <ScreenerTable rows={[row(over)]} sortCtx={SORT_CTX} withStats={false} />,
+    );
+
+  it("renders an em dash when the row has no prediction at all", () => {
+    // `row()` omits `prediction` entirely, which is how every fixture in
+    // this file and every ScreenRow built before ADR 174 arrives. The
+    // field is typed `Prediction | null`, so TypeScript cannot see the
+    // `undefined` — a strict `=== null` check compiled cleanly and threw
+    // on render, which is what this test exists to stop recurring.
+    const html = render();
+    expect(html).toContain("P(+3%)");
+    expect(html).toContain("—");
+  });
+
+  it("renders the probability with its interval and effective sample", () => {
+    const html = render({
+      prediction: {
+        pTouch3: 0.62,
+        ciLow: 0.58,
+        ciHigh: 0.66,
+        nEff: 812,
+        modelVersion: "adr175-05238410-abc1234",
+        adverse3: null,
+      },
+    });
+    expect(html).toContain("n=812");
+  });
+
+  it("shows the adverse side separately, with its own interval", () => {
+    // Its own, not the touch column's: the two are calibrated against
+    // different reliability tables, so borrowing one interval for both
+    // would render correctly and describe a different quantity.
+    const html = render({
+      prediction: {
+        pTouch3: 0.62,
+        ciLow: 0.58,
+        ciHigh: 0.66,
+        nEff: 812,
+        modelVersion: "adr175-05238410-abc1234",
+        adverse3: { p: 0.41, lo: 0.39, hi: 0.43, nEff: 790 },
+      },
+    });
+    expect(html).toContain("P(−3%)");
+    expect(html).toContain("n=790");
+    expect(html).toContain("n=812");
+  });
+
+  it("suppresses the adverse cell when the row predates the field", () => {
+    // `calibration_json` arrived with ADR 175, so older rows carry a
+    // p_touch and no adverse band. A probability must never reach the
+    // screen without its evidence, so the cell is empty rather than bare.
+    const html = render({
+      prediction: {
+        pTouch3: 0.62,
+        ciLow: 0.58,
+        ciHigh: 0.66,
+        nEff: 812,
+        modelVersion: "adr174-05238410-abc1234",
+        adverse3: null,
+      },
+    });
+    expect(html).toContain("P(−3%)");
+    expect(html).toContain("—");
+  });
+});
