@@ -6770,6 +6770,88 @@ only clean regime asymmetry in the table (+0.025 to +0.056 above the line,
 
 ---
 
+## 2026-09-06 — the coverage failures are label shift, and four other explanations are dead
+
+Five hypotheses, four refuted, one standing. The surviving one explains all
+three families with a single mechanism and every sign matches.
+
+### The four that died
+
+| hypothesis | killed by |
+|---|---|
+| the model cannot see market regime | coverage error is the same size with SPX above its 200-day SMA (+0.0876) as below it (+0.0631) |
+| the CRPS grid truncates the peak family | 0.50% of train exceeds the top edge, exactly what a 0.995 span gives; `q0.75` sits at bin 9 of 32 |
+| volatility scale | `peak_h10_q0.75` misses in 2022 (`bb_width` 0.664) **and** 2023 (0.409), opposite regimes |
+| multi-task interference | measured directly, below |
+
+**The interference test, and a prediction I got half wrong.** The written
+prediction before the run was that terminal's +0.06 would "fall by at least
+half" when its family trained alone, and that `peak_h10_q0.75` would
+"survive largely intact". The second held. The first was badly wrong:
+
+| head | multi-task | single-task | shrinkage |
+|---|---|---|---|
+| `terminal_h5_q0.50` | +0.0576 | +0.0552 | 4% |
+| `terminal_h10_q0.25` | +0.0811 | +0.0752 | 7% |
+| `peak_h10_q0.75` | −0.0644 | −0.0549 | 15% |
+
+**5/30 heads fail multi-task; 5/30 fail single-task.** Identical. Mean
+absolute error moves 0.0394 → 0.0354 for terminal and 0.0261 → 0.0217 for
+peak, and **gets worse** for trough (0.0158 → 0.0181) — that family gains
+from sharing. Multi-task learning costs a little and is not the cause of
+anything.
+
+Bin resolution was checked too and does not separate the families: the
+q25–q75 body spans 3.7 to 5.0 bins for every one of the six, and `trough`
+has skew −3.54 and passes all ten while `peak` has +3.78 and fails.
+
+### What it is: the label distribution moved
+
+| quantity | train (2010–21) | validate (2022–23) | shift |
+|---|---|---|---|
+| `peak_ret_10d` q75 | 0.0539 | 0.0710 | **+32%** |
+| `peak_ret_5d` q75 | 0.0382 | 0.0492 | +29% |
+| `fwd_ret_5d` q50 | 0.00366 | 0.00074 | **−80%** |
+| `trough_ret_5d` q25 | −0.0362 | −0.0456 | +26% deeper |
+
+The model fits train's distribution. Validate's is wider in both directions
+and has almost no drift. Every coverage error follows directly, and the
+signs are not free parameters — each one is forced:
+
+- **Peak excursions are 32% larger in validate.** The model predicts
+  train-sized peaks, so its `q0.75` sits too low, so fewer outcomes fall
+  below it. **Under-coverage.** Observed −0.064.
+- **Troughs are 26% deeper.** The model predicts train-sized troughs, so
+  its `q0.25` sits too high, so more outcomes fall below it.
+  **Over-coverage.** Observed +0.030.
+- **The median return is 80% lower.** The model predicts train's drift, so
+  its `q0.50` sits too high. **Over-coverage.** Observed +0.058.
+
+Three families, three different directions, one cause. Nothing about the
+architecture, the objective, the grid or the feature set is implicated.
+
+**Why `trough` still passes and the others do not** is only that its shift
+is smaller relative to the 5-point tolerance, not that it is better built.
+
+### The consequence
+
+This is the same finding as the training-window one, arrived at
+independently: train (2010–2021) contains no period resembling validate.
+Its worst year is 2011 at 0.603 of sessions above the 200-day SMA against
+2022's 0.151, and 2008 (0.000) is excluded because `ingest_start` is 2010.
+
+**The fix is more history, and specifically history that contains
+declines.** `capitalscan_hist` (11 GB) is still on disk and was built for
+exactly this, then shelved after being judged against a different question
+— so that negative result does not transfer. This is now the only open
+explanation with evidence behind it.
+
+**What would falsify it:** refit on a window containing 2008 and 2000–02
+and the coverage errors should shrink toward zero without any change to
+the architecture. If they do not, the label-shift story is wrong too.
+
+---
+
 ## 2026-09-05 — the adverse half: `p_adverse` ships (ADR 175)
 
 Heads went from four to six, `cscan predict` wrote **4,264 rows across 242

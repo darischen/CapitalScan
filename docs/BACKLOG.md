@@ -53,33 +53,38 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    in the project, so check it before trusting any other number. Put it in
    `nightly` once it has been watched a few times by hand.
 
-2. **Fix `peak_h10_q0.75`, the one regime-independent failure.** Coverage
-   0.6856 against a nominal 0.75, and it misses by roughly the same amount
-   in 2022, 2023, above the 200-day line and below it. That uniformity
-   makes it a shape error in one head rather than anything to do with
-   market conditions -- more history will not touch it. Cheapest probe:
-   check whether the CRPS grid's upper span truncates the peak
-   distribution, since `DEFAULT_CRPS_SPAN` is (0.005, 0.995) and the peak
-   family is one-sided and right-skewed. A grid that ends too low cannot
-   place mass where the outcomes are.
+2. **Extend the training window. This is now the only open explanation with
+   evidence behind it, and five others are dead.** Measured 2026-09-06:
+   every coverage failure follows from the label distribution moving
+   between train and validate, with each sign forced rather than fitted.
 
-3. **Extend the training window, which is now an evidence-backed change
-   rather than a hunch.** Train (2010-2021) contains no sustained decline:
-   its worst year is 2011 at 0.603 of sessions above the 200-day SMA,
-   against 2022's 0.151. **2008 is 0.000 and is excluded** because
-   `ingest_start` is 2010. All four terminal coverage failures are 2022 and
-   all four are fine in 2023. `capitalscan_hist` (11 GB) is still on disk
-   and was built for exactly this; it was shelved after being evaluated
-   against a different question, so the earlier negative result does not
-   apply here. Verify 2008 and 2000-2002 events exist in it before
-   re-running anything.
+   | quantity | train (2010-21) | validate (2022-23) |
+   |---|---|---|
+   | `peak_ret_10d` q75 | 0.0539 | 0.0710 (+32%) |
+   | `fwd_ret_5d` q50 | 0.00366 | 0.00074 (-80%) |
+   | `trough_ret_5d` q25 | -0.0362 | -0.0456 (26% deeper) |
 
-   **Do NOT add a market-regime feature for this.** It was the obvious fix
-   and the data says no: the coverage error is the same size with SPX above
-   its 200-day SMA (+0.0876) as below it (+0.0631). A regime feature has
-   nothing to learn from when 90.8% of train is one regime.
+   Train contains no period like it: worst year 2011 at 0.603 of sessions
+   above the 200-day SMA against 2022's 0.151, and **2008 (0.000) is
+   excluded because `ingest_start` is 2010**. `capitalscan_hist` (11 GB) is
+   still on disk, built for exactly this and shelved after being judged
+   against a different question -- that negative result does not transfer.
 
-4. **Measure `P(stop)`, which is not `p_adverse_*`.** A trade can reach its
+   **Check `capitalscan_hist` actually holds 2008 and 2000-02 events before
+   re-running anything.** Falsifier: refit on a window containing those
+   declines and the coverage errors should shrink toward zero with no
+   architecture change. If they do not, the label-shift story is wrong too.
+
+   **Do NOT spend time on these -- all four are measured and refuted:**
+   a market-regime feature (error is the same size above and below the
+   200-day line), CRPS grid truncation (0.50% exceeds the top edge, `q0.75`
+   sits at bin 9 of 32), volatility scale (`peak_h10_q0.75` misses in both
+   2022 and 2023, opposite regimes), and multi-task interference (5/30
+   heads fail multi-task, 5/30 fail single-task; shrinkage 4-15%, and
+   `trough` is *better* shared). Bin resolution does not separate the
+   families either: the q25-q75 body spans 3.7-5.0 bins for all six.
+
+3. **Measure `P(stop)`, which is not `p_adverse_*`.** A trade can reach its
    target before its stop, so the two are not independent and
    `P(stop) != P(trough <= stop)`. The ordering is already in `path`, so
    this is a measurement over existing rows.
@@ -87,14 +92,14 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    probabilities from its caller so it cannot pretend otherwise; nothing in
    the serving path calls it.
 
-5. **Adopt arm D's config, with a caveat.** Sector-relative features plus
+4. **Adopt arm D's config, with a caveat.** Sector-relative features plus
    `net_ret`/`mae` tasks beat base on Brier skill at all three thresholds
    (t3 +5.54% -> +6.22%) and do not interfere, **but AUC is flat**
    (0.6379 -> 0.6411), so it is better calibration rather than new
    predictive power, on one seed-triple each. Re-derive against the
    six-head model; the four-head numbers no longer describe the code.
 
-6. **Refit the reliability tables on clean data.** Blocked until item 1 has
+5. **Refit the reliability tables on clean data.** Blocked until item 1 has
    accumulated enough resolved rows -- roughly 2026-12 at ~15k events a
    month. The current intervals are fitted on validate and are a lower
    bound on the true uncertainty.
