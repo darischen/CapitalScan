@@ -73,8 +73,50 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    in the project, so check it before trusting any other number. Put it in
    `nightly` once it has been watched a few times by hand.
 
-2. **Extend the training window. This is now the only open explanation with
-   evidence behind it, and five others are dead.** Measured 2026-09-06:
+2. **Give the model decline-regime exposure. Two ways in, and the cheap one
+   should be tried first.** This is the only open explanation with evidence
+   behind it; five others are dead (listed below).
+
+   **Verified 2026-09-06: `capitalscan_hist` has what is needed.** Events
+   back to 2002-01-02 (6.7M rows), bars to 1998, and two declines worse
+   than 2022:
+
+   | year | frac above 200-SMA | in-trade events |
+   |---|---|---|
+   | 2002 | 0.071 | 23,867 |
+   | 2008 | **0.000** | 19,808 |
+   | 2009 | 0.575 | 14,465 |
+   | *(2022, for scale)* | *0.151* | — |
+
+   **But extending the window helps less than it sounds.** 2003-2007 is
+   another ~200k mostly-uptrend events that dilute the declines:
+
+   | window | events | frac uptrend |
+   |---|---|---|
+   | train 2010-2021 | 564,748 | 0.899 |
+   | extended 2002-2021 | 809,905 | **0.844** |
+   | validate 2022-23 (target) | 75,753 | 0.623 |
+
+   The mix barely moves. **The number that does move is the absolute count
+   of decline-regime examples: 57,085 -> 126,252, a 2.2x increase.** If the
+   problem is that 57k is too few to fit regime-dependent behaviour, that
+   matters more than the fraction. If the problem is the ratio, extending
+   will disappoint.
+
+   **2a. Reweight first -- one fit, no rebuild.** Upweight decline-regime
+   events inside the existing window and refit. It costs ~11 minutes
+   against ~2 h for a rebuild, and it separates the two explanations: if
+   ratio is what matters, reweighting moves coverage; if absolute count is
+   what matters, it will not and 2b is required.
+
+   **2b. Rebuild on 2002-2021** only if 2a shows the ratio matters, or if
+   2a moves nothing and the absolute-count theory needs its own test.
+   `capitalscan_hist` (11 GB) is on disk and was shelved after being judged
+   against a different question, so that negative result does not transfer.
+
+   **Falsifier for both:** coverage errors should shrink toward zero with
+   no architecture change. If neither moves them, label shift is wrong too
+   and the cause is still unfound. Measured 2026-09-06:
    every coverage failure follows from the label distribution moving
    between train and validate, with each sign forced rather than fitted.
 
