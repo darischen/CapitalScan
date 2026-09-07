@@ -47,8 +47,17 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
 
 **Next, in cost order:**
 
-1. **Check whether two identical fits agree. Cheapest thing on this list
-   that changes what every other number means.** Measured 2026-09-06: two
+1. **~~Check whether two identical fits agree~~ -- mostly answered
+   2026-09-07, downgrade.** The base arm ran twice across the market-state
+   experiments and gave **identical** steps [566, 417, 589] and identical
+   25/30 both times. Both were after the label backfill; the differing pair
+   ([426,426,467] vs [521,512,469]) straddled it. That points at the labels
+   moving, not at framework non-determinism -- the killed `path backfill`
+   ran `incomplete_only=False` over 300 tickers and the label pass rewrote
+   979,828 rows. Not proof, but enough to stop treating every A/B as
+   suspect. **What remains: re-check any A/B whose arms straddled a label
+   backfill.** ADR 172's holdout run and the arm A/B/C/D comparison should
+   be checked against their run timestamps. Measured 2026-09-06: two
    fits with identical code, identical `DEFAULT_SEEDS` and an identically
    sized frame (157,938 rows) gave steps [426, 426, 467] against
    [521, 512, 469], and 5/30 heads failing against 4/30.
@@ -90,9 +99,33 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    in the project, so check it before trusting any other number. Put it in
    `nightly` once it has been watched a few times by hand.
 
-3. **Add market-level trend features. Named 2026-08-25, never run, and the
-   2026-09-06 "refutation" of it was Simpson's paradox.** Corrected
-   2026-09-07 -- see `RESULTS.md`.
+3. **~~Add market-level trend features~~ -- RUN 2026-09-07, AND IT DOES NOT
+   FIX THE TRANSITION.** Index state plus breadth moves the target cell
+   0.0778 -> 0.0550 and **triples the error everywhere else** (2023_above
+   0.0199 -> 0.0608, heads passing 25/30 -> 16/30). The five index-state
+   features do nothing alone (0.0778 -> 0.0771); breadth carried the whole
+   gain, and breadth alone leaves the target cell at 0.0715. There is no
+   combination here that fixes the transition without losing more than it
+   gains. **Do not retry index-state features.** Full numbers in
+   `RESULTS.md`.
+
+3b. **Ship the two breadth features anyway -- they are a net win for a
+   different reason.** `breadth_ma_above` and `breadth_mean_dd`, computed
+   from `indicators` in 3.7s, take 30 heads from 25 passing to **26** and
+   **halve** the 2023 error (0.0199 -> 0.0085). ALL-cell mean abs error
+   0.0262 -> 0.0225. That stands on its own and does not depend on the
+   transition story. Needs: two columns on `events`, a backfill, and
+   `RAW_FEATURE_COLS`. Note it makes 2022_below slightly worse
+   (0.0236 -> 0.0377), so confirm the gate still passes 26/30 before
+   adopting.
+
+3c. **The transition is still unexplained and unfixed.** The model can be
+   told what the market is doing and does not convert that into a wider
+   distribution at the top without over-widening everywhere. Open
+   questions, none tested: is it capacity, too few transition-with-bad-
+   outcome examples, or a real limit? A per-regime calibration layer
+   (ADR 174's reliability table fitted separately above and below the
+   200-day line) would sidestep the model entirely and is cheap.
 
    Measured as a 2x2 with the year held fixed, the regime separates by a
    factor of three within 2022:

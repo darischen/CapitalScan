@@ -6770,6 +6770,91 @@ only clean regime asymmetry in the table (+0.025 to +0.056 above the line,
 
 ---
 
+## 2026-09-07 — market-state features: the transition is NOT fixed, but breadth is a net win
+
+Two arms tested against the transition failure located in the correction
+below. **Neither fixes it.** One is worth keeping for an unrelated reason,
+and a third question got answered by accident.
+
+### Arm 1: index state + breadth — improves the target, wrecks everything else
+
+Five index-state features (`spx_above_sma200`, `spx_dd_252d`,
+`spx_sma200_slope`, `spx_days_below_10pct`, `vix_pct_252d`) plus three
+breadth features.
+
+| cell | base | +market | +market+breadth |
+|---|---|---|---|
+| **2022_above** (target) | 0.0778 | 0.0771 | **0.0550** |
+| 2022_below | 0.0236 | 0.0425 | 0.0456 |
+| 2023_above | **0.0199** | 0.0585 | **0.0608** |
+| ALL | **0.0262** | 0.0519 | 0.0516 |
+| heads within 5pts | **25/30** | 16/30 | 16/30 |
+
+It buys the target cell (0.0778 -> 0.0550, and `peak_h10_q0.75` from
+−0.1022 to −0.0236) and pays by **tripling the error where the model was
+best**. 25/30 to 16/30 is far outside run-to-run noise. Early stopping also
+fired much sooner (steps 566/417/589 -> 333/323/417), which is what
+overfitting onset looks like: five features that are near-constant within
+any month, on a model with limited transition examples to anchor them.
+
+**The index features did nothing on their own.** Target cell 0.0778 ->
+0.0771. Every bit of the target-cell gain came from breadth. So the
+headline hypothesis -- "the model cannot see the *index* turning" -- is not
+what carries the signal.
+
+### Arm 2: breadth alone — a better model, and the transition still broken
+
+| cell | base | breadth_only (3) | breadth_2 (2) |
+|---|---|---|---|
+| **2022_above** (target) | 0.0778 | 0.0758 | **0.0715** |
+| 2022_below | **0.0236** | 0.0356 | 0.0377 |
+| 2023_above | 0.0199 | 0.0099 | **0.0085** |
+| ALL | 0.0262 | 0.0224 | **0.0225** |
+| heads within 5pts | 25/30 | **26/30** | **26/30** |
+
+**Overall calibration improves and 2023 error halves** (0.0199 -> 0.0085).
+But the target cell barely moves: 0.0778 -> 0.0715, still three times the
+tolerance-passing cells and still the reason the gate fails.
+
+**So the two results have to be read together.** Breadth alone is a modest
+net win. The transition gain in arm 1 needed the index features *and*
+breadth together, and that combination is unusable. There is no version of
+this here that fixes the transition without losing more than it gains.
+
+### The conclusion, stated plainly
+
+**The transition failure is not fixed and this line of attack did not
+work.** The model can be told what the market is doing; it does not convert
+that into a wider distribution at the top without over-widening everywhere
+else. Whether that is a capacity problem, a "too few transition-with-bad-
+outcome examples" problem, or a genuine limit is not settled by these runs.
+
+**What is worth keeping regardless:** `breadth_ma_above` and
+`breadth_mean_dd`, two features computed from `indicators` in 3.7s, which
+take 30 heads from 25 passing to 26 and halve the 2023 error. That is a
+real improvement on its own terms and does not depend on the transition
+story being right.
+
+### A determinism question, answered by accident
+
+The 2026-09-06 entry flagged that two identical fits gave steps
+[426, 426, 467] and [521, 512, 469], and raised two candidate causes:
+non-determinism, or the intervening label backfill changing train labels.
+
+**The base arm ran twice across these two experiments and gave identical
+steps [566, 417, 589] and identical 25/30 both times.** Both runs were
+after the label backfill; the differing pair straddled it. That points at
+the labels, not the framework — the killed `path backfill` ran
+`incomplete_only=False` over 300 tickers and the label pass rewrote 979,828
+rows, so train-era values moved underneath the comparison.
+
+Not proof, but the reproducible pair is evidence the seeding fix holds and
+the earlier discrepancy had a mundane cause. BACKLOG item 1 can be
+downgraded from "every A/B is suspect" to "re-check any A/B whose arms
+straddled a label backfill".
+
+---
+
 ## 2026-09-07 — CORRECTION: the regime refutation was Simpson's paradox
 
 **The 2026-09-06 entry below claims the market-regime hypothesis was
