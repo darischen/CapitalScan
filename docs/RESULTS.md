@@ -6770,6 +6770,185 @@ only clean regime asymmetry in the table (+0.025 to +0.056 above the line,
 
 ---
 
+## 2026-09-07 — CORRECTION: the regime refutation was Simpson's paradox
+
+**The 2026-09-06 entry below claims the market-regime hypothesis was
+refuted. That claim is wrong and is retracted here.** The 2026-08-25
+analysis, which traced the coverage failures to the absence of any
+market-level trend feature, was right.
+
+### What went wrong
+
+The refutation compared coverage with SPX above its own 200-day SMA
+(+0.0876) against below (+0.0631), found them similar, and concluded regime
+was not the cause. But the two slices are not comparable, because they are
+mostly different years:
+
+| slice | 2022 events | 2023 events |
+|---|---|---|
+| SPX below 200-SMA | 13,131 | 1,542 |
+| SPX above 200-SMA | 4,222 | 16,230 |
+
+"Below" is 90% 2022 and "above" is 79% 2023, so the pooled contrast was a
+year contrast wearing a regime label. Pooling across a confounder that
+moves in the opposite direction to the effect is Simpson's paradox, and it
+erased the signal completely.
+
+### The 2x2, measured directly
+
+`terminal_h5_q0.25`, which the pooled view reported as +0.0749 against
++0.0600:
+
+| | SPX above 200-SMA | SPX below 200-SMA |
+|---|---|---|
+| **2022** | **+0.2364** (n=4,166) | +0.0713 (n=12,738) |
+| **2023** | +0.0311 (n=15,796) | −0.0352 (n=1,495, thin) |
+
+**Within 2022 the regime separates by a factor of three**, and it does so
+for every family, not just the failing heads:
+
+| head | tau | above | below | gap |
+|---|---|---|---|---|
+| `terminal_h5` | 0.25 | +0.2364 | +0.0713 | **+0.165** |
+| `terminal_h10` | 0.50 | +0.2391 | +0.0730 | **+0.166** |
+| `peak_h10` | 0.75 | −0.1022 | −0.0433 | −0.059 |
+| `trough_h5` | 0.25 | +0.1272 | +0.0055 | **+0.122** |
+
+**Mean absolute error within 2022: 0.0778 above the line, 0.0236 below.**
+Below the line the model is comfortably inside the 5-point tolerance. Above
+it, it is three times worse.
+
+**`peak_h10_q0.75` was also mis-described.** The 2026-09-06 entry called it
+"uniform across every slice" and therefore regime-independent. It is not:
+−0.1022 above against −0.0433 below within 2022. That uniformity was the
+same pooling artefact.
+
+### What this actually means
+
+**The model fails during the transition, not during the bear market.** Once
+the index is clearly below its 200-day SMA, the per-ticker features have
+caught up -- `dd_52w` is large, `rv_pct_252d` is high, `vix_close` is
+elevated -- and the model is nearly calibrated. The failure concentrates in
+the period when the index is still above its 200-day average while the
+decline is already underway, and every per-ticker feature still looks
+ordinary.
+
+That is exactly what the 2026-08-25 analysis found from the other
+direction: coverage error on `terminal_h5_q25` within 2022 was **+0.118**
+for tickers down 0-5% and **+0.039** for tickers down 25%+. Deep-drawdown
+events were nearly calibrated; shallow ones were not. Two independent
+slices, same conclusion.
+
+**It also explains why reweighting failed.** The 2026-09-06 experiment
+upweighted rows with SPX below its 200-day SMA -- which are precisely the
+rows the model already handles well (0.0236). It multiplied the easy cases
+by 9.82x and left the hard ones alone. The experiment was not a test of the
+regime hypothesis at all; it was a test of a mislabelled one.
+
+### The standing conclusion
+
+Of 22 features, three are market-level: `vix_close` (a level),
+`spx_ret_1d` (**one day**) and `cofire_count` (same-day breadth). Every
+trend feature -- `above_sma200`, `sma200_slope_60`, `dd_52w` -- is
+per-ticker. The model cannot see that the *market* is turning until the
+individual names have already turned with it.
+
+**The next test is the one 2026-08-25 named and nobody ran**: add
+market-level trend features (index against its own 200-day SMA, index
+drawdown from its 252-day high, days spent below −10%) and refit. One fit.
+The label-shift description from 2026-09-06 remains accurate as a
+*description*; this is the mechanism behind it.
+
+### The methodological lesson
+
+Three refutations in this series were published from pooled comparisons.
+This one was wrong. **Any slice whose composition differs across the thing
+being compared has to be measured as a 2x2**, with cell counts shown, and
+that applies to the volatility and grid slices in the same entry -- neither
+has been re-checked with the year held fixed.
+
+---
+
+## 2026-09-06 — reweighting is refuted, and fits are not reproducible
+
+### Reweighting decline-regime events makes coverage worse
+
+The label-shift finding split into two readings needing different fixes:
+**ratio** (the model sees 89.9% uptrend and learns an uptrend prior, so
+reweighting the existing rows fixes it) or **count** (57k decline events is
+too few to fit conditional behaviour at all, so only more data fixes it).
+
+Reweighting cannot add information -- the same rows are present either way
+-- so it separates them for the price of one fit.
+
+Three arms, decline rows multiplied against the existing cluster weights so
+ADR 060's correction survives in each:
+
+| arm | heads failing | mean abs error |
+|---|---|---|
+| `base` | **4 / 30** | **0.0230** |
+| `x3` | 7 / 30 | 0.0267 |
+| `balanced` (9.82x) | 6 / 30 | 0.0311 |
+
+**It gets monotonically worse.** The four terminal failures grow rather
+than shrink:
+
+| head | base | balanced |
+|---|---|---|
+| `terminal_h5_q0.25` | +0.0737 | **+0.1018** |
+| `terminal_h5_q0.50` | +0.0612 | **+0.0905** |
+| `terminal_h10_q0.25` | +0.0770 | **+0.1141** |
+| `terminal_h10_q0.50` | +0.0627 | **+0.0913** |
+
+**The prediction written beforehand was wrong.** It said terminal would
+shrink by roughly a third with at most one head coming inside tolerance.
+Terminal grew by about 40%.
+
+**Why it fails, and it is instructive.** The training *frame* holds only
+**14,535 decline-regime events against 143,403 uptrend** — 9.2%, not the
+10.1% the raw event table suggested, because the frame drops ETFs, missing
+sectors and unlabelled rows. Balancing therefore needs a **9.82x**
+multiplier on a small set, which collapses the effective sample: the same
+14,535 rows carry half the total mass while supplying no more independent
+information. Kish would put the effective count far below the row count.
+
+**This is evidence for count over ratio.** You cannot manufacture
+decline-regime information by shouting the same 14,535 rows louder. The
+rebuild on extended history (126,252 decline events) is now the justified
+test rather than the expensive one, and **reweighting should not be
+retried**.
+
+### A caution that applies to every A/B in this project
+
+Two fits of identical code, identical seeds and an identically sized
+training frame (157,938 rows) produced different results:
+
+| run | steps | heads failing |
+|---|---|---|
+| coverage diagnosis | [426, 426, 467] | 5 / 30 |
+| reweight `base` arm | [521, 512, 469] | 4 / 30 |
+
+`DEFAULT_SEEDS` is fixed and ADR 173's seeding fix pins cuDNN, so this
+should not vary. Two candidate causes and this run cannot separate them:
+
+1. **Genuine non-determinism** the seeding fix did not fully close.
+2. **The intervening label backfill changed train labels.** The killed full
+   `path backfill` ran `incomplete_only=False` over 300 of 759 tickers,
+   recomputing `path` for their whole history, and the label pass then
+   rewrote 979,828 rows. Train-era values could have moved.
+
+**Either way, single-run arm comparisons carry unquantified variance**, and
+that caveat attaches to tonight's numbers and to every earlier arm result
+in this file, including ADR 172's and the arm A/B/C/D comparison. The
+reweighting conclusion survives it because the degradation is large and
+monotone in the multiplier, but a 0.7pp difference between arms would not.
+
+**The cheap fix is a determinism check**: fit twice with identical
+settings, assert the step counts and coverage match. It belongs in the
+fast tier as a marker, not as a gate, since it costs a fit.
+
+---
+
 ## 2026-09-06 — the coverage failures are label shift, and four other explanations are dead
 
 Five hypotheses, four refuted, one standing. The surviving one explains all

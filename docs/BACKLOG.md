@@ -47,7 +47,24 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
 
 **Next, in cost order:**
 
-1. **Re-run `cscan outcomes` and read it. Free, but it has a chain in
+1. **Check whether two identical fits agree. Cheapest thing on this list
+   that changes what every other number means.** Measured 2026-09-06: two
+   fits with identical code, identical `DEFAULT_SEEDS` and an identically
+   sized frame (157,938 rows) gave steps [426, 426, 467] against
+   [521, 512, 469], and 5/30 heads failing against 4/30.
+
+   Two candidate causes, unseparated: seeding that ADR 173 did not fully
+   close, or the intervening label backfill having moved train labels (the
+   killed `path backfill` ran `incomplete_only=False` over 300 tickers and
+   the label pass rewrote 979,828 rows).
+
+   **Until this is settled, every single-run arm comparison in
+   `RESULTS.md` carries unquantified variance** -- including ADR 172's and
+   the arm A/B/C/D result whose whole margin was 0.7pp. Fit twice, compare
+   step counts and coverage. One fit's cost to know whether any A/B in this
+   project means anything.
+
+2. **Re-run `cscan outcomes` and read it. Free, but it has a chain in
    front of it.** Measured 2026-09-06: the resolver is idempotent and
    correct, and it resolved nothing on its second run because the labels it
    needs were not there. The dependency, which nothing documented:
@@ -73,9 +90,39 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    in the project, so check it before trusting any other number. Put it in
    `nightly` once it has been watched a few times by hand.
 
-2. **Give the model decline-regime exposure. Two ways in, and the cheap one
-   should be tried first.** This is the only open explanation with evidence
-   behind it; five others are dead (listed below).
+3. **Add market-level trend features. Named 2026-08-25, never run, and the
+   2026-09-06 "refutation" of it was Simpson's paradox.** Corrected
+   2026-09-07 -- see `RESULTS.md`.
+
+   Measured as a 2x2 with the year held fixed, the regime separates by a
+   factor of three within 2022:
+
+   | | SPX above 200-SMA | SPX below 200-SMA |
+   |---|---|---|
+   | mean abs error, 2022 | **0.0778** | 0.0236 |
+   | `terminal_h5_q0.25` | +0.2364 | +0.0713 |
+   | `trough_h5_q0.25` | +0.1272 | +0.0055 |
+
+   **The model fails during the transition, not during the bear market.**
+   Once the index is clearly below its 200-day average the per-ticker
+   features have caught up and coverage is inside tolerance. The failure is
+   concentrated where the index is still above its average while the
+   decline is underway and every per-ticker feature looks ordinary -- which
+   matches 2026-08-25's independent finding that error was +0.118 for
+   tickers down 0-5% and +0.039 for tickers down 25%+.
+
+   Of 22 features only three are market-level: `vix_close` (a level),
+   `spx_ret_1d` (**one day**), `cofire_count` (same-day breadth). Every
+   trend feature is per-ticker.
+
+   **The test:** add index-against-its-own-200-SMA, index drawdown from the
+   252-day high, and days spent below -10%. One fit. `market_days` already
+   holds `spx_close` back to 2004 and `vix_pct_252d` unused.
+
+4. **Give the model decline-regime exposure -- lower priority than item 3
+   now.** Still worth testing, but the 2x2 above says the model's problem
+   is not that it lacks bear-market rows; it handles established bears
+   fine. It lacks the ability to *recognise* one starting.
 
    **Verified 2026-09-06: `capitalscan_hist` has what is needed.** Events
    back to 2002-01-02 (6.7M rows), bars to 1998, and two declines worse
@@ -103,14 +150,31 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    matters more than the fraction. If the problem is the ratio, extending
    will disappoint.
 
-   **2a. Reweight first -- one fit, no rebuild.** Upweight decline-regime
+   **2a. ~~Reweight first~~ -- MEASURED 2026-09-06, AND IT MAKES THINGS
+   WORSE.** Three arms: base 4/30 heads failing (mean |err| 0.0230), x3
+   7/30 (0.0267), balanced 6/30 (0.0311). The four terminal failures *grow*
+   monotonically with the multiplier, +0.0737 -> +0.1018 at
+   `terminal_h5_q0.25`. The training frame holds only **14,535 decline
+   events against 143,403 uptrend**, so balancing needs a 9.82x multiplier
+   that collapses the effective sample without adding information. **This
+   is evidence for count over ratio. Do not retry it.**
+
+   **Post-mortem, 2026-09-07: the experiment was aimed at the wrong
+   rows.** It upweighted events with SPX below its 200-day SMA --
+   exactly the rows the model already handles well (mean abs error
+   0.0236). It multiplied the easy cases 9.82x and left the hard ones
+   (0.0778, above the line) alone. So it was never a test of the regime
+   hypothesis, and its failure says nothing about count versus ratio.
+
+   **2a (superseded, kept so it is not retried).** Upweight decline-regime
    events inside the existing window and refit. It costs ~11 minutes
    against ~2 h for a rebuild, and it separates the two explanations: if
    ratio is what matters, reweighting moves coverage; if absolute count is
    what matters, it will not and 2b is required.
 
-   **2b. Rebuild on 2002-2021** only if 2a shows the ratio matters, or if
-   2a moves nothing and the absolute-count theory needs its own test.
+   **2b. Rebuild on 2002-2021 -- now the justified test.** 2a refuted the
+   ratio explanation, which leaves count: 57,085 -> 126,252 decline events
+   is information reweighting cannot fabricate.
    `capitalscan_hist` (11 GB) is on disk and was shelved after being judged
    against a different question, so that negative result does not transfer.
 
@@ -146,7 +210,7 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    `trough` is *better* shared). Bin resolution does not separate the
    families either: the q25-q75 body spans 3.7-5.0 bins for all six.
 
-3. **Measure `P(stop)`, which is not `p_adverse_*`.** A trade can reach its
+5. **Measure `P(stop)`, which is not `p_adverse_*`.** A trade can reach its
    target before its stop, so the two are not independent and
    `P(stop) != P(trough <= stop)`. The ordering is already in `path`, so
    this is a measurement over existing rows.
@@ -154,14 +218,14 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    probabilities from its caller so it cannot pretend otherwise; nothing in
    the serving path calls it.
 
-4. **Adopt arm D's config, with a caveat.** Sector-relative features plus
+6. **Adopt arm D's config, with a caveat.** Sector-relative features plus
    `net_ret`/`mae` tasks beat base on Brier skill at all three thresholds
    (t3 +5.54% -> +6.22%) and do not interfere, **but AUC is flat**
    (0.6379 -> 0.6411), so it is better calibration rather than new
    predictive power, on one seed-triple each. Re-derive against the
    six-head model; the four-head numbers no longer describe the code.
 
-5. **Refit the reliability tables on clean data.** Blocked until item 1 has
+7. **Refit the reliability tables on clean data.** Blocked until item 1 has
    accumulated enough resolved rows -- roughly 2026-12 at ~15k events a
    month. The current intervals are fitted on validate and are a lower
    bound on the true uncertainty.
