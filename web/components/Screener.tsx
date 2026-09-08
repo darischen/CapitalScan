@@ -271,54 +271,46 @@ function StatsCell({ stats }: { stats: CellStats | Suppressed | null }) {
  * No colour. The palette carries meaning here (side, staleness, breach),
  * and a probability is not a judgement about whether the row is good.
  */
-function PredictionCell({ prediction }: { prediction: Prediction | null }) {
-  // Truthiness, not `=== null`. The prop is typed `Prediction | null`, and
-  // at runtime it also arrives `undefined` -- from any `ScreenRow` built
-  // before this column existed, which includes every fixture in the web
-  // suite. TypeScript cannot see that, so the strict check compiled
-  // cleanly and threw on render.
-  if (!prediction || prediction.pTouch3 === null) {
-    return <span className="dim">—</span>;
+/**
+ * The inference cell: a button, never a number.
+ *
+ * **This replaced two columns that printed `p_touch_3` and `p_adverse_3`
+ * directly, and the reason is ADR 176.** Those probabilities only *rank*
+ * when market breadth is below 0.68 -- above it the model scores AUC
+ * 0.515, a coin flip, and the low band even inverts. A column of numbers
+ * invites exactly the comparison the gate says is unreliable: a reader
+ * sorts it and picks the top. A column of identical buttons cannot be
+ * eyeballed, so the number only appears in the modal, beside its interval,
+ * its effective sample and the gate's own verdict.
+ *
+ * The probabilities are still computed for every row on the nightly and
+ * poller passes -- this hides nothing, it just refuses to rank for you.
+ */
+function InferenceButton({ row }: { row: ScreenRow }) {
+  // Truthiness, not `!== null`. The prop is typed `Prediction | null` and
+  // arrives `undefined` from any `ScreenRow` built before the field
+  // existed -- every fixture in the web suite included. TypeScript
+  // cannot see that, so a strict check compiles clean and throws on
+  // render. This is the second time: the same mistake shipped in the
+  // cell this button replaced.
+  const has = Boolean(row.prediction && row.prediction.pTouch3 !== null);
+  if (!has) {
+    return <span className="dim" aria-label="no inference for this signal">—</span>;
   }
   return (
-    <span className="num">
-      {pct(prediction.pTouch3)}
-      <span className="dim">
-        {" "}
-        [{fmt(prediction.ciLow)}–{fmt(prediction.ciHigh)}] n={prediction.nEff ?? "—"}
-      </span>
-    </span>
+    <button
+      type="button"
+      className="infer"
+      aria-label={`Model output for ${row.ticker} on ${row.signalDate}`}
+      title="Model output: probabilities, range and sample size"
+      data-ticker={row.ticker}
+      data-signal-date={row.signalDate}
+    >
+      …
+    </button>
   );
 }
 
-/**
- * The adverse side (ADR 175): P(3% move against the position in 5 days).
- *
- * **Its own interval, never the touch column's.** Invariant 8 attaches to
- * each published probability, and this one is calibrated against a
- * different reliability table. `band()` returns null unless the row
- * carries a complete one, so a probability can never reach the screen
- * without its evidence.
- *
- * Still no colour. A reader comparing this against `P(+3%)` is doing the
- * comparison the two columns exist for, and tinting one of them would
- * make that judgement for them.
- */
-function AdverseCell({ prediction }: { prediction: Prediction | null }) {
-  if (!prediction || !prediction.adverse3) {
-    return <span className="dim">—</span>;
-  }
-  const { p, lo, hi, nEff } = prediction.adverse3;
-  return (
-    <span className="num">
-      {pct(p)}
-      <span className="dim">
-        {" "}
-        [{fmt(lo)}–{fmt(hi)}] n={nEff}
-      </span>
-    </span>
-  );
-}
 
 /**
  * The reversal state, in whichever of its two forms this row has.
@@ -565,8 +557,7 @@ export function ScreenerTable({
             ctx={sortCtx}
             className="r"
           />
-          <th title={PREDICTION_CAVEAT}>P(+3%)</th>
-          <th title={ADVERSE_CAVEAT}>P(−3%)</th>
+          <th className="c">Inference</th>
           {withStats && <th>Cell</th>}
         </tr>
       </thead>
@@ -731,11 +722,8 @@ export function ScreenerTable({
                 <span className="dim">—</span>
               )}
             </td>
-            <td data-label="P(+3%)" title={PREDICTION_CAVEAT}>
-              <PredictionCell prediction={row.prediction} />
-            </td>
-            <td data-label="P(−3%)" title={ADVERSE_CAVEAT}>
-              <AdverseCell prediction={row.prediction} />
+            <td data-label="Inference" className="c">
+              <InferenceButton row={row} />
             </td>
             {withStats && (
               <td data-label="Cell">
