@@ -189,6 +189,10 @@ export interface TickerEvent {
   mfe: number | null;
   mae: number | null;
   earningsInWindow: boolean | null;
+  /** ADR 149's watch universe: shown, and excluded from every statistic.
+   * Distinct from `inTrade === false`, which means outside the universe
+   * altogether -- the two are different reasons for having no result. */
+  inWatch: boolean;
 }
 
 /**
@@ -556,7 +560,7 @@ export async function state(ticker: string): Promise<TickerState | null> {
  */
 const EVENTS_SQL = `
   SELECT id, signal_date, signal_type, signal_types_all, signal_strength,
-         is_cluster_head, dd_bucket, pending, in_trade, entry_date, entry_price,
+         is_cluster_head, dd_bucket, pending, in_trade, in_watch, entry_date, entry_price,
          exit_date, exit_price, exit_reason, holding_days,
          net_ret, mfe, mae, earnings_in_window
     FROM v_ticker_events
@@ -658,6 +662,7 @@ interface EventRowRaw {
   dd_bucket: string | null;
   pending: boolean;
   in_trade: boolean | null;
+  in_watch: boolean | null;
   entry_date: Date | null;
   entry_price: string | null;
   exit_date: Date | null;
@@ -731,6 +736,11 @@ export async function events(
     ddBucket: r.dd_bucket,
     equity10k: balances.get(Number(r.id)) ?? null,
     pending: r.pending,
+    // ADR 149's watch universe. Carried so the outcome cell can tell
+    // "in the watch universe, no result is coming" apart from "outside
+    // the universe entirely": the two rendered identically until
+    // 2026-09-08, and for names like AAPL the label was simply wrong.
+    inWatch: r.in_watch === true,
     inTrade: r.in_trade,
     entryDate: r.entry_date ? isoDate(r.entry_date) : null,
     entryPrice: num(r.entry_price),

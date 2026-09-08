@@ -263,6 +263,55 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    month. The current intervals are fitted on validate and are a lower
    bound on the true uncertainty.
 
+**Agreed in session 29 (2026-09-08), not yet built.** In build order --
+each depends on the one above it.
+
+1. **Persist the fitted model and serve it from numpy.** ADR 174 refits
+   every run so a fit cannot outlive the feature code that built it. A
+   per-ticker button cannot wait 12 minutes, so the artifact has to be
+   stored -- but keep the guarantee by stamping it with `git_sha`,
+   `config_hash` and a hash of the ordered feature list, and **refusing to
+   serve** when any disagrees with the running code. A stale artifact then
+   fails loudly instead of scoring the wrong columns.
+
+   **Export weights to `.npz` and do the forward pass in `core/` with
+   numpy, not torch.** The model is a 3-layer MLP plus six linear heads --
+   ~282k parameters, about 1.1 MB float32 -- and dropout is a no-op at
+   inference, so a prediction is nine matmuls and a softmax. That keeps the
+   2 GB ARM wheel off the Pi entirely and satisfies invariant 1, since it
+   is arithmetic with no IO. Refresh **weekly**; a config change forces a
+   refit through the hash check automatically.
+
+2. **Rename `p_adverse_*` in the UI. "Moves 3% against" did not read
+   clearly.** It is side-adjusted -- against a short is *up* -- so "falls
+   3%" would be wrong half the time and wrong in the expensive direction.
+   No better phrasing agreed yet; the current wording ships as a
+   placeholder. `MODEL_FIELD_LABELS` in `web/lib/format.ts` is the one
+   place to change it.
+
+3. **The inference column.** Drop `STR`; tighten the Signal-to-bands gap;
+   add an `Inference` column right of `Fired` whose cell is a small square
+   with an ellipsis -- no number in the grid, which is what stops a reader
+   eyeball-ranking a column the breadth gate says is not rankable. Clicking
+   opens a modal with the full distribution, `p_touch_*`, `p_adverse_*`,
+   the interval, `n_eff` and the gate tier. **Populated automatically on
+   nightly and live poller runs.**
+
+4. **Inference on the ticker/graph page**, for any searched ticker and any
+   past report. Deliberate click rather than automatic. Same panel as the
+   modal. This supersedes DESIGN 7.9's live-inference-in-the-poller item,
+   which was never built.
+
+5. **`v_screen` still filters `next_open`.** Harmless today -- every real
+   query in `screen.ts` reads `v_screen_live` -- but it means the two views
+   serve different entry conventions after ADR 177, and the next person to
+   query `v_screen` directly will get the superseded model's rows.
+
+6. **`breach_depth` should be deleted, not just dropped.** Measured
+   2026-09-08: removing it moves `next_open` AUC by 0.0003, so it earns
+   nothing where it is legal, and it is look-ahead under `touch`. Leaving
+   the code in place invites someone to re-add it to `FEATURE_COLS`.
+
 **Three loose ends left by session 27**, none blocking:
 
 - **`handlers.predict(ticker, as_of)` cannot name a side.** `predictions`
@@ -416,163 +465,33 @@ not, since `scratchpad/hist/*.sh` rebuilds it.
 
 ### Deferred by the 2026-09-04 pivot
 
-- **Ship the dispersion model to the site.** The checkpoint the user asked
-  for. Needs: a UI surface for the fan, `n_eff` and an interval per
-  invariant 8, and the calibration caveat below. `predictions` is still
-  empty and `v_screen` already `LEFT JOIN`s it, so writing that table
-  displays it -- which the user has accepted (single-user, LAN-only), so no
-  shadow flag is needed.
-
-- **The calibration caveat, still unwritten.** Mean absolute coverage error
-  by year: 2024 **0.0182**, 2025 **0.0311**, 2026 **0.0480**. At that rate
-  it crosses DESIGN §7.7's 0.05 tolerance during 2027. Whatever surfaces the
-  fan should say so, and **refits should be scheduled** rather than
-  fit-and-forget.
-
-- **A `trough_ret_{h}d` auxiliary task.** Demoted twice: first by the
-  market-trend root cause, then by ADR 173. If the side fix works, this is
-  probably unnecessary; if it does not, it returns.
+**Both entries here shipped and are deleted.** The dispersion model
+reached the site as `p_touch` (ADR 174), and the calibration caveat is
+`core.calibration.MODEL_CAVEAT`, written into every `predictions` row
+and rendered on the screener. The coverage-decay figures it carried
+(2024 0.0182, 2025 0.0311, 2026 0.0480) live on in that constant.
 
 - **Re-measure the ADR 170 baseline under the seeding fix**, since every
   published figure predates it.
 
 
-### Coverage is 17/20 and the gate needs 20 — three heads, all failing the same way
+### ~~Coverage is 17/20~~ -- superseded 2026-09-06/07
 
-**This is the only thing standing between ADR 170's model and a real
-promotion decision**, so it is the first entry rather than a footnote.
+**Deleted rather than updated, because every number in it was about the
+four-head model.** At six heads the gate reads 25-26 of 30, and the failure
+was diagnosed: the label distribution moves between train and validate
+(`peak_ret_10d` q75 0.0539 -> 0.0710, `fwd_ret_5d` q50 0.00366 -> 0.00074),
+with each coverage error's sign forced by that shift. Five candidate causes
+were tested and four refuted -- market regime (Simpson's paradox in the
+first attempt; the real 2x2 shows 0.0778 above the 200-day line against
+0.0236 below), CRPS grid truncation, volatility scale, and multi-task
+interference. Full record in `RESULTS.md`.
 
-ADR 170's multi-task model lifted coverage from the incumbent's 14/20 to
-17/20 (RESULTS 2026-09-03). DESIGN §7.7 check 3 wants all twenty within 5
-points of nominal. The three that fail:
+**What matters now is not the gate but the product**: `p_touch` is
+calibrated in every regime (bias +0.0000) and only *ranks* in some, which
+ADR 176's breadth gate handles. The quantile fan the gate scores is not
+displayed anywhere.
 
-| head | coverage | nominal | error |
-|---|---|---|---|
-| `terminal_h5_q25` | 0.310 | 0.25 | **+0.060** |
-| `terminal_h10_q25` | 0.318 | 0.25 | **+0.068** |
-| `terminal_h10_q50` | 0.550 | 0.50 | **+0.050** |
-
-**Measured 2026-09-03: all three failures are entirely 2022.** Split by
-year, every one passes on 2023 -- `terminal_h10_q50` by six thousandths --
-and fails on 2022 by 10 to 12 points. Validate is 2022-01-03 to 2023-12-29,
-and 2022's realised 5-day q25 is −3.34% against the model's fitted −1.63%.
-The model is well calibrated in an ordinary year and understates downside
-in a bear market. RESULTS 2026-09-03 has both tables, and the implication
-for the fix: `rv_pct_252d` and `vix_close` are **already features**, so the
-model has the inputs to recognise a high-volatility regime and is not
-widening its lower tail enough on them. Measure that before building a new
-label.
-
-**All three over-cover, all three are terminal, all three are in the lower
-half of the fan.** That is not three problems. The predicted lower
-quantiles sit too high, so realised returns fall below them more often than
-they should — which is the residual regime shift RESULTS 2026-09-02 already
-found irreducible from train data, now down from six heads to three and
-concentrated in one corner.
-
-**What is worth trying, and what is not.**
-
-- **Not recalibration on validate.** DESIGN §7.6 is explicit that quantile
-  heads are *checked* by coverage rather than recalibrated, and fitting a
-  correction on the split the gate scores makes the gate circular. This was
-  already ruled out on 2026-09-02 and the ruling did not change.
-- **~~Market-level trend features~~ — MEASURED 2026-09-03 AND THEY MAKE IT
-  WORSE.** Coverage 17/20 → **13/20**, mean improvement +8.01 → **+3.54**,
-  and worse in *both* years, not just 2022. Cause, measured: the index was
-  above its 200-day SMA on **90.9% of train signal-days and 58.8% of
-  validate's**, so the downtrend regime is 9% of train against 41% of
-  validate. A feature that identifies the regime correctly is useless when
-  the training set barely contains it. **The blocker is training-data
-  coverage of bear regimes, not the feature set** — which routes back to the
-  2005 extension and its survivorship problem below. RESULTS 2026-09-03.
-
-- **~~Market-level trend features (original entry)~~**
-  Root-caused 2026-09-03 (RESULTS): of 22 features **only three are
-  market-level**, and none spans more than a day — `vix_close` is a level,
-  `spx_ret_1d` is one day, `cofire_count` is same-day breadth. Every trend
-  feature (`above_sma200`, `sma200_slope_60`, `dd_52w`) is **per ticker**.
-  So the model can see that a stock is in a downtrend and cannot see that
-  the market is. 2022 spent **185 days** more than 10% below the high
-  against a previous record of 68, and the coverage error is **worst on
-  shallow-drawdown events** (+0.118) and mildest on deep ones (+0.039) —
-  the events that looked ordinary per-ticker while the index ground down.
-  `SPY` is already in `bars` from 2004-09-29, so the index analogues of
-  those three features need no new data source. **Measure before
-  building on it**: one regime episode is thin evidence, and a feature
-  fitted to help 2022 may be fitting 2022.
-
-- **Extending train back to 2005 is the obvious fix and it is UNSAFE as it
-  stands.** Checked 2026-09-03. The data looks available -- `bars` holds
-  864 tickers in 2005 rising to 938 by 2009, and SPY fell **37.7% in 2008**,
-  a far longer and deeper decline than 2022's 19.9%. Train starts
-  2010-03-31 and excludes all of it, which is why the model has never seen
-  a year-long bear market.
-
-  **But the pre-2010 universe is survivorship-biased and the bias runs the
-  wrong way.** Lehman, Bear Stearns, Merrill, Wachovia, Fannie, Freddie,
-  Ambac, MBIA and CIT are all **absent from `tickers`**; only **18 of 1,561**
-  rows carry a `delisted_on` at all. `run_tickers_refresh` scrapes the
-  *current* Wikipedia constituent table plus recent changes, so it was never
-  going to recover names that died in 2008. Training on that 2008 would show
-  a bear market with the zeroes removed -- making it look survivable and
-  pushing the model **further** toward under-stating downside, which is the
-  exact failure this is meant to fix.
-
-  **What it would take:** a reconstructed historical membership and price
-  history for delisted names, which is a data-sourcing project, not a
-  config change. Until then this entry is a warning, not a task -- and it
-  is written down because "just extend the history, the bars are already
-  there" is the obvious next idea and it is a trap.
-
-- **A fifth auxiliary task.** ADR 170's gain came from three labels
-  supervising a fourth. A `trough_ret_{h}d` label — the mirror of
-  `peak_ret` — would add a task whose information is concentrated in
-  exactly the lower tail that is miscovered. **Demoted below the feature
-  work by the root cause above**: the miscovered events are the ones whose
-  *per-ticker* features look benign, and a better lower-tail label does not
-  tell the model it is in a market downtrend. It needs a label built, which
-  is a `path_labels.py` change, not a modelling one.
-- **Longer horizons as auxiliaries only.** ADR 113 dropped h=1,2,3
-  deliberately and h=20 was never built. A 20-day head that is trained but
-  never reported would regularise without widening the reported fan.
-
-**Nothing here is promoted regardless of outcome until the holdout is
-spent**, and the holdout is spent once.
-
-### On-demand per-ticker inference — **measured 2026-09-03: not needed for the model we have**
-
-The question was whether a heavier model could be run per ticker behind a
-button on the chart, rather than in batch for the whole universe. Measured,
-the premise does not hold for the model that won:
-
-| | parameters | one row | one ticker (64 events) | all 34,195 validate events |
-|---|---|---|---|---|
-| ADR 170 multi-task, CPU | 259,904 | 0.56 ms | 1.25 ms | **91 ms** |
-| ADR 170 multi-task, GPU | 259,904 | 0.71 ms | 0.74 ms | 9.3 ms |
-| TabFM, GPU (ctx 4000) | 1.64 **billion** | ~8 ms | ~0.5 s | ~4.5 min |
-
-**The model that won scores the entire validate split in 91 milliseconds on
-a CPU.** Batch inference for everything is cheaper than the HTTP round trip
-a single button press would cost, so the on-demand path solves a problem
-this model does not have.
-
-Worth noting from the same measurement: **one row is slower on the GPU than
-on the CPU** (0.71 ms against 0.56 ms), because at this size the whole cost
-is kernel launch overhead. The GPU only starts winning around a thousand
-rows. A per-ticker inference service would therefore want the CPU anyway,
-which removes the last reason the feature would need special hardware.
-
-The button remains the right shape for a *heavy* model, and that is the
-form the entry keeps: it is not rejected, it is unnecessary until something
-expensive is worth serving. If ADR 169's TabFM work or a successor produces
-a model that cannot run in batch, the design is a `web/app/api/predict/
-route.ts` beside the five existing routes, reading a cached fan rather than
-computing one in the request.
-
-**What would have to be true first, in order.** The gate passes (see the
-entry above), the holdout is spent, ADR 067's four promotion checks pass,
-and `v_screen_live`'s `LEFT JOIN predictions` is understood to mean that
-writing that table puts model output on the site.
 
 ## ~~Phase 6 refinement~~ — **all four tried and refuted, 2026-09-02**
 

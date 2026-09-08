@@ -87,6 +87,9 @@ function state(over: Partial<TickerState> = {}): TickerState {
 function event(over: Partial<TickerEvent> = {}): TickerEvent {
   return {
     id: 1,
+    // ADR 149. Defaulted false so the outcome cell renders the
+    // "outside universe" branch unless a test asks for the watch one.
+    inWatch: false,
     signalDate: "2026-07-27",
     signalType: "bb_lower_touch",
     signalTypesAll: ["bb_lower_touch"],

@@ -49,17 +49,28 @@ function Outcome({ e }: { e: TickerEvent }) {
   if (e.netRet !== null) {
     return <span className={`num ${e.netRet >= 0 ? "up" : "down"}`}>{signedPct(e.netRet)}</span>;
   }
-  if (e.exitDate !== null) return <span className="dim">closed, no return</span>;
-  // The poller saw it; `cscan backtest` has not run since. Said in words,
-  // because "not measured yet" and "still in the trade" are different
-  // facts and only one of them is about the market.
-  if (e.pending) return <span className="dim">not backtested</span>;
-  // ADR 122 keeps these visible and excludes them from every statistical
-  // read, so no outcome exists and none is coming. Saying "open" here
-  // would suggest a result is on its way for 179,286 rows.
-  if (e.inTrade === false) return <span className="dim">outside universe</span>;
-  return <span className="dim">open</span>;
+  if (e.exitDate !== null) return <span className="dim">N/A: closed, no return</span>;
+  // **`entry_date`, not `in_watch`, is what separates these.** ADR 149's
+  // watch universe is backtested exactly like the trade universe --
+  // `research/backtest.py` reads both flags from `universe` and writes
+  // both, and AAPL is in it with real returns (-4.27% on 2026-08-31). What
+  // ADR 122 withholds from a watch row is its place in the *statistics*,
+  // not its result. An earlier version of this branch said "watch
+  // universe" here and was wrong for exactly that reason.
+  if (e.entryDate !== null) return <span className="dim">open</span>;
+  // No entry bar yet. For a signal on the newest session there is no
+  // following bar to fill on, so this is the normal state of a fresh fire
+  // rather than a failure.
+  if (e.pending) return <span className="dim">N/A: not backtested yet</span>;
+  // Genuinely outside: no criterion met, so no entry is ever taken and no
+  // result is coming. `in_watch` rows never reach here.
+  if (e.inTrade === false && !e.inWatch) {
+    return <span className="dim">N/A: outside universe</span>;
+  }
+  return <span className="dim">N/A: awaiting entry</span>;
 }
+
+
 
 export default function EventRows({
   sym,

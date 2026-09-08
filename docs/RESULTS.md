@@ -6770,6 +6770,88 @@ only clean regime asymmetry in the table (+0.025 to +0.056 above the line,
 
 ---
 
+## 2026-09-08 — entry convention beats everything: fit on `touch`, not `next_open`
+
+The model answers "if I buy at tomorrow's open, how likely is a 3%
+favourable excursion in five sessions". Trading off a five-minute poller
+notification asks "if I buy near the price I am looking at now". `events`
+already carries both as `entry_kind`, so the question is measurable.
+
+### The first comparison was confounded, and the confound was large
+
+A `touch` entry needs a band level to fill at, and stochastic-only signals
+have none:
+
+| signal type | train rows | with `entry_price` |
+|---|---|---|
+| `stoch_overbought` | 46,490 | **0.0%** |
+| `stoch_oversold` | 22,528 | **0.0%** |
+| every band type | 94,406 | ~100% |
+
+So the touch arm silently dropped **69,018 events, 42% of train**, all of
+one kind -- and `stoch_overbought` is both the largest signal type and one
+of the weakest. The apparent win could have been "the same model with the
+weak signals removed", a population difference wearing an entry-convention
+label.
+
+### Controlled, it holds
+
+Three arms. `next_open_bands` is `next_open` restricted to the five band
+types, so it matches `touch` row for row (91,898 against 91,893 train,
+19,160 validate each).
+
+| field | `next_open_all` | `next_open_bands` | **`touch`** |
+|---|---|---|---|
+| `p_touch_2` | 0.6051 / +4.05% | 0.5989 / +4.41% | **0.6664 / +10.43%** |
+| `p_touch_3` | 0.6353 / +6.41% | 0.6339 / +6.91% | **0.6764 / +11.92%** |
+| `p_touch_5` | 0.6859 / +9.70% | 0.6827 / +9.36% | **0.7121 / +14.15%** |
+| `p_touch_10` | 0.7274 / +9.20% | 0.7186 / +8.26% | **0.7318 / +11.16%** |
+| `p_adverse_3` | 0.5900 / +3.25% | 0.5930 / +3.65% | **0.6737 / +11.69%** |
+| `p_adverse_5` | 0.6571 / +5.34% | 0.6475 / +5.01% | **0.6969 / +9.45%** |
+
+**Excluding the stochastic signals changes almost nothing** -- 0.6353 to
+0.6339 on `p_touch_3`. The population was not the explanation.
+
+**The entry convention is.** Holding population fixed, `p_touch_3` skill
+goes +6.91% to +11.92%, a 73% improvement, and `p_adverse_3` goes +3.65%
+to +11.69%, more than tripling. Every field improves and calibration stays
+exact (bias +0.0000 throughout).
+
+### Why, and why it should have been expected
+
+A `next_open` label measures a forward window from a price the features
+never saw. Between the signal and the fill sits an overnight gap carrying
+news, earnings and index moves that nothing in the feature vector predicts.
+That gap is noise added to the label, and noise in the label caps
+discrimination no matter how good the features are.
+
+Entering at the touch price removes it. The label is measured from the
+price the features describe.
+
+**The base rates move the same way**, which is a second reason to prefer
+it: `p_touch_3` base rises 0.516 to 0.548 while `p_adverse_3` base falls
+0.351 to 0.316. Entering at the signal rather than after the gap is both
+more likely to reach the target and less likely to go against you.
+
+### What this means
+
+**The deployed model uses the weaker convention and answers a question the
+user does not ask.** Switching is a change to `features._SQL`'s
+`entry_kind` filter and a refit -- no new labels, no migration, no new
+machinery.
+
+**The cost is population.** `touch` has no stochastic-only rows, so a
+touch-trained model cannot score `stoch_overbought` or `stoch_oversold`
+signals at all. Those are 42% of events and the weakest of the seven, but
+that is a real coverage loss to accept deliberately rather than discover.
+
+**Caveats.** Validate here is 19,160 rather than 34,195, so the estimates
+are noisier, and this is still the split that has been examined many times.
+The gaps are large enough to survive that, but the forward log remains the
+clean test.
+
+---
+
 ## 2026-09-07 — the 2D regime tier, and the model has no edge in today's market
 
 `p_touch_3` discrimination by breadth level x breadth trend, both knowable

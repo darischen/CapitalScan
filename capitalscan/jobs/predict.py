@@ -146,14 +146,52 @@ def run_predict(
     return report
 
 
-def clear_predictions(engine: Engine, config_hash: str) -> int:
-    """Delete every prediction for one config generation.
+def clear_predictions(engine: Engine, config_hash: str, drop_outcomes: bool = False) -> int:
+    """Delete predictions for one config generation.
 
-    The rollback path. Predictions are derived rows with no downstream
-    dependency beyond a LEFT JOIN, so removing them returns the screener to
-    its pre-ADR-174 appearance with nothing else to undo.
+    **Refuses by default once the forward log has scored anything, and that
+    is the point.** `outcomes.prediction_id` is a foreign key with no
+    `ON DELETE` clause, so a bare delete raises `ForeignKeyViolation` the
+    moment a single prediction has been resolved. The first version of this
+    function did exactly that and was written when `outcomes` was empty; it
+    then failed silently inside `cscan predict --clear`, leaving a table
+    holding two models' predictions at once.
+
+    A resolved outcome is the only uncontaminated measurement this project
+    has -- a prediction recorded before its result existed. Deleting one to
+    make room for a refit trades away the evidence that would validate the
+    refit. So the default is to refuse and say how many rows stand in the
+    way, and `drop_outcomes=True` is the deliberate, named way to say
+    otherwise.
+
+    Returns rows deleted.
     """
     with engine.begin() as conn:
+        scored = int(
+            conn.execute(
+                text(
+                    "SELECT count(*) FROM outcomes o JOIN predictions p ON p.id = o.prediction_id "
+                    "WHERE p.config_hash = :c"
+                ),
+                {"c": config_hash},
+            ).scalar()
+            or 0
+        )
+        if scored and not drop_outcomes:
+            raise ValueError(
+                f"{scored} of these predictions have resolved outcomes. Those are the "
+                "forward log -- the only measurement here that nothing has iterated "
+                "against -- and deleting the predictions would delete them too. Pass "
+                "drop_outcomes=True to do it anyway."
+            )
+        if drop_outcomes:
+            conn.execute(
+                text(
+                    "DELETE FROM outcomes WHERE prediction_id IN "
+                    "(SELECT id FROM predictions WHERE config_hash = :c)"
+                ),
+                {"c": config_hash},
+            )
         result = conn.execute(
             text("DELETE FROM predictions WHERE config_hash = :c"), {"c": config_hash}
         )

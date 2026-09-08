@@ -176,7 +176,7 @@ def test_derived_columns_are_deterministic():
 # ---------------------------------------------------------------------------
 
 
-def test_twenty_raw_plus_three_derived():
+def test_twenty_raw_plus_two_derived():
     """DESIGN §7.3 claims twenty-two are on the event row. Three are not —
     `bb_mid`-based distance, `atr_14/close`, and `vix_pct_252d` — and the
     module docstring records why each is blocked rather than dropping them
@@ -191,15 +191,14 @@ def test_twenty_raw_plus_three_derived():
     long/short pool without being told which. See RESULTS 2026-09-04.
     """
     assert len(feat.RAW_FEATURE_COLS) == 20
-    # Three as of 2026-09-02: `breach_depth` joined `k_minus_d` and
-    # `mcap_log`. ADR 069's deferred feature, and the half `bb_pctb` does
-    # not carry -- the signal is a touch, so the low's depth past the band
-    # is a different quantity from the close's (they correlate -0.054).
-    # Measured and kept despite being worth only +0.087% on the directional
-    # heads: it is genuinely new information, and RESULTS 2026-09-02 says
-    # what it bought.
-    assert len(feat.DERIVED_FEATURE_COLS) == 3
-    assert len(feat.FEATURE_COLS) == 23
+    # **Back to two on 2026-09-08.** `breach_depth` joined on 2026-09-02 and
+    # was deleted by ADR 177: it reads the signal day's LOW, which a
+    # `next_open` entry knows and a `touch` entry cannot, so it became
+    # look-ahead when the entry convention changed (invariant 3). It was
+    # also worth 0.0003 AUC where it was legal, so nothing measurable went
+    # with it. RESULTS 2026-09-08.
+    assert len(feat.DERIVED_FEATURE_COLS) == 2
+    assert len(feat.FEATURE_COLS) == 22
 
 
 def test_no_duplicate_features():
@@ -272,7 +271,7 @@ def test_the_query_scopes_config_split_grain_and_population():
     rendered = feat.training_sql(feat._select_columns())
     for fragment in (
         "e.config_hash = :chash",
-        "e.entry_kind = 'next_open'",
+        "e.entry_kind = :entry_kind",
         "e.in_trade",
         "e.split_key = :split",
     ):

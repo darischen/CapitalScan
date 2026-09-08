@@ -300,7 +300,14 @@ def predict(
     chash = _hash(config)
 
     if clear:
-        removed = jp.clear_predictions(db_io.get_engine(), chash)
+        try:
+            removed = jp.clear_predictions(db_io.get_engine(), chash)
+        except ValueError as exc:
+            # Refusing is the correct outcome, not an error to swallow: the
+            # first version failed with a raw ForeignKeyViolation and the
+            # run carried on, leaving two models' predictions in one table.
+            console.print(f"[red]refused[/red]: {exc}")
+            raise typer.Exit(code=1) from exc
         console.print(f"predict: deleted {removed} predictions for config {chash}")
         return
 
