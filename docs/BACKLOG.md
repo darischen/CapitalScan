@@ -299,8 +299,19 @@ each depends on the one above it.
 
 4. **Inference on the ticker/graph page**, for any searched ticker and any
    past report. Deliberate click rather than automatic. Same panel as the
-   modal. This supersedes DESIGN 7.9's live-inference-in-the-poller item,
-   which was never built.
+   modal.
+
+   **This SUPPLEMENTS DESIGN 7.9's live inference, it does not replace
+   it** (corrected 2026-09-08). Both ship: the poller and `nightly` run
+   inference over their own rows so the `Inference` column is already
+   populated when the page loads, and the ticker page adds on-demand
+   inference for tickers and dates neither job covered. The button is the
+   arbitrary-lookup path, not a substitute for the batch one.
+
+   **This is what makes item 1 mandatory rather than convenient.** The
+   poller runs on the Pi. Live inference there means the Pi must score a
+   model, and a 2 GB torch wheel on ARM is not the way -- the numpy forward
+   pass over exported weights is.
 
 5. **`v_screen` still filters `next_open`.** Harmless today -- every real
    query in `screen.ts` reads `v_screen_live` -- but it means the two views
