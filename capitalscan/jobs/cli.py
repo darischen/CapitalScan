@@ -3077,6 +3077,12 @@ def nightly() -> None:
 @app.command()
 def weekly(
     workers: int = typer.Option(8, help="ProcessPoolExecutor workers for the backtest refresh"),
+    cosmetic: bool = typer.Option(
+        True,
+        "--cosmetic/--no-cosmetic",
+        help="Price signals in neither universe so the ticker page can show a "
+        "number (display only; they stay out of every statistic)",
+    ),
 ) -> None:
     """Orchestrates the weekly chain (DESIGN §4.12): the backtest label
     refresh. `cell_stats` is Phase 4 scope and `sync` is Phase 5 scope; both
@@ -3130,6 +3136,7 @@ def weekly(
         "workers": workers,
         "n_tickers": len(resolved),
         "trigger": "weekly",
+        "cosmetic": cosmetic,
     }
 
     try:
@@ -3141,6 +3148,17 @@ def weekly(
                 engine=engine,
                 max_workers=workers,
                 full_universe=True,
+                # ADR 178, on by default here and nowhere else. Weekly
+                # already runs the whole-universe backtest, so pricing the
+                # out-of-universe signals costs one pass rather than a
+                # separate job -- and the ticker page stops saying "outside
+                # universe" for a name that merely missed one criterion.
+                #
+                # Safe only because `path_backfill` is scoped to
+                # `(in_trade OR in_watch)` as of 30915c5. Without that, every
+                # weekly hands nightly 3.6M extra events to path and
+                # `path_capture` goes from 97s to hours.
+                include_out_of_universe=cosmetic,
             )
             report.rows_written = bt_report.rows_written
             if bt_report.failed_tickers:
