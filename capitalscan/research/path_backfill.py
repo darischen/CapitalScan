@@ -213,7 +213,14 @@ def _events_query_for_ticker(
     """
     query = (
         "SELECT id, entry_price, side, signal_date FROM events "
-        "WHERE ticker = :ticker AND entry_price IS NOT NULL"
+        "WHERE ticker = :ticker AND entry_price IS NOT NULL "
+        # ADR 178. `--cosmetic` prices events in neither universe so the
+        # ticker page can show a number. Those rows must not enter the
+        # path pipeline: `path` feeds labels, and labels feed the model.
+        # Measured 2026-09-08 -- 3,609,960 cosmetic rows took nightly's
+        # `path_capture` from 97s to over an hour, walking events nothing
+        # reads.
+        "AND (in_trade OR in_watch)"
     )
     params: dict = {"ticker": ticker}
     if config_hash is not None:
@@ -438,7 +445,8 @@ def run_path_backfill(
             for r in conn.execute(
                 text(
                     "SELECT DISTINCT ticker FROM events "
-                    "WHERE entry_price IS NOT NULL AND config_hash = :chash ORDER BY ticker"
+                    "WHERE entry_price IS NOT NULL AND (in_trade OR in_watch) "
+                    "AND config_hash = :chash ORDER BY ticker"
                 ),
                 {"chash": chash},
             )
@@ -492,6 +500,7 @@ def run_path_capture(
             for r in conn.execute(
                 text(
                     "SELECT DISTINCT ticker FROM events WHERE entry_price IS NOT NULL "
+                    "AND (in_trade OR in_watch) "
                     "AND config_hash = :chash "
                     "AND (fwd_window_days IS NULL OR fwd_window_days < :window_days) "
                     "ORDER BY ticker"

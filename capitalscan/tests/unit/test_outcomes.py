@@ -155,3 +155,42 @@ class TestEveryLabelFamilyHasAWriter:
 
         for col in feat.LABEL_COLS:
             assert col in writable, f"{col} is a label no writer produces"
+
+
+class TestCosmeticRowsStayOutOfThePathPipeline:
+    """ADR 178's cosmetic rows are for display and nothing else.
+
+    `--cosmetic` prices events in neither universe so the ticker page can
+    show a number instead of "outside universe". Those rows must not enter
+    `path`, because `path` feeds `peak_ret_*`/`trough_ret_*`, which feed
+    `features.LABEL_COLS`, which feeds the model. A display concession that
+    reached the training frame would be a silent population change.
+
+    **Measured 2026-09-08:** 3,609,960 cosmetic rows took nightly's
+    `path_capture` from a 97-second average to over an hour, walking events
+    nothing reads. Both the ticker-list queries and the per-ticker query
+    filter on `entry_price IS NOT NULL` alone, which is exactly why they
+    swept the cosmetic rows in.
+    """
+
+    def test_the_per_ticker_query_filters_the_population(self) -> None:
+        from capitalscan.research.path_backfill import _events_query_for_ticker
+
+        query, _ = _events_query_for_ticker("AAPL", 10, True, "chash")
+        assert "(in_trade OR in_watch)" in query
+
+    def test_every_events_read_in_the_path_module_filters_it(self) -> None:
+        """The two ticker-list queries are easy to miss: they select
+        `DISTINCT ticker` rather than events, so a reader checking "does
+        this read events" can skim past them."""
+        from pathlib import Path
+
+        from capitalscan.research import path_backfill
+
+        src = Path(path_backfill.__file__).read_text(encoding="utf-8")
+        reads = src.count("FROM events")
+        guarded = src.count("(in_trade OR in_watch)")
+        assert guarded >= reads, (
+            f"{reads} reads of `events` in path_backfill but only {guarded} "
+            "carry the population filter"
+        )
