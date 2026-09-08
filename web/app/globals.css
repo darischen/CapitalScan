@@ -229,6 +229,57 @@ td.rail span[data-side="short"] {
   color: var(--text);
 }
 
+/* The Signal column sits directly left of the Bollinger triple, and both
+ * are wide. Dropping `Str` from between them (ADR 176's UI pass) left the
+ * default 10px either side reading as a gap rather than a boundary, so the
+ * pair is tightened on the facing edges only -- the rest of the row keeps
+ * the standard rhythm. */
+table.screen td.sig,
+table.screen th.sig {
+  padding-right: 4px;
+}
+
+table.screen td.sig + td.r,
+table.screen th.sig + th.r {
+  padding-left: 4px;
+}
+
+/* The inference cell: a button, never a number (ADR 176). Sized to the row
+ * so it reads as an affordance rather than content, and centred because a
+ * column of identical marks has no natural alignment edge. */
+.infer {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.infer:hover,
+.infer:focus-visible {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.infer:focus-visible {
+  outline: 2px solid var(--muted);
+  outline-offset: 1px;
+}
+
+table.screen th.c,
+table.screen td.c {
+  text-align: center;
+}
+
 .dim {
   color: var(--muted);
 }

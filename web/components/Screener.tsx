@@ -501,12 +501,7 @@ export function ScreenerTable({
             sortKey="signal"
             ctx={sortCtx}
             title="Confluence first, then band, then stochastic; short side above long within each"
-          />
-          <SortHeader
-            label="Str"
-            sortKey="strength"
-            ctx={sortCtx}
-            className="r"
+            className="sig"
           />
           <SortHeader
             label="Bollinger Lower / Mid / Upper"
@@ -633,9 +628,6 @@ export function ScreenerTable({
                   Rare enough to earn the treatment: 116 of 4,306
                   confluences. */}
               <ReversalBadge row={row} />
-            </td>
-            <td className="r num" data-label="Str">
-              {row.signalStrength}
             </td>
             {/* The t-1 bands, which is the row the signal compared against
                 (invariant 3). `bb_mid` is the 20-day SMA as
