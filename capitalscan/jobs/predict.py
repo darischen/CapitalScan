@@ -142,9 +142,7 @@ def run_predict(
             # `ForeignKeyViolation`. The forward log is exactly what makes
             # a re-run worth doing, so the writer must not fight it.
             # `sync.py` carries the same fix for the same reason.
-            updatable = [
-                c for c in rows[0] if c not in {"id", "event_id"}
-            ]
+            updatable = [c for c in rows[0] if c not in {"id", "event_id"}]
             report.rows_written = db_io.upsert(
                 engine,
                 "predictions",

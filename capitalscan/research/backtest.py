@@ -888,7 +888,11 @@ def run_backtest(
             try:
                 frames.append(
                     _backtest_one_ticker(
-                        ticker, config, run_id, database_url, today,
+                        ticker,
+                        config,
+                        run_id,
+                        database_url,
+                        today,
                         include_out_of_universe,
                     )
                 )

@@ -1,5 +1,5 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -255,6 +255,80 @@ describe("the client boundary", () => {
     for (const path of sources().filter((p) => /^\s*["']use client["']/.test(read(p)))) {
       expect(code(path)).not.toMatch(/from "pg"|@\/lib\/db/);
     }
+  });
+
+  /**
+   * **The transitive version, and the one that would have caught 2026-09-08.**
+   *
+   * The check above tests whether a client component names `pg` or
+   * `@/lib/db` *directly*. It passed while the Pi build died on
+   * `Module not found: fs / dns`, because `InferenceModal` imported a
+   * VALUE from `@/lib/screen` -- and that module imports `./db` on line 1.
+   * One hop was enough to pull the whole `pg` tree into the browser
+   * bundle, and the guard never looked.
+   *
+   * So this walks the graph instead. `import type` is erased at compile
+   * time and is therefore safe at any depth; a value import is not.
+   */
+  /**
+   * **What actually broke the Pi build on 2026-09-08, stated honestly.**
+   *
+   * The check above tests whether a client component names `pg` or
+   * `@/lib/db` *directly*. It passed while `next build` died on
+   * `Module not found: fs / dns`, because `InferenceModal` imported a
+   * value from `@/lib/screen`, which imports `./db` on line 1.
+   *
+   * **But a value import through a db-importing module is not always
+   * fatal**, and a first version of this test that banned them outright
+   * failed on four components that ship today: `EventRows`, `LivePrice`,
+   * `TickerChart` and `TickerSearch` all pull a constant from
+   * `lib/ticker.ts`, which also imports `./db`. Next tree-shakes those
+   * because the constant has no path back to `pg`. The failure needs the
+   * imported binding itself to reach the driver.
+   *
+   * So this asserts the narrower rule that is actually true: a client
+   * component may not import a **function** from a module that imports
+   * `pg` -- functions are what carry the reference the bundler must keep.
+   * Constants and types are fine.
+   *
+   * `next build` remains the real authority, which is why it is now a
+   * required step before any Pi deploy. This test is the cheap version
+   * that names the file instead of printing a webpack trace.
+   */
+  it("no client component imports a function from a db-importing module", () => {
+    const VALUE_IMPORT = /^\s*import\s+(?!type)\{([^}]*)\}\s*from\s+["'](@\/[^"']+)["']/gm;
+
+    const resolve = (spec: string): string | null => {
+      const base = join(ROOT, spec.slice(2));
+      for (const ext of [".ts", ".tsx"]) {
+        if (existsSync(base + ext)) return base + ext;
+      }
+      return null;
+    };
+
+    const offenders: string[] = [];
+    for (const path of sources().filter((p) => /^\s*["']use client["']/.test(read(p)))) {
+      for (const m of read(path).matchAll(VALUE_IMPORT)) {
+        const target = resolve(m[2]);
+        if (!target || !/from\s+["']\.\/db["']/.test(read(target))) continue;
+        const targetText = read(target);
+        for (const raw of m[1].split(",")) {
+          const name = raw.replace(/type/, "").trim().split(/\s+as\s+/)[0];
+          if (!name) continue;
+          // A function export is what keeps the module graph alive.
+          const isFn = new RegExp(
+            `export\s+(async\s+)?function\s+${name}\b`,
+          ).test(targetText);
+          if (isFn) {
+            offenders.push(
+              `${relative(ROOT, path).split(sep).join("/")} imports ${name}() from ${m[2]}`,
+            );
+          }
+        }
+      }
+    }
+
+    expect(offenders).toEqual([]);
   });
 });
 

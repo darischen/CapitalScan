@@ -126,7 +126,13 @@ class TestTheCaveatTravels:
         wording differs because the UI string is shorter, and asserting
         equality would fail on a legitimate edit.
         """
-        ts = (REPO / "web" / "lib" / "screen.ts").read_text(encoding="utf-8")
+        # `format.ts`, not `screen.ts`: the constant moved there on
+        # 2026-09-08 because `screen.ts` imports `./db`, so a client
+        # component importing this string pulled `pg` into the browser
+        # bundle and killed the Pi build. `screen.ts` re-exports it, so
+        # server callers were unaffected -- but this test reads the file
+        # that defines it.
+        ts = (REPO / "web" / "lib" / "format.ts").read_text(encoding="utf-8")
         block = re.search(r"export const PREDICTION_CAVEAT =(.+?);", ts, re.S)
         assert block, "PREDICTION_CAVEAT is gone from screen.ts"
         copy = block.group(1).lower()

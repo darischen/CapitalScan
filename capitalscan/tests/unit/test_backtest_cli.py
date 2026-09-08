@@ -80,6 +80,25 @@ def _no_real_io(monkeypatch):
     )
 
 
+def _noop_backtest(
+    tickers,
+    config,
+    run_id,
+    engine=None,
+    max_workers=1,
+    full_universe=True,
+    include_out_of_universe=False,
+):
+    """A `run_backtest` that writes nothing, for tests about everything else.
+
+    A named function rather than a lambda: `ruff format` re-joins a wrapped
+    lambda onto one line, which then trips E501 at this parameter count, so
+    the two gates disagree forever. Shared by both call sites -- they had
+    identical copies.
+    """
+    return BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
+
+
 def _call(
     tickers=None,
     workers=1,
@@ -189,9 +208,7 @@ def test_tickers_flag_reuses_resolve_tickers(monkeypatch):
     monkeypatch.setattr(
         backtest_mod,
         "run_backtest",
-        lambda tickers, config, run_id, engine=None, max_workers=1, full_universe=True, include_out_of_universe=False: (
-            BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
-        ),
+        _noop_backtest,
     )
 
     _call(tickers="TSM,NVDA")
@@ -694,9 +711,7 @@ def test_config_hash_is_printed(monkeypatch, capsys):
     monkeypatch.setattr(
         backtest_mod,
         "run_backtest",
-        lambda tickers, config, run_id, engine=None, max_workers=1, full_universe=True, include_out_of_universe=False: (
-            BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
-        ),
+        _noop_backtest,
     )
     monkeypatch.setattr(cli, "_resolve_tickers", lambda t: ["AAPL"])
 

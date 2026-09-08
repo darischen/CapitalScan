@@ -166,6 +166,32 @@ $ErrorActionPreference = $prev
 
 `$ErrorActionPreference = "Stop"` does **not** make a native exe's non-zero exit fail the script -- a wrapper must `exit $LASTEXITCODE` or Task Scheduler records success for a failed job. `Tee-Object` has no `-Encoding` in 5.1 and writes UTF-16LE; use `Add-Content -Encoding utf8`. → `OPERATIONS.md`
 
+**`next build` is required before any Pi deploy, and `tsc --noEmit` is not
+a substitute.** On 2026-09-08 a client component imported a *value* from
+`@/lib/screen`, which imports `./db` on line 1, so the whole `pg` tree
+followed it into the browser bundle. The type check passed; the Pi build
+died on `Module not found: fs / dns` and the site was down ~12 minutes.
+Run `cd web && npx next build` locally first — it is the only gate that
+sees the bundler.
+
+**A value import through a db-importing module is not automatically fatal**,
+which is why the rule is narrower than it looks. `EventRows`, `LivePrice`,
+`TickerChart` and `TickerSearch` all import a *constant* from `lib/ticker.ts`
+and tree-shake fine. Importing a **function** is what keeps the graph alive.
+`boundary.test.ts` now checks exactly that.
+
+**Recovering a failed Pi build needs `.next/` deleted.** `git checkout <sha>
+-- web/` restores the source and leaves the broken build directory, so the
+service starts from neither version and sits in `activating`. It also
+leaves the tree dirty, which blocks the next `git pull` carrying the fix.
+The recovery is `git reset --hard`, `rm -rf .next`, rebuild.
+
+**Run `ruff check .` before every push, not just `ruff check --fix`.**
+Three commits reached `main` red on 2026-09-08 because `ruff format` and
+`ruff check` disagreed: a lambda long enough to trip E501 gets re-joined
+onto one line by the formatter, so wrapping it by hand does not stick. A
+named function satisfies both.
+
 **`npm run build` invalidates a running `next start`.** The server holds its chunk hashes in memory; a build rewrites `.next/` and every asset 404s, rendering as unstyled text that looks like broken CSS. Restart the server after any build; never point `next dev` at a `.next/` a production server is serving. → `OPERATIONS.md`
 
 ---
