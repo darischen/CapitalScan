@@ -134,11 +134,23 @@ def run_predict(
         report.tickers = len({r["ticker"] for r in rows})
 
         if rows:
+            # **`update_columns` excludes `id`, and that is not cosmetic.**
+            # `db_io.upsert` overwrites every non-key column by default,
+            # and `predictions.id` is a `bigserial` -- so a re-run tried to
+            # reassign primary keys that `outcomes.prediction_id`
+            # references, and Postgres refused with a
+            # `ForeignKeyViolation`. The forward log is exactly what makes
+            # a re-run worth doing, so the writer must not fight it.
+            # `sync.py` carries the same fix for the same reason.
+            updatable = [
+                c for c in rows[0] if c not in {"id", "event_id"}
+            ]
             report.rows_written = db_io.upsert(
                 engine,
                 "predictions",
                 rows,
                 conflict_cols=["event_id"],
+                update_columns=updatable,
             )
         run.rows_written = report.rows_written
         run.notes = report.summary()
