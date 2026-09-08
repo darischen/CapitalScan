@@ -272,6 +272,7 @@ def apply_eligibility(
     universe_flags: pd.DataFrame,
     sp_splits: SplitParams,
     today: date | None = None,
+    include_out_of_universe: bool = False,
 ) -> tuple[pd.DataFrame, list[dict]]:
     """DESIGN §5.2 step 4. Drops rows outside `[event_start, today]` and
     rows whose ticker is not in-trade on that date. The null-indicator check
@@ -283,6 +284,20 @@ def apply_eligibility(
     run stays a pure function of its inputs (ADR 060). Callers that want
     "as of right now" pass `date.today()` themselves; tests pass a fixed
     date.
+
+    **`include_out_of_universe` admits rows in neither universe, and it
+    defaults False on purpose.** Those rows exist -- 4,407 `touch` events on
+    the live config -- and they are the only ones that never get an entry
+    price, so the ticker page has nothing to show for them. Admitting them
+    is a *display* decision: they arrive with `in_trade=False` and
+    `in_watch=False`, every statistical query hardcodes `in_trade`
+    (enforced by `test_events_in_trade_filter.py`), and
+    `features.build_training_frame` filters it too, so they cannot reach a
+    model or a statistic.
+
+    It is a parameter rather than the new default because it changes the
+    measured population of a job whose determinism ADR 060 pins. A caller
+    asking for cosmetic coverage says so; `nightly` and `weekly` do not.
     """
     today = today or date.today()
     event_start = date.fromisoformat(sp_splits.event_start)
@@ -319,7 +334,10 @@ def apply_eligibility(
                     "reason": "not_in_trade",
                 }
             )
-            continue
+            # Still rejected for statistics -- the row above is the record
+            # of that -- but optionally kept so the page can show a price.
+            if not include_out_of_universe:
+                continue
         row = row.copy()
         row["in_trade"] = traded
         row["in_watch"] = watched

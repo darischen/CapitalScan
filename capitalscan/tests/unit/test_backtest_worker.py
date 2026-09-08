@@ -405,7 +405,14 @@ class TestRunBacktestDispatchAndWrite:
     def test_tickers_are_sorted_before_dispatch(self, monkeypatch):
         seen: list[str] = []
 
-        def fake_worker(ticker, config, run_id, database_url, today=None):
+        def fake_worker(
+            ticker,
+            config,
+            run_id,
+            database_url,
+            today=None,
+            include_out_of_universe=False,
+        ):
             seen.append(ticker)
             return backtest._empty_events_frame()
 
@@ -431,7 +438,14 @@ class TestRunBacktestDispatchAndWrite:
         fails.
         """
 
-        def fake_worker(ticker, config, run_id, database_url, today=None):
+        def fake_worker(
+            ticker,
+            config,
+            run_id,
+            database_url,
+            today=None,
+            include_out_of_universe=False,
+        ):
             if ticker == "ZZZ":
                 return pd.DataFrame(
                     [_minimal_row(ticker="ZZZ", signal_date=date(2026, 1, 6), entry_kind="touch")]
@@ -478,7 +492,14 @@ class TestRunBacktestDispatchAndWrite:
         `signal_type` actually drove the sort, not incidental input order.
         """
 
-        def fake_worker(ticker, config, run_id, database_url, today=None):
+        def fake_worker(
+            ticker,
+            config,
+            run_id,
+            database_url,
+            today=None,
+            include_out_of_universe=False,
+        ):
             return pd.DataFrame(
                 [
                     _minimal_row(
@@ -620,7 +641,14 @@ class TestRunBacktestPerTickerFailureIsolation:
     other ticker's already-completed work."""
 
     def test_a_failing_ticker_does_not_block_the_others(self, monkeypatch):
-        def fake_worker(ticker, config, run_id, database_url, today=None):
+        def fake_worker(
+            ticker,
+            config,
+            run_id,
+            database_url,
+            today=None,
+            include_out_of_universe=False,
+        ):
             if ticker == "BAD":
                 raise ValueError(
                     "tag_clusters: ticker 'BAD' has candidate events but no trading_dates"
@@ -655,7 +683,9 @@ class TestRunBacktestPerTickerFailureIsolation:
         routine empty run. Superseded `test_every_ticker_failing_writes_
         nothing_but_does_not_raise`, which codified the pre-fix behavior."""
 
-        def always_fails(ticker, config, run_id, database_url, today=None):
+        def always_fails(
+            ticker, config, run_id, database_url, today=None, include_out_of_universe=False
+        ):
             raise RuntimeError("boom")
 
         monkeypatch.setattr(backtest, "_backtest_one_ticker", always_fails)
@@ -676,7 +706,14 @@ class TestRunBacktestPerTickerFailureIsolation:
         surviving ticker keeps `run_backtest` on the Finding 4 (non-raising)
         path — only ALL tickers failing raises `BacktestRunFailed`."""
 
-        def fake_worker(ticker, config, run_id, database_url, today=None):
+        def fake_worker(
+            ticker,
+            config,
+            run_id,
+            database_url,
+            today=None,
+            include_out_of_universe=False,
+        ):
             if ticker == "BAD":
                 raise RuntimeError("boom")
             return pd.DataFrame(

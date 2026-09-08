@@ -412,7 +412,15 @@ def test_backtest_command_uses_resolved_config(monkeypatch, tmp_path):
 
     captured = {}
 
-    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+    def _fake_run_backtest(
+        tickers,
+        config,
+        run_id,
+        engine=None,
+        max_workers=1,
+        full_universe=True,
+        include_out_of_universe=False,
+    ):
         captured["config"] = config
         return backtest_mod.BacktestReport(
             run_id=run_id, rows_written=0, tickers=[], failed_tickers={}

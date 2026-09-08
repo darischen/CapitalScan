@@ -80,7 +80,15 @@ def _no_real_io(monkeypatch):
     )
 
 
-def _call(tickers=None, workers=1, sweep=False, config_name=None, phase="all", chunk_size=25):
+def _call(
+    tickers=None,
+    workers=1,
+    sweep=False,
+    config_name=None,
+    phase="all",
+    chunk_size=25,
+    cosmetic=False,
+):
     """Every option passed explicitly, including the ones a test does not care
     about.
 
@@ -91,6 +99,7 @@ def _call(tickers=None, workers=1, sweep=False, config_name=None, phase="all", c
     real function instead of going through `CliRunner`.
     """
     return cli.backtest(
+        cosmetic=cosmetic,
         tickers=tickers,
         workers=workers,
         sweep=sweep,
@@ -140,8 +149,19 @@ def test_workers_option_default_is_one():
 def test_workers_is_passed_through_to_run_backtest(monkeypatch):
     captured = {}
 
-    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+    def _fake_run_backtest(
+        tickers,
+        config,
+        run_id,
+        engine=None,
+        max_workers=1,
+        full_universe=True,
+        include_out_of_universe=False,
+    ):
         captured["max_workers"] = max_workers
+        # ADR 178's opt-in. Captured so the default is pinned: the
+        # cosmetic population must never be on unless asked for.
+        captured["cosmetic"] = include_out_of_universe
         return BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
 
     monkeypatch.setattr(backtest_mod, "run_backtest", _fake_run_backtest)
@@ -150,6 +170,7 @@ def test_workers_is_passed_through_to_run_backtest(monkeypatch):
     _call(tickers="AAPL", workers=7)
 
     assert captured["max_workers"] == 7
+    assert captured["cosmetic"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +189,7 @@ def test_tickers_flag_reuses_resolve_tickers(monkeypatch):
     monkeypatch.setattr(
         backtest_mod,
         "run_backtest",
-        lambda tickers, config, run_id, engine=None, max_workers=1, full_universe=True: (
+        lambda tickers, config, run_id, engine=None, max_workers=1, full_universe=True, include_out_of_universe=False: (
             BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
         ),
     )
@@ -186,7 +207,15 @@ def test_tickers_flag_reuses_resolve_tickers(monkeypatch):
 def test_explicit_tickers_passes_full_universe_false(monkeypatch):
     captured = {}
 
-    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+    def _fake_run_backtest(
+        tickers,
+        config,
+        run_id,
+        engine=None,
+        max_workers=1,
+        full_universe=True,
+        include_out_of_universe=False,
+    ):
         captured["full_universe"] = full_universe
         return BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
 
@@ -201,7 +230,15 @@ def test_explicit_tickers_passes_full_universe_false(monkeypatch):
 def test_no_tickers_flag_passes_full_universe_true(monkeypatch):
     captured = {}
 
-    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+    def _fake_run_backtest(
+        tickers,
+        config,
+        run_id,
+        engine=None,
+        max_workers=1,
+        full_universe=True,
+        include_out_of_universe=False,
+    ):
         captured["full_universe"] = full_universe
         return BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
 
@@ -221,7 +258,15 @@ def test_no_tickers_flag_passes_full_universe_true(monkeypatch):
 def test_default_config_passed_to_run_backtest(monkeypatch):
     captured = {}
 
-    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+    def _fake_run_backtest(
+        tickers,
+        config,
+        run_id,
+        engine=None,
+        max_workers=1,
+        full_universe=True,
+        include_out_of_universe=False,
+    ):
         captured["config"] = config
         return BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
 
@@ -274,7 +319,15 @@ def test_sweep_with_prior_clean_run_does_not_run_a_single_default_backtest(monke
 
     run_backtest_calls = []
 
-    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+    def _fake_run_backtest(
+        tickers,
+        config,
+        run_id,
+        engine=None,
+        max_workers=1,
+        full_universe=True,
+        include_out_of_universe=False,
+    ):
         run_backtest_calls.append(config)
         return BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
 
@@ -317,7 +370,15 @@ def test_sweep_dispatches_all_18_configs_in_deterministic_order(monkeypatch):
 
     calls = []
 
-    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+    def _fake_run_backtest(
+        tickers,
+        config,
+        run_id,
+        engine=None,
+        max_workers=1,
+        full_universe=True,
+        include_out_of_universe=False,
+    ):
         calls.append((config, run_id, tuple(tickers), max_workers, full_universe))
         return BacktestReport(
             run_id=run_id, rows_written=1, tickers=list(tickers), failed_tickers={}
@@ -347,7 +408,15 @@ def test_sweep_failure_at_config_n_does_not_discard_earlier_configs(monkeypatch,
 
     calls = []
 
-    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+    def _fake_run_backtest(
+        tickers,
+        config,
+        run_id,
+        engine=None,
+        max_workers=1,
+        full_universe=True,
+        include_out_of_universe=False,
+    ):
         calls.append(config)
         if len(calls) == 5:
             raise BacktestRunFailed({"AAPL": "ValueError: boom"})
@@ -388,7 +457,15 @@ def test_sweep_resume_skips_already_completed_configs(monkeypatch):
 
     calls = []
 
-    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+    def _fake_run_backtest(
+        tickers,
+        config,
+        run_id,
+        engine=None,
+        max_workers=1,
+        full_universe=True,
+        include_out_of_universe=False,
+    ):
         calls.append(config_hash(config))
         return BacktestReport(
             run_id=run_id, rows_written=1, tickers=list(tickers), failed_tickers={}
@@ -540,7 +617,15 @@ def test_backtest_run_failed_surfaces_as_clean_error(monkeypatch, capsys):
 
 
 def test_partial_failure_reports_failed_tickers_and_exits_nonzero(monkeypatch, capsys):
-    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+    def _fake_run_backtest(
+        tickers,
+        config,
+        run_id,
+        engine=None,
+        max_workers=1,
+        full_universe=True,
+        include_out_of_universe=False,
+    ):
         return BacktestReport(
             run_id=run_id,
             rows_written=3,
@@ -569,7 +654,15 @@ def test_partial_failure_reports_failed_tickers_and_exits_nonzero(monkeypatch, c
 
 
 def test_full_success_no_failed_tickers_exits_zero_when_harness_passes(monkeypatch, capsys):
-    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+    def _fake_run_backtest(
+        tickers,
+        config,
+        run_id,
+        engine=None,
+        max_workers=1,
+        full_universe=True,
+        include_out_of_universe=False,
+    ):
         return BacktestReport(run_id=run_id, rows_written=5, tickers=["AAPL"], failed_tickers={})
 
     monkeypatch.setattr(backtest_mod, "run_backtest", _fake_run_backtest)
@@ -601,7 +694,7 @@ def test_config_hash_is_printed(monkeypatch, capsys):
     monkeypatch.setattr(
         backtest_mod,
         "run_backtest",
-        lambda tickers, config, run_id, engine=None, max_workers=1, full_universe=True: (
+        lambda tickers, config, run_id, engine=None, max_workers=1, full_universe=True, include_out_of_universe=False: (
             BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
         ),
     )
@@ -620,7 +713,15 @@ def test_config_hash_is_printed(monkeypatch, capsys):
 
 
 def test_harness_runs_automatically_and_gates_exit_code(monkeypatch, capsys):
-    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+    def _fake_run_backtest(
+        tickers,
+        config,
+        run_id,
+        engine=None,
+        max_workers=1,
+        full_universe=True,
+        include_out_of_universe=False,
+    ):
         return BacktestReport(run_id=run_id, rows_written=2, tickers=["AAPL"], failed_tickers={})
 
     captured = {}
@@ -649,7 +750,15 @@ def test_harness_runs_automatically_and_gates_exit_code(monkeypatch, capsys):
 
 
 def test_harness_skipped_when_no_events_written(monkeypatch, capsys):
-    def _fake_run_backtest(tickers, config, run_id, engine=None, max_workers=1, full_universe=True):
+    def _fake_run_backtest(
+        tickers,
+        config,
+        run_id,
+        engine=None,
+        max_workers=1,
+        full_universe=True,
+        include_out_of_universe=False,
+    ):
         return BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
 
     harness_called = []

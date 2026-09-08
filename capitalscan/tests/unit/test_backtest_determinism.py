@@ -143,9 +143,21 @@ class TestWorkerDeterminism:
 
         real_apply_eligibility = research_candidates.apply_eligibility
 
-        def spy(candidates, universe_flags, sp_splits, today=None):
+        def spy(
+            candidates,
+            universe_flags,
+            sp_splits,
+            today=None,
+            include_out_of_universe=False,
+        ):
             captured["today"] = today
-            return real_apply_eligibility(candidates, universe_flags, sp_splits, today=today)
+            return real_apply_eligibility(
+                candidates,
+                universe_flags,
+                sp_splits,
+                today=today,
+                include_out_of_universe=include_out_of_universe,
+            )
 
         monkeypatch.setattr(research_candidates, "apply_eligibility", spy)
 
@@ -225,7 +237,9 @@ class TestRunBacktestDeterminism:
         """
         from datetime import date as date_
 
-        def fake_worker(ticker, config, run_id, database_url, today=None):
+        def fake_worker(
+            ticker, config, run_id, database_url, today=None, include_out_of_universe=False
+        ):
             if ticker == "ZZZ":
                 return pd.DataFrame(
                     [

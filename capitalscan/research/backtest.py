@@ -455,6 +455,7 @@ def _backtest_one_ticker(
     run_id: str,
     database_url: str | None,
     today: date | None = None,
+    include_out_of_universe: bool = False,
 ) -> pd.DataFrame:
     """Runs in a worker process under `ProcessPoolExecutor(spawn)` — mirrors
     `jobs.compute._compute_one_ticker`'s spawn-safety template (CLAUDE.md
@@ -515,7 +516,11 @@ def _backtest_one_ticker(
 
     resolved_today = today if today is not None else bars["ts"].max().date()
     eligible, _elig_rejects = research_candidates.apply_eligibility(
-        candidates, universe_flags, config.splits, today=resolved_today
+        candidates,
+        universe_flags,
+        config.splits,
+        today=resolved_today,
+        include_out_of_universe=include_out_of_universe,
     )
     if eligible.empty:
         return _empty_events_frame()
@@ -806,6 +811,7 @@ def run_backtest(
     max_workers: int = 1,
     today: date | None = None,
     full_universe: bool = True,
+    include_out_of_universe: bool = False,
 ) -> BacktestReport:
     """DESIGN §5.1/§5.8: config in, `events` rows out. Dispatches one worker
     per ticker (`_backtest_one_ticker`), runs the cross-ticker
@@ -880,14 +886,25 @@ def run_backtest(
     if max_workers <= 1:
         for ticker in sorted_tickers:
             try:
-                frames.append(_backtest_one_ticker(ticker, config, run_id, database_url, today))
+                frames.append(
+                    _backtest_one_ticker(
+                        ticker, config, run_id, database_url, today,
+                        include_out_of_universe,
+                    )
+                )
             except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
                 failed_tickers[ticker] = f"{type(exc).__name__}: {exc}"
     else:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(
-                    _backtest_one_ticker, ticker, config, run_id, database_url, today
+                    _backtest_one_ticker,
+                    ticker,
+                    config,
+                    run_id,
+                    database_url,
+                    today,
+                    include_out_of_universe,
                 ): ticker
                 for ticker in sorted_tickers
             }
