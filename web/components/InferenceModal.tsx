@@ -2,9 +2,21 @@
 
 import { useEffect, useRef } from "react";
 
-import { fmt, MODEL_FIELD_HELP, MODEL_FIELD_LABELS, pct } from "@/lib/format";
+// **Type-only from `@/lib/screen`, and the caveat from `@/lib/format`.**
+// `screen.ts` imports `./db` on its first line, so a value import here
+// pulls `pg` into the browser bundle and the build dies on unresolvable
+// `fs`/`dns`. `import type` is erased at compile time; a value import is
+// not. That is what `boundary.test.ts` checks for, and it caught this
+// only after the Pi build failed -- the guard tests the file list, not
+// the transitive import graph.
+import {
+  fmt,
+  MODEL_FIELD_HELP,
+  MODEL_FIELD_LABELS,
+  PREDICTION_CAVEAT,
+  pct,
+} from "@/lib/format";
 import type { Band, Prediction, ScreenRow } from "@/lib/screen";
-import { PREDICTION_CAVEAT } from "@/lib/screen";
 
 /**
  * The model's output for one signal, in full.

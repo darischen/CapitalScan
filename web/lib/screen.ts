@@ -217,12 +217,11 @@ export const ADVERSE_CAVEAT =
   "with its own interval. Same caveat: the calibration split was reused " +
   "during model selection, so the interval is a lower bound.";
 
-export const PREDICTION_CAVEAT =
-  "Calibrated on the validate split, which was scored repeatedly during " +
-  "model selection, so the interval is a lower bound on the true " +
-  "uncertainty. Coverage decays with distance from the training window. " +
-  "Advisory only: this is what historically followed signals like this " +
-  "one, not what will happen.";
+// PREDICTION_CAVEAT moved to `format.ts` on 2026-09-08. This module
+// imports `./db` on line 1, so anything a client component imports from
+// here drags `pg` into the browser bundle -- `fs`/`dns` unresolvable,
+// build dead. `format.ts` has no such dependency.
+export { PREDICTION_CAVEAT } from "./format";
 
 /**
  * A calibrated `p_touch` and the evidence behind it (ADR 174).

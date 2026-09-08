@@ -21,6 +21,13 @@
  * screen. An unmapped key falls back to the identifier, which is ugly on
  * purpose: it is how a gap gets noticed.
  */
+export const PREDICTION_CAVEAT =
+  "Calibrated on the validate split, which was scored repeatedly during " +
+  "model selection, so the interval is a lower bound on the true " +
+  "uncertainty. Coverage decays with distance from the training window. " +
+  "Advisory only: this is what historically followed signals like this " +
+  "one, not what will happen.";
+
 export const MODEL_FIELD_LABELS: Record<string, string> = {
   p_touch_2: "Reaches +2%",
   p_touch_3: "Reaches +3%",
