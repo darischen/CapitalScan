@@ -6770,6 +6770,155 @@ only clean regime asymmetry in the table (+0.025 to +0.056 above the line,
 
 ---
 
+## 2026-09-07 — the 2D regime tier, and the model has no edge in today's market
+
+`p_touch_3` discrimination by breadth level x breadth trend, both knowable
+at prediction time. Validate, n shown per cell.
+
+| breadth level | falling | flat | rising |
+|---|---|---|---|
+| low <0.40 | 0.669 **+9.6%** n=7214 | 0.653 +6.8% n=1024 | 0.544 +0.5% n=990 |
+| mid 0.40-0.55 | 0.641 +6.2% n=9812 | **0.721 +10.5%** n=1368 | 0.534 **−1.3%** n=1175 |
+| high 0.55-0.68 | **0.728 +12.3%** n=859 | 0.524 **−3.2%** n=4803 | 0.662 +7.9% n=3913 |
+| **vhigh >=0.68** | — | — | **0.515 −0.6% n=3037** |
+
+### The market is in the worst cell in the table
+
+2026-09-01 reads breadth **0.685**, up **+0.110** over 60 sessions. That is
+`vhigh >= 0.68` x `rising`: **AUC 0.5154, Brier skill −0.56%**, measured on
+3,037 events -- enough to be sure of.
+
+**AUC 0.515 is a coin flip. Negative skill means the base rate beats the
+model.** In this regime `p_touch_3` adds nothing over the flat statement
+"51.5% of signals touch +3% within five sessions". It cannot rank one name
+against another.
+
+This directly contradicts the intuition that a bullish market suits the
+model. The signal is mean-reversion on oversold names; when 68% of the
+universe is above its 200-day average and climbing, "oversold" mostly means
+"an ordinary week" and there is no dislocation to revert.
+
+### An apparent boundary near 0.68, not yet verified
+
+`high 0.55-0.68 x rising` scores **0.6623 (+7.92%, n=3913)** while
+`vhigh >=0.68 x rising` scores **0.5154**. Same trend, adjacent level bins,
+and the edge vanishes.
+
+**That edge was chosen by hand and has not been tested for robustness.** A
+cliff between two neighbouring bins is exactly what an arbitrary cut
+produces by chance, so 0.68 must not be treated as a discovered threshold
+until AUC has been measured against finer breadth bins. If it survives, it
+is directly operational: the model becomes useful again when breadth pulls
+back under it.
+
+### Three cells where the model is actively worse than its own base rate
+
+`high x flat` (−3.19%, n=4803), `mid x rising` (−1.30%), `vhigh x rising`
+(−0.56%). Together roughly 9,000 of 34,195 validate events. In those, using
+the base rate directly beats using the model output.
+
+### What this means for deployment
+
+**Calibration is not the problem and never was.** Bias is +0.000 across
+every cell measured earlier: if the page says 62%, roughly 62% resolve up.
+The number is honest everywhere.
+
+**Discrimination is the problem, and it is regime-dependent.** Ranking
+works when breadth is falling or the universe is already beaten down, and
+fails when the market is broadly healthy and rising.
+
+So the deployable product today is a **calibrated frequency, not a
+stock-picker**. It can answer "how often does a signal like this resolve
+up" and cannot currently answer "which of these ten names is the better
+one" in this market.
+
+---
+
+## 2026-09-07 — the deployable finding: the edge lives where breadth is falling
+
+**The reframe that mattered.** Every coverage number in this investigation
+is about the quantile fan, and ADR 172 retired those heads. What ships is
+`p_touch`. Measuring the shipped quantity in the transition cell gives a
+completely different answer from the fan:
+
+| cell | n | base | predicted | bias | skill | AUC |
+|---|---|---|---|---|---|---|
+| **2022_above (transition)** | 4,166 | 0.514 | 0.515 | **+0.000** | **−0.47%** | **0.5314** |
+| 2022_below (bear) | 12,738 | 0.600 | 0.600 | +0.000 | +5.66% | 0.6316 |
+| 2023_above (recovery) | 15,796 | 0.438 | 0.446 | +0.008 | +4.59% | 0.6104 |
+| ALL | 34,195 | 0.516 | 0.516 | +0.000 | +6.41% | 0.6353 |
+
+**In the transition the probability is perfectly calibrated and completely
+uninformative.** Bias +0.000 -- it is not lying. AUC 0.531 -- it cannot
+rank. The fan was *biased* there; the probability is not biased at all, it
+simply has no discrimination.
+
+**That kills the per-regime calibration idea (BACKLOG 3c).** A reliability
+table maps predictions onto realised rates; it cannot manufacture ranking
+power that is absent from the model's output. Per-regime tables moved AUC
+0.5314 -> 0.5360. The honest cross-year test agrees: fitted on 2023 and
+applied to 2022, per-regime Brier 0.2517 against global 0.2540.
+
+### No observable rule isolates the dead zone
+
+`2022_above` is not a usable predicate -- it means "the index was above its
+200-day average in a year that turned out to be a bear", and the second
+half is not knowable on the day. Measured against state that *is*
+observable, the worst cells are 0.547 to 0.584, never the 0.531 of the
+target. The dead zone is smeared across several observable states rather
+than sitting in one.
+
+### But breadth trend separates the edge cleanly
+
+| breadth now vs 60 sessions ago | n | AUC | skill |
+|---|---|---|---|
+| falling hard (< −0.15) | 10,606 | **0.6605** | **+8.37%** |
+| falling (−0.15 to −0.05) | 7,279 | 0.6414 | +6.57% |
+| flat (±0.05) | 7,195 | 0.5832 | +1.50% |
+| rising (> +0.05) | 9,115 | 0.5910 | +3.58% |
+
+And by breadth *level*:
+
+| fraction of universe above its 200-day | n | AUC | skill |
+|---|---|---|---|
+| < 0.35 | 5,600 | 0.6284 | +5.65% |
+| 0.35–0.50 | 11,416 | **0.6420** | **+6.90%** |
+| 0.50–0.65 | 13,177 | 0.6207 | +5.37% |
+| **>= 0.65 (broad health)** | 4,002 | **0.5473** | **+1.51%** |
+
+**The model's edge is concentrated where the market is under stress and
+nearly absent when it is calm.** Split on breadth trend alone: falling
+gives AUC 0.6574 across 52% of events, not-falling 0.5868 across the rest.
+
+That is a coherent story rather than a curiosity. The signal is
+mean-reversion on oversold names. It pays when there is real dislocation
+and has little to work with when everything is rising quietly.
+
+### What to do about it, and what not to
+
+**Not suppression.** The best suppression rule found -- index above its
+200-day average and down more than 3% from its high -- discards 31% of
+predictions to move kept AUC 0.6353 -> 0.6503. The discarded region still
+scores 0.5918, so it is throwing away real if weaker signal, and the gain
+is small.
+
+**Annotate instead.** Attach a market-regime tier to every prediction and
+publish the AUC measured for that tier. That preserves the information,
+matches invariant 8's philosophy of shipping the evidence rather than a
+verdict, and gives a reader doing manual observation exactly what they need
+to weight what they are looking at:
+
+    breadth falling      AUC 0.657   the model's home ground
+    breadth flat/rising  AUC 0.587   weak, treat as a weak prior
+
+**For deployment this is the honest headline:** `p_touch` ranks usefully
+when breadth is deteriorating and is close to a coin flip when the market
+is broadly healthy. It is never *miscalibrated* -- bias is +0.000 in every
+cell measured -- so the number itself can be trusted as a long-run
+frequency. What varies is how much it separates one name from another.
+
+---
+
 ## 2026-09-07 — market-state features: the transition is NOT fixed, but breadth is a net win
 
 Two arms tested against the transition failure located in the correction

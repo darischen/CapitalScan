@@ -217,6 +217,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 173 | `signal_type` must be a feature: the model was never told the direction | **Decided 2026-09-04.** Neither `signal_type` nor `side` is in `FEATURE_COLS`, and `fwd_ret_*` is the raw price return, not the position return (train medians: longs +0.549%, shorts +0.282%, both positive). So the directional head predicted a 38/62 mix of opposing populations without being told which — **mis-posed, not unanswerable**. Explains why `peak_ret_*`, which IS side-adjusted, works. Measurable only on validate now |
 | 174 | `p_touch` is the shipped product, and its interval is empirical | **Decided 2026-09-05.** Second checkpoint after ADR 172. `touched_3pct` is exactly `peak_ret_5d >= 0.03`, so `exceedance()` on the fitted peak head IS `Prediction.p_touch_3` -- calibrated, monotone across ten deciles, AUC 0.607-0.771, **no retraining**. Ships the probability rather than the fan. Invariant 8's interval is **empirical** (Wilson on the reliability bucket's realised rate at its `n_eff`), not the ensemble spread, which measures seed choice rather than uncertainty. `predict()` stops returning `NotFound` |
 | 175 | The adverse head reads a fixed window, not `mae` | **Decided 2026-09-05.** Completes `p_adverse_*` and the other two terms of `E[net_ret]`. `events.mae` is adverse excursion **until exit**, so `ExitParams` is baked into it and every sweep would silently redefine the target. Adds `trough_ret_{1,2,3,5,10}d` as the exact mirror of `peak_ret_*` from `path.adverse`, which is already side-adjusted. `p_adverse_3 = P(trough_ret_5d <= -0.03)`, read off the same CDF. Heads 4 -> 6, so ADR 174's tables refit |
+| 176 | Predictions are gated on market breadth | **Decided 2026-09-07.** `p_touch` is calibrated everywhere and only *ranks* in some regimes. Below 0.68 universe breadth: AUC **0.6255**, skill +5.62% (n=6,078). At or above: **0.5154**, −0.56% (n=3,037), and the low band inverts. Publish the probability always, gate the ranking. A gate, not a suppression -- the number is trustworthy, the ordering is not. Found by searching validate; `cscan outcomes` is the clean test |
 
 ---
 
@@ -8494,3 +8495,77 @@ the expected value above becomes computable from model output rather than
 from historical cell frequencies. Whether it is *accurate* is a separate
 measurement, and validate is contaminated (ADR 174), so it is a lead until
 the forward log can score it.
+
+## 176. Predictions are gated on market breadth
+
+**Status.** Decided 2026-09-07. Operational gate on ADR 174's product. Does
+not change the model, the config hash, or any stored probability.
+
+**Context.**
+
+`p_touch` is calibrated everywhere and its ability to *rank* is not.
+Measured on validate, discrimination depends on market breadth -- the
+fraction of the universe whose 20-day average sits above its 200-day:
+
+| breadth, trend rising | n | AUC | Brier skill |
+|---|---|---|---|
+| 0.55-0.60 | 564 | 0.6575 | +7.17% |
+| 0.60-0.64 | 1,701 | **0.7055** | +10.59% |
+| 0.64-0.68 | 1,648 | 0.6120 | +4.92% |
+| **0.68-0.72** | 1,882 | **0.5194** | −1.07% |
+| **0.72+** | 1,155 | **0.5372** | −1.10% |
+
+Cumulatively: below 0.68 gives **AUC 0.6255, skill +5.62%** on 6,078
+events; at or above gives **0.5154, −0.56%** on 3,037. Three consecutive
+bins on one side, two on the other, thousands of events each. That is a
+sustained drop rather than one noisy bin.
+
+**AUC 0.515 is a coin flip and negative skill means the base rate wins.**
+In that state the model adds nothing over "51.5% of signals touch +3%".
+Worse, the low band inverts: predictions under 0.40 resolve at 0.458 while
+those from 0.40-0.55 resolve at 0.417, so a low `p_touch` is not a negative
+signal there.
+
+The mechanism is not mysterious. This is mean-reversion on oversold names.
+When 68% of the universe is above its 200-day average and climbing,
+"oversold" mostly means an ordinary week and there is no dislocation to
+revert.
+
+**Decision.**
+
+**Publish `p_touch` always; gate the *ranking* on breadth < 0.68.** Above
+the line the probability still displays -- it is calibrated and honest --
+but the surface says the ranking is not reliable and must not be used to
+choose between names.
+
+**A gate, not a suppression.** `Suppressed` answers a thin cell with a
+reason instead of a number, because there the number would be
+untrustworthy. Here the number is trustworthy and only the *ordering* is
+not, so removing it would discard something correct. This follows invariant
+8's habit of shipping the evidence rather than a verdict.
+
+**Breadth is stored on `market_days`**, computed from `indicators` in ~4
+seconds for the full history. It is market-level daily data and that table
+already holds `spx_close`, `vix_close` and `vix_pct_252d`.
+
+**Consequences.**
+
+**The gate is open most days.** Over the 30 sessions to 2026-09-04, breadth
+averaged 0.671 and 21 of 30 days were below 0.68. Across 2026, 20% of
+sessions are in the dead zone. This is a daily state, not a market cycle.
+
+**This was found by searching validate, and validate has been examined
+dozens of times.** The boundary's robustness across adjacent bins is much
+better evidence than a single cut, but it is still a lead discovered by
+search. `cscan outcomes` is the clean test and it is already running.
+**Nothing should be sized on 0.6255 holding.**
+
+**No subset rescues the dead zone.** Roughly fifteen slices were tested
+inside it -- signal type, ticker drawdown, volatility percentile, signal
+strength. One flagged (`dd_52w` 10-20%, AUC 0.667, n=701), which is what
+one search of fifteen produces by chance. Not adopted.
+
+**What this does NOT claim.** The threshold 0.68 is where the measured drop
+sits on this split; it is not a law. The gate is a display state and a
+warning, not a trading rule, and ADR 001's advisory-only constraint is
+untouched.

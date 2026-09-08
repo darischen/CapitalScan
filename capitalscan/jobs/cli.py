@@ -350,6 +350,21 @@ def outcomes(
 
 
 @app.command()
+def breadth() -> None:
+    """Recompute universe breadth and report the ranking gate (ADR 176).
+
+    Breadth is the fraction of the universe whose 20-day average sits above
+    its 200-day. Below `StatsParams.breadth_rank_floor` the model's ranking
+    has held (AUC 0.626); at or above it discrimination falls to a coin
+    flip and only the calibrated probability is usable.
+    """
+    from capitalscan.jobs import breadth as br
+
+    report = br.run_breadth()
+    console.print(f"breadth: {report.summary()}")
+
+
+@app.command()
 def universe(
     quarter: Optional[str] = typer.Option(None, help="Quarter to evaluate (e.g. 2026Q3)"),
     tickers: Optional[str] = typer.Option(None, help="Comma-separated ticker list"),

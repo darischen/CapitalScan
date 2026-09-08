@@ -471,7 +471,7 @@ def _patch_nightly_io(monkeypatch):
     # ADR 093's peak refresh, a third database call in the nightly chain.
     from capitalscan.research import peak_labels as peak_labels_mod
 
-    monkeypatch.setattr(peak_labels_mod, "backfill_peak_labels", lambda *a, **k: 0)
+    monkeypatch.setattr(peak_labels_mod, "backfill_extremum_labels", lambda *a, **k: 0)
 
     # `nightly`'s path capture runs inside `ingest.run_job` so its `path`
     # rows carry a `run_id` (ADR 034); the real one writes a `runs` row.

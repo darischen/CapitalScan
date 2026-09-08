@@ -435,6 +435,15 @@ class ServingParams:
 
     `history_years` is how far back the served subset reaches.
 
+    **`breadth_rank_floor` is here for exactly the reason above, and it was
+    put in `StatsParams` first by mistake.** Adding it there moved
+    `config_hash` off `0523841076f47293`, which would have orphaned every
+    `events`, `predictions` and `cell_stats` row keyed on it --
+    `test_the_default_config_hash_did_not_move` caught it. The gate changes
+    what a *surface* does with a probability and changes no probability, no
+    label and no backtest result, so it does not belong in the hashed
+    config.
+
     **Was three, and only because of Neon.** Measured against its 512MB free
     tier on 2026-08-20:
 
@@ -464,6 +473,14 @@ class ServingParams:
     """
 
     history_years: int = 30
+
+    # ADR 176. Universe breadth at or above this and `p_touch` stops
+    # ranking: AUC 0.5154 with negative Brier skill, against 0.6255 below
+    # it, measured on 3,037 and 6,078 validate events. The probability is
+    # calibrated either side, so this gates the *ordering* and never the
+    # number. Sweepable, and it must be: 0.68 is where the drop sits on one
+    # split, not a law (invariant 9).
+    breadth_rank_floor: float = 0.68
 
 
 @dataclass(frozen=True)
