@@ -263,6 +263,42 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    month. The current intervals are fitted on validate and are a lower
    bound on the true uncertainty.
 
+### Session 29 corrections -- read before trusting anything above
+
+Five things were stated wrongly during this session and corrected by the
+user. They are recorded because each was wrong in a way that would have
+shipped:
+
+1. **`in_watch` rows are backtested.** They always were --
+   `research/backtest.py` reads both flags from `universe` and writes both,
+   and 192,545 watch-only touch events carry entry prices. The "outside
+   universe" label was a *display* bug: `v_ticker_events` never exposed
+   `in_watch` (fixed, migration `d8c40a5b71e9`). No backtest re-run was
+   ever needed.
+
+2. **"N/A: watch universe" was also wrong.** Membership is never the reason
+   a result is missing. `entry_date` is: no entry means the window has not
+   opened, no exit means it has not closed. AAPL is in the watch universe
+   *with* a -4.27% return on 2026-08-31.
+
+3. **Live inference in the poller is NOT superseded by the button.** Both
+   ship. The poller and `nightly` populate the column; the button covers
+   arbitrary tickers and past dates.
+
+4. **"Not backtested" on TS, RPRX, QCOM, ADM, EXPE, CIEN was a false
+   alarm** -- all `in_trade`, all with entry prices, missing only an exit
+   because the five-day window opened on 09-03/09-04. `weekly` missed
+   nothing.
+
+5. **Stochastic-only signals cannot be touch-backtested, ever.** No band
+   level means no fill price. That is structural, not a gap, and no full
+   backtest changes it.
+
+**The one real data gap** is 4,407 touch events with neither flag --
+outside the universe entirely for that quarter, never backtested. That is
+the cosmetic-backtest item, and it is a scoped change to the backtest's
+candidate query rather than a re-run.
+
 **Agreed in session 29 (2026-09-08), not yet built.** In build order --
 each depends on the one above it.
 
@@ -283,7 +319,8 @@ each depends on the one above it.
    refit through the hash check automatically.
 
 2. **Rename `p_adverse_*` in the UI. "Moves 3% against" did not read
-   clearly.** It is side-adjusted -- against a short is *up* -- so "falls
+   clearly -- user's words, 2026-09-08.** Shipped as a placeholder in
+   `MODEL_FIELD_LABELS`, not as a settled name. It is side-adjusted -- against a short is *up* -- so "falls
    3%" would be wrong half the time and wrong in the expensive direction.
    No better phrasing agreed yet; the current wording ships as a
    placeholder. `MODEL_FIELD_LABELS` in `web/lib/format.ts` is the one
@@ -318,10 +355,14 @@ each depends on the one above it.
    serve different entry conventions after ADR 177, and the next person to
    query `v_screen` directly will get the superseded model's rows.
 
-6. **`breach_depth` should be deleted, not just dropped.** Measured
-   2026-09-08: removing it moves `next_open` AUC by 0.0003, so it earns
-   nothing where it is legal, and it is look-ahead under `touch`. Leaving
-   the code in place invites someone to re-add it to `FEATURE_COLS`.
+6. **~~`breach_depth` should be deleted~~ -- DONE in ADR 177.** Removed
+   from `DERIVED_FEATURE_COLS`, the `_breach_depth` function deleted, and
+   `TestBreachDepthIsGone` asserts both. `docs/model_spec_adr170.json`
+   records why under `features.removed`. **It was also a BUILD.md Phase 6
+   deliverable** ("breach-depth features added after the base model
+   exists"), which is now **void rather than pending**: the feature cannot
+   exist under a touch entry. Worth an ADR note so nobody re-adds a
+   look-ahead feature to satisfy a checklist.
 
 **Three loose ends left by session 27**, none blocking:
 
@@ -331,27 +372,38 @@ each depends on the one above it.
   does not identify which, and returns the newest by `(as_of DESC, id DESC)`
   -- deterministic, not correct. Either add an optional `side` argument or
   return both. The screener is unaffected: it joins on the event.
-- **`clear_predictions` does not clear serving.** `sync` copies
-  `predictions` keyed on `id`. Clearing research and re-running produces
-  new ids for the same `(ticker, as_of)`, which the unique index added in
-  migration `c3f8a1e07b26` will reject on the serving side. Either clear
-  both or teach `sync` to delete-then-copy for this table.
-- **`cscan predict` is not in `nightly`, deliberately.** It needs the
-  `neural` extra (a 2GB torch wheel) and refits every run, and `wivie`'s
-  multiplier for that workload is unmeasured. It is a workstation job until
-  someone benchmarks it there. The consequence is that predictions go stale
-  unless run by hand.
-- **Watch-universe rows never get a prediction, and that is correct today.**
-  `build_serving_frame` filters `in_trade`, matching what the model was
-  trained on, while `v_screen_live` shows `in_trade OR in_watch`. Watch
-  rows therefore render `—` in the `P(+3%)` column. Extending to `in_watch`
-  means training on it, not just widening the filter: a name below its
-  SMA200 is a different population and scoring it with this model would be
-  extrapolation dressed as a probability.
-- **`p_touch_2/5/10` are written but only `p_touch_3` is displayed.** The
-  screener shows one column. The ticker page shows none.
+- **`clear_predictions` does not clear serving.** The foreign-key half was
+  fixed 2026-09-08: it now refuses when predictions have resolved outcomes
+  and names how many, instead of raising a raw `ForeignKeyViolation` the
+  CLI swallowed. `drop_outcomes=True` is the deliberate override. **The
+  serving half is still open**: `sync` copies `predictions` keyed on `id`,
+  so clearing research and re-running produces new ids for the same event
+  and the unique index on the serving side rejects them. Either clear both
+  or teach `sync` to delete-then-copy for this table.
 
-**Two findings that constrain the strategy, not the model:**
+- **~~`cscan predict` is not in `nightly`, deliberately~~ -- REVERSED by the
+  session-29 plan.** It has to be, and so does the poller: the `Inference`
+  column is specified to be populated on load, which means both jobs score
+  their own rows. What made it a workstation job was the 2 GB torch wheel
+  and a 12-minute refit -- both of which the numpy weight export (item 1)
+  removes. `nightly` will load a 1.1 MB artifact and do a forward pass, not
+  fit anything.
+
+- **Watch-universe rows never get a prediction, and that is no longer
+  what is wanted.** `build_serving_frame` filters `in_trade`, so watch rows
+  carry no `p_touch`. The session-29 plan wants them scored for display:
+  they are already fully backtested -- AAPL sits in the watch universe with
+  a real -4.27% on 2026-08-31 -- and ADR 122 withholds them from
+  *statistics*, not from the page. **Scoring them is still extrapolation**:
+  the model trains on `in_trade` only, and a name below its SMA200 is a
+  different population. So the number is displayable but must be marked as
+  out-of-population, not presented as equivalent.
+
+- **~~`p_touch_2/5/10` are written but only `p_touch_3` is displayed~~ --
+  addressed by the session-29 modal.** All six fields plus the quantile
+  fan, the interval, `n_eff` and the gate tier go in the modal; the grid
+  cell is a button with no number, which is what stops a reader
+  eyeball-ranking a column the breadth gate says is not rankable.
 
 - **The signal times the market; it does not select stocks.**
   Cross-sectional demeaning collapses SNR from 0.100 to **0.024** and the
