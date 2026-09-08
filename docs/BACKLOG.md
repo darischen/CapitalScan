@@ -263,6 +263,47 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    month. The current intervals are fitted on validate and are a lower
    bound on the true uncertainty.
 
+### Paused mid-flight, resumable (2026-09-08)
+
+**`cscan path capture` is checkpointed and stopped at 1h53m.** Not a
+failure. ADR 178's cosmetic pricing gave 3,609,960 out-of-universe events
+an `entry_price`, so `path_capture` saw 1,411 tickers of work instead of
+the usual handful and would have taken days -- while blocking `finalize`,
+`outcomes` and tomorrow's nightly.
+
+**The checkpoint is in the data, not a file.** `fwd_window_days` is written
+per event as each ticker completes, and the query skips anything already
+carrying it. Killing between tickers loses nothing.
+
+| | |
+|---|---|
+| events with a forward window | 2,218,130 |
+| tickers remaining, scoped (`30915c5`) | **535** |
+| tickers remaining, unscoped | 1,409 |
+
+**Resume with `cscan path capture` whenever.** It picks up exactly here and
+now does 38% of the original work, because commit `30915c5` scopes all
+three `FROM events` reads in `path_backfill.py` to `(in_trade OR
+in_watch)`. Cosmetic rows keep their entry price for display and get no
+forward path -- `path` feeds the labels that feed the model, so a display
+concession must not reach it.
+
+**Do it after the current chain**, and in slices rather than one run: it is
+pure catch-up with nothing downstream waiting.
+
+**Still to decide: bundle `--cosmetic` into `weekly`** (user's call,
+2026-09-08). Weekly already runs the backtest, so cosmetic pricing belongs
+there rather than as a one-off -- but only alongside the scoped path
+pipeline, or every weekly re-creates this hour.
+
+**Unverified claim attached to it:** that `wivie` could absorb the cosmetic
+backfill in two days. Its multiplier for this workload is **unmeasured** --
+BACKLOG's 1.58x is a different laptop, and CLAUDE.md says run
+`scripts/cpu_bench.py` there before quoting a budget. The workstation took
+~9h at 8 workers; an i5-7200U (2 cores, 4 threads, 7.6 GB) could be 4-6x
+that, which is 36-54 hours of continuous work. Measure before planning on
+it.
+
 ### Session 29 corrections -- read before trusting anything above
 
 Five things were stated wrongly during this session and corrected by the
