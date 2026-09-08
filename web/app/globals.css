@@ -2288,3 +2288,118 @@ table.screen td.pick input:focus-visible {
 table.screen th.r .sortlink {
   flex-direction: row-reverse;
 }
+
+/* --- inference modal (ADR 176) ------------------------------------------
+ * The grid shows a button; this is where the numbers live. It needs room
+ * for a probability, its interval and its effective sample on one line --
+ * the pairing invariant 8 requires and a 60px table cell cannot hold. */
+
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 55%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 50;
+}
+
+.modal {
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 14px 16px 12px;
+  min-width: 340px;
+  max-width: 460px;
+  width: 100%;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+
+.modal:focus {
+  outline: none;
+}
+
+.modal-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.modal-x {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.modal-x:hover,
+.modal-x:focus-visible {
+  color: var(--text);
+}
+
+.modal-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.modal-table th {
+  text-align: left;
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0 6px 4px 0;
+  white-space: nowrap;
+}
+
+.modal-table td {
+  padding: 3px 0 3px 10px;
+  white-space: nowrap;
+}
+
+.modal-table tbody th {
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  color: var(--text);
+  padding: 3px 6px 3px 0;
+}
+
+/* A section heading inside the table, not a data row. `In the signal's
+ * direction` and `Against the position` are the only framing that makes a
+ * side-adjusted adverse number readable: against a short is *up*. */
+.modal-group th {
+  padding-top: 9px;
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid var(--rule);
+}
+
+.modal-note {
+  margin: 12px 0 0;
+  font-family: var(--sans);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.modal-ver {
+  margin: 6px 0 0;
+  font-family: var(--mono);
+  font-size: 10px;
+}

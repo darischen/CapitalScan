@@ -160,6 +160,23 @@ export interface Reversal {
 }
 
 /**
+ * Every band in the payload, keyed by stored field name.
+ *
+ * Fields whose band is incomplete are dropped rather than partially
+ * rendered: a probability without its interval is exactly what invariant 8
+ * forbids, and a modal is the one place with room to show both.
+ */
+function allBands(payload: Record<string, unknown> | null): Record<string, Band> {
+  const out: Record<string, Band> = {};
+  if (!payload) return out;
+  for (const field of Object.keys(payload)) {
+    const b = band(payload, field);
+    if (b) out[field] = b;
+  }
+  return out;
+}
+
+/**
  * One field's calibrated probability and the evidence behind it, out of
  * `predictions.calibration_json`.
  *
@@ -232,6 +249,17 @@ export interface Prediction {
   ciHigh: number | null;
   nEff: number | null;
   modelVersion: string | null;
+  /**
+   * Every published field with its own band, keyed by the stored name
+   * (`p_touch_3`, `p_adverse_5`, ...). The modal renders from this; the
+   * grid renders nothing from it.
+   *
+   * **Each field carries its own interval and `n_eff`** because each is
+   * calibrated against its own reliability table (ADR 174). Borrowing one
+   * field's interval for another would render correctly and describe a
+   * different quantity.
+   */
+  bands: Record<string, Band>;
   /**
    * The adverse side (ADR 175): probability of a 3% move **against** the
    * position within five sessions, with its own interval.
@@ -831,6 +859,7 @@ export async function screen(
             nEff: r.pred_n_eff === null ? null : Math.round(Number(r.pred_n_eff)),
             modelVersion: r.model_version,
             adverse3: band(r.calibration_json, "p_adverse_3"),
+            bands: allBands(r.calibration_json),
           },
   }));
 

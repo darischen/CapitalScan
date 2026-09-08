@@ -221,7 +221,7 @@ describe("the client boundary", () => {
    * external, which turns a stray import into a build error, and this is the
    * cheaper check that says which file did it.
    */
-  it("the client components are exactly the seven that need a browser", () => {
+  it("the client components are exactly the nine that need a browser", () => {
     const clients = sources()
       .filter((p) => /^\s*["']use client["']/.test(read(p)))
       .map((p) => relative(ROOT, p).split(sep).join("/"))
@@ -231,13 +231,22 @@ describe("the client boundary", () => {
     // and a keyboard-driven menu. The list is asserted whole rather than as
     // a count, so adding one is a decision someone makes here.
     //
-    // `OpenSelected` is the cheapest of the seven on purpose: it wraps the
+    // `OpenSelected` is the cheapest of them on purpose: it wraps the
     // screener table without rendering it, so the table stays a server
     // component and only the form around it ships (ADR 139).
+    //
+    // `InferenceCell` and `InferenceModal` joined 2026-09-08 for the same
+    // reason in reverse: the cell holds one boolean and the modal needs a
+    // keydown listener, so the pair is a client island while
+    // `ScreenerTable` -- which renders dozens of them -- stays on the
+    // server. Putting the state in the table would have shipped the whole
+    // grid to the browser to open a dialog.
     expect(clients).toEqual([
       "components/Chat.tsx",
       "components/DatePicker.tsx",
       "components/EventRows.tsx",
+      "components/InferenceCell.tsx",
+      "components/InferenceModal.tsx",
       "components/LivePrice.tsx",
       "components/OpenSelected.tsx",
       "components/TickerChart.tsx",

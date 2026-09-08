@@ -1,4 +1,5 @@
 import DatePicker from "./DatePicker";
+import { InferenceCell } from "./InferenceCell";
 import TickerSearch from "./TickerSearch";
 import {
   DISPLAY_TZ_LABEL,
@@ -297,18 +298,7 @@ function InferenceButton({ row }: { row: ScreenRow }) {
   if (!has) {
     return <span className="dim" aria-label="no inference for this signal">—</span>;
   }
-  return (
-    <button
-      type="button"
-      className="infer"
-      aria-label={`Model output for ${row.ticker} on ${row.signalDate}`}
-      title="Model output: probabilities, range and sample size"
-      data-ticker={row.ticker}
-      data-signal-date={row.signalDate}
-    >
-      …
-    </button>
-  );
+  return <InferenceCell row={row} />;
 }
 
 

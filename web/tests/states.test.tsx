@@ -970,6 +970,7 @@ describe("the inference column", () => {
         ciHigh: 0.66,
         nEff: 812,
         modelVersion: "adr177-05238410-4eb3325",
+        bands: {},
         adverse3: { p: 0.41, lo: 0.39, hi: 0.43, nEff: 790 },
       },
     });
@@ -988,6 +989,7 @@ describe("the inference column", () => {
         ciHigh: 0.66,
         nEff: 812,
         modelVersion: "v",
+        bands: {},
         adverse3: null,
       },
     });
@@ -1005,6 +1007,7 @@ describe("the inference column", () => {
         ciHigh: 0.66,
         nEff: 812,
         modelVersion: "v",
+        bands: {},
         adverse3: null,
       },
     });
