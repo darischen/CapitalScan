@@ -226,6 +226,11 @@ def _applied(p3: list[float]) -> pd.DataFrame:
         ]
         frame[f"{target.field}__n_eff"] = [800.0] * n
         frame[f"{target.field}__bucket"] = [5] * n
+    # The quantile fan, generated from `FAN_TAUS` for the same reason the
+    # targets are: adding a tau must not leave this fixture describing the
+    # old set while the tests below still pass.
+    for offset, col in enumerate(rp._FAN_COLUMNS):
+        frame[col] = [-0.06 + 0.03 * offset] * n
     frame["calib_bucket"] = [f"{rp.HEADLINE}:b5"] * n
     frame["calib_n_eff"] = [800.0] * n
     frame["ci_low"] = [0.58] * n
@@ -351,3 +356,40 @@ class TestCalibrationHoldsOnRealShapedData:
             # merged block. Strictly less, because these weights are unequal.
             assert bucket.n_eff < bucket.n, "clustered events must lose effective sample"
         assert all(not math.isnan(v) for v in published)
+
+
+class TestTheQuantileFanIsActuallyWritten:
+    """ADR 174 said the fan "stays in the payload". It did not.
+
+    All 4,264 rows of the first production run carried NULL `q05..q95`,
+    because `build_rows` never emitted them -- the ADR described code that
+    was not there. The fan is not decoration: `outcomes` scores a pinball
+    loss against it, so a fan that is never recorded can never be scored.
+    """
+
+    def test_every_stored_quantile_reaches_the_row(self) -> None:
+        rows = rp.build_rows(
+            _fake(_applied([0.62, 0.62])), _frame(), "chash123", "run-1", "abc1234"
+        )
+        for row in rows:
+            for col in rp._FAN_COLUMNS:
+                assert col in row, f"{col} missing from the written row"
+                assert row[col] is not None
+
+    def test_the_columns_match_the_taus(self) -> None:
+        assert rp._FAN_COLUMNS == ("q05", "q25", "q50", "q75", "q95")
+        assert len(rp._FAN_COLUMNS) == len(rp.FAN_TAUS)
+
+    def test_the_fan_comes_from_the_terminal_head(self) -> None:
+        """The peak and trough families are extremes; their quantiles would
+        answer a different question under the same column name."""
+        assert rp.FAN_TASK == ("terminal", 5)
+        assert rp.FAN_TASK in neural.TASKS
+
+    def test_the_resolver_scores_the_same_taus_the_writer_stores(self) -> None:
+        """A quantile scored against the wrong tau gives a plausible loss
+        and no error."""
+        from capitalscan.jobs import outcomes as oc
+
+        assert tuple(col for col, _ in oc.FAN) == rp._FAN_COLUMNS
+        assert tuple(tau for _, tau in oc.FAN) == rp.FAN_TAUS

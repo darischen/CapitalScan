@@ -217,6 +217,8 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 173 | `signal_type` must be a feature: the model was never told the direction | **Decided 2026-09-04.** Neither `signal_type` nor `side` is in `FEATURE_COLS`, and `fwd_ret_*` is the raw price return, not the position return (train medians: longs +0.549%, shorts +0.282%, both positive). So the directional head predicted a 38/62 mix of opposing populations without being told which — **mis-posed, not unanswerable**. Explains why `peak_ret_*`, which IS side-adjusted, works. Measurable only on validate now |
 | 174 | `p_touch` is the shipped product, and its interval is empirical | **Decided 2026-09-05.** Second checkpoint after ADR 172. `touched_3pct` is exactly `peak_ret_5d >= 0.03`, so `exceedance()` on the fitted peak head IS `Prediction.p_touch_3` -- calibrated, monotone across ten deciles, AUC 0.607-0.771, **no retraining**. Ships the probability rather than the fan. Invariant 8's interval is **empirical** (Wilson on the reliability bucket's realised rate at its `n_eff`), not the ensemble spread, which measures seed choice rather than uncertainty. `predict()` stops returning `NotFound` |
 | 175 | The adverse head reads a fixed window, not `mae` | **Decided 2026-09-05.** Completes `p_adverse_*` and the other two terms of `E[net_ret]`. `events.mae` is adverse excursion **until exit**, so `ExitParams` is baked into it and every sweep would silently redefine the target. Adds `trough_ret_{1,2,3,5,10}d` as the exact mirror of `peak_ret_*` from `path.adverse`, which is already side-adjusted. `p_adverse_3 = P(trough_ret_5d <= -0.03)`, read off the same CDF. Heads 4 -> 6, so ADR 174's tables refit |
+| 176 | Predictions are gated on market breadth | **Decided 2026-09-07.** `p_touch` is calibrated everywhere and only *ranks* in some regimes. Below 0.68 universe breadth: AUC **0.6255**, skill +5.62% (n=6,078). At or above: **0.5154**, −0.56% (n=3,037), and the low band inverts. Publish the probability always, gate the ranking. A gate, not a suppression -- the number is trustworthy, the ordering is not. Found by searching validate; `cscan outcomes` is the clean test |
+| 177 | The model trains and serves on `touch` entry, not `next_open` | **Decided 2026-09-08, corrected same day.** The first measurement included `breach_depth`, which is **look-ahead under a touch entry** (it reads the session's low); a test caught it. Re-measured without it, `p_touch_3` skill +6.57% -> **+10.14%** and `p_adverse_3` +3.83% -> **+7.17%** -- the decision holds, the adverse gain was two-thirds leak. `breach_depth` deleted (worth 0.0003 AUC where legal); every field improves, bias stays +0.0000. A `next_open` label measures from a price the features never saw, and the overnight gap is noise in the *label*. Costs the stochastic-only signals (no fill price, 42% of rows) -- but **zero** of those share a ticker-date with a confluence row, so confluence retains the stochastic condition entirely. Does not move `config_hash` |
 
 ---
 
@@ -8494,3 +8496,169 @@ the expected value above becomes computable from model output rather than
 from historical cell frequencies. Whether it is *accurate* is a separate
 measurement, and validate is contaminated (ADR 174), so it is a lead until
 the forward log can score it.
+
+## 176. Predictions are gated on market breadth
+
+**Status.** Decided 2026-09-07. Operational gate on ADR 174's product. Does
+not change the model, the config hash, or any stored probability.
+
+**Context.**
+
+`p_touch` is calibrated everywhere and its ability to *rank* is not.
+Measured on validate, discrimination depends on market breadth -- the
+fraction of the universe whose 20-day average sits above its 200-day:
+
+| breadth, trend rising | n | AUC | Brier skill |
+|---|---|---|---|
+| 0.55-0.60 | 564 | 0.6575 | +7.17% |
+| 0.60-0.64 | 1,701 | **0.7055** | +10.59% |
+| 0.64-0.68 | 1,648 | 0.6120 | +4.92% |
+| **0.68-0.72** | 1,882 | **0.5194** | −1.07% |
+| **0.72+** | 1,155 | **0.5372** | −1.10% |
+
+Cumulatively: below 0.68 gives **AUC 0.6255, skill +5.62%** on 6,078
+events; at or above gives **0.5154, −0.56%** on 3,037. Three consecutive
+bins on one side, two on the other, thousands of events each. That is a
+sustained drop rather than one noisy bin.
+
+**AUC 0.515 is a coin flip and negative skill means the base rate wins.**
+In that state the model adds nothing over "51.5% of signals touch +3%".
+Worse, the low band inverts: predictions under 0.40 resolve at 0.458 while
+those from 0.40-0.55 resolve at 0.417, so a low `p_touch` is not a negative
+signal there.
+
+The mechanism is not mysterious. This is mean-reversion on oversold names.
+When 68% of the universe is above its 200-day average and climbing,
+"oversold" mostly means an ordinary week and there is no dislocation to
+revert.
+
+**Decision.**
+
+**Publish `p_touch` always; gate the *ranking* on breadth < 0.68.** Above
+the line the probability still displays -- it is calibrated and honest --
+but the surface says the ranking is not reliable and must not be used to
+choose between names.
+
+**A gate, not a suppression.** `Suppressed` answers a thin cell with a
+reason instead of a number, because there the number would be
+untrustworthy. Here the number is trustworthy and only the *ordering* is
+not, so removing it would discard something correct. This follows invariant
+8's habit of shipping the evidence rather than a verdict.
+
+**Breadth is stored on `market_days`**, computed from `indicators` in ~4
+seconds for the full history. It is market-level daily data and that table
+already holds `spx_close`, `vix_close` and `vix_pct_252d`.
+
+**Consequences.**
+
+**The gate is open most days.** Over the 30 sessions to 2026-09-04, breadth
+averaged 0.671 and 21 of 30 days were below 0.68. Across 2026, 20% of
+sessions are in the dead zone. This is a daily state, not a market cycle.
+
+**This was found by searching validate, and validate has been examined
+dozens of times.** The boundary's robustness across adjacent bins is much
+better evidence than a single cut, but it is still a lead discovered by
+search. `cscan outcomes` is the clean test and it is already running.
+**Nothing should be sized on 0.6255 holding.**
+
+**No subset rescues the dead zone.** Roughly fifteen slices were tested
+inside it -- signal type, ticker drawdown, volatility percentile, signal
+strength. One flagged (`dd_52w` 10-20%, AUC 0.667, n=701), which is what
+one search of fifteen produces by chance. Not adopted.
+
+**What this does NOT claim.** The threshold 0.68 is where the measured drop
+sits on this split; it is not a law. The gate is a display state and a
+warning, not a trading rule, and ADR 001's advisory-only constraint is
+untouched.
+
+## 177. The model trains and serves on `touch` entry, not `next_open`
+
+**Status.** Decided 2026-09-08. Changes what `research/features.py` selects
+and therefore what every head is fitted on. Does not move `config_hash`:
+both entry kinds already exist on `events` and neither row's meaning
+changes.
+
+**Context.**
+
+`p_touch_3` has answered "if I buy at tomorrow's open, how likely is a 3%
+favourable excursion within five sessions". That is not the question a
+reader has. The poller notifies within five minutes of a signal, and
+anyone acting on it buys near the price they are looking at, not after an
+overnight gap.
+
+**The first measurement of this was wrong and is corrected here.** It
+included `breach_depth`, which is `(lower - low) / (upper - lower)` -- the
+signal day's LOW against the t-1 band. Day t's low is final before day
+t+1's open, so a `next_open` entry knows it; at the moment price crosses
+the band intraday, the session's eventual low has not happened. Under
+`touch` that feature is **look-ahead**, and
+`test_it_is_causal_for_the_only_entry_kind_built` failed the instant the
+entry kind changed. Invariant 3, caught by a test that says so in prose.
+
+**Re-measured with `breach_depth` removed from every arm**, population held
+constant (91,551 against 91,546 train, 19,141 validate each):
+
+| field | `next_open_bands` | `next_open_bands_nodepth` | `touch_nodepth` | `touch_leaky` |
+|---|---|---|---|---|
+| `p_touch_3` | 0.6289 / +6.67% | 0.6286 / +6.57% | **0.6589 / +10.14%** | 0.6797 / +12.31% |
+| `p_touch_5` | 0.6782 / +8.99% | 0.6789 / +9.11% | **0.7058 / +13.63%** | 0.7159 / +14.64% |
+| `p_adverse_3` | 0.5943 / +3.75% | 0.5953 / +3.83% | **0.6283 / +7.17%** | 0.6774 / +11.91% |
+
+**The decision survives; the size of the win does not.** `touch` still
+beats `next_open` on every field with the leak removed -- `p_touch_3` skill
++6.57% to +10.14%. But `p_adverse_3` was inflated by two-thirds (+7.17%
+honest against +11.91% leaked), which is exactly what a feature encoding
+the session's low does to a *downside* probability. The originally reported
+"more than triples" was mostly the leak.
+
+**`breach_depth` is deleted, not merely dropped.** Removing it moves
+`next_open` AUC by 0.0003, so it earns nothing where it is legal and is
+unusable where it is not. Leaving the code in place invites someone to
+re-add it to `FEATURE_COLS` and reopen an invariant-3 hole for no gain.
+
+Restricting `next_open` to the band types changed almost nothing (0.6353 to
+0.6289), so this is the entry convention and not the population.
+
+**Why.** A `next_open` label measures a forward window from a price the
+features never saw. The overnight gap between signal and fill carries news
+and index moves nothing in the feature vector predicts, and that is noise
+added to the *label*. Label noise caps discrimination regardless of feature
+quality. Entering at the touch price removes it.
+
+The base rates move the same way: `p_touch_3` base rises 0.516 to 0.548
+while `p_adverse_3` falls 0.351 to 0.316.
+
+**Decision.**
+
+**`features.TRAINING_ENTRY_KIND = "touch"`.** A module constant beside
+`FEATURE_COLS` and `LABEL_COLS`, not a `Config` field. It selects which
+existing rows the model reads; it does not change what any row means, what
+the backtest computes, or what a `split_key` is. Putting it in the hashed
+config would move `config_hash` off `0523841076f47293` and orphan every
+row keyed on it, which is the mistake ADR 176 already made once.
+
+**Consequences.**
+
+**Stochastic-only signals become unscoreable, and this is the deliberate
+cost.** A touch entry needs a band level to fill at; `stoch_overbought`
+and `stoch_oversold` have none and carry no `entry_price` in any split
+(0.0%, against ~100% for every band type). That is 68,869 train events,
+42% of the old population.
+
+**Confluence loses nothing, which is why the cost is acceptable.**
+`detect` fires `CONFLUENCE_LOW` when `lower_touch and oversold and
+agrees_long`, and DESIGN §4.7's debounce then collapses the coincident
+`bb_lower_touch` and `stoch_oversold` rows into that single slot (ADR 057).
+Measured: **zero** of 68,869 stochastic rows share a ticker-date with a
+confluence row. The stochastic *condition* is fully retained inside
+confluence; what is dropped is only stochastic-fired-without-a-band-touch,
+which the regime slices already showed to be the weakest setup
+(`stoch_overbought` AUC 0.5189).
+
+**Validate shrinks to 19,160 from 34,195**, so every estimate under this
+configuration is noisier than the numbers it replaces. The gaps are large
+enough to survive that; smaller future comparisons will not be.
+
+**This does not repeal ADR 176.** The breadth gate was measured on
+`next_open` and whether `touch` changes the regime dependence is **not yet
+measured**. Until it is, the gate stays exactly as it is.

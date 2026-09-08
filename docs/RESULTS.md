@@ -6649,6 +6649,704 @@ failed mechanism prediction are the evidence, not the decimals.
 
 ---
 
+## 2026-09-06 — why coverage fails, and the forward log that can finally check
+
+Two pieces of work. The second answers a question the first made askable.
+
+### The forward log exists now (`cscan outcomes`)
+
+DESIGN §7.8 defined an `outcomes` table in Phase 5 and nothing ever wrote
+it. It does now: a set-based join from `predictions` to closed `events`
+windows, `ON CONFLICT DO NOTHING` so a recorded outcome is never rewritten,
+and no tuneable parameter of any kind. **3,482 predictions resolved**, 125
+windows still open.
+
+This matters because every other number about this model comes from a split
+that has been reused. A prediction recorded before its outcome existed is
+the one kind of evidence that cannot be contaminated.
+
+**First reading, and it is not flattering:**
+
+| predicted | n | realised | gap |
+|---|---|---|---|
+| 0.282 | 244 | 0.430 | **+0.148** |
+| 0.371 | 412 | 0.442 | +0.071 |
+| 0.396 | 448 | 0.464 | +0.068 |
+| 0.474 | 401 | 0.511 | +0.037 |
+| 0.596 | 283 | 0.625 | +0.029 |
+| 0.758 | 530 | 0.796 | +0.038 |
+
+Realised climbs monotonically 0.430 → 0.796, so **the ranking is real**.
+But the model under-predicts in nine of ten bands. The sample's base rate is
+0.5658 against validate's 0.516: July–August 2026 was a friendlier tape than
+the 2022–23 window the calibration was fitted on, and the model carried the
+old base rate forward.
+
+**Also fixed:** ADR 174 claimed the quantile fan "stays in the payload" and
+`build_rows` never wrote it — all 4,264 rows had NULL `q05..q95`. The
+documentation described code that did not exist. Now written, which is what
+lets `outcomes` score a pinball loss at all.
+
+### Which heads fail coverage, and why — the hypothesis was wrong
+
+At six heads the gate reads **25/30 within 5 points**. The five failures
+split into two unrelated problems.
+
+**Problem A: the terminal heads are biased high at the middle.**
+
+| head | nominal | coverage | error |
+|---|---|---|---|
+| `terminal_h5_q0.25` | 0.25 | 0.3273 | +0.0773 |
+| `terminal_h5_q0.50` | 0.50 | 0.5576 | +0.0576 |
+| `terminal_h10_q0.25` | 0.25 | 0.3311 | +0.0811 |
+| `terminal_h10_q0.50` | 0.50 | 0.5644 | +0.0644 |
+
+Over-coverage means the predicted quantile sits **too high** — more
+outcomes fall below it than should. The terminal distribution is shifted
+up, which is the same defect ADR 172 found from the other side when
+`terminal_h5_q50` came back negative out of sample.
+
+Sliced by year, it is almost entirely 2022:
+
+| head | 2022 | 2023 |
+|---|---|---|
+| `terminal_h5_q0.25` | +0.1188 **MISS** | +0.0360 OK |
+| `terminal_h5_q0.50` | +0.1064 **MISS** | +0.0090 OK |
+| `terminal_h10_q0.25` | +0.1337 **MISS** | +0.0287 OK |
+| `terminal_h10_q0.50` | +0.1182 **MISS** | +0.0108 OK |
+
+**The regime hypothesis was tested and refuted.** The prediction going in
+was that the model fails because it cannot see the *market's* trend —
+`above_sma200` is the ticker's, not the index's, and the known limitation
+measures the train/validate imbalance on a variable the model has no access
+to. Splitting validate on SPX above/below its own 200-day SMA:
+
+| head | SPX above | SPX below |
+|---|---|---|
+| `terminal_h5_q0.25` | +0.0876 | +0.0631 |
+| `terminal_h5_q0.50` | +0.0612 | +0.0528 |
+| `terminal_h10_q0.25` | +0.0872 | +0.0727 |
+| `terminal_h10_q0.50` | +0.0720 | +0.0539 |
+
+**The error is the same size in both regimes.** If the model were blind to
+a regime it could otherwise exploit, the two columns would diverge. They do
+not. Adding a market-trend feature would not have fixed this.
+
+**What it actually is: train contains no sustained decline at all.**
+Fraction of sessions with SPX above its own 200-day SMA, by year:
+
+| 2010 | 2011 | 2012 | 2013 | 2014 | 2015 | 2016 | 2017 | 2018 | 2019 | 2020 | 2021 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0.738 | 0.603 | 0.960 | 1.000 | 0.976 | 0.742 | 0.806 | 1.000 | 0.809 | 0.873 | 0.755 | 1.000 |
+
+The worst year in train is 2011 at 0.603. **2022 is 0.151.** Nothing in the
+training window resembles it. **2008 is 0.000** — an entire year below the
+line — and it is excluded because `ingest_start` is 2010.
+
+So this is a *training-data coverage* problem, not a feature problem, and
+that also explains why the regime slices agree: a regime feature has almost
+nothing to learn from when 90.8% of train is one regime. The fix is more
+history, not more columns — and `capitalscan_hist` (11 GB, still on disk)
+was built for exactly that and shelved after being evaluated for a
+different question.
+
+**Problem B: `peak_h10_q0.75` is a different fault.**
+
+| slice | coverage | error |
+|---|---|---|
+| 2022 | 0.6785 | −0.0715 MISS |
+| 2023 | 0.6927 | −0.0573 MISS |
+| SPX above | 0.6854 | −0.0646 MISS |
+| SPX below | 0.6859 | −0.0641 MISS |
+
+Uniform across every slice: both years, both regimes. Under-coverage means
+the predicted quantile is too **low** — the model under-states how high the
+peak gets in the upper-middle of the distribution. This is a shape error in
+one head, owes nothing to 2022, and more history will not touch it.
+
+**The trough family passes all ten**, on its first outing. It also shows the
+only clean regime asymmetry in the table (+0.025 to +0.056 above the line,
+−0.003 to −0.029 below), staying inside tolerance throughout.
+
+---
+
+## 2026-09-08 — entry convention beats everything: fit on `touch`, not `next_open`
+
+The model answers "if I buy at tomorrow's open, how likely is a 3%
+favourable excursion in five sessions". Trading off a five-minute poller
+notification asks "if I buy near the price I am looking at now". `events`
+already carries both as `entry_kind`, so the question is measurable.
+
+### The first comparison was confounded, and the confound was large
+
+A `touch` entry needs a band level to fill at, and stochastic-only signals
+have none:
+
+| signal type | train rows | with `entry_price` |
+|---|---|---|
+| `stoch_overbought` | 46,490 | **0.0%** |
+| `stoch_oversold` | 22,528 | **0.0%** |
+| every band type | 94,406 | ~100% |
+
+So the touch arm silently dropped **69,018 events, 42% of train**, all of
+one kind -- and `stoch_overbought` is both the largest signal type and one
+of the weakest. The apparent win could have been "the same model with the
+weak signals removed", a population difference wearing an entry-convention
+label.
+
+### Controlled, it holds
+
+Three arms. `next_open_bands` is `next_open` restricted to the five band
+types, so it matches `touch` row for row (91,898 against 91,893 train,
+19,160 validate each).
+
+| field | `next_open_all` | `next_open_bands` | **`touch`** |
+|---|---|---|---|
+| `p_touch_2` | 0.6051 / +4.05% | 0.5989 / +4.41% | **0.6664 / +10.43%** |
+| `p_touch_3` | 0.6353 / +6.41% | 0.6339 / +6.91% | **0.6764 / +11.92%** |
+| `p_touch_5` | 0.6859 / +9.70% | 0.6827 / +9.36% | **0.7121 / +14.15%** |
+| `p_touch_10` | 0.7274 / +9.20% | 0.7186 / +8.26% | **0.7318 / +11.16%** |
+| `p_adverse_3` | 0.5900 / +3.25% | 0.5930 / +3.65% | **0.6737 / +11.69%** |
+| `p_adverse_5` | 0.6571 / +5.34% | 0.6475 / +5.01% | **0.6969 / +9.45%** |
+
+**Excluding the stochastic signals changes almost nothing** -- 0.6353 to
+0.6339 on `p_touch_3`. The population was not the explanation.
+
+**The entry convention is.** Holding population fixed, `p_touch_3` skill
+goes +6.91% to +11.92%, a 73% improvement, and `p_adverse_3` goes +3.65%
+to +11.69%, more than tripling. Every field improves and calibration stays
+exact (bias +0.0000 throughout).
+
+### Why, and why it should have been expected
+
+A `next_open` label measures a forward window from a price the features
+never saw. Between the signal and the fill sits an overnight gap carrying
+news, earnings and index moves that nothing in the feature vector predicts.
+That gap is noise added to the label, and noise in the label caps
+discrimination no matter how good the features are.
+
+Entering at the touch price removes it. The label is measured from the
+price the features describe.
+
+**The base rates move the same way**, which is a second reason to prefer
+it: `p_touch_3` base rises 0.516 to 0.548 while `p_adverse_3` base falls
+0.351 to 0.316. Entering at the signal rather than after the gap is both
+more likely to reach the target and less likely to go against you.
+
+### What this means
+
+**The deployed model uses the weaker convention and answers a question the
+user does not ask.** Switching is a change to `features._SQL`'s
+`entry_kind` filter and a refit -- no new labels, no migration, no new
+machinery.
+
+**The cost is population.** `touch` has no stochastic-only rows, so a
+touch-trained model cannot score `stoch_overbought` or `stoch_oversold`
+signals at all. Those are 42% of events and the weakest of the seven, but
+that is a real coverage loss to accept deliberately rather than discover.
+
+**Caveats.** Validate here is 19,160 rather than 34,195, so the estimates
+are noisier, and this is still the split that has been examined many times.
+The gaps are large enough to survive that, but the forward log remains the
+clean test.
+
+---
+
+## 2026-09-07 — the 2D regime tier, and the model has no edge in today's market
+
+`p_touch_3` discrimination by breadth level x breadth trend, both knowable
+at prediction time. Validate, n shown per cell.
+
+| breadth level | falling | flat | rising |
+|---|---|---|---|
+| low <0.40 | 0.669 **+9.6%** n=7214 | 0.653 +6.8% n=1024 | 0.544 +0.5% n=990 |
+| mid 0.40-0.55 | 0.641 +6.2% n=9812 | **0.721 +10.5%** n=1368 | 0.534 **−1.3%** n=1175 |
+| high 0.55-0.68 | **0.728 +12.3%** n=859 | 0.524 **−3.2%** n=4803 | 0.662 +7.9% n=3913 |
+| **vhigh >=0.68** | — | — | **0.515 −0.6% n=3037** |
+
+### The market is in the worst cell in the table
+
+2026-09-01 reads breadth **0.685**, up **+0.110** over 60 sessions. That is
+`vhigh >= 0.68` x `rising`: **AUC 0.5154, Brier skill −0.56%**, measured on
+3,037 events -- enough to be sure of.
+
+**AUC 0.515 is a coin flip. Negative skill means the base rate beats the
+model.** In this regime `p_touch_3` adds nothing over the flat statement
+"51.5% of signals touch +3% within five sessions". It cannot rank one name
+against another.
+
+This directly contradicts the intuition that a bullish market suits the
+model. The signal is mean-reversion on oversold names; when 68% of the
+universe is above its 200-day average and climbing, "oversold" mostly means
+"an ordinary week" and there is no dislocation to revert.
+
+### An apparent boundary near 0.68, not yet verified
+
+`high 0.55-0.68 x rising` scores **0.6623 (+7.92%, n=3913)** while
+`vhigh >=0.68 x rising` scores **0.5154**. Same trend, adjacent level bins,
+and the edge vanishes.
+
+**That edge was chosen by hand and has not been tested for robustness.** A
+cliff between two neighbouring bins is exactly what an arbitrary cut
+produces by chance, so 0.68 must not be treated as a discovered threshold
+until AUC has been measured against finer breadth bins. If it survives, it
+is directly operational: the model becomes useful again when breadth pulls
+back under it.
+
+### Three cells where the model is actively worse than its own base rate
+
+`high x flat` (−3.19%, n=4803), `mid x rising` (−1.30%), `vhigh x rising`
+(−0.56%). Together roughly 9,000 of 34,195 validate events. In those, using
+the base rate directly beats using the model output.
+
+### What this means for deployment
+
+**Calibration is not the problem and never was.** Bias is +0.000 across
+every cell measured earlier: if the page says 62%, roughly 62% resolve up.
+The number is honest everywhere.
+
+**Discrimination is the problem, and it is regime-dependent.** Ranking
+works when breadth is falling or the universe is already beaten down, and
+fails when the market is broadly healthy and rising.
+
+So the deployable product today is a **calibrated frequency, not a
+stock-picker**. It can answer "how often does a signal like this resolve
+up" and cannot currently answer "which of these ten names is the better
+one" in this market.
+
+---
+
+## 2026-09-07 — the deployable finding: the edge lives where breadth is falling
+
+**The reframe that mattered.** Every coverage number in this investigation
+is about the quantile fan, and ADR 172 retired those heads. What ships is
+`p_touch`. Measuring the shipped quantity in the transition cell gives a
+completely different answer from the fan:
+
+| cell | n | base | predicted | bias | skill | AUC |
+|---|---|---|---|---|---|---|
+| **2022_above (transition)** | 4,166 | 0.514 | 0.515 | **+0.000** | **−0.47%** | **0.5314** |
+| 2022_below (bear) | 12,738 | 0.600 | 0.600 | +0.000 | +5.66% | 0.6316 |
+| 2023_above (recovery) | 15,796 | 0.438 | 0.446 | +0.008 | +4.59% | 0.6104 |
+| ALL | 34,195 | 0.516 | 0.516 | +0.000 | +6.41% | 0.6353 |
+
+**In the transition the probability is perfectly calibrated and completely
+uninformative.** Bias +0.000 -- it is not lying. AUC 0.531 -- it cannot
+rank. The fan was *biased* there; the probability is not biased at all, it
+simply has no discrimination.
+
+**That kills the per-regime calibration idea (BACKLOG 3c).** A reliability
+table maps predictions onto realised rates; it cannot manufacture ranking
+power that is absent from the model's output. Per-regime tables moved AUC
+0.5314 -> 0.5360. The honest cross-year test agrees: fitted on 2023 and
+applied to 2022, per-regime Brier 0.2517 against global 0.2540.
+
+### No observable rule isolates the dead zone
+
+`2022_above` is not a usable predicate -- it means "the index was above its
+200-day average in a year that turned out to be a bear", and the second
+half is not knowable on the day. Measured against state that *is*
+observable, the worst cells are 0.547 to 0.584, never the 0.531 of the
+target. The dead zone is smeared across several observable states rather
+than sitting in one.
+
+### But breadth trend separates the edge cleanly
+
+| breadth now vs 60 sessions ago | n | AUC | skill |
+|---|---|---|---|
+| falling hard (< −0.15) | 10,606 | **0.6605** | **+8.37%** |
+| falling (−0.15 to −0.05) | 7,279 | 0.6414 | +6.57% |
+| flat (±0.05) | 7,195 | 0.5832 | +1.50% |
+| rising (> +0.05) | 9,115 | 0.5910 | +3.58% |
+
+And by breadth *level*:
+
+| fraction of universe above its 200-day | n | AUC | skill |
+|---|---|---|---|
+| < 0.35 | 5,600 | 0.6284 | +5.65% |
+| 0.35–0.50 | 11,416 | **0.6420** | **+6.90%** |
+| 0.50–0.65 | 13,177 | 0.6207 | +5.37% |
+| **>= 0.65 (broad health)** | 4,002 | **0.5473** | **+1.51%** |
+
+**The model's edge is concentrated where the market is under stress and
+nearly absent when it is calm.** Split on breadth trend alone: falling
+gives AUC 0.6574 across 52% of events, not-falling 0.5868 across the rest.
+
+That is a coherent story rather than a curiosity. The signal is
+mean-reversion on oversold names. It pays when there is real dislocation
+and has little to work with when everything is rising quietly.
+
+### What to do about it, and what not to
+
+**Not suppression.** The best suppression rule found -- index above its
+200-day average and down more than 3% from its high -- discards 31% of
+predictions to move kept AUC 0.6353 -> 0.6503. The discarded region still
+scores 0.5918, so it is throwing away real if weaker signal, and the gain
+is small.
+
+**Annotate instead.** Attach a market-regime tier to every prediction and
+publish the AUC measured for that tier. That preserves the information,
+matches invariant 8's philosophy of shipping the evidence rather than a
+verdict, and gives a reader doing manual observation exactly what they need
+to weight what they are looking at:
+
+    breadth falling      AUC 0.657   the model's home ground
+    breadth flat/rising  AUC 0.587   weak, treat as a weak prior
+
+**For deployment this is the honest headline:** `p_touch` ranks usefully
+when breadth is deteriorating and is close to a coin flip when the market
+is broadly healthy. It is never *miscalibrated* -- bias is +0.000 in every
+cell measured -- so the number itself can be trusted as a long-run
+frequency. What varies is how much it separates one name from another.
+
+---
+
+## 2026-09-07 — market-state features: the transition is NOT fixed, but breadth is a net win
+
+Two arms tested against the transition failure located in the correction
+below. **Neither fixes it.** One is worth keeping for an unrelated reason,
+and a third question got answered by accident.
+
+### Arm 1: index state + breadth — improves the target, wrecks everything else
+
+Five index-state features (`spx_above_sma200`, `spx_dd_252d`,
+`spx_sma200_slope`, `spx_days_below_10pct`, `vix_pct_252d`) plus three
+breadth features.
+
+| cell | base | +market | +market+breadth |
+|---|---|---|---|
+| **2022_above** (target) | 0.0778 | 0.0771 | **0.0550** |
+| 2022_below | 0.0236 | 0.0425 | 0.0456 |
+| 2023_above | **0.0199** | 0.0585 | **0.0608** |
+| ALL | **0.0262** | 0.0519 | 0.0516 |
+| heads within 5pts | **25/30** | 16/30 | 16/30 |
+
+It buys the target cell (0.0778 -> 0.0550, and `peak_h10_q0.75` from
+−0.1022 to −0.0236) and pays by **tripling the error where the model was
+best**. 25/30 to 16/30 is far outside run-to-run noise. Early stopping also
+fired much sooner (steps 566/417/589 -> 333/323/417), which is what
+overfitting onset looks like: five features that are near-constant within
+any month, on a model with limited transition examples to anchor them.
+
+**The index features did nothing on their own.** Target cell 0.0778 ->
+0.0771. Every bit of the target-cell gain came from breadth. So the
+headline hypothesis -- "the model cannot see the *index* turning" -- is not
+what carries the signal.
+
+### Arm 2: breadth alone — a better model, and the transition still broken
+
+| cell | base | breadth_only (3) | breadth_2 (2) |
+|---|---|---|---|
+| **2022_above** (target) | 0.0778 | 0.0758 | **0.0715** |
+| 2022_below | **0.0236** | 0.0356 | 0.0377 |
+| 2023_above | 0.0199 | 0.0099 | **0.0085** |
+| ALL | 0.0262 | 0.0224 | **0.0225** |
+| heads within 5pts | 25/30 | **26/30** | **26/30** |
+
+**Overall calibration improves and 2023 error halves** (0.0199 -> 0.0085).
+But the target cell barely moves: 0.0778 -> 0.0715, still three times the
+tolerance-passing cells and still the reason the gate fails.
+
+**So the two results have to be read together.** Breadth alone is a modest
+net win. The transition gain in arm 1 needed the index features *and*
+breadth together, and that combination is unusable. There is no version of
+this here that fixes the transition without losing more than it gains.
+
+### The conclusion, stated plainly
+
+**The transition failure is not fixed and this line of attack did not
+work.** The model can be told what the market is doing; it does not convert
+that into a wider distribution at the top without over-widening everywhere
+else. Whether that is a capacity problem, a "too few transition-with-bad-
+outcome examples" problem, or a genuine limit is not settled by these runs.
+
+**What is worth keeping regardless:** `breadth_ma_above` and
+`breadth_mean_dd`, two features computed from `indicators` in 3.7s, which
+take 30 heads from 25 passing to 26 and halve the 2023 error. That is a
+real improvement on its own terms and does not depend on the transition
+story being right.
+
+### A determinism question, answered by accident
+
+The 2026-09-06 entry flagged that two identical fits gave steps
+[426, 426, 467] and [521, 512, 469], and raised two candidate causes:
+non-determinism, or the intervening label backfill changing train labels.
+
+**The base arm ran twice across these two experiments and gave identical
+steps [566, 417, 589] and identical 25/30 both times.** Both runs were
+after the label backfill; the differing pair straddled it. That points at
+the labels, not the framework — the killed `path backfill` ran
+`incomplete_only=False` over 300 tickers and the label pass rewrote 979,828
+rows, so train-era values moved underneath the comparison.
+
+Not proof, but the reproducible pair is evidence the seeding fix holds and
+the earlier discrepancy had a mundane cause. BACKLOG item 1 can be
+downgraded from "every A/B is suspect" to "re-check any A/B whose arms
+straddled a label backfill".
+
+---
+
+## 2026-09-07 — CORRECTION: the regime refutation was Simpson's paradox
+
+**The 2026-09-06 entry below claims the market-regime hypothesis was
+refuted. That claim is wrong and is retracted here.** The 2026-08-25
+analysis, which traced the coverage failures to the absence of any
+market-level trend feature, was right.
+
+### What went wrong
+
+The refutation compared coverage with SPX above its own 200-day SMA
+(+0.0876) against below (+0.0631), found them similar, and concluded regime
+was not the cause. But the two slices are not comparable, because they are
+mostly different years:
+
+| slice | 2022 events | 2023 events |
+|---|---|---|
+| SPX below 200-SMA | 13,131 | 1,542 |
+| SPX above 200-SMA | 4,222 | 16,230 |
+
+"Below" is 90% 2022 and "above" is 79% 2023, so the pooled contrast was a
+year contrast wearing a regime label. Pooling across a confounder that
+moves in the opposite direction to the effect is Simpson's paradox, and it
+erased the signal completely.
+
+### The 2x2, measured directly
+
+`terminal_h5_q0.25`, which the pooled view reported as +0.0749 against
++0.0600:
+
+| | SPX above 200-SMA | SPX below 200-SMA |
+|---|---|---|
+| **2022** | **+0.2364** (n=4,166) | +0.0713 (n=12,738) |
+| **2023** | +0.0311 (n=15,796) | −0.0352 (n=1,495, thin) |
+
+**Within 2022 the regime separates by a factor of three**, and it does so
+for every family, not just the failing heads:
+
+| head | tau | above | below | gap |
+|---|---|---|---|---|
+| `terminal_h5` | 0.25 | +0.2364 | +0.0713 | **+0.165** |
+| `terminal_h10` | 0.50 | +0.2391 | +0.0730 | **+0.166** |
+| `peak_h10` | 0.75 | −0.1022 | −0.0433 | −0.059 |
+| `trough_h5` | 0.25 | +0.1272 | +0.0055 | **+0.122** |
+
+**Mean absolute error within 2022: 0.0778 above the line, 0.0236 below.**
+Below the line the model is comfortably inside the 5-point tolerance. Above
+it, it is three times worse.
+
+**`peak_h10_q0.75` was also mis-described.** The 2026-09-06 entry called it
+"uniform across every slice" and therefore regime-independent. It is not:
+−0.1022 above against −0.0433 below within 2022. That uniformity was the
+same pooling artefact.
+
+### What this actually means
+
+**The model fails during the transition, not during the bear market.** Once
+the index is clearly below its 200-day SMA, the per-ticker features have
+caught up -- `dd_52w` is large, `rv_pct_252d` is high, `vix_close` is
+elevated -- and the model is nearly calibrated. The failure concentrates in
+the period when the index is still above its 200-day average while the
+decline is already underway, and every per-ticker feature still looks
+ordinary.
+
+That is exactly what the 2026-08-25 analysis found from the other
+direction: coverage error on `terminal_h5_q25` within 2022 was **+0.118**
+for tickers down 0-5% and **+0.039** for tickers down 25%+. Deep-drawdown
+events were nearly calibrated; shallow ones were not. Two independent
+slices, same conclusion.
+
+**It also explains why reweighting failed.** The 2026-09-06 experiment
+upweighted rows with SPX below its 200-day SMA -- which are precisely the
+rows the model already handles well (0.0236). It multiplied the easy cases
+by 9.82x and left the hard ones alone. The experiment was not a test of the
+regime hypothesis at all; it was a test of a mislabelled one.
+
+### The standing conclusion
+
+Of 22 features, three are market-level: `vix_close` (a level),
+`spx_ret_1d` (**one day**) and `cofire_count` (same-day breadth). Every
+trend feature -- `above_sma200`, `sma200_slope_60`, `dd_52w` -- is
+per-ticker. The model cannot see that the *market* is turning until the
+individual names have already turned with it.
+
+**The next test is the one 2026-08-25 named and nobody ran**: add
+market-level trend features (index against its own 200-day SMA, index
+drawdown from its 252-day high, days spent below −10%) and refit. One fit.
+The label-shift description from 2026-09-06 remains accurate as a
+*description*; this is the mechanism behind it.
+
+### The methodological lesson
+
+Three refutations in this series were published from pooled comparisons.
+This one was wrong. **Any slice whose composition differs across the thing
+being compared has to be measured as a 2x2**, with cell counts shown, and
+that applies to the volatility and grid slices in the same entry -- neither
+has been re-checked with the year held fixed.
+
+---
+
+## 2026-09-06 — reweighting is refuted, and fits are not reproducible
+
+### Reweighting decline-regime events makes coverage worse
+
+The label-shift finding split into two readings needing different fixes:
+**ratio** (the model sees 89.9% uptrend and learns an uptrend prior, so
+reweighting the existing rows fixes it) or **count** (57k decline events is
+too few to fit conditional behaviour at all, so only more data fixes it).
+
+Reweighting cannot add information -- the same rows are present either way
+-- so it separates them for the price of one fit.
+
+Three arms, decline rows multiplied against the existing cluster weights so
+ADR 060's correction survives in each:
+
+| arm | heads failing | mean abs error |
+|---|---|---|
+| `base` | **4 / 30** | **0.0230** |
+| `x3` | 7 / 30 | 0.0267 |
+| `balanced` (9.82x) | 6 / 30 | 0.0311 |
+
+**It gets monotonically worse.** The four terminal failures grow rather
+than shrink:
+
+| head | base | balanced |
+|---|---|---|
+| `terminal_h5_q0.25` | +0.0737 | **+0.1018** |
+| `terminal_h5_q0.50` | +0.0612 | **+0.0905** |
+| `terminal_h10_q0.25` | +0.0770 | **+0.1141** |
+| `terminal_h10_q0.50` | +0.0627 | **+0.0913** |
+
+**The prediction written beforehand was wrong.** It said terminal would
+shrink by roughly a third with at most one head coming inside tolerance.
+Terminal grew by about 40%.
+
+**Why it fails, and it is instructive.** The training *frame* holds only
+**14,535 decline-regime events against 143,403 uptrend** — 9.2%, not the
+10.1% the raw event table suggested, because the frame drops ETFs, missing
+sectors and unlabelled rows. Balancing therefore needs a **9.82x**
+multiplier on a small set, which collapses the effective sample: the same
+14,535 rows carry half the total mass while supplying no more independent
+information. Kish would put the effective count far below the row count.
+
+**This is evidence for count over ratio.** You cannot manufacture
+decline-regime information by shouting the same 14,535 rows louder. The
+rebuild on extended history (126,252 decline events) is now the justified
+test rather than the expensive one, and **reweighting should not be
+retried**.
+
+### A caution that applies to every A/B in this project
+
+Two fits of identical code, identical seeds and an identically sized
+training frame (157,938 rows) produced different results:
+
+| run | steps | heads failing |
+|---|---|---|
+| coverage diagnosis | [426, 426, 467] | 5 / 30 |
+| reweight `base` arm | [521, 512, 469] | 4 / 30 |
+
+`DEFAULT_SEEDS` is fixed and ADR 173's seeding fix pins cuDNN, so this
+should not vary. Two candidate causes and this run cannot separate them:
+
+1. **Genuine non-determinism** the seeding fix did not fully close.
+2. **The intervening label backfill changed train labels.** The killed full
+   `path backfill` ran `incomplete_only=False` over 300 of 759 tickers,
+   recomputing `path` for their whole history, and the label pass then
+   rewrote 979,828 rows. Train-era values could have moved.
+
+**Either way, single-run arm comparisons carry unquantified variance**, and
+that caveat attaches to tonight's numbers and to every earlier arm result
+in this file, including ADR 172's and the arm A/B/C/D comparison. The
+reweighting conclusion survives it because the degradation is large and
+monotone in the multiplier, but a 0.7pp difference between arms would not.
+
+**The cheap fix is a determinism check**: fit twice with identical
+settings, assert the step counts and coverage match. It belongs in the
+fast tier as a marker, not as a gate, since it costs a fit.
+
+---
+
+## 2026-09-06 — the coverage failures are label shift, and four other explanations are dead
+
+Five hypotheses, four refuted, one standing. The surviving one explains all
+three families with a single mechanism and every sign matches.
+
+### The four that died
+
+| hypothesis | killed by |
+|---|---|
+| the model cannot see market regime | coverage error is the same size with SPX above its 200-day SMA (+0.0876) as below it (+0.0631) |
+| the CRPS grid truncates the peak family | 0.50% of train exceeds the top edge, exactly what a 0.995 span gives; `q0.75` sits at bin 9 of 32 |
+| volatility scale | `peak_h10_q0.75` misses in 2022 (`bb_width` 0.664) **and** 2023 (0.409), opposite regimes |
+| multi-task interference | measured directly, below |
+
+**The interference test, and a prediction I got half wrong.** The written
+prediction before the run was that terminal's +0.06 would "fall by at least
+half" when its family trained alone, and that `peak_h10_q0.75` would
+"survive largely intact". The second held. The first was badly wrong:
+
+| head | multi-task | single-task | shrinkage |
+|---|---|---|---|
+| `terminal_h5_q0.50` | +0.0576 | +0.0552 | 4% |
+| `terminal_h10_q0.25` | +0.0811 | +0.0752 | 7% |
+| `peak_h10_q0.75` | −0.0644 | −0.0549 | 15% |
+
+**5/30 heads fail multi-task; 5/30 fail single-task.** Identical. Mean
+absolute error moves 0.0394 → 0.0354 for terminal and 0.0261 → 0.0217 for
+peak, and **gets worse** for trough (0.0158 → 0.0181) — that family gains
+from sharing. Multi-task learning costs a little and is not the cause of
+anything.
+
+Bin resolution was checked too and does not separate the families: the
+q25–q75 body spans 3.7 to 5.0 bins for every one of the six, and `trough`
+has skew −3.54 and passes all ten while `peak` has +3.78 and fails.
+
+### What it is: the label distribution moved
+
+| quantity | train (2010–21) | validate (2022–23) | shift |
+|---|---|---|---|
+| `peak_ret_10d` q75 | 0.0539 | 0.0710 | **+32%** |
+| `peak_ret_5d` q75 | 0.0382 | 0.0492 | +29% |
+| `fwd_ret_5d` q50 | 0.00366 | 0.00074 | **−80%** |
+| `trough_ret_5d` q25 | −0.0362 | −0.0456 | +26% deeper |
+
+The model fits train's distribution. Validate's is wider in both directions
+and has almost no drift. Every coverage error follows directly, and the
+signs are not free parameters — each one is forced:
+
+- **Peak excursions are 32% larger in validate.** The model predicts
+  train-sized peaks, so its `q0.75` sits too low, so fewer outcomes fall
+  below it. **Under-coverage.** Observed −0.064.
+- **Troughs are 26% deeper.** The model predicts train-sized troughs, so
+  its `q0.25` sits too high, so more outcomes fall below it.
+  **Over-coverage.** Observed +0.030.
+- **The median return is 80% lower.** The model predicts train's drift, so
+  its `q0.50` sits too high. **Over-coverage.** Observed +0.058.
+
+Three families, three different directions, one cause. Nothing about the
+architecture, the objective, the grid or the feature set is implicated.
+
+**Why `trough` still passes and the others do not** is only that its shift
+is smaller relative to the 5-point tolerance, not that it is better built.
+
+### The consequence
+
+This is the same finding as the training-window one, arrived at
+independently: train (2010–2021) contains no period resembling validate.
+Its worst year is 2011 at 0.603 of sessions above the 200-day SMA against
+2022's 0.151, and 2008 (0.000) is excluded because `ingest_start` is 2010.
+
+**The fix is more history, and specifically history that contains
+declines.** `capitalscan_hist` (11 GB) is still on disk and was built for
+exactly this, then shelved after being judged against a different question
+— so that negative result does not transfer. This is now the only open
+explanation with evidence behind it.
+
+**What would falsify it:** refit on a window containing 2008 and 2000–02
+and the coverage errors should shrink toward zero without any change to
+the architecture. If they do not, the label-shift story is wrong too.
+
+---
+
 ## 2026-09-05 — the adverse half: `p_adverse` ships (ADR 175)
 
 Heads went from four to six, `cscan predict` wrote **4,264 rows across 242

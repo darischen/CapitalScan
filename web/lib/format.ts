@@ -7,6 +7,74 @@
  * round differently for no reason anyone could find.
  */
 
+/**
+ * Product-facing names for every model output.
+ *
+ * **The page is read by someone who knows markets, not this codebase.**
+ * `p_touch_3` and `q05` are column names in a database; a reader wants
+ * "Reaches +3%" and "Worst case". The screener already works this way --
+ * `bb_lower` rather than `bb_lower_touch`, "oversold" rather than
+ * `stoch_oversold` -- and the inference modal has to match, or the app
+ * speaks two languages depending on which panel you open.
+ *
+ * Kept in one map so a renamed field cannot leave a raw identifier on
+ * screen. An unmapped key falls back to the identifier, which is ugly on
+ * purpose: it is how a gap gets noticed.
+ */
+export const MODEL_FIELD_LABELS: Record<string, string> = {
+  p_touch_2: "Reaches +2%",
+  p_touch_3: "Reaches +3%",
+  p_touch_5: "Reaches +5%",
+  p_touch_10: "Reaches +10%",
+  // Side-adjusted: "against" is down for a long and up for a short, which
+  // is why it does not say "falls".
+  p_adverse_3: "Moves 3% against",
+  p_adverse_5: "Moves 5% against",
+  // The percentile is in the label, not only in the help text. "Worst
+  // case" alone is opaque -- worst of what, and how bad is worst? Naming
+  // the level makes the number self-describing in a cell the reader may
+  // never hover over.
+  q05: "Worst case (5th pct)",
+  q25: "Weak case (25th pct)",
+  q50: "Midpoint (50th pct)",
+  q75: "Strong case (75th pct)",
+  q95: "Best case (95th pct)",
+  calib_n_eff: "Comparable past signals",
+  ci_low: "Range low",
+  ci_high: "Range high",
+  model_version: "Model version",
+};
+
+/**
+ * How each model output should be read, in one sentence.
+ *
+ * Shown beside the number in the modal. A probability with no statement of
+ * what it is a probability *of* invites the reader to supply their own
+ * meaning, and the most natural wrong guess -- "chance this trade makes
+ * money" -- is the one the system must never imply (ADR 001, advisory
+ * only).
+ */
+export const MODEL_FIELD_HELP: Record<string, string> = {
+  p_touch_3:
+    "How often price has reached 3% in the signal's own direction within " +
+    "five sessions, for past signals that looked like this one. Not a " +
+    "forecast that the trade is profitable.",
+  p_adverse_3:
+    "How often price has moved 3% against the position within five " +
+    "sessions — down for a long, up for a short.",
+  q05: "5 of every 100 comparable signals did worse than this.",
+  q25: "25 of every 100 comparable signals did worse than this.",
+  q50:
+    "Half of comparable signals did better, half worse. Historically " +
+    "negative out of sample, so read it as context and not as a direction " +
+    "call.",
+  q75: "75 of every 100 comparable signals did worse than this.",
+  q95: "95 of every 100 comparable signals did worse than this.",
+  calib_n_eff:
+    "How many independent past signals stand behind this number, after " +
+    "correcting for signals that fired together on the same day.",
+};
+
 export const SIGNAL_LABELS: Record<string, string> = {
   bb_lower_touch: "bb lower",
   bb_upper_touch: "bb upper",

@@ -95,7 +95,14 @@ RAW_FEATURE_COLS: tuple[str, ...] = (
 )
 
 #: Computed from raw columns, never from anything off-row.
-DERIVED_FEATURE_COLS: tuple[str, ...] = ("k_minus_d", "mcap_log", "breach_depth")
+#: `breach_depth` was here until 2026-09-08 and is deleted, not disabled
+#: (ADR 177). It read the signal day's LOW, which a `next_open` entry
+#: knows and a `touch` entry does not -- look-ahead the moment the entry
+#: convention changed, and invariant 3 is the highest-risk silent failure
+#: in this system. It was also worth 0.0003 AUC where it was legal, so
+#: nothing is lost. Removed entirely so it cannot be re-added by someone
+#: reading a disabled constant as an invitation.
+DERIVED_FEATURE_COLS: tuple[str, ...] = ("k_minus_d", "mcap_log")
 
 FEATURE_COLS: tuple[str, ...] = RAW_FEATURE_COLS + DERIVED_FEATURE_COLS
 
@@ -107,6 +114,29 @@ FEATURE_COLS: tuple[str, ...] = RAW_FEATURE_COLS + DERIVED_FEATURE_COLS
 CATEGORICAL_COLS: tuple[str, ...] = ("sector", "signal_type")
 
 #: ADR 113's four labels. `fwd_ret_{h}d` is R_h, `peak_ret_{h}d` is M_h.
+#: Which fill convention the model is fitted on and serves (ADR 177).
+#:
+#: **`touch` -- same-bar entry at the signal price -- not `next_open`.**
+#: With population held constant, `p_touch_3` Brier skill goes +6.91% to
+#: +11.92% and `p_adverse_3` +3.65% to +11.69%, every field improving with
+#: calibration unchanged. A `next_open` label measures a forward window from
+#: a price the features never saw: the overnight gap carries news and index
+#: moves nothing in the feature vector predicts, and that is noise in the
+#: *label*, which caps discrimination however good the features are.
+#:
+#: **A module constant, not a `Config` field.** It selects which existing
+#: rows are read and changes no row's meaning, so it must not move
+#: `config_hash` -- ADR 176 made that mistake once and orphaned every row
+#: keyed on `0523841076f47293` until a test caught it.
+#:
+#: **The cost: stochastic-only signals cannot be scored.** A touch entry
+#: needs a band level to fill at, and `stoch_overbought`/`stoch_oversold`
+#: carry no `entry_price` in any split. Confluence loses nothing --
+#: measured, **zero** of 68,869 stochastic rows share a ticker-date with a
+#: confluence row, because DESIGN 4.7's debounce already collapses the
+#: coincident rows into the confluence slot.
+TRAINING_ENTRY_KIND: str = "touch"
+
 LABEL_COLS: tuple[str, ...] = (
     "fwd_ret_5d",
     "fwd_ret_10d",
@@ -285,7 +315,7 @@ SELECT {cols}
        LIMIT 1
   ) ind ON TRUE
  WHERE e.config_hash = :chash
-   AND e.entry_kind = 'next_open'
+   AND e.entry_kind = :entry_kind
    AND e.in_trade
    {row_filter}
 """
@@ -360,7 +390,11 @@ def build_training_frame(
         frame = pd.read_sql(
             text(training_sql(cols)),
             conn,
-            params={"chash": config_hash, "split": split},
+            params={
+                "chash": config_hash,
+                "split": split,
+                "entry_kind": TRAINING_ENTRY_KIND,
+            },
         )
 
     trainable, etf, missing = partition_for_training(
@@ -427,7 +461,11 @@ def build_serving_frame(
     a categorical as a NULL level and corrupt the fit.
     """
     cols = _select_columns()
-    params: dict[str, Any] = {"chash": config_hash, "since": since}
+    params: dict[str, Any] = {
+        "chash": config_hash,
+        "since": since,
+        "entry_kind": TRAINING_ENTRY_KIND,
+    }
     with engine.connect() as conn:
         frame = pd.read_sql(
             text(_SQL.format(cols=", ".join(cols), row_filter="AND e.signal_date >= :since")),
@@ -457,51 +495,6 @@ def build_serving_frame(
 #: Feature columns that are `boolean` in Postgres. Named rather than
 #: sniffed, so a new boolean feature has to be added here deliberately.
 BOOL_FEATURE_COLS: tuple[str, ...] = ("above_sma200", "k_cross_up", "k_cross_down")
-
-
-def _breach_depth(frame: pd.DataFrame) -> pd.Series:
-    """How far the signal day's bar pierced past the band, in band widths.
-
-    **ADR 069's deferred feature, and the half `bb_pctb` does not carry.**
-    `bb_pctb` is `(close - lower) / (upper - lower)` and already reaches
-    -0.588 on train events, so close-based depth ships today. But the signal
-    is a *touch*: the low crosses the band and the close can be back inside
-    by the bell. A bar that stabbed 40% of a band width below the lower
-    boundary and closed above it is a different event from one that drifted
-    to the boundary and stopped, and no current feature separates them.
-
-    **Signed by side**, so the number means the same thing in both
-    directions: positive is "further past the band the signal fired on".
-
-        long   (lower-band touch):  (lower - low)  / (upper - lower)
-        short  (upper-band touch):  (high - upper) / (upper - lower)
-
-    **The band is t-1's**, which is the one `detect` compared against
-    (invariant 3). Using day t's band would measure the breach against a
-    boundary the signal never saw.
-
-    **Causal for `next_open`.** Day t's low is final before day t+1's open,
-    so the feature is known when the position is taken. For a `touch` entry
-    it would be look-ahead -- the low is not known while the day is running
-    -- and `build_training_frame` selects only `next_open`.
-
-    NaN where any input is missing, per invariant 4: LightGBM handles a NaN
-    natively as its own split direction, which is the honest encoding of
-    "no bar on file" and is not the same as zero depth.
-    """
-    width = pd.to_numeric(frame["band_upper"], errors="coerce") - pd.to_numeric(
-        frame["band_lower"], errors="coerce"
-    )
-    low = pd.to_numeric(frame["bar_low"], errors="coerce")
-    high = pd.to_numeric(frame["bar_high"], errors="coerce")
-    lower = pd.to_numeric(frame["band_lower"], errors="coerce")
-    upper = pd.to_numeric(frame["band_upper"], errors="coerce")
-
-    is_short = frame["side"].astype(str).str.lower().eq("short")
-    depth = (lower - low).where(~is_short, high - upper)
-
-    # A zero or negative width is a degenerate band, not a deep breach.
-    return depth.where(width > 0) / width.where(width > 0)
 
 
 def _coerce_boolean_features(frame: pd.DataFrame) -> pd.DataFrame:
@@ -544,7 +537,7 @@ def _coerce_boolean_features(frame: pd.DataFrame) -> pd.DataFrame:
 def _add_derived(frame: pd.DataFrame) -> pd.DataFrame:
     """Never mutate in place (project convention).
 
-    `breach_depth` (ADR 069) is derived here rather than stored, so the
+    `breach_depth` was derived here until ADR 177 deleted it. What remains is
     four raw inputs stay meta and never reach the matrix.
 
     `k_minus_d` is the stochastic spread, which a tree can only express as a
@@ -566,5 +559,4 @@ def _add_derived(frame: pd.DataFrame) -> pd.DataFrame:
     # small one, it is an absent or corrupted one, and `log(0)` is `-inf`,
     # which a tree happily splits on as though it meant something.
     out["mcap_log"] = np.log(mcap.where(mcap > 0))
-    out["breach_depth"] = _breach_depth(out)
     return out

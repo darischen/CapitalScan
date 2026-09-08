@@ -300,7 +300,14 @@ def predict(
     chash = _hash(config)
 
     if clear:
-        removed = jp.clear_predictions(db_io.get_engine(), chash)
+        try:
+            removed = jp.clear_predictions(db_io.get_engine(), chash)
+        except ValueError as exc:
+            # Refusing is the correct outcome, not an error to swallow: the
+            # first version failed with a raw ForeignKeyViolation and the
+            # run carried on, leaving two models' predictions in one table.
+            console.print(f"[red]refused[/red]: {exc}")
+            raise typer.Exit(code=1) from exc
         console.print(f"predict: deleted {removed} predictions for config {chash}")
         return
 
@@ -309,6 +316,59 @@ def predict(
     console.print(f"predict: {report.summary()}")
     if report.rows_written == 0:
         console.print("[yellow]warning[/yellow]: no predictions written")
+
+
+@app.command()
+def outcomes(
+    show: bool = typer.Option(False, help="Print the forward log's score and exit"),
+) -> None:
+    """Score written predictions against what actually happened (DESIGN 7.8).
+
+    The forward log. Every other number about this model comes from a split
+    that has been reused; a prediction recorded before its outcome existed
+    is the one kind of evidence that cannot be contaminated. Idempotent and
+    cheap -- safe to run nightly.
+    """
+    from capitalscan.jobs import outcomes as oc
+
+    if show:
+        s = oc.score()
+        if not s["n"]:
+            console.print("outcomes: nothing resolved yet")
+            return
+
+        # Every aggregate is nullable and for different reasons: `pinball`
+        # is NULL for rows written before the quantile fan was stored, and
+        # `brier` is NULL if a prediction carried no `p_touch_3`. Printing
+        # "n/a" says which is missing; a crash says nothing.
+        def num(key: str, places: int) -> str:
+            value = s[key]
+            return "n/a" if value is None else f"{value:.{places}f}"
+
+        console.print(
+            f"outcomes: n={s['n']}  Brier={num('brier', 5)}  "
+            f"base={num('base_rate', 4)}  pinball={num('pinball', 6)}  "
+            f"({s['first_pred']} to {s['last_pred']})"
+        )
+        return
+
+    report = oc.run_outcomes()
+    console.print(f"outcomes: {report.summary()}")
+
+
+@app.command()
+def breadth() -> None:
+    """Recompute universe breadth and report the ranking gate (ADR 176).
+
+    Breadth is the fraction of the universe whose 20-day average sits above
+    its 200-day. Below `StatsParams.breadth_rank_floor` the model's ranking
+    has held (AUC 0.626); at or above it discrimination falls to a coin
+    flip and only the calibrated probability is usable.
+    """
+    from capitalscan.jobs import breadth as br
+
+    report = br.run_breadth()
+    console.print(f"breadth: {report.summary()}")
 
 
 @app.command()
@@ -1966,17 +2026,27 @@ def path_peak_labels_cmd(
     """
     from capitalscan.jobs import db_io, ingest
     from capitalscan.jobs.config import config_hash as compute_config_hash
-    from capitalscan.research.peak_labels import backfill_peak_labels
+    from capitalscan.research.peak_labels import FAMILIES, backfill_extremum_labels
 
     config = _resolve_config_or_exit()
     chash = config_hash or compute_config_hash(config)
     engine = db_io.get_engine()
 
     with ingest.run_job(engine, "peak_labels", {"config_hash": chash}) as job:
-        updated = backfill_peak_labels(engine, chash, config.stats.fwd_ret_horizons)
+        # **Every family, not just `peak`.** ADR 175 added the trough family
+        # and `features.LABEL_COLS` now requires it, so a writer that
+        # refreshed only the peak columns would leave every new event with a
+        # NULL trough and `build_training_frame` would silently drop it -- a
+        # training set that shrinks with no error. That is the
+        # `events.giveback` failure exactly: a column added by migration
+        # with no writer ever run.
+        updated = sum(
+            backfill_extremum_labels(engine, chash, config.stats.fwd_ret_horizons, family)
+            for family in FAMILIES
+        )
         job.rows_written = updated
 
-    console.print(f"peak labels: config_hash={chash} rows_updated={updated:,}")
+    console.print(f"extremum labels: config_hash={chash} rows_updated={updated:,}")
 
 
 @path_app.command("backfill")
@@ -2879,11 +2949,17 @@ def nightly() -> None:
     # exactly how `events.giveback` ended up NULL on all 5.57M rows —
     # migration 699cb410d219 added the column and no writer ever ran.
     from capitalscan.jobs.config import config_hash as _compute_config_hash
-    from capitalscan.research.peak_labels import backfill_peak_labels
+    from capitalscan.research.peak_labels import FAMILIES, backfill_extremum_labels
 
     chash = _compute_config_hash(config)
     with ingest.run_job(engine, "peak_labels", {"trigger": "nightly", "config_hash": chash}) as pk:
-        pk.rows_written = backfill_peak_labels(engine, chash, config.stats.fwd_ret_horizons)
+        # Both families. See the note in the `path peak-labels` command: a
+        # peak-only refresh freezes ADR 175's trough columns and quietly
+        # removes every new event from the training frame.
+        pk.rows_written = sum(
+            backfill_extremum_labels(engine, chash, config.stats.fwd_ret_horizons, family)
+            for family in FAMILIES
+        )
     # Closes the slot `record` opened above. Without it the row stays
     # `'started'` forever and `cscan system-status` cannot tell a chain that
     # finished from one that died halfway (ADR 080 lists `status` and

@@ -44,7 +44,10 @@ def _no_real_nightly_io(monkeypatch):
     # the call actually resolves against.
     from capitalscan.research import peak_labels as peak_labels_mod
 
-    monkeypatch.setattr(peak_labels_mod, "backfill_peak_labels", lambda *args, **kwargs: 0)
+    # ADR 175 moved the nightly chain onto the generalised writer so both
+    # label families refresh. Stubbing the old peak-only name let the real
+    # function run against this fixture's fake engine.
+    monkeypatch.setattr(peak_labels_mod, "backfill_extremum_labels", lambda *args, **kwargs: 0)
 
     # `nightly` wraps its path capture in `ingest.run_job` (2026-08-06) so
     # the rows it writes carry a `run_id` — `path.run_id`, ADR 034. The real

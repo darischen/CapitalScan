@@ -111,9 +111,21 @@ TARGETS: tuple[Target, ...] = (
 #: leaves its lower buckets nearly empty of positives.
 HEADLINE = "p_touch_3"
 
+#: Which head backs `Prediction.q05..q95`. The terminal family is the
+#: return actually realised at the horizon, which is what a quantile fan
+#: over "the return" means; the peak and trough families are extremes and
+#: their quantiles would answer a different question under the same name.
+FAN_TASK: tuple[str, int] = ("terminal", 5)
+
+#: The taus `predictions` has columns for.
+FAN_TAUS: tuple[float, ...] = (0.05, 0.25, 0.50, 0.75, 0.95)
+
 #: Re-exported from `core`, which is where it lives so that `handlers`
 #: can reach it without importing this module. See the definition there.
 MODEL_CAVEAT = calib.MODEL_CAVEAT
+
+#: `q05`..`q95`, the column names the fan lands in.
+_FAN_COLUMNS: tuple[str, ...] = tuple(f"q{int(round(t * 100)):02d}" for t in FAN_TAUS)
 
 
 @dataclass(frozen=True)
@@ -142,6 +154,21 @@ class FittedPredictor:
         """
         pmf = self.ensemble.predict_pmf(frame)
         out = pd.DataFrame(index=frame.index)
+
+        # The quantile fan, from the terminal 5-day head. DESIGN 7.4
+        # defines the field and it is read off a CDF the forward pass has
+        # already produced, so it costs one interpolation.
+        #
+        # **Stored, not displayed.** `terminal_h5_q50` is negative out of
+        # sample (ADR 172) and no surface renders it. It is written because
+        # `outcomes` scores a pinball loss against it, which is how the
+        # forward log measures the distribution rather than only the
+        # thresholds -- and a fan that is never recorded can never be
+        # scored, which is the state ADR 174 described the code as being in
+        # while the code in fact wrote NULLs.
+        for tau, values in self.ensemble.fan(frame, *FAN_TASK).items():
+            out[f"q{int(round(tau * 100)):02d}"] = values
+
         for target in TARGETS:
             k = neural.TASKS.index((target.family, target.horizon))
             raw = target.probability(pmf[:, k, :], self.ensemble.grids[k])
@@ -252,12 +279,11 @@ def build_rows(
     event_ids = frame["id"].astype("int64").tolist()
     signal_types = frame["signal_type"].astype(str).tolist()
     sides = frame["side"].astype(str).tolist()
-    columns = [t.field for t in TARGETS] + [
-        f"{HEADLINE}_raw",
-        "calib_n_eff",
-        "ci_low",
-        "ci_high",
-    ]
+    columns = (
+        [t.field for t in TARGETS]
+        + [f"{HEADLINE}_raw", "calib_n_eff", "ci_low", "ci_high"]
+        + list(_FAN_COLUMNS)
+    )
     for t in TARGETS:
         columns += [f"{t.field}__lo", f"{t.field}__hi", f"{t.field}__n_eff", f"{t.field}__bucket"]
         # `apply` names the raw column `<field>_raw`; the per-field block
@@ -281,6 +307,10 @@ def build_rows(
             "run_id": run_id,
             "git_sha": git_sha,
             "p_touch_3_raw": float(probs[f"{HEADLINE}_raw"][i]),
+            **{
+                name: (float(probs[name][i]) if np.isfinite(probs[name][i]) else None)
+                for name in _FAN_COLUMNS
+            },
             "calib_bucket": buckets[i],
             "calib_n_eff": float(probs["calib_n_eff"][i]),
             "ci_low": float(probs["ci_low"][i]),
