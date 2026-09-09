@@ -422,13 +422,57 @@ pure catch-up with nothing downstream waiting.
 there rather than as a one-off -- but only alongside the scoped path
 pipeline, or every weekly re-creates this hour.
 
-**Unverified claim attached to it:** that `wivie` could absorb the cosmetic
-backfill in two days. Its multiplier for this workload is **unmeasured** --
-BACKLOG's 1.58x is a different laptop, and CLAUDE.md says run
-`scripts/cpu_bench.py` there before quoting a budget. The workstation took
-~9h at 8 workers; an i5-7200U (2 cores, 4 threads, 7.6 GB) could be 4-6x
-that, which is 36-54 hours of continuous work. Measure before planning on
-it.
+**Measured 2026-09-08, and the guess above was close: `wivie` is 3.41x the
+workstation, not 1.58x.** `scripts/cpu_bench.py` at 8 workers, ten minutes,
+machine otherwise idle:
+
+| | cores / threads | steady | sustain |
+|---|---|---:|---:|
+| workstation (3700X, 65W) | 8 / 16 | **2.138 units/s** | 1.171 |
+| Flow X13 (5950HS, 35W) | 8 / 16 | 1.352 | 1.012 |
+| **`wivie` (i5-7200U, 15W)** | **2 / 4** | **0.627** | **1.111** |
+
+`sustain` above 1.0 means it got *faster* over ten minutes: no thermal decay
+at all, which is what a 15W part with almost no boost headroom does. The
+constraint on this machine is core count, not heat, and no amount of cooling
+changes it.
+
+**Worker count barely matters there, which is worth knowing before anyone
+tunes it.** Eight workers on two physical cores oversubscribes 4x and costs
+almost nothing:
+
+| `wivie` `--workers` | steady | sustain | vs workstation |
+|---|---:|---:|---:|
+| 8 (the documented default) | 0.627 | 1.111 | 3.41x |
+| 4 (its thread count) | **0.660** | 1.025 | 3.24x |
+
+**5.3%.** Not worth changing the systemd units for, and worth recording so
+the next person does not spend an afternoon tuning `--workers` expecting
+more. A 2-core box is core-bound whatever you ask of it; the fix is a bigger
+box, not a better flag. Quote **3.2-3.4x** and do not pretend to more
+precision than that.
+
+**The 1.58x in this file is a different laptop and must not be applied to
+`wivie`.** The Flow X13 is an 8-core 5950HS. `wivie` has **two** physical
+cores. Anything quoting 1.58x for the Debian laptop is wrong by better than
+a factor of two.
+
+So the cosmetic backfill is ~9h x 3.41 = **~31 hours** of continuous work,
+inside the 36-54h guess but still not a two-day-and-forget job.
+
+Projected from the workstation budgets at 3.41x:
+
+| job | workstation | `wivie` |
+|---|---|---|
+| `nightly`, cold | 35-40 min | **~2h-2h20m** |
+| `weekly` | ~36 min | **~2h** |
+| `backtest --workers 8`, full universe | ~2h | **~6.8h** |
+| `bars --hourly --backfill` | 4.5-5.5h | **~15-19h** |
+
+`nightly` and `weekly` still fit an overnight window, so the cutover holds
+for the scope it actually covers. The full backtest does not, which is
+already the rule -- CLAUDE.md keeps arms and heavy research on the
+workstation permanently.
 
 ### Session 29 corrections -- read before trusting anything above
 
@@ -1869,3 +1913,39 @@ non-finite quantile points at the inversion, not at the distribution.
 
 Cheap first cut: pull one such row, print its pmf, and see whether the CDF
 ever crosses the quantile level at all.
+
+## `wivie` is 12 migrations behind, and must NOT be caught up with `db migrate`
+
+Checked 2026-09-08. `wivie`'s local research database sits at
+`b7f3c5d21a94`; head is `a1c7f3b09d84`. The twelve in between are the whole
+prediction chain:
+
+```
+e2c7a94b3d15  universe_watch_near_trade      c1e6b73f9a02  market_days_breadth
+c3f8a1e07b26  predictions_carry_calibration  d8c40a5b71e9  ticker_events_in_watch
+d5a02b18c937  screener_views_prediction_ci   e4b19c86d275  predictions_natural_key
+e7b4c92f1a08  predictions_key_on_event_id    f7d3a02e5c18  views_join_natural_key
+f2a71d6e8c34  events_trough_ret_columns      a1c7f3b09d84  predictions_model_scored
+a9d3e05f7b21  predictions_calibration_json
+b4f8c17d29e6  views_expose_calibration_json
+```
+
+Its *serving* pointer is fine and already reads the Pi at head — only the
+local research database is stale.
+
+**Running `cscan db migrate` there is the wrong move, and the reason is
+ordering rather than risk.** The cutover restores a workstation dump onto
+`wivie`, which is the only direction that works (ADR 164: 16.14 restores
+into 17.11, never the reverse). That dump carries the workstation's schema
+*and* its data, both at head. Migrating the stale database first spends
+twelve migrations on rows that a `pg_restore` is about to replace, and
+leaves a window where `wivie` holds head's schema over an old generation's
+data — which looks exactly like a working research database and is not.
+
+Restore first, then confirm `cscan db status` reads head because the dump
+put it there. The schema is not a separate task from the data sync; it is
+the same task.
+
+**Still true and separate:** WAL and autovacuum tuning live on the server,
+not in a migration, so they must be re-applied by hand on `wivie` after any
+restore. → `CLAUDE.md`, `pi-postgres-tuning`.
