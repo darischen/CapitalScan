@@ -7670,3 +7670,91 @@ value:
     E[net_ret] ~ P(target) x +5.30%  +  P(stop) x −4.38%  +  P(timeout) x −0.05%
 
 measured from 163,424 train exits.
+
+---
+
+## 2026-09-08 — the rolling-window test is invalid as run, and the reason is worth more than the test
+
+ADR 179's cheapest check: does a rolling training window close the coverage
+gate the fixed window fails on 2022? Three arms, same architecture, same
+seeds, `scripts/rolling_window_test.py`.
+
+### What it printed
+
+| arm | train | validate | heads within 5% | mean abs err | steps |
+|---|---:|---:|---:|---:|---|
+| `fixed` | 91,546 (2010-03-31..2021-12-31) | 19,141 (..2023-12-29) | 26/30 | 0.0307 | **[776, 909, 591]** |
+| `roll5` | 70,317 (2021-01-01..2025-12-31) | 11,596 (..2026-09-04) | 26/30 | 0.0293 | **[300, 300, 300]** |
+| `roll5_purge` | 70,118 (same, 10d embargo) | 11,596 | 26/30 | 0.0319 | **[300, 300, 300]** |
+
+The four heads `fixed` fails looked transformed:
+
+| head | fixed | roll5 | roll5_purge |
+|---|---:|---:|---:|
+| `terminal_h5` q0.25 | +0.0836 | +0.0302 | +0.0306 |
+| `terminal_h5` q0.50 | +0.0625 | +0.0035 | −0.0001 |
+| `terminal_h10` q0.25 | +0.0886 | +0.0234 | +0.0209 |
+| `terminal_h10` q0.50 | +0.0669 | +0.0145 | +0.0089 |
+
+**Do not read that table as a result.** `steps [300, 300, 300]`, identical
+across three independent seeds, is not a coincidence and not a cap.
+
+### `300` is `DEFAULT_STEPS`, the fallback
+
+`neural.fit` selects its step count as `median(picks) if picks else
+DEFAULT_STEPS`, and `picks` is filled from the inner walk-forward ladder.
+Counting folds directly, no fitting:
+
+```
+fixed        train 91,546   folds built 7   sizes [(22170, 5326), (27698, 5549), ...]
+roll5        train 70,317   folds built 0   sizes []
+roll5_purge  train 70,118   folds built 0   sizes []
+```
+
+Both rolling arms built **zero folds** and fell through to a hardcoded 300.
+
+`core.folds.walk_forward_folds` needs `DEFAULT_MIN_TRAIN_YEARS = 5` of
+training before its first validation year, so the window must *exceed* five
+years to hold even one fold:
+
+```
+5-year window (2021..2025): 0 folds
+6-year window (2020..2025): 1 fold
+7-year window (2019..2025): 2 folds
+```
+
+ADR 179 specified five. It is one year short of being able to select its own
+step count, and `walk_forward_folds` returning `()` is deliberate and
+documented — a single fold is not cross-validation.
+
+### So the comparison measures training length, not the window
+
+The rolling arms trained 300 steps against the fixed arm's 776/909/591:
+roughly **2.5x less**, chosen by fallback rather than by data. All four
+"improved" heads failed in the **over**-coverage direction, which is what a
+shorter, less-converged fit produces — a wider fan covers more. The
+improvement is fully confounded with under-training and cannot be
+attributed to the window.
+
+`purge effect: 0.0293 -> 0.0319 (no leak detected)` is equally void: both
+arms trained an unselected 300 steps, so it compares two fallbacks.
+
+### What was fixed
+
+`neural.fit` now raises on an empty ladder instead of falling through.
+A fallback indistinguishable from a selection turns a broken experiment into
+a plausible-looking result, and the `steps` field reported the same number
+either way. `DEFAULT_STEPS` still covers the narrower case of a ladder that
+ran but degenerated.
+
+### To re-run
+
+`scripts/rolling_window_test.py` now carries the seven-year window
+(2019-01-01..2025-12-31, two folds) and prints a loud warning if every seed
+still lands on `DEFAULT_STEPS`. Say plainly that two folds against seven is
+a thin ladder. The like-for-like
+caveat in `rolling.py`'s docstring still stands on top of that: the arms
+validate on different years, so a lower error could mean 2026 was easier.
+
+**No conclusion is recorded about rolling windows.** The question ADR 179
+asks is still open.

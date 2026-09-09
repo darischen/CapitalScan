@@ -220,6 +220,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 176 | Predictions are gated on market breadth | **Decided 2026-09-07.** `p_touch` is calibrated everywhere and only *ranks* in some regimes. Below 0.68 universe breadth: AUC **0.6255**, skill +5.62% (n=6,078). At or above: **0.5154**, −0.56% (n=3,037), and the low band inverts. Publish the probability always, gate the ranking. A gate, not a suppression -- the number is trustworthy, the ordering is not. Found by searching validate; `cscan outcomes` is the clean test |
 | 177 | The model trains and serves on `touch` entry, not `next_open` | **Decided 2026-09-08, corrected same day.** The first measurement included `breach_depth`, which is **look-ahead under a touch entry** (it reads the session's low); a test caught it. Re-measured without it, `p_touch_3` skill +6.57% -> **+10.14%** and `p_adverse_3` +3.83% -> **+7.17%** -- the decision holds, the adverse gain was two-thirds leak. `breach_depth` deleted (worth 0.0003 AUC where legal); every field improves, bias stays +0.0000. A `next_open` label measures from a price the features never saw, and the overnight gap is noise in the *label*. Costs the stochastic-only signals (no fill price, 42% of rows) -- but **zero** of those share a ticker-date with a confluence row, so confluence retains the stochastic condition entirely. Does not move `config_hash` |
 | 179 | The model refits on a rolling window; the forward log is never trained on | **Decided 2026-09-08.** Coverage error grows with distance from the training window (2024 0.0182 -> 2026 0.0480) and **46,232 labelled events** sit outside it -- 49% more than the 94,054 trained on. Weekly refit, all three bounds rolling. **`outcomes` is never trained on**: it is the only estimate nothing has iterated against, and training on it converts it irreversibly. Newly closed labels enter training only after serving as forward-log evidence |
+| 180 | Serving scores only the signal types the model was fitted on | **Decided 2026-09-08.** **4,207 of 8,699 predictions (48%) were extrapolation**: `stoch_oversold`/`stoch_overbought`, of which the training frame holds **zero** rows, shipped with a calibrated probability, a CI and an `n_eff` formatted exactly like the 4,492 legitimate ones. Cause is a correct guard -- `build_training_frame` drops NULL labels (removing them), `build_serving_frame` drops `LABEL_COLS` outright per ADR 174 (so it cannot filter). Measured on 5,986 resolved forward-log rows, Brier skill against each population's own base rate: in-population **0.079** (pred 51.7% vs actual 57.1%), outside **0.021** (pred 52.3% vs actual 49.0%) -- the model gives both ~52% while their real rates differ by 8pp, and the error flips from understating to **overstating**. Serving now filters on `predictor.trained_signal_types`, read off the fit, never a literal list. Existing rows flagged via `predictions.model_scored`, not deleted: their 1,966 outcomes are the only off-distribution measurement the project has. `v_forward` stays unfiltered. Does not move `config_hash` |
 
 ---
 
@@ -8726,9 +8727,26 @@ miscalibrates silently -- plausible numbers, never an error.
 
 **2022 eventually enters training.** Train's worst year is 2011 at 0.603 of
 sessions above the 200-day SMA, against 2022's 0.151, and the coverage gate
-fails on exactly that regime. A window reaching back five years from 2026
-includes it. That may close the gate without any architecture change, which
-is the cheapest available test of the label-shift diagnosis.
+fails on exactly that regime. A window reaching back into 2022 includes it.
+That may close the gate without any architecture change, which is the
+cheapest available test of the label-shift diagnosis.
+
+**Amended 2026-09-08: the window is seven years, not five.** The first
+version of this ADR said five, and five cannot select its own step count.
+`core.folds.walk_forward_folds` needs `DEFAULT_MIN_TRAIN_YEARS = 5` of
+training before its first validation year, so a five-year window builds
+**zero** inner folds, six builds one, seven builds two. `neural.fit` then
+fell through to `DEFAULT_STEPS = 300` and reported it in the same `steps`
+field a real selection writes.
+
+The test ran that way on 2026-09-08 and looked like a clean win -- the four
+heads the fixed arm fails all improved sharply -- while the rolling arms had
+simply trained 2.5x less than the fixed arm's [776, 909, 591]. Every one of
+those heads fails in the **over**-coverage direction, which is what a
+shorter fit produces. `RESULTS.md` carries the full retraction.
+
+`neural.fit` now raises on an empty ladder rather than falling through. Two
+folds against seven years is still a thin ladder and any re-run must say so.
 
 **Weekly, not nightly.** Labels close on a 5-10 day lag, so a daily refit
 would train on almost the same rows and burn ~11 minutes doing it.
