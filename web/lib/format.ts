@@ -50,6 +50,27 @@ export const PREDICTION_CAVEAT_DETAIL =
   "signals like this one, not what will happen.";
 
 /**
+ * Shown instead of the normal caveat when the row is cosmetic (ADR 183).
+ *
+ * **It leads with the limitation rather than appending it.** The normal
+ * caveat says "rank, do not read the level", which still assumes the
+ * number means something. This one does not: the model was never fitted on
+ * this population, so there is no ranking claim either. Burying that under
+ * the usual text would let it read as a footnote on a working number.
+ */
+export const COSMETIC_CAVEAT_SUMMARY =
+  "Reference only. This name is outside the trade universe.";
+
+/** The rest of the cosmetic caveat, shown when the disclosure is opened. */
+export const COSMETIC_CAVEAT_DETAIL =
+  "The model is fitted only on names inside the trade universe, so it has " +
+  "never seen signals like this one and these figures are an " +
+  "extrapolation. They are shown so every ticker has something to look " +
+  "at, not because they have been checked. Nothing here has been measured " +
+  "against what actually happened to names in this state. Treat it as a " +
+  "rough reference point and not as evidence.";
+
+/**
  * The whole thing, for any surface that cannot collapse it. Composed from
  * the two above rather than restated, so the halves cannot drift apart.
  */

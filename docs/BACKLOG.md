@@ -2058,3 +2058,63 @@ kind of change that looks free and occasionally is not, because a join that
 also constrains row count is doing more than it appears to. If it turns out
 these joins are inner joins, dropping them **changes the training
 population**, which is a config-hash question and not a cleanup.
+
+## The backtest harness cannot run at the current event count
+
+Found 2026-09-09 while running the full backtest. **The harness phase is
+the only part that did not complete, and the rebuild is therefore
+unvalidated by it.**
+
+`_load_events_for_config` (`cli.py:809`) does `SELECT * FROM events WHERE
+config_hash = :chash` into a single DataFrame. That table now holds
+**10,824,053 rows** for the live config, roughly double what it held when
+the harness was written, because the cosmetic backfill priced `in_watch`
+and out-of-universe signals.
+
+Measured directly, mid-run:
+
+```
+python PID 30444   commit 70.69 GB   resident  1.77 GB
+python PID 20956   commit 23.30 GB   resident  0.13 GB
+commit limit 114.3 GB, commit free 0.7 GB
+sum of ALL process working sets: 2.9 GB
+```
+
+**It exhausts commit charge, not RAM**, which is why it presents as
+"system is running low on memory" while almost nothing is resident. That
+misleads: three separate attempts were spent lowering `--workers` (8 -> 4
+-> 1) and capping WSL, none of which touched the cause. Killing the two
+processes freed 39.7 GB of commit instantly.
+
+`--tickers` does not help. The load runs before any ticker filter and is
+scoped only on `config_hash`, so a hundred-ticker harness still reads all
+10.8M rows.
+
+### The fix, and why it was not done in flight
+
+Select only the columns `run_harness` actually reads instead of `*`. That
+is a narrowing rather than a weakening, but it requires knowing exactly
+which columns each of the five checks touches, and getting that wrong
+silently removes a check rather than failing. The harness is one of the
+five things `CLAUDE.md` names as carrying the correctness load, so it is
+not a change to make at 04:00 against a sleeping owner.
+
+Chunking by ticker is the alternative and is a larger change: the
+no-look-ahead ladder and the signal-path parity check are per ticker
+already, so the events frame could be built and discarded per ticker
+rather than held whole.
+
+**Do not raise the commit limit to work around this.** A 70 GB reservation
+for a frame that needs a fraction of that is the defect; a bigger pagefile
+would hide it and make every future run slower.
+
+### What this means for the 2026-09-09 rebuild
+
+`compute` (59/59 chunks, 2026-09-08) and `finalize` (2026-09-08 15:57,
+32m51s) both completed and are current -- verified by diffing the compute
+path between the chunk sha and HEAD, which found only a formatting reflow.
+The **harness last passed 2026-08-30**, before the event count doubled, so
+the data written since has not been through it.
+
+That is a real gap and should be closed before the wivie cutover, not
+after.

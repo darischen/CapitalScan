@@ -916,6 +916,7 @@ export async function latestPrediction(sym: string): Promise<Prediction | null> 
   const rows = await query<{
     as_of: Date;
     signal_type: string;
+    cosmetic: boolean;
     p_touch_3: string | number | null;
     ci_low: string | number | null;
     ci_high: string | number | null;
@@ -923,7 +924,7 @@ export async function latestPrediction(sym: string): Promise<Prediction | null> 
     model_version: string | null;
     calibration_json: Record<string, unknown> | null;
   }>(
-    `SELECT p.as_of, p.signal_type, p.p_touch_3, p.ci_low, p.ci_high,
+    `SELECT p.as_of, p.signal_type, p.cosmetic, p.p_touch_3, p.ci_low, p.ci_high,
             p.calib_n_eff, p.model_version, p.calibration_json
        FROM predictions p
       WHERE p.ticker = $1
@@ -944,6 +945,7 @@ export async function latestPrediction(sym: string): Promise<Prediction | null> 
     adverse3: band(r.calibration_json, "p_adverse_3"),
     asOf: isoDate(r.as_of),
     signalType: r.signal_type,
+    cosmetic: Boolean(r.cosmetic),
     bands: allBands(r.calibration_json),
   };
 }

@@ -268,6 +268,13 @@ export interface Prediction {
   asOf?: string | null;
   signalType?: string | null;
   /**
+   * The event was outside the trade universe when scored, so the model was
+   * never fitted on its population (ADR 183). The number is shown because
+   * a reader clicking any ticker expects one; it carries its own caveat
+   * because it is extrapolation.
+   */
+  cosmetic?: boolean;
+  /**
    * The adverse side (ADR 175): probability of a 3% move **against** the
    * position within five sessions, with its own interval.
    *

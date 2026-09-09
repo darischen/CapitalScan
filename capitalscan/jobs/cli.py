@@ -286,6 +286,15 @@ def predict(
         "--from-artifact",
         help="Score from the last saved fit instead of refitting (~11 min -> seconds)",
     ),
+    universe: str = typer.Option(
+        "trade",
+        "--universe",
+        help=(
+            "Which events to score: trade (fitted), watch (adds in_watch), "
+            "all (every event). watch and all are COSMETIC -- the model is "
+            "not fitted on them (ADR 183)"
+        ),
+    ),
 ) -> None:
     """Write calibrated p_touch predictions for recent events (ADR 174).
 
@@ -308,6 +317,21 @@ def predict(
     from capitalscan.jobs import artifact as artifact_mod
     from capitalscan.jobs import db_io
     from capitalscan.jobs import predict as jp
+    from capitalscan.research import features as feat
+
+    # Built here rather than at module scope: `research.features` pulls
+    # pandas and sqlalchemy, and paying that on every `cscan --help` to
+    # populate three strings is not a trade worth making.
+    filters = {
+        "trade": feat.TRADE_ONLY,
+        "watch": feat.TRADE_OR_WATCH,
+        "all": feat.ANY_UNIVERSE,
+    }
+    if universe not in filters:
+        console.print(
+            f"[red]unknown --universe {universe!r}[/red]. Valid: {', '.join(sorted(filters))}."
+        )
+        raise typer.Exit(code=2)
 
     config = _resolve_config_or_exit()
     from capitalscan.jobs.config import config_hash as _hash
@@ -329,7 +353,11 @@ def predict(
     parsed = _date.fromisoformat(since) if since else None
     try:
         report = jp.run_predict(
-            config_hash=chash, since=parsed, lookback_days=lookback, from_artifact=from_artifact
+            config_hash=chash,
+            since=parsed,
+            lookback_days=lookback,
+            from_artifact=from_artifact,
+            universe=filters[universe],
         )
     except artifact_mod.StaleArtifact as exc:
         console.print(f"[red]refused[/red]: {exc}")

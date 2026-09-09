@@ -874,3 +874,50 @@ a partial `.next/` is not repaired by building over it.
 **Fix.** Do not chain them. Build, wait for exit, confirm
 `.next/BUILD_ID`, then restart. The build takes minutes on the Pi and a
 backgrounded SSH makes it easy to think it finished when it has not.
+
+## 2026-09-09 — "low memory" that was not memory
+
+**Symptom.** Three backtest phases killed in a row by the Windows
+low-memory reaper: the full run at 8 workers after 30 minutes, then the
+harness at 4 workers, then the harness at **1** worker. Lowering the worker
+count is the obvious response and it did nothing, which was the clue.
+
+**What the numbers actually said**, taken mid-run:
+
+```
+physical total     31.9 GB
+free physical       1.0 GB
+commit limit      114.3 GB
+commit free         0.7 GB      <- exhausted
+sum of ALL working sets  2.9 GB  <- almost nothing resident
+
+python PID 30444   commit 70.69 GB   resident 1.77 GB
+python PID 20956   commit 23.30 GB   resident 0.13 GB
+```
+
+**Commit charge, not RAM.** Windows reports commit exhaustion as "running
+low on memory", and the two readings point at opposite causes. Free
+physical memory looked plausible the whole time. Killing the two processes
+returned 39.7 GB of commit instantly.
+
+**Read `FreeVirtualMemory` alongside `FreePhysicalMemory` before concluding
+anything about memory on this box.** `Get-Process | Sort PrivateMemorySize64`
+names the culprit in one line; `WorkingSet64` hides it completely, because
+a 70 GB reservation with 1.8 GB touched sorts near the bottom.
+
+**Cause.** `_load_events_for_config` reads `SELECT * FROM events` for the
+config into one DataFrame. That is 10.8M rows now, roughly double what it
+was when the harness was written. → `BACKLOG.md`
+
+**Two things this cost before the reading was taken.** Two `wsl --shutdown`
+cycles capping WSL2 memory, on a theory that fit the "low memory" message
+and not the data: `vmmemWSL` really had grown 7.2 → 13.3 GB and really was
+uncapped, so the evidence was consistent with a wrong cause. The
+`.wslconfig` is worth keeping on its own merits; it was not the fix.
+
+**Also learned, and not previously documented:** after `wsl --shutdown` the
+Docker engine takes ~20 s to come back and `capitalscan-postgres` needs an
+explicit `docker start`. `CLAUDE.md` documents this for reboots only. The
+first `docker start` after the shutdown fails with `500 Internal Server
+Error ... check if the server supports the requested API version`, which
+reads like a version mismatch and is just the engine not being up yet.
