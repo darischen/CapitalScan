@@ -2306,7 +2306,12 @@ table.screen th.r .sortlink {
 }
 
 .modal {
-  background: var(--bg);
+  /* **`--panel`, not `--bg`.** `--bg` is defined nowhere in this file --
+   * it appeared here once and never as a token -- so the declaration was
+   * invalid and the modal inherited the scrim, rendering see-through over
+   * the table it was covering. An undefined custom property does not fall
+   * back to anything; it drops the declaration. */
+  background: var(--panel);
   border: 1px solid var(--rule);
   border-radius: 4px;
   padding: 14px 16px 12px;
@@ -2315,6 +2320,9 @@ table.screen th.r .sortlink {
   width: 100%;
   max-height: 88vh;
   overflow-y: auto;
+  /* The dialog is a layer, so it needs its own shadow to separate from
+   * the page rather than relying on the scrim alone. */
+  box-shadow: 0 12px 32px rgb(0 0 0 / 55%);
 }
 
 .modal:focus {
@@ -2394,12 +2402,16 @@ table.screen th.r .sortlink {
   margin: 12px 0 0;
   font-family: var(--sans);
   font-size: 11px;
-  line-height: 1.45;
+  line-height: 1.5;
   color: var(--muted);
-}
-
-.modal-ver {
-  margin: 6px 0 0;
-  font-family: var(--mono);
-  font-size: 10px;
+  /* The caveat grew long when it gained the measured ranking-vs-level
+   * finding, and it sits next to a table wide enough to set the modal's
+   * scroll width. Without these it tracked the table instead of wrapping,
+   * so the whole dialog scrolled sideways to read one paragraph. */
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: break-word;
+  text-wrap: pretty;
+  border-top: 1px solid var(--rule);
+  padding-top: 10px;
 }

@@ -148,14 +148,19 @@ export function InferenceModal({
           </tbody>
         </table>
 
-        {/* The caveat is not a footnote. It says the intervals are a lower
-         * bound because the calibration split was reused, and that this is
-         * a frequency rather than a recommendation — the two things a
-         * reader is most likely to assume otherwise. */}
+        {/* The caveat is not a footnote. It says to rank rather than read
+         * the level, that the intervals are a lower bound because the
+         * calibration split was reused, and that this is a frequency
+         * rather than a recommendation — the things a reader is most
+         * likely to assume otherwise.
+         *
+         * **`modelVersion` used to render below this and no longer does.**
+         * It read `adr175-05238410-4aa7928`: an ADR number, a config hash
+         * prefix and a git sha, none of which mean anything to the person
+         * this dialog is for. It stays on the row object, so anyone
+         * debugging a stale generation can still reach it; it is only off
+         * the surface. */}
         <p className="modal-note">{PREDICTION_CAVEAT}</p>
-        {prediction.modelVersion && (
-          <p className="modal-ver dim">{prediction.modelVersion}</p>
-        )}
       </div>
     </div>
   );
