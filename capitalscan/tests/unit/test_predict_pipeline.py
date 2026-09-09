@@ -481,3 +481,57 @@ class TestTheQuantileFanIsActuallyWritten:
 
         assert tuple(col for col, _ in oc.FAN) == rp._FAN_COLUMNS
         assert tuple(tau for _, tau in oc.FAN) == rp.FAN_TAUS
+
+
+class TestTheNaturalKeyIsWritten:
+    """The screener views join on it, and the writer used to omit it.
+
+    Migration `e4b19c86d275` added `predictions.signal_type` and
+    `.entry_kind` and backfilled them from `events`. `build_rows` was never
+    taught to set them, so every prediction written afterwards carried
+    NULLs. Measured 2026-09-09: **11,006 of 19,705 rows**, invisible to
+    `v_screen` and `v_screen_live` while looking perfectly healthy in the
+    table -- a `SELECT count(*)` said the predictions existed, and the
+    screener showed an empty Inference cell.
+
+    That is the shape worth testing for. A missing column would be loud; a
+    NULL in a join key is silent, and the surface degrades without an
+    error anywhere.
+    """
+
+    def test_rows_carry_signal_type_and_entry_kind(self) -> None:
+        rows = rp.build_rows(
+            _fake(_applied([0.62, 0.62])), _frame(), "chash123", "run-1", "abc1234"
+        )
+        assert rows, "no rows to check"
+        for row in rows:
+            assert row["signal_type"], "signal_type missing; the view join will not match"
+            assert row["entry_kind"], "entry_kind missing; the view join will not match"
+
+    def test_entry_kind_falls_back_to_the_filtered_value(self) -> None:
+        """`_SQL` filters on `entry_kind` without selecting it.
+
+        So the frame usually lacks the column, and the fallback must be the
+        value that filter used rather than a guess -- otherwise the written
+        key would not match the events the frame came from.
+        """
+        from capitalscan.research import features as feat
+
+        assert "entry_kind" not in _frame().columns
+        rows = rp.build_rows(
+            _fake(_applied([0.62, 0.62])), _frame(), "chash123", "run-1", "abc1234"
+        )
+        assert all(r["entry_kind"] == feat.TRAINING_ENTRY_KIND for r in rows)
+
+    def test_the_key_matches_what_the_views_join_on(self) -> None:
+        """Pins the tuple, so a view change and the writer cannot drift.
+
+        `events` keys on five columns and serving assigns its own `id`, so
+        `event_id` is useless across a sync -- which is why this key exists
+        at all (migration `e4b19c86d275`).
+        """
+        rows = rp.build_rows(
+            _fake(_applied([0.62, 0.62])), _frame(), "chash123", "run-1", "abc1234"
+        )
+        for name in ("config_hash", "ticker", "as_of", "signal_type", "entry_kind"):
+            assert name in rows[0], f"{name} is part of the view join and is not written"

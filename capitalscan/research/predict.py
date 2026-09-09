@@ -293,6 +293,16 @@ def build_rows(
         if "in_trade" in frame.columns
         else [True] * len(frame)
     )
+    # `_SQL` filters on `entry_kind` rather than selecting it, so the frame
+    # carries it only when a caller asked for it. `TRAINING_ENTRY_KIND` is
+    # the value that filter used, so it is the right fallback rather than a
+    # guess -- but read the column when it is there, so this keeps working
+    # if the frame ever spans more than one kind.
+    entry_kinds = (
+        frame["entry_kind"].astype(str).tolist()
+        if "entry_kind" in frame.columns
+        else [feat.TRAINING_ENTRY_KIND] * len(frame)
+    )
     columns = (
         [t.field for t in TARGETS]
         + [f"{HEADLINE}_raw", "calib_n_eff", "ci_low", "ci_high"]
@@ -332,6 +342,22 @@ def build_rows(
             # future path that has *not* been filtered stays out of the
             # screener until someone looks at it. Setting it explicitly is
             # this path asserting it did the check.
+            # **The natural key the screener views join on.**
+            #
+            # Migration `e4b19c86d275` added these columns and backfilled
+            # them from `events`; the writer was never taught to set them.
+            # So every prediction written after that migration carried NULLs
+            # and could not be joined -- measured 2026-09-09, 11,006 of
+            # 19,705 rows, invisible on the screener while looking perfectly
+            # healthy in the table.
+            #
+            # `event_id` is still written and still correct. It is useless
+            # across a sync, which is the whole reason the natural key
+            # exists: `events` keys on a five-column tuple, so serving
+            # assigns its own `id` and a research `event_id` points at
+            # nothing there.
+            "signal_type": signal_types[i],
+            "entry_kind": entry_kinds[i],
             "model_scored": True,
             # **Cosmetic when the event was not in the trade universe
             # (ADR 183).** The model is fitted on `in_trade` rows only --
