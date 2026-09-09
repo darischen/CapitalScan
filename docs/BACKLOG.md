@@ -1839,3 +1839,33 @@ addresses it.
 
 RESULTS 2026-09-02 has both tables.
 
+
+## Half the predictions ship with no quantile fan, and nobody knows why
+
+Found 2026-09-08 while investigating ADR 180. `predictions.q05..q95` come
+from the terminal 5-day head via `FAN_TASK`, and `build_rows` writes `None`
+for any non-finite value. Across the 5,986 resolved forward-log rows:
+
+| | n | with a fan |
+|---|---:|---:|
+| in the training population | 4,020 | 1,847 (46%) |
+| outside it (ADR 180) | 1,966 | **0** |
+
+The out-of-population column is explained by ADR 180 and is now moot -- those
+rows no longer serve. **The in-population 54% is not explained.** Those are
+rows the model was fitted on, shipping a `p_touch_3` the screener displays,
+while the same ensemble returned a non-finite quantile for the same row.
+
+It does not currently mislead anyone: ADR 172 established that
+`terminal_h5_q50` is negative out of sample, so no surface displays the fan,
+and `outcomes.pinball_loss` is simply NULL where it is missing. The reason to
+chase it is that a probability and a quantile read off *the same CDF* should
+not disagree about whether that CDF exists. One of them is wrong, and the
+probability is the one being shipped.
+
+Start at `Ensemble.fan` rather than at `build_rows`: `exceedance` sums pmf
+bins and stays finite for any finite pmf, so a finite probability beside a
+non-finite quantile points at the inversion, not at the distribution.
+
+Cheap first cut: pull one such row, print its pmf, and see whether the CDF
+ever crosses the quantile level at all.

@@ -8738,3 +8738,101 @@ would train on almost the same rows and burn ~11 minutes doing it.
 mistakes" in any online sense -- there is no feedback from a prediction's
 error into the next fit beyond that row's label entering the training set
 like any other. The gain is recency and volume, not correction.
+
+---
+
+## 180. Serving scores only the signal types the model was fitted on
+
+**Status:** accepted, 2026-09-08. Supersedes nothing; corrects a defect in
+ADR 174's serving path.
+
+**48% of shipped predictions were extrapolation, and nothing said so.**
+
+Measured on the live generation `0523841076f47293`:
+
+| signal_type | predictions | in the training frame |
+|---|---:|---|
+| `stoch_oversold` | 2,438 | **none** |
+| `stoch_overbought` | 1,769 | **none** |
+| `bb_upper_touch` | 1,178 | yes |
+| `confluence_high` | 1,119 | yes |
+| `bb_lower_touch` | 1,055 | yes |
+| `confluence_low` | 991 | yes |
+| `bear_close_above_upper` | 149 | yes |
+
+4,207 of 8,699 rows were for two signal types the model had never seen. The
+screener rendered each with a calibrated probability, a confidence interval
+and an `n_eff`, formatted identically to the 4,492 that were legitimate.
+Invariant 8 was satisfied to the letter and the number still meant nothing.
+
+### The cause is a correct safety measure, which is why it survived review
+
+`build_training_frame` drops rows with NULL labels. Stochastic-only signals
+carry no fill price under ADR 177's `touch` entry, so they have no forward
+return, so they were dropped -- silently and for a good reason.
+
+`build_serving_frame` drops `LABEL_COLS` **outright**. That is ADR 174's
+guard: a serving frame that cannot see a label cannot be pointed at the
+holdout by accident. Having dropped them, it has nothing left to filter on,
+so it keeps every row.
+
+Neither builder is wrong on its own. The population they disagree about is
+created *by* the guard in one of them, and no test compared the two.
+
+### What it cost, measured on the forward log
+
+1,966 out-of-population predictions had resolved by 2026-09-08, against
+4,020 in. Brier skill is scored against each population's own base rate, so
+a different underlying hit rate cannot flatter either arm:
+
+| | n | Brier | base-rate Brier | skill | predicted | actual | gap |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| in population | 4,020 | 0.2256 | 0.2450 | **0.079** | 51.7% | 57.1% | −5.4pp |
+| outside it | 1,966 | 0.2445 | 0.2499 | **0.021** | 52.3% | 49.0% | **+3.3pp** |
+
+The model hands both groups about 52%. Their real rates differ by eight
+points. It is not merely less accurate off-distribution, it is **blind to
+the distinction** -- and the sign of the error flips. In population it
+understates, which is the cheap direction. Outside it overstates by 3.3
+points while skill falls to roughly a quarter, which is the direction that
+costs a reader money.
+
+A separate oddity, recorded and **not** built on: all 1,966 out-of-population
+rows have a wholly NULL `q05..q95` fan, against 2,173 of 4,020 in population.
+The rate differs sharply but the in-population nulls have no explanation
+yet, so this is a `BACKLOG.md` item rather than a second guard.
+
+### The decision
+
+`build_serving_frame` takes `trained_types` and keeps only rows matching it.
+`run_predict` passes `predictor.trained_signal_types`, read off the fit
+itself.
+
+**Not a hardcoded list.** Which types training contains moves as the
+backtest prices more events: once stochastic rows carry fills they gain
+labels, enter training, and become predictable -- in that order, which is
+the correct order. A literal list would freeze that and drift silently.
+
+**An empty sequence drops everything, and `None` means no filter.** A fit
+that saw no signal types is a broken fit, and the natural `if not
+trained_types` would read it as "no restriction" and score the whole
+population off it. That is the exact failure this ADR exists to stop, so it
+gets its own test.
+
+### The 4,207 rows already written are flagged, not deleted
+
+`predictions.model_scored` (migration `a1c7f3b09d84`) defaults to `false`,
+is backfilled from `signal_type`, and is set explicitly by the writer.
+`v_screen` and `v_screen_live` join on it.
+
+They are kept because those 1,966 resolved outcomes are a third of the whole
+forward log and the only direct measurement the project has of what this
+model does off-distribution -- the evidence the table above rests on, and
+exactly what ADR 179's rolling refit needs to keep scoring.
+
+**`v_forward` is deliberately not filtered.** It is the scoring log. What
+the model does outside its training population is what that log is for.
+
+**`false` is the safe default** rather than a convenience. A row written by
+some future path that has not been filtered stays out of the screener until
+someone looks at it.

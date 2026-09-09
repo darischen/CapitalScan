@@ -116,7 +116,15 @@ def run_predict(
                 f"{MIN_CALIBRATION_ROWS} needed before an interval means anything"
             )
 
-        frame, frame_report = feat.build_serving_frame(engine, config_hash, since)
+        # **The types the fit actually saw, read off the fit itself.**
+        # Not a hardcoded list: `build_training_frame` drops rows with NULL
+        # labels, and which signal types that removes changes as the
+        # backtest prices more events. Passing the fitted population keeps
+        # serving and training in step by construction.
+        trained_types = sorted(set(predictor.trained_signal_types))
+        frame, frame_report = feat.build_serving_frame(
+            engine, config_hash, since, trained_types=trained_types
+        )
         report.rows_scored = frame_report.rows
         report.model_version = predictor.model_version
         if frame.empty:

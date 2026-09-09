@@ -144,6 +144,11 @@ class FittedPredictor:
     model_version: str
     n_train: int
     n_calibrate: int
+    #: The signal types present in the training frame. Carried so serving
+    #: can restrict to them: a probability for a type the model never saw
+    #: is extrapolation wearing a calibrated number, and until 2026-09-08
+    #: 48% of predictions were exactly that.
+    trained_signal_types: tuple[str, ...] = ()
 
     def apply(self, frame: pd.DataFrame) -> pd.DataFrame:
         """Raw and calibrated probabilities for every row of `frame`.
@@ -245,6 +250,7 @@ def fit_and_calibrate(
         model_version=f"adr175-{config_hash[:8]}-{git_sha[:7]}",
         n_train=len(train_frame),
         n_calibrate=len(valid_frame),
+        trained_signal_types=tuple(sorted(set(train_frame["signal_type"].astype(str)))),
     )
 
 
@@ -311,6 +317,14 @@ def build_rows(
                 name: (float(probs[name][i]) if np.isfinite(probs[name][i]) else None)
                 for name in _FAN_COLUMNS
             },
+            # **Always true here, and written anyway.** `build_serving_frame`
+            # has already dropped every row outside the fitted population,
+            # so the writer cannot produce an unscored one. The column
+            # defaults to `false` precisely so that a row written by some
+            # future path that has *not* been filtered stays out of the
+            # screener until someone looks at it. Setting it explicitly is
+            # this path asserting it did the check.
+            "model_scored": True,
             "calib_bucket": buckets[i],
             "calib_n_eff": float(probs["calib_n_eff"][i]),
             "ci_low": float(probs["ci_low"][i]),
