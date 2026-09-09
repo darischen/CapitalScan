@@ -61,6 +61,7 @@ import pandas as pd
 
 from capitalscan.core import distributions as dist
 from capitalscan.core import folds as core_folds
+from capitalscan.core import inference as cinf
 from capitalscan.research import features as feat
 from capitalscan.research import train
 
@@ -566,3 +567,33 @@ def fit(
             )
         )
     return ensemble
+
+
+def export_weights(model: FittedModel) -> "cinf.NetworkWeights":
+    """One fitted seed's weights, as numpy, for `core.inference`.
+
+    **Reads the module's own children rather than a hardcoded layer list.**
+    `_build_module` may gain or lose a layer; walking `nn.Linear` instances
+    in order picks that up, where a list of names would silently export a
+    stale architecture and the parity test would be the only thing between
+    that and a wrong number on the screen.
+
+    Weights stay in torch's `(out, in)` orientation. `LinearLayer` applies
+    `x @ W.T + b` to match, so nothing is transposed on either side.
+    """
+    import torch.nn as nn
+
+    def layers(module: Any) -> list[cinf.LinearLayer]:
+        return [
+            cinf.LinearLayer(
+                weight=child.weight.detach().cpu().numpy().astype(np.float64),
+                bias=child.bias.detach().cpu().numpy().astype(np.float64),
+            )
+            for child in module
+            if isinstance(child, nn.Linear)
+        ]
+
+    return cinf.NetworkWeights(
+        trunk=tuple(layers(model.module.trunk)),
+        heads=tuple(layers(model.module.heads)),
+    )

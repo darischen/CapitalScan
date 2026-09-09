@@ -524,6 +524,13 @@ def test_nightly_command_threads_resolved_config(monkeypatch, tmp_path):
         cli, "_sweep_provisional_poll_rows", lambda *a, **k: 0
     )  # ADR 150; sentinel engine has no .begin()
 
+    # `predict` joined the chain 2026-09-08. Same reason as the sweep above:
+    # the sentinel engine is a string, and this test is about config
+    # threading, not about fitting a model.
+    from capitalscan.jobs import predict as predict_mod
+
+    monkeypatch.setattr(predict_mod, "run_predict", lambda *a, **k: predict_mod.PredictReport())
+
     cli.nightly()
 
     assert captured["params"].bb_window == 25

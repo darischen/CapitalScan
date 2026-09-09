@@ -49,6 +49,16 @@ def _no_real_nightly_io(monkeypatch):
     # function run against this fixture's fake engine.
     monkeypatch.setattr(peak_labels_mod, "backfill_extremum_labels", lambda *args, **kwargs: 0)
 
+    # `predict` joined the chain 2026-09-08, between `peak_labels` and
+    # `sync`. Unstubbed it runs for real and dies on `'str' object has no
+    # attribute 'connect'` against this fixture's fake engine -- which is
+    # the fixture working, not a bug: a unit test must not fit a model.
+    from capitalscan.jobs import predict as predict_mod
+
+    monkeypatch.setattr(
+        predict_mod, "run_predict", lambda *args, **kwargs: predict_mod.PredictReport()
+    )
+
     # `nightly` wraps its path capture in `ingest.run_job` (2026-08-06) so
     # the rows it writes carry a `run_id` — `path.run_id`, ADR 034. The real
     # `run_job` inserts a `runs` row, which is exactly the database access
