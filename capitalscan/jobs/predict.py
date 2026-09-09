@@ -28,7 +28,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import Engine, text
 
-from capitalscan.jobs import db_io, ingest
+from capitalscan.jobs import artifact, db_io, ingest
 from capitalscan.jobs.provenance import git_sha
 from capitalscan.research import features as feat
 from capitalscan.research import predict as rp
@@ -53,6 +53,10 @@ class PredictReport:
     rows_written: int = 0
     rows_dropped: int = 0
     tickers: int = 0
+    #: Where the fitted model was written, or why it was not. Carried in
+    #: `runs.notes` so a scorer that later refuses a stale artifact can be
+    #: traced back to the run that wrote it.
+    artifact_path: str = ""
     since: date | None = None
     model_version: str = ""
 
@@ -115,6 +119,20 @@ def run_predict(
                 f"only {predictor.n_calibrate} validate rows; "
                 f"{MIN_CALIBRATION_ROWS} needed before an interval means anything"
             )
+
+        # **Persist the fit before scoring anything with it (ADR 181).**
+        # Written here rather than by the caller so every path that fits
+        # also saves -- a scorer that finds no artifact has to refit, which
+        # is the eleven minutes this exists to avoid.
+        #
+        # A failure to write must not fail the run. The predictions below
+        # are the product; the artifact is an optimisation for whoever
+        # scores next, and a full disk should not cost a night of them.
+        try:
+            saved = artifact.save(predictor, config_hash, sha)
+            report.artifact_path = str(saved)
+        except OSError as exc:  # pragma: no cover - disk-dependent
+            report.artifact_path = f"not written: {exc}"
 
         # **The types the fit actually saw, read off the fit itself.**
         # Not a hardcoded list: `build_training_frame` drops rows with NULL
