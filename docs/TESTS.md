@@ -2094,7 +2094,33 @@ having run rather than skipped, at each session's close.
 
 ### Phase 6
 
-- Model beats cell-lookup Brier score on validation, or lookup ships alone
-- Reliability diagram renders
-- Forward log accumulates predictions and resolves them at T+6
-- Promotion gate rejects a deliberately flattened model
+**Restated 2026-09-09 by ADR 182.** Two gates were written before ADR 180
+and 181 and were under-specified in ways this project hit for real. The
+original wording is kept beneath each.
+
+- **Model beats the base rate on the fitted population, per task family,
+  and a family that reaches a surface passes before one that does not.**
+  `peak` (`p_touch_*`) and `trough` (`p_adverse_*`) reach a surface;
+  `terminal` backs only `q05..q95`, which nothing displays. **Met**: peak
+  10/10, trough 10/10, terminal 6/10; in-population Brier skill 0.079.
+  *(was: "Model beats cell-lookup Brier score on validation, or lookup
+  ships alone" — silent on which population, and a pooled figure hid an
+  inversion between the displayed and undisplayed families)*
+
+- **The reliability table is computed from the forward log, published with
+  Wilson intervals, and a band whose shipped probability lies outside its
+  own interval is visible as such.** **Met**: `/model`, from
+  `web/lib/reliability.ts`. It currently reports six of eight bands
+  understating.
+  *(was: "Reliability diagram renders" — a picture satisfies that without
+  anyone checking what it shows)*
+
+- Forward log accumulates predictions and resolves them at T+6. **Met**:
+  5,986 rows, all scored, 2026-09-06 to 2026-09-08.
+
+- Promotion gate rejects a deliberately flattened model. **Unchanged, and
+  now the most important of the four** — it is the only gate that tests a
+  gate. **Met**: `test_promotion_rejects_flat.py`, 10 tests. The sharp one
+  asserts a tie does not count as beating: a flattened model's loss equals
+  the baseline exactly, so `<=` for `<` is the difference between refusing
+  it and shipping it.

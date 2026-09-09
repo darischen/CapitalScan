@@ -353,6 +353,22 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
             ("id",),
         ),
         SyncTable("predictions", "SELECT * FROM predictions", ("id",)),
+        # **After `predictions`, and that order is load-bearing.**
+        # `outcomes.prediction_id` references it, so copying outcomes first
+        # would fail the foreign key on a fresh serving store.
+        #
+        # Safe to key on `prediction_id` only because `predictions` syncs on
+        # `("id",)` and therefore keeps its research ids on serving. Events
+        # do not -- they key on a natural tuple, which is what made
+        # `predictions.event_id` useless across the copy (migration
+        # `e4b19c86d275`). Check that before adding any table that
+        # references another by surrogate id.
+        #
+        # Carried so the reliability table can be computed where it is
+        # displayed (ADR 182). The forward log is the only clean evidence
+        # the project has, and a serving store that cannot see it can only
+        # show the model's claims, never how they turned out.
+        SyncTable("outcomes", "SELECT * FROM outcomes", ("prediction_id",)),
         SyncTable("positions", "SELECT * FROM positions", ("id",)),
     )
 

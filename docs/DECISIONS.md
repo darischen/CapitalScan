@@ -222,6 +222,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 179 | The model refits on a rolling window; the forward log is never trained on | **Decided 2026-09-08.** Coverage error grows with distance from the training window (2024 0.0182 -> 2026 0.0480) and **46,232 labelled events** sit outside it -- 49% more than the 94,054 trained on. Weekly refit, all three bounds rolling. **`outcomes` is never trained on**: it is the only estimate nothing has iterated against, and training on it converts it irreversibly. Newly closed labels enter training only after serving as forward-log evidence |
 | 180 | Serving scores only the signal types the model was fitted on | **Decided 2026-09-08.** **4,207 of 8,699 predictions (48%) were extrapolation**: `stoch_oversold`/`stoch_overbought`, of which the training frame holds **zero** rows, shipped with a calibrated probability, a CI and an `n_eff` formatted exactly like the 4,492 legitimate ones. Cause is a correct guard -- `build_training_frame` drops NULL labels (removing them), `build_serving_frame` drops `LABEL_COLS` outright per ADR 174 (so it cannot filter). Measured on 5,986 resolved forward-log rows, Brier skill against each population's own base rate: in-population **0.079** (pred 51.7% vs actual 57.1%), outside **0.021** (pred 52.3% vs actual 49.0%) -- the model gives both ~52% while their real rates differ by 8pp, and the error flips from understating to **overstating**. Serving now filters on `predictor.trained_signal_types`, read off the fit, never a literal list. Existing rows flagged via `predictions.model_scored`, not deleted: their 1,966 outcomes are the only off-distribution measurement the project has. `v_forward` stays unfiltered. Does not move `config_hash` |
 | 181 | A fitted predictor is persisted, and refused on any mismatch | **Decided 2026-09-09.** Amends ADR 174/175's "refit, never load a pickle". A signal must carry a prediction when it reaches the screen; refitting on a cadence costs **24 model fits and ~11 min per run** (~4h45m/day at 15-min cadence) and buys nothing, since both paths score the same live features and differ only by one day of labels on 91k rows. **The 11 minutes is training; the forward pass is milliseconds.** The old rule stopped a fit outliving its feature code -- a real failure, but caused by loading unchecked, not by persisting. So: persist, and refuse on any `config_hash` **or** `git_sha` mismatch. Neither is redundant -- `config_hash` catches a sweep moving the population, `git_sha` catches a feature reordered in code, which no config hash sees. `.npz`+JSON not pickle: the file travels to the Pi and must not execute on load. `core/inference.py` reruns the net in numpy (4 matmuls, GELU, softmax) so the Pi needs no 2GB ARM torch wheel; parity with torch is tested to 1e-5 because a drifting second implementation is worse than none. Does not move `config_hash` |
+| 182 | Phase 6's two remaining gates, restated | **Decided 2026-09-09.** Two of four are met. The Brier gate was under-specified on **population** (ADR 180: in-population skill 0.079 vs 0.021 outside) and on **family** (the aggregate hid an inversion -- `peak` 10/10, `trough` 10/10, `terminal` 6/10, and only the first two reach a surface); restated as beats-base-rate on the fitted population, per family, displayed families first. "Reliability diagram renders" was a UI gate for an evidence gate -- the data already shows the shipped value missing its own 95% interval in **six of eight** buckets; restated so that fact must be visible, not merely charted. "Promotion gate rejects a flattened model" stands unchanged and is now the most important: 45 tests pass and none makes the gate refuse anything. Does not move `config_hash` |
 
 ---
 
@@ -8990,3 +8991,70 @@ hashes enforce.
 
 `core/inference.py` performs no IO, per invariant 1. `jobs/artifact.py`
 owns the file.
+
+---
+
+## 182. Phase 6's two remaining gates, restated
+
+**Status:** accepted, 2026-09-09. Amends the Phase 6 gate list in
+`docs/TESTS.md` §10.
+
+Two of the four Phase 6 gates are met: the forward log accumulates and
+resolves (5,986 rows, all scored), and the model beats its base rate. The
+other two were written before ADR 180 and 181, and this session found the
+reasons both are under-specified.
+
+### "Model beats cell-lookup Brier score on validation"
+
+**Under-specified in two ways, and both were hit for real.**
+
+*Which population.* ADR 180 found 48% of shipped predictions were for
+signal types the model was never fitted on. In-population Brier skill is
+**0.079**; outside it, **0.021**. A gate that pools them reports something
+between two numbers that mean different things.
+
+*Which family.* The seven-year rolling test showed the aggregate hides an
+inversion. Split by task family under the shipped configuration: `peak`
+**10/10**, `trough` **10/10**, `terminal` **6/10** — and every shipped
+probability reads `peak` or `trough`, while `terminal` backs only
+`q05..q95`, which no surface displays. A pooled "26/30 heads pass" reads as
+a mild problem when it is a total inversion of which family works.
+
+**Restated:** the model beats the base rate **on the fitted population**
+(ADR 180's `model_scored` rows), reported **per task family**, and a family
+that reaches a surface must pass before one that does not.
+
+### "Reliability diagram renders"
+
+**"Renders" is a UI gate for what is an evidence gate.** The diagram
+already exists as data, and what it shows is the finding: bucketing
+`p_touch_3` eight ways over the forward log gives a monotone realised rate
+(41.6% to 87.1%, nothing crossing) while the **shipped value falls outside
+the bucket's own 95% Wilson interval in six of the eight**, always low.
+
+A gate satisfied by a chart appearing would have passed without anyone
+checking that.
+
+**Restated:** the reliability table is computed from the forward log,
+published with Wilson intervals on Kish `n_eff`, and a bucket whose shipped
+probability lies outside its own interval is **visible as such**. Rendering
+is how it is delivered, not what is being asserted.
+
+### "Promotion gate rejects a deliberately flattened model"
+
+**Left exactly as written, and it is now the most important of the four.**
+`test_promotion_gate.py` has 45 passing tests and not one of them makes the
+gate refuse anything. A gate never shown to reject is a gate nobody has
+tested.
+
+This session's recurring failure was a broken measurement agreeing with
+itself: a void rolling test that looked like a clean win, a coverage gate
+guarding a family nothing displays, 48% of predictions extrapolating with a
+calibrated number attached. Feeding the promotion gate a model flattened to
+the base rate and asserting refusal is cheap, and it is the only evidence
+the gate does its job.
+
+### What this does not change
+
+The other two Phase 6 gates stand as written and are met. Holdout is still
+evaluated exactly once, at the end, and published whatever it says.

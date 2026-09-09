@@ -2488,3 +2488,39 @@ table.screen th.r .sortlink {
 .modal-note > p {
   margin: 8px 0 0;
 }
+
+/* The calibration table (ADR 182). Shares `.modal-table` so the numbers
+ * line up the same way they do in the inference dialog -- a reader
+ * comparing the two is comparing the same quantities. */
+.rel {
+  padding: 18px 0;
+}
+
+.rel-verdict {
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 70ch;
+  color: var(--text);
+  margin: 10px 0 14px;
+}
+
+.rel-table {
+  width: 100%;
+}
+
+/* **Not colour alone.** The row also says "understates" or "overstates" in
+ * words, because the whole point of this table is that a miss is legible,
+ * and a reader who cannot separate the hues would otherwise see a table
+ * where every row looks the same. */
+.rel-miss td,
+.rel-miss th {
+  color: var(--short);
+}
+
+.rel-flag {
+  padding-left: 10px;
+  font-family: var(--sans);
+  font-size: 11px;
+  white-space: nowrap;
+}
