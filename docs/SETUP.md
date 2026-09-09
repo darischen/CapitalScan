@@ -397,3 +397,103 @@ the serving box), override with `CAPSCAN_ROLE=research|serving`.
 `(Get-ScheduledTaskInfo -TaskName 'CapitalScan nightly').LastTaskResult`
 — `0` is success. Linux: `systemctl status capitalscan-nightly.service`,
 `journalctl -u capitalscan-nightly --since today`.
+
+---
+
+# Part D — Remote access via Tailscale
+
+Set up 2026-09-09 so `wivie` (and, through it, the Pi) can be reached from
+outside the LAN — a phone hotspot, a coffee shop, anywhere. Nothing here
+changes what runs where; it only changes how you connect.
+
+## D1. Topology
+
+**`wivie` is the only machine running the Tailscale client. It is a subnet
+router**, not a mesh of individually-joined devices. It advertises the
+whole LAN, `192.168.1.0/24`, so any tailnet device reaches the workstation,
+the Pi, and wivie itself by their normal `192.168.1.x` addresses — no
+separate install needed on the Pi or the workstation for this to work.
+wivie's own tailnet address (`100.65.212.123` as of 2026-09-09, `tailscale
+status` on wivie for the current one) is a second way to reach wivie
+specifically, useful for testing the tunnel itself apart from the subnet
+route.
+
+The client device (a laptop, this workstation, a phone) needs the
+Tailscale app and must be logged into the **same tailnet account**
+(`daris.chen@...`). **Check the account before trusting a connection** —
+this workstation's first `tailscale up` silently signed into a stranger's
+existing tailnet from a cached Windows credential, and `tailscale status`
+showed a page of unfamiliar devices instead of an error. Logout and
+re-`up` fixed it. There is no prompt that flags a wrong-tailnet login;
+only the device list in `tailscale status` shows it.
+
+## D2. Reaching things from outside the LAN
+
+Once connected to the tailnet, addresses are the same ones used on the
+LAN — the subnet route makes this transparent:
+
+| What | Address | Notes |
+|---|---|---|
+| SSH to wivie | `ssh daris@192.168.1.12` | |
+| SSH to the Pi | `ssh darischen@192.168.1.30` | user is `darischen`, not `daris` |
+| Postgres on wivie | `psql -h 192.168.1.12 -p 5432 -U capscan -d capitalscan` | see D3 |
+| CapitalScan web app | `http://192.168.1.30:3000` | served by the Pi, already listens on all interfaces |
+
+`wivie`'s own tailnet IP (`100.65.212.123`) works as an alternative host
+for the SSH and Postgres rows above — it bypasses the subnet route and
+talks to wivie directly, which is a useful way to tell "is Tailscale
+broken" apart from "is the subnet route not approved."
+
+## D3. What had to change on wivie for this to work
+
+- **Route approval.** Advertising a route (`tailscale up
+  --advertise-routes=192.168.1.0/24`) is not enough by itself — it must
+  also be approved for wivie in the tailnet admin console
+  (Machines → wivie → Edit route settings). Unapproved, the route is
+  invisible to other devices and there is no error, just no connection.
+- **IP forwarding**, off by default on Debian, on in
+  `/etc/sysctl.d/99-tailscale.conf` (`net.ipv4.ip_forward = 1`,
+  `net.ipv6.conf.all.forwarding = 1`). Without it wivie can't route
+  packets between the tailnet interface and the LAN, which is the whole
+  job of a subnet router.
+- **Postgres now listens on all interfaces** (`listen_addresses = '*'` in
+  `/etc/postgresql/17/main/postgresql.conf`), not just localhost.
+- **`pg_hba.conf` grants the tailnet CIDR access, scoped narrowly**: only
+  the `capitalscan` database, only the `capscan` and `capscan_ro` roles,
+  only `100.64.0.0/10` (Tailscale's whole address block, since a specific
+  device's 100.x address isn't stable enough to pin). Not `host all all`
+  — the tailnet reaches every current and future device on it, so the
+  rule should reach only what's actually needed.
+- Postgres was restarted (`sudo systemctl restart postgresql@17-main`) to
+  pick up both config changes; check the actual instance unit, not the
+  meta-unit `postgresql.service`, which reports `active (exited)` even
+  when nothing changed.
+
+No firewall change was needed on wivie — it runs neither `ufw` nor active
+`nftables`/`iptables` rules, so nothing was gating the new listeners once
+Postgres itself opened up. The Pi's web app needed no change at all; it
+already listened on `*:3000`.
+
+## D4. Client-side autolaunch (Windows)
+
+The Windows Tailscale service installs as `Automatic` startup by default,
+so `tailscaled` itself starts at boot without a login. That is not the
+same as the *tunnel* surviving a logout — by default Windows drops the
+tailnet connection when the GUI user session ends. Fix:
+
+```
+& "C:\Program Files\Tailscale\tailscale.exe" set --unattended
+```
+
+This keeps the machine reachable on the tailnet even before anyone logs
+in, which matters for a machine you're trying to reach *because* you're
+away from it.
+
+## D5. Verifying from genuinely outside the LAN
+
+A test run from a device still physically on `192.168.1.0/24` proves
+nothing — normal LAN routing satisfies it even if Tailscale is broken.
+Confirm the client's own address first (`ipconfig` / `ip a`; it should
+show a `100.x` Tailscale adapter and a non-`192.168.1.x` local address),
+then repeat the D2 table. All rows above were confirmed working from a
+phone hotspot on 2026-09-09.
