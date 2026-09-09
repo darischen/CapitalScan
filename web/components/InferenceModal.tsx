@@ -13,7 +13,8 @@ import {
   fmt,
   MODEL_FIELD_HELP,
   MODEL_FIELD_LABELS,
-  PREDICTION_CAVEAT,
+  PREDICTION_CAVEAT_DETAIL,
+  PREDICTION_CAVEAT_SUMMARY,
   pct,
 } from "@/lib/format";
 import type { Band, Prediction, ScreenRow } from "@/lib/screen";
@@ -154,13 +155,22 @@ export function InferenceModal({
          * rather than a recommendation — the things a reader is most
          * likely to assume otherwise.
          *
+         * **Collapsed by default**, because a wall of text under a number
+         * is text nobody reads. `<details>` rather than a state hook: it
+         * is keyboard-accessible, survives with JS disabled, and needs no
+         * client state at all. The closed line carries the actionable
+         * half, so a reader who never opens it still gets the point.
+         *
          * **`modelVersion` used to render below this and no longer does.**
          * It read `adr175-05238410-4aa7928`: an ADR number, a config hash
          * prefix and a git sha, none of which mean anything to the person
          * this dialog is for. It stays on the row object, so anyone
          * debugging a stale generation can still reach it; it is only off
          * the surface. */}
-        <p className="modal-note">{PREDICTION_CAVEAT}</p>
+        <details className="modal-note">
+          <summary>{PREDICTION_CAVEAT_SUMMARY}</summary>
+          <p>{PREDICTION_CAVEAT_DETAIL}</p>
+        </details>
       </div>
     </div>
   );

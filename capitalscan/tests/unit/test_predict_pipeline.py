@@ -134,9 +134,26 @@ class TestTheCaveatTravels:
         # server callers were unaffected -- but this test reads the file
         # that defines it.
         ts = (REPO / "web" / "lib" / "format.ts").read_text(encoding="utf-8")
-        block = re.search(r"export const PREDICTION_CAVEAT =(.+?);", ts, re.S)
-        assert block, "PREDICTION_CAVEAT is gone from screen.ts"
+        # **The whole caveat region, not one constant.** It was split into
+        # `_SUMMARY` and `_DETAIL` on 2026-09-08 so the modal could collapse
+        # it, and `PREDICTION_CAVEAT` is now composed from the two rather
+        # than restated. Matching only the composed export would read a
+        # template literal naming two identifiers and find none of the
+        # claims below -- a test that passes on the wrong text is worse
+        # than no test.
+        block = re.search(
+            r"export const PREDICTION_CAVEAT_SUMMARY =(.+?)export const PREDICTION_CAVEAT =",
+            ts,
+            re.S,
+        )
+        assert block, "the PREDICTION_CAVEAT constants are gone from format.ts"
         copy = block.group(1).lower()
+        # The composed export must still exist for surfaces that cannot
+        # collapse it, and must be built from the halves so they cannot
+        # drift apart.
+        assert "`${PREDICTION_CAVEAT_SUMMARY} ${PREDICTION_CAVEAT_DETAIL}`" in ts, (
+            "PREDICTION_CAVEAT must be composed from its halves, not restated"
+        )
         # "rank" and "understate" pin the 2026-09-08 measurement: the
         # ordering held across all eight probability bands while the shipped
         # value missed the band's own 95% interval in six. A caveat that

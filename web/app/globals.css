@@ -2415,3 +2415,44 @@ table.screen th.r .sortlink {
   border-top: 1px solid var(--rule);
   padding-top: 10px;
 }
+
+/* **Closed by default.** A wall of small grey text under a number is text
+ * nobody reads, so the closed line carries the actionable half and the
+ * rest is one click away. `<details>` needs no client state and stays
+ * keyboard-operable for free. */
+.modal-note > summary {
+  cursor: pointer;
+  color: var(--text);
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.modal-note > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* The affordance, drawn rather than relying on the platform triangle,
+ * which differs across browsers and sits at the wrong optical weight for
+ * 11px text. */
+.modal-note > summary::before {
+  content: "+";
+  font-family: var(--mono);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.modal-note[open] > summary::before {
+  content: "2";
+}
+
+.modal-note > summary:focus-visible {
+  outline: 1px solid var(--long);
+  outline-offset: 2px;
+}
+
+.modal-note > p {
+  margin: 8px 0 0;
+}
