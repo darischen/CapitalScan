@@ -30,13 +30,16 @@ def _write(tmp_path: Path, **overrides: object) -> Path:
     Built by hand rather than by calling `save`, because `save` needs a
     fitted torch model and these tests are about the reader.
     """
+    columns = ["a", "b"]
+    levels = [["sector", ["Tech", "Energy"]]]
     meta: dict[str, object] = {
         "artifact_version": art.ARTIFACT_VERSION,
         "n_members": 1,
         "n_trunk": 1,
         "n_heads": 1,
-        "columns": ["a", "b"],
-        "categorical_levels": [["sector", ["Tech", "Energy"]]],
+        "columns": columns,
+        "categorical_levels": levels,
+        "design_fingerprint": art.design_fingerprint(columns, levels, 1, 1),
         "tables": {},
         "model_version": "test",
         "config_hash": CHASH,
@@ -72,16 +75,28 @@ class TestItRefusesWhatItCannotTrust:
         with pytest.raises(art.StaleArtifact, match="config moved"):
             art.load("deadbeefdeadbeef", SHA, _write(tmp_path))
 
-    def test_a_moved_git_sha_is_refused(self, tmp_path: Path) -> None:
-        """The failure `config_hash` cannot see.
+    def test_a_reordered_column_is_refused(self, tmp_path: Path) -> None:
+        """The failure `config_hash` cannot see, caught precisely.
 
-        Reordering a feature column or changing what one means does not
-        touch the config, so its hash is unchanged. Only the code moved,
-        and only `git_sha` notices.
+        Reordering a feature column does not touch the config, so its hash
+        is unchanged. It produces a different matrix from the same names,
+        which is exactly the silent-wrongness case (ADR 186).
         """
-        path = _write(tmp_path)
-        with pytest.raises(art.StaleArtifact, match="feature code moved"):
-            art.load(CHASH, "0000000feedface", path)
+        path = _write(tmp_path, design_fingerprint="deadbeefdeadbeef")
+        with pytest.raises(art.StaleArtifact, match="fingerprint"):
+            art.load(CHASH, SHA, path)
+
+    def test_a_moved_git_sha_alone_is_NOT_refused(self, tmp_path: Path) -> None:
+        """**The correction ADR 186 makes.**
+
+        A docs commit, a CSS tweak or a new CLI flag moves `git_sha` and
+        cannot touch the design matrix. Measured 2026-09-09: the Pi refused
+        a good artifact because the only intervening commit added a
+        `--serving` option. A guard that fires on changes it can prove are
+        irrelevant gets worked around, and then it guards nothing.
+        """
+        loaded = art.load(CHASH, "0000000feedface", _write(tmp_path))
+        assert loaded.git_sha == SHA, "the sha is still recorded, just not gated on"
 
     def test_an_unknown_version_is_refused_rather_than_guessed(self, tmp_path: Path) -> None:
         path = _write(tmp_path, artifact_version=art.ARTIFACT_VERSION + 1)

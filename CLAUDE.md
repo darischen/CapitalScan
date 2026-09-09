@@ -229,13 +229,15 @@ Budgets, so nobody starts one blind. Per-step tables, regimes, and the history o
 - **`compute`'s `cofire_count` is only correct within a chunk** and is excluded from that write. `finalize` is the whole-universe pass that corrects it, and only if `compute` finished for the config.
 - **`cscan indicators` writes nothing until it finishes** -- it collects across all tickers then upserts once. Querying mid-run returns the pre-run count and looks exactly like a hang. Pass `--workers 8`; it defaults to 1.
 - **Never run `cscan universe --quarter` while a backtest runs.** Not locking -- determinism: workers resolving eligibility against a `universe` that changes mid-run violate ADR 060.
-- **`cscan predict` is IN `nightly` as of 2026-09-08**, between
-  `peak_labels` and `sync` — after the labels it trains on, before the copy
-  that ships it. Run it after the sync and the site serves yesterday's model
-  for a day. It **skips visibly** when the `neural` extra is absent rather
-  than failing the chain, matching `db migrate`'s `skip <target>` line.
-  This reverses the earlier rule below, on the user's call: stale
-  predictions on the home page are worse than a longer nightly.
+- **The refit is `weekly`; `nightly` and the live path only score**
+  (ADR 184). `cscan predict` does both, and running the whole command
+  nightly was wrong: a refit **replaces the model**, so two days' numbers
+  come from two different models with nothing saying whether the signal
+  moved or the model did. `weekly` refits after the backtest that wrote the
+  labels — that order is load-bearing. `nightly` passes
+  `from_artifact=True` and takes milliseconds. A `StaleArtifact` is
+  reported and skipped in both, never fatal: **a week-old model is a known
+  quantity; no model is not.**
 - **`cscan predict` needs the optional `neural` extra.** `uv sync --extra neural --extra dev` — the plain
   `--extra neural` **prunes the dev group**, which silently removes pytest's
   `testcontainers` and breaks the integration tier. It refits rather than

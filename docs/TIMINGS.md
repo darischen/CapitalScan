@@ -355,3 +355,44 @@ orders of magnitude below the `numeric(12,6)` the column stores.
 Matching counts would not have shown this. The first check was "2,074 both
 times", which is satisfied by a scorer that returns the wrong numbers for
 the right events.
+
+
+## `cscan backtest --phase harness` (2026-09-09)
+
+Three fixes in one morning, from unrunnable to under its historical time.
+
+| | 2026-08-30 | before the fixes | after |
+|---|---|---|---|
+| events | 1,379,144 | 10,824,053 | 1,898,575 |
+| workers | 8 | 2 (8 was killed) | 8 |
+| load_bars | 172s | 235s | **141s** |
+| load_hourly | 33s | 35s | **29s** |
+| checks | 671s | 1,199s | **620s** |
+| total | 11m11s | 19m58s (FAILED) | **10m19s** |
+| verdict | passed | entry 2, exit 7, overlap 328 | **passed** |
+
+**It was killed three times before any of this**, at 8 workers, then 4,
+then 1 — which is where worker count stopped being the variable.
+
+**1. `SELECT *` fetched 85 columns to satisfy 12.** Derived by reading
+every `events["..."]` and `row.get("...")` in `harness.py`. Measured on a
+200k sample and extrapolated: 12.3 GB wide, 2.2 GB narrow, 1.5 GB with the
+text columns as categories. `test_harness_columns.py` re-derives the list
+from source so the two cannot drift.
+
+**2. Chunk size was `len(tickers) / max_workers`.** So two workers each
+held *half the universe*, and raising the count shrank chunks while
+multiplying concurrent copies — the effects cancelled and memory stayed
+binding at any setting. Fixed at 40 tickers per chunk, which made worker
+count a throughput dial: per-worker memory went 4.8 GB → 1.56 GB, and
+commit free went 0.7 GB → 27.3 GB at four times the workers.
+
+**3. Scope (ADR 187).** Proven per slice before changing anything:
+`in_trade` passes all five, `in_watch` passes all five, the full table
+fails. All 337 violations were in the 8.9M out-of-universe rows the
+cosmetic backfill priced. Scoping also cut `load_bars` from 235s to 141s,
+because the universe slices share tickers.
+
+**The failure presented as "system is running low on memory" and was
+commit exhaustion, not RAM** — 2.9 GB resident against a 70.7 GB
+reservation. → `OPERATIONS.md`

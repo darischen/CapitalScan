@@ -243,3 +243,127 @@ class TestTickerRefreshIsInTheChain:
             if not line.lstrip().startswith("#")
         ]
         assert "run_universe(" not in chr(10).join(code)
+
+
+class TestTheRefitLivesInWeeklyNotNightly:
+    """ADR 184. `cscan predict` refits *and* scores; only one belongs nightly.
+
+    A refit is 24 model fits and ~11 minutes, and it **replaces the model**.
+    Running it every night means two days' numbers came from two different
+    models, and it spends eleven minutes to learn one more day of labels on
+    ~91,000 training rows. Scoring is milliseconds and is what nightly
+    needs.
+
+    Pinned as source checks because the alternative is asserting on an
+    eleven-minute fit, and the thing that would regress is the argument, not
+    the arithmetic.
+    """
+
+    def test_nightly_scores_from_the_artifact(self) -> None:
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        src = inspect.getsource(cli.nightly)
+        assert "from_artifact=True" in src
+
+    def test_nightly_does_not_refit(self) -> None:
+        """The bare call is the refit. Nightly must not make it."""
+        import inspect
+        import re
+
+        from capitalscan.jobs import cli
+
+        src = inspect.getsource(cli.nightly)
+        bare = re.search(r"run_predict\(\s*engine,\s*chash\s*\)", src)
+        assert bare is None, "nightly is refitting; the refit belongs in weekly"
+
+    def test_weekly_refits(self) -> None:
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        src = inspect.getsource(cli.weekly)
+        assert '"refit": True' in src
+
+    def test_weekly_refits_after_the_backtest(self) -> None:
+        """Order matters: the backtest writes the labels the fit trains on.
+
+        Refitting first would train on last week's population and then
+        record a model version implying it saw this week's.
+        """
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        src = inspect.getsource(cli.weekly)
+        assert src.index("run_backtest(") < src.index('"refit": True')
+
+    def test_a_stale_artifact_does_not_fail_the_night(self) -> None:
+        """Everything above it is already committed to research.
+
+        The weekly refit is what fixes a stale artifact; failing the night
+        would not, and would mark a good ingest bad.
+        """
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        src = inspect.getsource(cli.nightly)
+        assert "StaleArtifact" in src
+
+
+class TestBothChainsScoreEveryUniverse:
+    """ADR 183 coverage must survive the scheduled jobs, not just the CLI.
+
+    1,040 of roughly 1,419 tickers only ever fire outside the trade
+    universe. A chain that scores `trade` alone leaves three quarters of
+    the ticker pages blank, and the failure is quiet: the page renders, the
+    Inference cell is simply empty, and nothing says a probability was
+    withheld rather than never computed.
+
+    The weekly case is worse than the nightly one. The refit scores as well
+    as fits, so a `trade`-only weekly would blank every cosmetic ticker
+    until the next nightly filled them back in -- a page that empties and
+    refills on a weekly cycle reads as a bug, and someone would eventually
+    "fix" it by narrowing something else.
+    """
+
+    def test_nightly_scores_every_universe(self) -> None:
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        assert "universe=feat.ANY_UNIVERSE" in inspect.getsource(cli.nightly)
+
+    def test_weekly_scores_every_universe(self) -> None:
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        assert "universe=_feat.ANY_UNIVERSE" in inspect.getsource(cli.weekly)
+
+    def test_any_universe_really_is_unrestricted(self) -> None:
+        """Guards the constant the two lines above depend on.
+
+        Both assertions are source checks, so they would still pass if
+        `ANY_UNIVERSE` were quietly redefined to a filter. This is the one
+        that would fail.
+        """
+        from capitalscan.research import features as feat
+
+        assert feat.ANY_UNIVERSE == ""
+        assert feat.TRADE_ONLY == "AND e.in_trade"
+
+    def test_training_still_is_not_widened(self) -> None:
+        """Serving widens; training must not (ADR 183).
+
+        `in_watch` has 347 trainable rows against `in_trade`'s 94,335 --
+        there is no population to fit on. Widening training would be ADR
+        180 again, with a calibrated number on a population the model never
+        saw.
+        """
+        from capitalscan.research import features as feat
+
+        assert feat.TRADE_ONLY in feat.training_sql(feat._select_columns())
+        assert feat.TRADE_OR_WATCH not in feat.training_sql(feat._select_columns())

@@ -187,8 +187,56 @@ while kill -0 "$POLLER" 2>/dev/null; do
       esac
     done <<< "$rows"
   fi
+
+  # **Score whatever has landed (ADR 181/184/185).** A fire should carry a
+  # probability by the time a reader clicks it, and before this the poller
+  # wrote events that stayed unscored until the next nightly -- measured
+  # 2026-09-09, 184 events for the day and zero predictions.
+  #
+  # Cheap enough to sit in a 20-second loop: the model is not refitted here,
+  # only applied. `--from-artifact` is implied by `--serving`, the forward
+  # pass is numpy (no torch on this board), and `predict` upserts on the
+  # event, so re-scoring the same fire replaces its row rather than
+  # accumulating.
+  #
+  # Every 3rd pass, not every pass. A minute of staleness is invisible to a
+  # reader and this shares a Pi with the web app; the interval is a guess
+  # worth revisiting with a measurement rather than a principle.
+  SCORE_EVERY=3
+  TICK=$(( ${TICK:-0} + 1 ))
+  if [ $(( TICK % SCORE_EVERY )) -eq 0 ]; then
+    # Output is swallowed on success and shown on failure. A scoring error
+    # must not end the session -- the poller's job is capturing fires, and
+    # an unscored fire is recoverable while a missed one is not.
+    # **`--since today`, not the 45-day default.** Measured 2026-09-09:
+    # 184 events today against 23,767 in the default window, so the
+    # unscoped call is 129x the work -- on a Pi, in a 60-second loop, it
+    # would not finish before the next tick.
+    #
+    # Older rows are not neglected: `nightly` re-scores the whole window,
+    # which is what keeps every displayed number from the *same* model
+    # after a weekly refit (ADR 184). This loop only has to keep today
+    # current.
+    if ! out=$(.venv/bin/cscan predict --serving --universe all                  --since "$(date +%F)" 2>&1); then
+      say SCORE "predict failed: $(echo "$out" | tail -2 | tr '
+' ' ')"
+    fi
+  fi
+
   sleep 20
 done
 
 wait "$POLLER"; rc=$?
+
+# **A final pass after the poller exits.** The loop above scores every third
+# tick, so up to a minute of fires can be outstanding when the session ends.
+# This is the one that matters: it is what the site serves overnight until
+# nightly runs.
+say SCORE "Final scoring pass"
+if ! out=$(.venv/bin/cscan predict --serving --universe all --since "$(date +%F)" 2>&1); then
+  say SCORE "final predict failed: $(echo "$out" | tail -2 | tr '
+' ' ')"
+else
+  say SCORE "$(echo "$out" | grep -E '^predict:' | tail -1)"
+fi
 say STOP "Session ended (exit $rc). $n confluence signal(s), $(( $(wc -l < "$CSV") - 1 )) row(s) in $CSV"

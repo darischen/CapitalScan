@@ -286,6 +286,16 @@ def predict(
         "--from-artifact",
         help="Score from the last saved fit instead of refitting (~11 min -> seconds)",
     ),
+    serving: bool = typer.Option(
+        False,
+        "--serving",
+        help=(
+            "Score the SERVING store instead of research. For the Pi, which "
+            "holds the poller's fires and can run the numpy forward pass "
+            "without torch (ADR 181). Implies --from-artifact: fitting needs "
+            "labels the serving store does not carry."
+        ),
+    ),
     universe: str = typer.Option(
         "trade",
         "--universe",
@@ -338,6 +348,40 @@ def predict(
 
     chash = _hash(config)
 
+    # **`--serving` implies `--from-artifact`, and refusing is wrong here.**
+    # Fitting reads `peak_ret_*` and the other labels, which the serving
+    # store does not carry -- it holds the subset a reader needs, not the
+    # training population. So the combination is not merely slow, it cannot
+    # work, and silently fitting against a label-less frame would produce a
+    # model trained on nothing rather than an error.
+    engine = None
+    if serving:
+        from capitalscan.jobs import sync as sync_job
+
+        if not from_artifact:
+            from_artifact = True
+            console.print(
+                "[dim]--serving implies --from-artifact: the serving store "
+                "carries no labels to fit on[/dim]"
+            )
+        engine = sync_job.serving_engine()
+
+        # **Pull the published artifact down first (ADR 185).** On the Pi
+        # there is no local fit to fall back on -- nothing there ever runs
+        # `weekly` -- so without this the first `--serving` run on a fresh
+        # box fails with "no artifact" and stays failed.
+        #
+        # A no-op when the local copy already matches, which matters
+        # because the poller asks on a 20-second cadence and the payload is
+        # 3.6 MB.
+        from capitalscan.jobs import artifact as _art
+
+        if _art.fetch(engine, chash) is None:
+            console.print(
+                "[yellow]no published artifact[/yellow] for this generation. "
+                "The weekly refit publishes one."
+            )
+
     if clear:
         try:
             removed = jp.clear_predictions(db_io.get_engine(), chash)
@@ -353,6 +397,7 @@ def predict(
     parsed = _date.fromisoformat(since) if since else None
     try:
         report = jp.run_predict(
+            engine=engine,
             config_hash=chash,
             since=parsed,
             lookback_days=lookback,
@@ -806,6 +851,66 @@ def _sweep_provisional_poll_rows(engine, chash: str, session_date) -> int:
     return int(result.rowcount or 0)
 
 
+#: The `events` columns the harness reads, and the only ones it loads.
+#:
+#: **`SELECT *` was pulling 85 columns to satisfy 12.** Measured 2026-09-09
+#: on a 200k sample and extrapolated to the 10.8M-row table: 12.3 GB for
+#: the wide read against 2.2 GB narrow, and 1.5 GB once the text columns
+#: are categories. The wide read committed ~70 GB of address space building
+#: the frame and was killed three times by the Windows reaper -- at 8
+#: workers, at 4, and at 1, which is where worker count stopped being the
+#: variable. → `OPERATIONS.md`, `BACKLOG.md`
+#:
+#: **Derived by reading `research/harness.py`, not by guessing.** Every
+#: bracketed `events["..."]` access and every `row.get("...")` in that
+#: module, minus the bar columns, which arrive through `bars_by_ticker`
+#: instead. `test_harness_columns.py` re-derives the set from the source
+#: and fails if the two drift -- a missing column here would surface as a
+#: `KeyError` mid-check, which is loud, but only for whoever runs it next.
+#:
+#: This is a **narrowing, not a weakening**: every check reads exactly the
+#: same values it did before.
+_HARNESS_EVENT_COLUMNS: tuple[str, ...] = (
+    "ticker",
+    "signal_date",
+    "signal_type",
+    "side",
+    "entry_date",
+    "entry_price",
+    "entry_kind",
+    "touch_level",
+    "exit_date",
+    "exit_price",
+    "exit_reason",
+    "gross_ret",
+    "is_cluster_head",
+)
+
+#: Text columns worth holding as categories. Each is low-cardinality over
+#: millions of rows, and an `object` column pays ~50-80 bytes per value for
+#: a separate Python string.
+_HARNESS_CATEGORICAL: tuple[str, ...] = (
+    "ticker",
+    "signal_type",
+    "side",
+    "entry_kind",
+    "exit_reason",
+)
+
+
+def _categorise(frame):
+    """Text columns to `category`, in place of `object`.
+
+    Worth 0.7 GB on the full table. Category is safe for every consumer
+    here: the checks compare and group these values, never mutate them into
+    something outside the observed set.
+    """
+    for col in _HARNESS_CATEGORICAL:
+        if col in frame.columns:
+            frame[col] = frame[col].astype("category")
+    return frame
+
+
 def _load_events_for_config(engine, chash: str):
     """Every `events` row for a config -- the harness phase's `events`
     argument.
@@ -814,6 +919,24 @@ def _load_events_for_config(engine, chash: str):
     above. The compute phase writes one `run_id` **per chunk**, so no single
     `run_id` holds the universe and a run-scoped load would validate one
     twenty-five-ticker slice while reporting on the config.
+
+    **Scoped to `in_trade OR in_watch` (ADR 187).** The out-of-universe
+    rows are priced by ADR 178's cosmetic backfill, not by the backtest
+    engine whose invariants these checks assert, so validating them is a
+    category error rather than a standard being missed.
+
+    Measured 2026-09-09, which is the whole reason this line exists:
+
+    | slice | events | verdict |
+    |---|---:|---|
+    | `in_trade` | 1,129,486 | all five PASS |
+    | `in_watch` | 769,089 | all five PASS |
+    | everything | 10,824,053 | entry 2, exit 7, non-overlap 328 |
+
+    So every violation comes from the 8.9M rows that exist only so a
+    ticker page is not blank. `in_watch` is included deliberately and not
+    as a convenience: those rows are shown to a reader as guidance, and
+    they earn their place by passing.
 
     Widening the scope is safe here for the reason the upsert key gives:
     `events` conflicts on `(config_hash, ticker, signal_date, signal_type,
@@ -826,10 +949,13 @@ def _load_events_for_config(engine, chash: str):
 
     with engine.connect() as conn:
         return pd.read_sql(
-            text("SELECT * FROM events WHERE config_hash = :chash"),
+            text(
+                f"SELECT {', '.join(_HARNESS_EVENT_COLUMNS)} FROM events "
+                "WHERE config_hash = :chash AND (in_trade OR in_watch)"
+            ),
             conn,
             params={"chash": chash},
-        )
+        ).pipe(_categorise)
 
 
 def _print_harness_report(report) -> None:
@@ -3038,13 +3164,38 @@ def nightly() -> None:
     # The cost is real and lands on whichever box holds research — ~11 min
     # on the workstation, ~37 min projected on `wivie` at its measured
     # 3.41x, which is the number to check before the cutover.
+    # **Scores from the saved model. It does not refit** -- that is
+    # `weekly`'s job (ADR 184).
+    #
+    # `cscan predict` does two things, and running both nightly was wrong:
+    # a refit is 24 model fits and ~11 minutes, and it *replaces the model*.
+    # Retraining every night means the numbers a reader compares across two
+    # days came from two different models, and it spends eleven minutes to
+    # learn one more day of labels on ~91,000 training rows.
+    #
+    # Scoring is milliseconds and is what nightly actually needs: today's
+    # events, priced by the current model.
+    #
+    # A `StaleArtifact` here is reported and skipped rather than fatal.
+    # Everything above is already committed to research, and the weekly
+    # refit is what fixes a stale artifact -- failing the night would not.
     try:
+        from capitalscan.jobs import artifact as artifact_mod
         from capitalscan.jobs.predict import run_predict
+        from capitalscan.research import features as feat
 
         with ingest.run_job(engine, "predict", {"trigger": "nightly"}) as pj:
-            pred_report = run_predict(engine, chash)
+            # **Every event, not just the trade universe** (ADR 183).
+            # 1,040 of ~1,419 tickers only ever fire outside it, so
+            # scoring `trade` alone leaves three quarters of the ticker
+            # pages blank. The out-of-universe rows are written with
+            # `cosmetic = true` and carry their own caveat.
+            pred_report = run_predict(engine, chash, from_artifact=True, universe=feat.ANY_UNIVERSE)
             pj.rows_written = pred_report.rows_written
         console.print(f"predict: rows_written={pred_report.rows_written:,}")
+    except artifact_mod.StaleArtifact as exc:
+        console.print(f"[yellow]skip predict[/yellow]: {exc}")
+        console.print("The weekly refit writes a fresh artifact.")
     except ModuleNotFoundError as exc:
         console.print(f"skip predict: {exc}. Install the `neural` extra to enable it.")
 
@@ -3270,6 +3421,61 @@ def weekly(
         scheduled_runs.complete(engine, "weekly", "failed", run_id=bt_report.run_id)
         console.print(f"[red]{len(bt_report.failed_tickers)} ticker(s) failed[/red]")
         raise typer.Exit(code=1)
+    # **The refit lives here, and only here** (ADR 184). It runs after the
+    # backtest above because that is what closed this week's forward
+    # windows and wrote the labels the fit trains on -- refitting first
+    # would train on last week's population.
+    #
+    # This is the step that *changes the model*. Everything else scores
+    # with whatever this last produced, so the model a reader sees is
+    # stable for a week rather than moving under them nightly.
+    #
+    # Failure is reported, not fatal: the label refresh above is the
+    # weekly's contract, and last week's artifact keeps serving until this
+    # succeeds. A week-old model is a known quantity; no model is not.
+    try:
+        from capitalscan.jobs.predict import run_predict as _refit
+        from capitalscan.research import features as _feat
+
+        with ingest.run_job(engine, "predict", {"trigger": "weekly", "refit": True}) as rj:
+            # Same coverage as nightly (ADR 183). The refit scores as
+            # well as fits, and a weekly that scored only the trade
+            # universe would blank every cosmetic ticker until the next
+            # nightly put it back -- a page that empties and refills on a
+            # weekly cycle reads as a bug.
+            refit_report = _refit(engine, chash, universe=_feat.ANY_UNIVERSE)
+            rj.rows_written = refit_report.rows_written
+        console.print(
+            f"refit: {refit_report.rows_written:,} predictions, "
+            f"model {refit_report.model_version}, artifact {refit_report.artifact_path}"
+        )
+
+        # **Publish it to serving so the Pi can score with it (ADR 185).**
+        # The Pi reads through the connection it already holds rather than
+        # over ssh from whichever machine ran `weekly` -- which matters
+        # because that machine changes at the `wivie` cutover.
+        #
+        # Skipped visibly when serving is not configured, matching
+        # `db migrate`'s `skip <target>` line. Failure is reported and never
+        # fatal: the refit above already succeeded and the previous
+        # artifact keeps serving.
+        try:
+            from capitalscan.jobs import artifact as _artifact
+            from capitalscan.jobs import sync as _sync
+
+            _serving = _sync.serving_engine()
+            _size = _artifact.publish(_serving)
+            console.print(f"artifact published to serving: {_size:,} bytes")
+        except RuntimeError as exc:
+            console.print(f"skip artifact publish: {exc}")
+        except Exception as exc:  # noqa: BLE001 - reported, never fatal
+            console.print(f"[yellow]artifact publish failed[/yellow]: {exc}")
+    except ModuleNotFoundError as exc:
+        console.print(f"skip refit: {exc}. Install the `neural` extra to enable it.")
+    except Exception as exc:  # noqa: BLE001 - reported, never fatal to the label refresh
+        console.print(f"[red]refit failed[/red]: {exc}")
+        console.print("Last week's artifact keeps serving until the next weekly.")
+
     scheduled_runs.complete(engine, "weekly", "ok", run_id=bt_report.run_id)
 
 
