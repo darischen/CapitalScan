@@ -88,14 +88,37 @@ export const MODEL_FIELD_LABELS: Record<string, string> = {
  * money" -- is the one the system must never imply (ADR 001, advisory
  * only).
  */
+/**
+ * Row help, generated rather than written six times. The threshold and the
+ * window are the only things that vary, and hand-writing each invites the
+ * drift that left four rows with no tooltip at all.
+ */
+function touchHelp(threshold: string, sessions: string): string {
+  return (
+    `How often price has reached ${threshold} in the signal's own ` +
+    `direction within ${sessions} sessions, for past signals that looked ` +
+    "like this one. Not a forecast that the trade is profitable."
+  );
+}
+
+function adverseHelp(threshold: string): string {
+  return (
+    `How often price has moved ${threshold} against the position within ` +
+    "five sessions — down for a long, up for a short."
+  );
+}
+
 export const MODEL_FIELD_HELP: Record<string, string> = {
-  p_touch_3:
-    "How often price has reached 3% in the signal's own direction within " +
-    "five sessions, for past signals that looked like this one. Not a " +
-    "forecast that the trade is profitable.",
-  p_adverse_3:
-    "How often price has moved 3% against the position within five " +
-    "sessions — down for a long, up for a short.",
+  // **Every row gets its own help, not just the headline.** Only
+  // `p_touch_3` and `p_adverse_3` had text, so four of the six rows
+  // offered a tooltip that never appeared -- worse than none, because the
+  // reader learns hovering does nothing and stops trying.
+  p_touch_2: touchHelp("2%", "five"),
+  p_touch_3: touchHelp("3%", "five"),
+  p_touch_5: touchHelp("5%", "five"),
+  p_touch_10: touchHelp("10%", "ten"),
+  p_adverse_3: adverseHelp("3%"),
+  p_adverse_5: adverseHelp("5%"),
   q05: "5 of every 100 comparable signals did worse than this.",
   q25: "25 of every 100 comparable signals did worse than this.",
   q50:
@@ -107,6 +130,27 @@ export const MODEL_FIELD_HELP: Record<string, string> = {
   calib_n_eff:
     "How many independent past signals stand behind this number, after " +
     "correcting for signals that fired together on the same day.",
+};
+
+/**
+ * The column headers, and the help behind each. A reader asked what
+ * "Range" and "Signals" meant, which is the answer: they did not say.
+ * "Range" now says what it is a range of, and both carry hover text.
+ */
+export const MODEL_COLUMN_HELP: Record<string, string> = {
+  chance:
+    "The share of comparable past signals that did this. A frequency " +
+    "already observed, not a forecast.",
+  range:
+    "The 95% confidence interval around that chance. Read it as 'the true " +
+    "rate is somewhere in here'. A wide range means thin evidence, and " +
+    "every chance in this system carries one.",
+  signals:
+    "How many past signals the chance rests on, counted by how much " +
+    "independent information they carry rather than by how many rows " +
+    "there are. Signals that fired on the same day mostly repeat each " +
+    "other, so 300 spread over three years count for far more than 300 " +
+    "from three days.",
 };
 
 export const SIGNAL_LABELS: Record<string, string> = {

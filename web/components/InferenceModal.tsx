@@ -11,6 +11,7 @@ import { useEffect, useRef } from "react";
 // the transitive import graph.
 import {
   fmt,
+  MODEL_COLUMN_HELP,
   MODEL_FIELD_HELP,
   MODEL_FIELD_LABELS,
   PREDICTION_CAVEAT_DETAIL,
@@ -37,7 +38,12 @@ import type { Band, Prediction, ScreenRow } from "@/lib/screen";
  */
 
 /** Order matters: the two the reader acts on first, then the rest. */
-const TOUCH_FIELDS = ["p_touch_3", "p_touch_5", "p_touch_2", "p_touch_10"] as const;
+// **Ascending by threshold.** The earlier order put the headline
+// (`p_touch_3`) first and left the rest as 5, 2, 10 -- defensible as
+// "most important first" and unreadable as a column of numbers, because a
+// reader scanning a ladder of thresholds expects it to climb. The headline
+// earns its place on the row itself, not by jumping the queue here.
+const TOUCH_FIELDS = ["p_touch_2", "p_touch_3", "p_touch_5", "p_touch_10"] as const;
 const ADVERSE_FIELDS = ["p_adverse_3", "p_adverse_5"] as const;
 
 function label(field: string): string {
@@ -118,11 +124,24 @@ export function InferenceModal({
 
         <table className="modal-table">
           <thead>
+            {/* **"Range" and "Signals" both needed saying out loud.** A
+             * reader asked what they meant, which is the answer: the
+             * headers did not say. "Range" now names what it ranges over,
+             * "Signals" says the count is a past one, and both carry
+             * hover text. Invariant 8 requires the interval and the
+             * sample beside every probability -- it does not require them
+             * to be unreadable. */}
             <tr>
               <th />
-              <th className="r">Chance</th>
-              <th className="r">Range</th>
-              <th className="r">Signals</th>
+              <th className="r" title={MODEL_COLUMN_HELP.chance}>
+                Chance
+              </th>
+              <th className="r" title={MODEL_COLUMN_HELP.range}>
+                95% range
+              </th>
+              <th className="r" title={MODEL_COLUMN_HELP.signals}>
+                Past signals
+              </th>
             </tr>
           </thead>
           <tbody>
