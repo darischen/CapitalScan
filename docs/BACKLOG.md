@@ -263,6 +263,65 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    month. The current intervals are fitted on validate and are a lower
    bound on the true uncertainty.
 
+### `exit_reason = 'timeout'` covers two different facts
+
+**Found 2026-09-08 from a user question about SPG.** A trade closed because
+the forward data ran out is labelled `timeout`, identically to one that
+held its full `max_hold_days = 5`. SPG shows five consecutive signals all
+exiting on 2026-09-04 -- the last bar -- with holding days 1, 2, 3, 4 and 5.
+Only the last is a real timeout.
+
+**Measured: 1,455 of 788,718 timeouts have `holding_days < 5`, or 0.18%.**
+Small, and worth stating plainly because an earlier note in this session
+implied it contaminated `net_ret` broadly. It does not.
+
+But those 1,455 rows carry a return computed over an arbitrarily truncated
+window, and they are counted as completed trades in every statistic that
+groups by `exit_reason`. A signal from yesterday sits in the same bucket as
+one that genuinely ran five sessions.
+
+**The fix is a distinct reason**, `unfinished` or similar, set when the exit
+bar is the last available rather than the horizon. It changes no return,
+only what the row claims about itself. Cheap, and it makes the count of
+"real" timeouts honest.
+
+**Related, already fixed:** the UI said `N/A: awaiting entry` for a
+`next_open` event whose following session has not happened. That read as
+"not computed yet" when it means the opposite -- the backtest looked and
+correctly wrote nothing. Now `N/A: awaiting next open`.
+
+### `sync --incremental` cannot see backwards -- a full sync is required after any historical rewrite
+
+**Found 2026-09-08 the hard way.** `_incremental_bounds` computes
+`events_from` as `max(signal_date)` **on the serving database**. Serving
+already held 2026-09-08, so an incremental sync shipped only events on or
+after that date and skipped every earlier row the cosmetic backtest had
+rewritten -- and would have skipped them on every future run too.
+
+The symptom was not an error. `cscan sync --incremental` reported
+"synced 118,340 rows" and exited 0, while serving sat at **699,402 events
+against research's 10,823,948** and 550 predictions pointed at events
+serving had never seen. On the page that read as an empty `Inference`
+column: 62 of 63 rows showing "no inference".
+
+**The rule: any job that rewrites events with a `signal_date` in the past
+needs a full `cscan sync` afterward.** The cosmetic backtest is one.
+`--phase finalize` is another -- it rewrote `cofire_count` on 10.8M rows,
+almost all of them historical.
+
+**Worth fixing properly rather than remembering.** Options, cheapest first:
+
+1. **Watermark on `computed_at` rather than `signal_date`.** A rewritten
+   row gets a new `computed_at`, so the watermark advances with the write
+   rather than with the event's date. Needs the column indexed.
+2. **Make `run_backtest` and `finalize` record the oldest `signal_date`
+   they touched**, and have sync read that.
+3. **Warn when the row counts diverge** by more than some factor. Cheapest
+   of all and catches every variant, including ones not thought of.
+
+Until one lands, the workaround is a full sync, which is ~14 tables from
+the 1996 cutoff.
+
 ### Paused mid-flight, resumable (2026-09-08)
 
 **`cscan path capture` is checkpointed and stopped at 1h53m.** Not a

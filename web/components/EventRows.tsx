@@ -67,7 +67,11 @@ function Outcome({ e }: { e: TickerEvent }) {
   if (e.inTrade === false && !e.inWatch) {
     return <span className="dim">N/A: outside universe</span>;
   }
-  return <span className="dim">N/A: awaiting entry</span>;
+  // "awaiting entry" read as "we have not computed it yet" (user, 2026-09-08).
+  // It is the opposite: the backtest HAS looked at this row and correctly
+  // written nothing, because a `next_open` fill needs tomorrow's opening bar
+  // and that session has not happened. Naming the bar says whose turn it is.
+  return <span className="dim">N/A: awaiting next open</span>;
 }
 
 
