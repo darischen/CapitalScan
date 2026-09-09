@@ -1996,7 +1996,11 @@ Ranking is sound: bucket `p_touch_3` eight ways and the realised rate is
 **monotone across all eight**, 41.6% to 87.1%. Nothing crosses.
 
 The level is not: the shipped value falls outside the bucket's **own** 95%
-Wilson interval in **six of the eight**, always too low.
+Wilson interval in most bands, always too low. **The exact count depends on
+the partition** — six of eight with equal-width buckets, **four of eight**
+with the equal-count buckets the shipped page uses, one of which sits 0.3pp
+from its edge. `RESULTS.md` 2026-09-09 carries the reconciliation. The
+direction is the durable part; the count is not.
 
 The cause is a base rate that will not sit still:
 

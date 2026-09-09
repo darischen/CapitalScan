@@ -9054,6 +9054,43 @@ calibrated number attached. Feeding the promotion gate a model flattened to
 the base rate and asserting refusal is cheap, and it is the only evidence
 the gate does its job.
 
+
+### Correction, 2026-09-09: the miss count depends on the partition
+
+This ADR and `RESULTS.md` said **six of eight** bands miss their own
+interval, and that the realised rate is **monotone across all eight**. Both
+came from equal-**width** buckets. The shipped page uses equal-**count**
+(`ntile(8)`), which is the better partition and gives different numbers:
+
+```
+band  n     stated  observed  95% range        verdict
+1     503   0.319   0.439     [0.397, 0.483]   understates
+2     503   0.388   0.443     [0.401, 0.487]   understates
+3     503   0.444   0.429     [0.387, 0.473]   ok
+4     503   0.478   0.525     [0.481, 0.568]   understates (by 0.3pp)
+5     502   0.514   0.542     [0.498, 0.585]   ok
+6     502   0.578   0.606     [0.562, 0.647]   ok
+7     502   0.650   0.727     [0.686, 0.764]   understates
+8     502   0.773   0.857     [0.823, 0.885]   understates
+```
+
+**Four of eight, not six**, and band 4 sits 0.3pp from its edge — close
+enough that rounding the inputs to four decimals flips it to five. The page
+computes at full precision and reports four.
+
+**And the ordering is not perfectly monotone.** Band 3 realises 42.9%
+against band 2's 44.3%. That inversion is 1.4pp between two bands whose
+intervals overlap almost entirely ([0.401, 0.487] against [0.387, 0.473]),
+so it is not evidence of a real crossing — but "monotone across all eight,
+nothing crosses" was a stronger claim than the data supports under the
+shipped partition, and it should not have been written as though the
+bucketing were incidental to it.
+
+**What survives all three partitions**, and is the finding: the trend rises
+strongly and consistently, from roughly 44% at the bottom band to 86% at the
+top, while the stated chance understates in most bands and never
+meaningfully overstates. Rank with it; do not read the level.
+
 ### What this does not change
 
 The other two Phase 6 gates stand as written and are met. Holdout is still
