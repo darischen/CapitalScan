@@ -55,15 +55,26 @@ export const PREDICTION_CAVEAT_DETAIL =
  */
 export const PREDICTION_CAVEAT = `${PREDICTION_CAVEAT_SUMMARY} ${PREDICTION_CAVEAT_DETAIL}`;
 
+/**
+ * **The window lives in the label, not in a column header.** A single
+ * "within 5 days" header would be wrong for one row in six: `p_touch_10`
+ * reads the ten-day head (`TARGETS` in `research/predict.py`), every other
+ * field the five-day one. A header states one thing about a column, so a
+ * column whose rows disagree cannot have one.
+ *
+ * "days" rather than "sessions" because that is how a reader thinks about
+ * a holding period; the tooltip says trading sessions, which is what they
+ * actually are.
+ */
 export const MODEL_FIELD_LABELS: Record<string, string> = {
-  p_touch_2: "Reaches +2%",
-  p_touch_3: "Reaches +3%",
-  p_touch_5: "Reaches +5%",
-  p_touch_10: "Reaches +10%",
+  p_touch_2: "Reaches +2% in 5 days",
+  p_touch_3: "Reaches +3% in 5 days",
+  p_touch_5: "Reaches +5% in 5 days",
+  p_touch_10: "Reaches +10% in 10 days",
   // Side-adjusted: "against" is down for a long and up for a short, which
   // is why it does not say "falls".
-  p_adverse_3: "Moves 3% against",
-  p_adverse_5: "Moves 5% against",
+  p_adverse_3: "Moves 3% against in 5 days",
+  p_adverse_5: "Moves 5% against in 5 days",
   // The percentile is in the label, not only in the help text. "Worst
   // case" alone is opaque -- worst of what, and how bad is worst? Naming
   // the level makes the number self-describing in a cell the reader may
@@ -117,6 +128,8 @@ export const MODEL_FIELD_HELP: Record<string, string> = {
   p_touch_3: touchHelp("3%", "five"),
   p_touch_5: touchHelp("5%", "five"),
   p_touch_10: touchHelp("10%", "ten"),
+  // The one row on a different horizon, called out because the label's
+  // "10 days" is easy to read as a typo beside five rows saying 5.
   p_adverse_3: adverseHelp("3%"),
   p_adverse_5: adverseHelp("5%"),
   q05: "5 of every 100 comparable signals did worse than this.",
@@ -138,19 +151,17 @@ export const MODEL_FIELD_HELP: Record<string, string> = {
  * "Range" now says what it is a range of, and both carry hover text.
  */
 export const MODEL_COLUMN_HELP: Record<string, string> = {
+  outcome:
+    "What has to happen, and the window it has to happen in. Measured in " +
+    "trading sessions from the signal, not calendar days.",
   chance:
     "The share of comparable past signals that did this. A frequency " +
     "already observed, not a forecast.",
-  range:
-    "The 95% confidence interval around that chance. Read it as 'the true " +
-    "rate is somewhere in here'. A wide range means thin evidence, and " +
-    "every chance in this system carries one.",
-  signals:
-    "How many past signals the chance rests on, counted by how much " +
-    "independent information they carry rather than by how many rows " +
-    "there are. Signals that fired on the same day mostly repeat each " +
-    "other, so 300 spread over three years count for far more than 300 " +
-    "from three days.",
+  error:
+    "The 95% margin of error on that chance. A bigger number means less " +
+    "certainty. It is set by how many independent past signals stand " +
+    "behind the estimate, so it already tells you how thin the evidence " +
+    "is.",
 };
 
 export const SIGNAL_LABELS: Record<string, string> = {
