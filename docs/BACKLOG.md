@@ -263,6 +263,34 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    month. The current intervals are fitted on validate and are a lower
    bound on the true uncertainty.
 
+### ADR 179 is decided but not built -- the rolling refit
+
+Written 2026-09-08, no code yet. What it needs, in order:
+
+1. **A rolling `SplitParams`.** Today's bounds are ISO strings fixed in
+   `core/config.py`. The refit needs them computed from a reference date --
+   `today - 5y / -6mo / -5d` -- while `split_key` on existing rows stays
+   exactly as assigned (ADR 019, invariant 5). That means the rolling
+   window is a *training-time filter*, not a rewrite of the column, and the
+   two must not be confused.
+
+2. **Verify the purge covers the new boundary.** `core/folds.py` embargoes
+   the walk-forward ladder already. A rolling train/validate boundary needs
+   the same 10-day purge, and it needs a test that fails if the boundary
+   moves without it -- otherwise the model reads its own validation labels
+   and every number after that is optimistic.
+
+3. **Refit the reliability tables with the ensemble.** ADR 174's tables are
+   fitted per model. A refit that reuses them miscalibrates silently.
+
+4. **Wire it into `weekly`**, after the backtest that produces the labels.
+
+**The cheap test worth running first:** a window reaching back five years
+from 2026 pulls **2022** into training -- the regime the coverage gate
+fails on, and the one the label-shift diagnosis says is missing. That may
+close the gate with no architecture change at all. One fit answers it, and
+it is the cheapest test of the whole label-shift story.
+
 ### `exit_reason = 'timeout'` covers two different facts
 
 **Found 2026-09-08 from a user question about SPG.** A trade closed because

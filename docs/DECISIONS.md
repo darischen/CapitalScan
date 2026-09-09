@@ -219,6 +219,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 175 | The adverse head reads a fixed window, not `mae` | **Decided 2026-09-05.** Completes `p_adverse_*` and the other two terms of `E[net_ret]`. `events.mae` is adverse excursion **until exit**, so `ExitParams` is baked into it and every sweep would silently redefine the target. Adds `trough_ret_{1,2,3,5,10}d` as the exact mirror of `peak_ret_*` from `path.adverse`, which is already side-adjusted. `p_adverse_3 = P(trough_ret_5d <= -0.03)`, read off the same CDF. Heads 4 -> 6, so ADR 174's tables refit |
 | 176 | Predictions are gated on market breadth | **Decided 2026-09-07.** `p_touch` is calibrated everywhere and only *ranks* in some regimes. Below 0.68 universe breadth: AUC **0.6255**, skill +5.62% (n=6,078). At or above: **0.5154**, −0.56% (n=3,037), and the low band inverts. Publish the probability always, gate the ranking. A gate, not a suppression -- the number is trustworthy, the ordering is not. Found by searching validate; `cscan outcomes` is the clean test |
 | 177 | The model trains and serves on `touch` entry, not `next_open` | **Decided 2026-09-08, corrected same day.** The first measurement included `breach_depth`, which is **look-ahead under a touch entry** (it reads the session's low); a test caught it. Re-measured without it, `p_touch_3` skill +6.57% -> **+10.14%** and `p_adverse_3` +3.83% -> **+7.17%** -- the decision holds, the adverse gain was two-thirds leak. `breach_depth` deleted (worth 0.0003 AUC where legal); every field improves, bias stays +0.0000. A `next_open` label measures from a price the features never saw, and the overnight gap is noise in the *label*. Costs the stochastic-only signals (no fill price, 42% of rows) -- but **zero** of those share a ticker-date with a confluence row, so confluence retains the stochastic condition entirely. Does not move `config_hash` |
+| 179 | The model refits on a rolling window; the forward log is never trained on | **Decided 2026-09-08.** Coverage error grows with distance from the training window (2024 0.0182 -> 2026 0.0480) and **46,232 labelled events** sit outside it -- 49% more than the 94,054 trained on. Weekly refit, all three bounds rolling. **`outcomes` is never trained on**: it is the only estimate nothing has iterated against, and training on it converts it irreversibly. Newly closed labels enter training only after serving as forward-log evidence |
 
 ---
 
@@ -8662,3 +8663,78 @@ enough to survive that; smaller future comparisons will not be.
 **This does not repeal ADR 176.** The breadth gate was measured on
 `next_open` and whether `touch` changes the regime dependence is **not yet
 measured**. Until it is, the gate stays exactly as it is.
+
+## 179. The model refits on a rolling window; the forward log is never trained on
+
+**Status.** Decided 2026-09-08. Supersedes the fixed split bounds in
+`SplitParams` for *training* purposes; ADR 019's assignment at event
+creation is unchanged. Does not move `config_hash`.
+
+**Context.**
+
+The splits were fixed in advance and have not moved: train 2010-03-31 to
+2021-12-31, validate through 2023-12-29, holdout after. That was right
+while the question was "does this work at all". It is wrong now, for two
+measured reasons.
+
+**The model drifts from the market it scores.** Mean absolute coverage
+error by year: 2024 **0.0182**, 2025 **0.0311**, 2026 **0.0480**. At that
+rate it crosses DESIGN §7.7's 5-point tolerance during 2027. Nothing about
+the architecture causes this; the training window simply recedes.
+
+**46,232 labelled events sit outside the training window** -- 2024-01-02 to
+2026-08-28, on the `touch` grain the model now uses (ADR 177). That is 49%
+more data than the 94,054 currently trained on, and it is the most recent
+2.7 years, including the only period resembling the market the model runs
+in today.
+
+**Decision.**
+
+**Refit weekly on a rolling window**, all three bounds moving together:
+
+    today - 5y  ->  today - 6mo    train
+    today - 6mo ->  today - 5d     validate
+    today - 5d  ->  today          forward log
+
+**The forward log is never trained on, and that is the load-bearing half of
+this decision.** `outcomes` holds predictions recorded before their results
+existed -- the only estimate in this project that nothing has iterated
+against. Training on it converts it into another contaminated split, and
+the conversion is irreversible: once a row has taught the model, no later
+run can un-teach it. The measurement instrument is worth more than the
+marginal rows.
+
+Newly closed labels do enter training, but only *after* they have served as
+forward-log evidence. Nothing is wasted; the order is what matters.
+
+**Purging is not optional here.** `core/folds.py` already implements the
+embargo the walk-forward ladder needs, and a rolling refit uses the same
+machinery. A 10-day forward window means the last 10 days of any train
+period overlap the first days of validate, and without the purge the model
+sees its own validation labels.
+
+**Consequences.**
+
+**No untouched historical split remains.** The holdout was spent on
+2026-09-04 (ADR 172); training on it now spends it a second way. After this,
+the forward log is the *only* clean evidence, which is precisely why the
+rule above is absolute rather than a default.
+
+**A refit is a new `model_version`**, and ADR 174's reliability tables must
+be refitted with it. A table fitted against a different ensemble
+miscalibrates silently -- plausible numbers, never an error.
+
+**2022 eventually enters training.** Train's worst year is 2011 at 0.603 of
+sessions above the 200-day SMA, against 2022's 0.151, and the coverage gate
+fails on exactly that regime. A window reaching back five years from 2026
+includes it. That may close the gate without any architecture change, which
+is the cheapest available test of the label-shift diagnosis.
+
+**Weekly, not nightly.** Labels close on a 5-10 day lag, so a daily refit
+would train on almost the same rows and burn ~11 minutes doing it.
+`weekly` already runs the backtest that produces the labels.
+
+**What this does NOT do.** It does not make the model "learn from its
+mistakes" in any online sense -- there is no feedback from a prediction's
+error into the next fit beyond that row's label entering the training set
+like any other. The gain is recency and volume, not correction.
