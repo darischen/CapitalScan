@@ -366,6 +366,22 @@ def predict(
             )
         engine = sync_job.serving_engine()
 
+        # **Pull the published artifact down first (ADR 185).** On the Pi
+        # there is no local fit to fall back on -- nothing there ever runs
+        # `weekly` -- so without this the first `--serving` run on a fresh
+        # box fails with "no artifact" and stays failed.
+        #
+        # A no-op when the local copy already matches, which matters
+        # because the poller asks on a 20-second cadence and the payload is
+        # 3.6 MB.
+        from capitalscan.jobs import artifact as _art
+
+        if _art.fetch(engine, chash) is None:
+            console.print(
+                "[yellow]no published artifact[/yellow] for this generation. "
+                "The weekly refit publishes one."
+            )
+
     if clear:
         try:
             removed = jp.clear_predictions(db_io.get_engine(), chash)
@@ -3067,13 +3083,32 @@ def nightly() -> None:
     # The cost is real and lands on whichever box holds research — ~11 min
     # on the workstation, ~37 min projected on `wivie` at its measured
     # 3.41x, which is the number to check before the cutover.
+    # **Scores from the saved model. It does not refit** -- that is
+    # `weekly`'s job (ADR 184).
+    #
+    # `cscan predict` does two things, and running both nightly was wrong:
+    # a refit is 24 model fits and ~11 minutes, and it *replaces the model*.
+    # Retraining every night means the numbers a reader compares across two
+    # days came from two different models, and it spends eleven minutes to
+    # learn one more day of labels on ~91,000 training rows.
+    #
+    # Scoring is milliseconds and is what nightly actually needs: today's
+    # events, priced by the current model.
+    #
+    # A `StaleArtifact` here is reported and skipped rather than fatal.
+    # Everything above is already committed to research, and the weekly
+    # refit is what fixes a stale artifact -- failing the night would not.
     try:
+        from capitalscan.jobs import artifact as artifact_mod
         from capitalscan.jobs.predict import run_predict
 
         with ingest.run_job(engine, "predict", {"trigger": "nightly"}) as pj:
-            pred_report = run_predict(engine, chash)
+            pred_report = run_predict(engine, chash, from_artifact=True)
             pj.rows_written = pred_report.rows_written
         console.print(f"predict: rows_written={pred_report.rows_written:,}")
+    except artifact_mod.StaleArtifact as exc:
+        console.print(f"[yellow]skip predict[/yellow]: {exc}")
+        console.print("The weekly refit writes a fresh artifact.")
     except ModuleNotFoundError as exc:
         console.print(f"skip predict: {exc}. Install the `neural` extra to enable it.")
 
@@ -3299,6 +3334,55 @@ def weekly(
         scheduled_runs.complete(engine, "weekly", "failed", run_id=bt_report.run_id)
         console.print(f"[red]{len(bt_report.failed_tickers)} ticker(s) failed[/red]")
         raise typer.Exit(code=1)
+    # **The refit lives here, and only here** (ADR 184). It runs after the
+    # backtest above because that is what closed this week's forward
+    # windows and wrote the labels the fit trains on -- refitting first
+    # would train on last week's population.
+    #
+    # This is the step that *changes the model*. Everything else scores
+    # with whatever this last produced, so the model a reader sees is
+    # stable for a week rather than moving under them nightly.
+    #
+    # Failure is reported, not fatal: the label refresh above is the
+    # weekly's contract, and last week's artifact keeps serving until this
+    # succeeds. A week-old model is a known quantity; no model is not.
+    try:
+        from capitalscan.jobs.predict import run_predict as _refit
+
+        with ingest.run_job(engine, "predict", {"trigger": "weekly", "refit": True}) as rj:
+            refit_report = _refit(engine, chash)
+            rj.rows_written = refit_report.rows_written
+        console.print(
+            f"refit: {refit_report.rows_written:,} predictions, "
+            f"model {refit_report.model_version}, artifact {refit_report.artifact_path}"
+        )
+
+        # **Publish it to serving so the Pi can score with it (ADR 185).**
+        # The Pi reads through the connection it already holds rather than
+        # over ssh from whichever machine ran `weekly` -- which matters
+        # because that machine changes at the `wivie` cutover.
+        #
+        # Skipped visibly when serving is not configured, matching
+        # `db migrate`'s `skip <target>` line. Failure is reported and never
+        # fatal: the refit above already succeeded and the previous
+        # artifact keeps serving.
+        try:
+            from capitalscan.jobs import artifact as _artifact
+            from capitalscan.jobs import sync as _sync
+
+            _serving = _sync.serving_engine()
+            _size = _artifact.publish(_serving)
+            console.print(f"artifact published to serving: {_size:,} bytes")
+        except RuntimeError as exc:
+            console.print(f"skip artifact publish: {exc}")
+        except Exception as exc:  # noqa: BLE001 - reported, never fatal
+            console.print(f"[yellow]artifact publish failed[/yellow]: {exc}")
+    except ModuleNotFoundError as exc:
+        console.print(f"skip refit: {exc}. Install the `neural` extra to enable it.")
+    except Exception as exc:  # noqa: BLE001 - reported, never fatal to the label refresh
+        console.print(f"[red]refit failed[/red]: {exc}")
+        console.print("Last week's artifact keeps serving until the next weekly.")
+
     scheduled_runs.complete(engine, "weekly", "ok", run_id=bt_report.run_id)
 
 

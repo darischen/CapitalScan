@@ -224,6 +224,9 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 181 | A fitted predictor is persisted, and refused on any mismatch | **Decided 2026-09-09.** Amends ADR 174/175's "refit, never load a pickle". A signal must carry a prediction when it reaches the screen; refitting on a cadence costs **24 model fits and ~11 min per run** (~4h45m/day at 15-min cadence) and buys nothing, since both paths score the same live features and differ only by one day of labels on 91k rows. **The 11 minutes is training; the forward pass is milliseconds.** The old rule stopped a fit outliving its feature code -- a real failure, but caused by loading unchecked, not by persisting. So: persist, and refuse on any `config_hash` **or** `git_sha` mismatch. Neither is redundant -- `config_hash` catches a sweep moving the population, `git_sha` catches a feature reordered in code, which no config hash sees. `.npz`+JSON not pickle: the file travels to the Pi and must not execute on load. `core/inference.py` reruns the net in numpy (4 matmuls, GELU, softmax) so the Pi needs no 2GB ARM torch wheel; parity with torch is tested to 1e-5 because a drifting second implementation is worse than none. Does not move `config_hash` |
 | 182 | Phase 6's two remaining gates, restated | **Decided 2026-09-09.** Two of four are met. The Brier gate was under-specified on **population** (ADR 180: in-population skill 0.079 vs 0.021 outside) and on **family** (the aggregate hid an inversion -- `peak` 10/10, `trough` 10/10, `terminal` 6/10, and only the first two reach a surface); restated as beats-base-rate on the fitted population, per family, displayed families first. "Reliability diagram renders" was a UI gate for an evidence gate -- the data already shows the shipped value missing its own 95% interval in **six of eight** buckets; restated so that fact must be visible, not merely charted. "Promotion gate rejects a flattened model" stands unchanged and is now the most important: 45 tests pass and none makes the gate refuse anything. Does not move `config_hash` |
 | 183 | `in_watch` events are scored cosmetically, and say so | **Decided 2026-09-09.** A reader clicking any ticker expects a number; 8,780 recent `in_watch` events had none. **Cannot be fixed by training on them**: `peak_labels` labels `in_trade` rows only, so `in_watch` has **347 trainable rows against 94,335** -- they are priced but unlabelled. Removing that filter is a model change needing measurement, not a display change. So: serve them flagged. `include_watch=True` widens serving to `TRADE_OR_WATCH`; training keeps `TRADE_ONLY`. `predictions.cosmetic` is separate from ADR 180's `model_scored` on purpose -- that one answers "was this signal *type* fitted", this one "was this *population*", and a row can be a fitted type on an unfitted population. The caveat **replaces** the normal one and opens by default: "rank, not exact odds" still asserts the ordering means something, and here it does not. Off by default so `nightly` cannot start writing extrapolation. Does not move `config_hash` |
+| 184 | The refit is weekly; everything else scores from the artifact | **Decided 2026-09-09.** `cscan predict` refits AND scores, and ADR 181 put the whole command in `nightly`. Wrong, and not mainly on cost: **a refit replaces the model**, so nightly retraining means Monday's and Tuesday's numbers came from different models with nothing on the surface saying whether the signal moved or the model did. Split: `weekly` refits (~11 min, after the backtest that wrote this week's labels -- order is load-bearing), `nightly` and the live path score from the artifact in milliseconds. A stale artifact is reported and skipped in both, never fatal: everything above it is committed, and **a week-old model is a known quantity; no model is not.** This is what makes per-fire scoring possible -- it could not work while the model was replaced nightly. Does not move `config_hash` |
+| 185 | The fitted model travels in the database | **Decided 2026-09-09.** The Pi scores from a saved artifact, so the artifact must reach it. `scp` makes the autonomous path depend on ssh keys between two boxes and breaks differently after the `wivie` cutover, when the pushing machine changes. The Pi already holds a serving connection; one `model_artifact` row rides it. `weekly` publishes after the refit, `predict --serving` fetches before scoring, no-op when the local copy matches (the poller asks every 20s, payload is 3.6 MB). One row per `config_hash`, replaced -- an append-only log would let a scorer prefer a half-written row. `bytea` with `STORAGE EXTERNAL`: already compressed, so TOAST would re-compress for nothing. Publish failure is reported, never fatal. Does not move `config_hash` |
+| 186 | The staleness guard is a design fingerprint, not `git_sha` | **Decided 2026-09-09.** Corrects ADR 181. Measured: the Pi refused a good artifact because the only intervening commit added a `--serving` CLI flag, which cannot reach the design matrix. `git_sha` is a proxy for "did the feature code move" and a poor one -- it moves on docs, CSS, comments -- and with a weekly refit the Pi would spend most of the week unable to score. **A guard that fires on changes it can prove are irrelevant gets worked around, and then it guards nothing.** Replaced by a hash of the feature columns **in order**, categorical levels **in order**, network shape and `IMPUTE_COLS` -- **stricter** where it matters, since it catches a reorder that an amended commit would hide from `git_sha`. The sha is still recorded, just not gated on. `ARTIFACT_VERSION` -> 2. Does not move `config_hash` |
 
 ---
 
@@ -9190,3 +9193,134 @@ not the extrapolation, it is the silence: this is off by default
 (`include_watch=False`, asserted by test, so `nightly` cannot start writing
 it because a default flipped), restricted to serving, marked on the row,
 and stated in the dialog before the reader sees the number.
+
+---
+
+## 184. The refit is weekly; everything else scores from the artifact
+
+**Status:** accepted, 2026-09-09. Corrects the wiring ADR 181 left behind.
+
+`cscan predict` does two things — **refit** the model and **score** events
+with it — and ADR 181 put the whole command in `nightly`. That was wrong,
+and the reason is not cost.
+
+**A refit replaces the model.** Running it nightly means the probability a
+reader compares between Monday and Tuesday came from two different models.
+The number moved and nothing on the surface says whether the signal changed
+or the model did. That is a worse property than a week-old model.
+
+The cost is the smaller argument and still real: 24 model fits, ~11
+minutes, to learn one more day of closed labels on ~91,000 training rows.
+
+### The split
+
+| job | does | costs |
+|---|---|---|
+| `weekly` | **refit**, after the backtest that wrote this week's labels | ~11 min |
+| `nightly` | score today's events from the saved artifact | milliseconds |
+| live / poller | score a fire as it lands, on the Pi | milliseconds |
+
+**Order inside `weekly` is load-bearing.** The refit runs *after*
+`run_backtest`, because that is what closes the forward windows and writes
+the labels the fit trains on. Refitting first would train on last week's
+population and stamp a `model_version` implying otherwise.
+
+### Failure handling differs by job, on purpose
+
+A `StaleArtifact` in `nightly` is **reported and skipped**, not fatal.
+Everything above it is already committed to research, and the weekly refit
+is what fixes a stale artifact — failing the night would not, and would
+mark a good ingest bad.
+
+A failed refit in `weekly` is **reported and skipped** too. The label
+refresh is the weekly's contract; last week's artifact keeps serving until
+the next attempt. **A week-old model is a known quantity; no model is
+not.**
+
+### What this makes possible
+
+Per-fire scoring. With the refit on a weekly cadence the artifact is stable
+for days at a time, so the Pi can score a poller fire the moment it lands
+without waiting on anything. That was ADR 181's stated purpose and it could
+not work while the model was being replaced every night.
+
+---
+
+## 185. The fitted model travels in the database
+
+**Status:** accepted, 2026-09-09.
+
+The Pi scores poller fires from a saved artifact (ADR 181), so the artifact
+has to reach the Pi. `scp` from the research machine was the obvious route
+and is the wrong one.
+
+**It makes the autonomous path depend on ssh keys between two boxes**, and
+it breaks differently after the `wivie` cutover, when the machine doing the
+pushing changes. The Pi already holds a serving connection and reads
+everything else it needs through it. One row rides that connection.
+
+`weekly` publishes after the refit; `predict --serving` fetches before
+scoring. A no-op when the local copy already matches, which matters because
+the poller asks on a 20-second cadence and the payload is 3.6 MB.
+
+**One row per `config_hash`, replaced.** Not an append-only log: two
+artifacts for one generation is not a state anything wants to resolve at
+read time, and a scorer picking "the newest" would silently prefer a
+half-written row over a good one.
+
+**`bytea`, not a path.** The bytes are the `.npz` exactly as
+`savez_compressed` wrote them, so the reader is `np.load` on a buffer and
+nothing has to agree about filesystem layout across three machines.
+`STORAGE EXTERNAL` because the payload is already compressed and TOAST
+would spend CPU re-compressing incompressible bytes.
+
+**Publishing failure is reported, never fatal.** The refit already
+succeeded and the previous artifact keeps serving. The same rule as ADR
+184: a week-old model is a known quantity.
+
+---
+
+## 186. The staleness guard is a design fingerprint, not `git_sha`
+
+**Status:** accepted, 2026-09-09. Corrects ADR 181.
+
+ADR 181 refused an artifact whose `git_sha` did not match the running code.
+The intent was right and the mechanism was wrong.
+
+**Measured 2026-09-09.** The Pi refused a perfectly good artifact because
+the only intervening commit added a `--serving` flag to `predict`:
+
+```
+refused: artifact git_sha 38bf331 != c33b178: the feature code moved
+```
+
+A CLI option cannot reach the design matrix. `git_sha` is a proxy for "did
+the feature code move" and a poor one — it changes on a docs commit, a CSS
+tweak, a comment. With the refit on a weekly cadence (ADR 184) and commits
+landing daily, the Pi would spend most of the week unable to score.
+
+**A guard that fires on changes it can prove are irrelevant gets worked
+around, and then it guards nothing.**
+
+### What replaces it
+
+A hash of what actually decides the matrix: the feature column list **in
+order**, every categorical's levels **in order**, the network shape, and
+`IMPUTE_COLS`.
+
+This is **stricter** where it matters. A reordered column changes it; so
+does a dropped sector level, a new feature, or a layer added to the trunk.
+`git_sha` catches those only because they coincide with a commit, and would
+miss them entirely on an amended one.
+
+Ordering is the point, so the parts are joined positionally and never
+sorted — `(bb_pctb, k_full)` and `(k_full, bb_pctb)` are different matrices
+and must hash differently.
+
+**`git_sha` is still recorded**, because a reader asking which commit
+produced a model has no other answer. It is simply not what `load` refuses
+on. `config_hash` still gates, unchanged: it catches a sweep moving the
+population, which the fingerprint cannot see.
+
+`ARTIFACT_VERSION` goes to 2, so an artifact written before this refuses
+rather than loading without a fingerprint.

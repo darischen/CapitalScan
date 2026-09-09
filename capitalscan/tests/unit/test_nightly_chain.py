@@ -243,3 +243,71 @@ class TestTickerRefreshIsInTheChain:
             if not line.lstrip().startswith("#")
         ]
         assert "run_universe(" not in chr(10).join(code)
+
+
+class TestTheRefitLivesInWeeklyNotNightly:
+    """ADR 184. `cscan predict` refits *and* scores; only one belongs nightly.
+
+    A refit is 24 model fits and ~11 minutes, and it **replaces the model**.
+    Running it every night means two days' numbers came from two different
+    models, and it spends eleven minutes to learn one more day of labels on
+    ~91,000 training rows. Scoring is milliseconds and is what nightly
+    needs.
+
+    Pinned as source checks because the alternative is asserting on an
+    eleven-minute fit, and the thing that would regress is the argument, not
+    the arithmetic.
+    """
+
+    def test_nightly_scores_from_the_artifact(self) -> None:
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        src = inspect.getsource(cli.nightly)
+        assert "from_artifact=True" in src
+
+    def test_nightly_does_not_refit(self) -> None:
+        """The bare call is the refit. Nightly must not make it."""
+        import inspect
+        import re
+
+        from capitalscan.jobs import cli
+
+        src = inspect.getsource(cli.nightly)
+        bare = re.search(r"run_predict\(\s*engine,\s*chash\s*\)", src)
+        assert bare is None, "nightly is refitting; the refit belongs in weekly"
+
+    def test_weekly_refits(self) -> None:
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        src = inspect.getsource(cli.weekly)
+        assert '"refit": True' in src
+
+    def test_weekly_refits_after_the_backtest(self) -> None:
+        """Order matters: the backtest writes the labels the fit trains on.
+
+        Refitting first would train on last week's population and then
+        record a model version implying it saw this week's.
+        """
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        src = inspect.getsource(cli.weekly)
+        assert src.index("run_backtest(") < src.index('"refit": True')
+
+    def test_a_stale_artifact_does_not_fail_the_night(self) -> None:
+        """Everything above it is already committed to research.
+
+        The weekly refit is what fixes a stale artifact; failing the night
+        would not, and would mark a good ingest bad.
+        """
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        src = inspect.getsource(cli.nightly)
+        assert "StaleArtifact" in src
