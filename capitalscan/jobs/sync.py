@@ -373,6 +373,11 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
     )
 
 
+#: Rows per streamed read. 500k of `events`' 85 columns is a few hundred
+#: MB, well inside any sane headroom, while keeping the number of `COPY`
+#: round trips per table in the tens rather than the thousands.
+_CHUNK_ROWS = 500_000
+
 logger = logging.getLogger(__name__)
 
 
@@ -693,10 +698,27 @@ def run_sync(
                 # bound is exactly how "no incremental floor" is expressed and
                 # psycopg binds it fine. The mismatch is the stub, not the call
                 # -- same as `_read_corporate_actions`' list binding.
-                frame = pd.read_sql(
+                # **Streamed, not materialised.** `events` is 5.4M rows of
+                # 85 columns for the live generation, and reading it whole
+                # was killed by the Windows low-memory reaper on 2026-09-09
+                # -- twice, the second time with nothing else running. The
+                # same read succeeded on 2026-09-08 because the commit
+                # ceiling was 114 GB; Windows had since shrunk the pagefile
+                # to put it at 67.7 GB.
+                #
+                # Raising the pagefile would hide it. A 5.4M-row frame does
+                # not need tens of gigabytes of address space, and the next
+                # generation's growth would find the new ceiling too.
+                #
+                # `_CHUNK_ROWS` at a time bounds the frame regardless of
+                # table size. Chunks are large enough that the per-chunk
+                # `COPY` round trip stays a rounding error against the
+                # transfer itself.
+                chunks = pd.read_sql(
                     text(table.sql),
                     snapshot,
                     params={"cutoff": cutoff, "config_hash": config_hash, **bounds},  # type: ignore[arg-type]
+                    chunksize=_CHUNK_ROWS,
                 )
                 # **`COPY` into a staging table, not row dicts.** Profiled
                 # during a full sync on 2026-08-26: the Pi was 76% idle (load
@@ -714,12 +736,23 @@ def run_sync(
                 # Writes the *target* from inside the source's read
                 # transaction, deliberately: the snapshot must outlive
                 # every read, and serving is a different database.
-                rows[table.name] = db_io.copy_upsert(
-                    target,
-                    table.name,
-                    _drop_surrogate_id(frame, table.key),
-                    list(table.key),
-                )
+                # **One `COPY` per chunk, and the count accumulates.**
+                # This reintroduces one transaction per chunk rather than
+                # one per table, which the note above gave up deliberately
+                # when it moved off row dicts. It is acceptable here for a
+                # reason that did not apply then: every table syncs by
+                # upsert on its own key, so a partially applied table is
+                # already the failure mode of an interrupted sync and a
+                # re-run converges. Bounded memory is worth that.
+                copied = 0
+                for chunk in chunks:
+                    copied += db_io.copy_upsert(
+                        target,
+                        table.name,
+                        _drop_surrogate_id(chunk, table.key),
+                        list(table.key),
+                    )
+                rows[table.name] = copied
 
         # Sequences, in the direction this function copies. See
         # `_reset_sequences` for why an explicit-id INSERT leaves them

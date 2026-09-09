@@ -201,9 +201,18 @@ def test_signal_reports_still_has_its_where_clause():
 def _capture(monkeypatch) -> list[dict]:
     seen: list[dict] = []
 
-    def _read_sql(statement, con, params=None):
+    def _read_sql(statement, con, params=None, chunksize=None):
+        """Mirrors `pd.read_sql`, including the chunked return shape.
+
+        `run_sync` streams since 2026-09-09 -- reading `events` whole was
+        killed by the low-memory reaper -- so it passes `chunksize` and
+        iterates. A stub returning a bare frame would make the caller
+        iterate its *columns*, which silently copies nothing rather than
+        failing.
+        """
         seen.append(dict(params or {}))
-        return pd.DataFrame()
+        empty = pd.DataFrame()
+        return iter([empty]) if chunksize else empty
 
     monkeypatch.setattr(sync_mod.pd, "read_sql", _read_sql)
     monkeypatch.setattr(sync_mod.db_io, "upsert", lambda *a, **k: 0)
