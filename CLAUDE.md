@@ -192,6 +192,19 @@ Three commits reached `main` red on 2026-09-08 because `ruff format` and
 onto one line by the formatter, so wrapping it by hand does not stick. A
 named function satisfies both.
 
+**Never chain `next build` and `systemctl restart` in one command.**
+Hit twice on 2026-09-08/09, both times taking the site down. `cd web &&
+npx next build && sudo systemctl restart capitalscan-web` over SSH lets the
+restart begin against a `.next/` the build has not finished writing, so the
+service starts, finds no `BUILD_ID`, exits 1, and systemd retries into
+`activating` forever. The journal says `Could not find a production build
+in the '.next' directory`, which reads like a missing build rather than a
+half-written one.
+
+Run the build, **wait for it to exit**, confirm `.next/BUILD_ID` exists,
+and only then restart. Recovery is the same as any broken build:
+`rm -rf .next`, rebuild, restart.
+
 **`npm run build` invalidates a running `next start`.** The server holds its chunk hashes in memory; a build rewrites `.next/` and every asset 404s, rendering as unstyled text that looks like broken CSS. Restart the server after any build; never point `next dev` at a `.next/` a production server is serving. → `OPERATIONS.md`
 
 ---

@@ -281,16 +281,31 @@ def predict(
     since: Optional[str] = typer.Option(None, help="Earliest signal_date to score (YYYY-MM-DD)"),
     lookback: int = typer.Option(45, help="Days back from the newest event, when --since is unset"),
     clear: bool = typer.Option(False, help="Delete this config's predictions and exit"),
+    from_artifact: bool = typer.Option(
+        False,
+        "--from-artifact",
+        help="Score from the last saved fit instead of refitting (~11 min -> seconds)",
+    ),
 ) -> None:
     """Write calibrated p_touch predictions for recent events (ADR 174).
 
     Fits the four-task model on train, calibrates on validate, and upserts
-    one row per recent event. Takes a few minutes: the model is refitted
-    every run rather than loaded, so the fit can never outlive the feature
-    code that produced it.
+    one row per recent event. The fit is 24 model fits and takes about
+    eleven minutes.
+
+    `--from-artifact` skips it and scores from what the last fit wrote
+    (ADR 181), which is milliseconds. Use it when a signal has just fired
+    and should carry a probability now; use the default when the labels
+    have moved, which is what `nightly` does.
+
+    It refuses rather than silently refitting when the artifact does not
+    match this config and commit -- a fast path that quietly becomes an
+    eleven-minute one is worse than an error, and it would hide the change
+    that invalidated the model.
     """
     from datetime import date as _date
 
+    from capitalscan.jobs import artifact as artifact_mod
     from capitalscan.jobs import db_io
     from capitalscan.jobs import predict as jp
 
@@ -312,7 +327,14 @@ def predict(
         return
 
     parsed = _date.fromisoformat(since) if since else None
-    report = jp.run_predict(config_hash=chash, since=parsed, lookback_days=lookback)
+    try:
+        report = jp.run_predict(
+            config_hash=chash, since=parsed, lookback_days=lookback, from_artifact=from_artifact
+        )
+    except artifact_mod.StaleArtifact as exc:
+        console.print(f"[red]refused[/red]: {exc}")
+        console.print("Run `cscan predict` without --from-artifact to refit.")
+        raise typer.Exit(code=1) from exc
     console.print(f"predict: {report.summary()}")
     if report.rows_written == 0:
         console.print("[yellow]warning[/yellow]: no predictions written")
