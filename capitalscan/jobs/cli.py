@@ -286,6 +286,16 @@ def predict(
         "--from-artifact",
         help="Score from the last saved fit instead of refitting (~11 min -> seconds)",
     ),
+    serving: bool = typer.Option(
+        False,
+        "--serving",
+        help=(
+            "Score the SERVING store instead of research. For the Pi, which "
+            "holds the poller's fires and can run the numpy forward pass "
+            "without torch (ADR 181). Implies --from-artifact: fitting needs "
+            "labels the serving store does not carry."
+        ),
+    ),
     universe: str = typer.Option(
         "trade",
         "--universe",
@@ -338,6 +348,24 @@ def predict(
 
     chash = _hash(config)
 
+    # **`--serving` implies `--from-artifact`, and refusing is wrong here.**
+    # Fitting reads `peak_ret_*` and the other labels, which the serving
+    # store does not carry -- it holds the subset a reader needs, not the
+    # training population. So the combination is not merely slow, it cannot
+    # work, and silently fitting against a label-less frame would produce a
+    # model trained on nothing rather than an error.
+    engine = None
+    if serving:
+        from capitalscan.jobs import sync as sync_job
+
+        if not from_artifact:
+            from_artifact = True
+            console.print(
+                "[dim]--serving implies --from-artifact: the serving store "
+                "carries no labels to fit on[/dim]"
+            )
+        engine = sync_job.serving_engine()
+
     if clear:
         try:
             removed = jp.clear_predictions(db_io.get_engine(), chash)
@@ -353,6 +381,7 @@ def predict(
     parsed = _date.fromisoformat(since) if since else None
     try:
         report = jp.run_predict(
+            engine=engine,
             config_hash=chash,
             since=parsed,
             lookback_days=lookback,
