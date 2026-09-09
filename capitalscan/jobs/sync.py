@@ -691,8 +691,27 @@ def run_sync(
         # accidental write then fails at the database instead of
         # succeeding quietly. The target is written outside this
         # transaction, which is the point of holding it open.
+        # **`stream_results` is what makes `chunksize` mean anything.**
+        #
+        # `pd.read_sql(chunksize=N)` chunks DataFrame *construction*, not
+        # the fetch. Without a server-side cursor psycopg buffers the whole
+        # result set client-side first, so a chunked read of 5.4M rows still
+        # materialises 5.4M rows of Python tuples before pandas builds its
+        # first chunk. Adding `chunksize` alone changed nothing on
+        # 2026-09-09 -- the reaper killed the sync again, at the same point.
+        #
+        # `stream_results=True` gives psycopg a named cursor and the rows
+        # arrive in batches. Together with `chunksize` the frame and the
+        # fetch are both bounded; either one alone is not enough.
         with source.connect().execution_options(isolation_level="REPEATABLE READ") as snapshot:
             snapshot.execute(text("SET TRANSACTION READ ONLY"))
+            # **Applied after the SET, not on the connection.** With
+            # `stream_results` set at connect time psycopg wraps *every*
+            # statement in a named cursor, including this one, and
+            # `DECLARE ... CURSOR FOR SET TRANSACTION READ ONLY` is a
+            # syntax error. The read-only declaration has to land on a
+            # plain cursor first.
+            snapshot = snapshot.execution_options(stream_results=True)
             for table in _tables(cutoff, str(config_hash)):
                 # pandas-stubs types `params` values as non-optional; a NULL
                 # bound is exactly how "no incremental floor" is expressed and
