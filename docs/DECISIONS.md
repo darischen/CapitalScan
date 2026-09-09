@@ -8748,6 +8748,41 @@ shorter fit produces. `RESULTS.md` carries the full retraction.
 `neural.fit` now raises on an empty ladder rather than falling through. Two
 folds against seven years is still a thin ladder and any re-run must say so.
 
+**Amended again 2026-09-08, after the seven-year run: the rolling window is
+REFUTED, and this clause is withdrawn.** Run twice, identical to four
+decimals, step counts properly selected. Split by task family:
+
+| family | shipped as | `fixed` | `roll7` |
+|---|---|---|---|
+| **peak** | `p_touch_2/3/5/10` | **10/10** | 6/10 |
+| **trough** | `p_adverse_3/5` | **10/10** | 8/10 |
+| terminal | **nothing displays it** | 6/10 | **10/10** |
+
+Rolling inverts which family works. It takes `terminal` from 6/10 to 10/10
+and `peak` from 10/10 to 6/10, and **every shipped probability reads `peak`
+or `trough`** — the `terminal` head backs only `q05..q95`, negative out of
+sample under ADR 172 and displayed nowhere. The window improves the family
+nobody sees and degrades both the product ships.
+
+The aggregate concealed it: 26/30 against 24/30 reads as a marginal loss
+rather than an inversion.
+
+**And the premise above is wrong.** All four heads the fixed arm fails are
+`terminal` heads, so "the coverage gate fails on exactly that regime" was
+true of a family no surface reads. `peak` and `trough` are 10/10 under the
+shipped configuration. The label-shift diagnosis is not supported and the
+window is not the fix.
+
+**What survives of this ADR:** the forward log is never trained on, a refit
+is a new `model_version` requiring refitted reliability tables, weekly
+rather than nightly, and the rule that newly closed labels enter training
+only after serving as forward-log evidence. Those stand. Only the rolling
+*window* is withdrawn — refits continue on the fixed split.
+
+The live calibration bias on `p_touch_3` is a separate open question, caused
+by a non-stationary base rate (`RESULTS.md` 2026-09-08), and this result
+rules out the rolling window as its remedy.
+
 **Weekly, not nightly.** Labels close on a 5-10 day lag, so a daily refit
 would train on almost the same rows and burn ~11 minutes doing it.
 `weekly` already runs the backtest that produces the labels.

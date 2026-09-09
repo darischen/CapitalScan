@@ -50,6 +50,8 @@ write-up must say so. Full retraction in `RESULTS.md`.
 
 from __future__ import annotations
 
+import pathlib
+
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
@@ -58,6 +60,10 @@ from capitalscan.core import folds as core_folds
 from capitalscan.jobs import db_io
 from capitalscan.research import features as feat
 from capitalscan.research import neural, train
+
+#: Per-arm coverage tables land here so a question the printout did not
+#: anticipate costs a file read rather than a 22-minute refit.
+OUT_DIR = pathlib.Path(__file__).resolve().parent.parent / "reports" / "rolling"
 
 CHASH = "0523841076f47293"
 TOL = 0.05
@@ -133,6 +139,7 @@ def coverage(ens, va, w) -> pd.DataFrame:
 
 
 def main() -> None:
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
     engine = db_io.get_engine()
     with engine.connect() as conn:
         calendar = list(conn.execute(text("SELECT d FROM trading_days ORDER BY d")).scalars())
@@ -165,6 +172,11 @@ def main() -> None:
         w = np.asarray(core_folds.cluster_weights(list(va["cluster_id"])))
         d = coverage(ens, va, w)
         results[name] = d
+        out = OUT_DIR / f"coverage_{name}.csv"
+        d.assign(arm=name, steps=str(steps), n_train=len(tr), n_validate=len(va)).to_csv(
+            out, index=False
+        )
+        print(f"  wrote {out}", flush=True)
         print(
             f"  {d['ok'].sum()}/{len(d)} heads within {TOL:.0%}"
             f"   mean |err| {d['err'].abs().mean():.4f}",

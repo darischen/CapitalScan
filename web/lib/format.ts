@@ -22,38 +22,59 @@
  * purpose: it is how a gap gets noticed.
  */
 /**
- * Shorter than `core.calibration.MODEL_CAVEAT` and asserting the same
- * things. `test_the_typescript_copy_has_not_drifted` pins the claims both
- * must carry, comparing substance rather than characters.
+ * Split so the modal can collapse it. `_SUMMARY` is what a reader gets
+ * without opening anything, so it carries the actionable half rather than
+ * a label like "About this number" — a disclosure whose closed state says
+ * nothing is a disclosure nobody opens.
  *
- * The ranking-versus-level sentence leads because it is the one measured
+ * The ranking-versus-level claim leads because it is the one measured
  * against live results (2026-09-08, 4,020 resolved predictions): the
  * ordering held across all eight probability bands while the stated
  * percentage fell below the band's own 95% interval in six of them. See
  * RESULTS.md.
  */
-export const PREDICTION_CAVEAT =
-  "Use these to rank signals, not to read an exact chance. Measured " +
-  "against live results, the ordering held across every probability " +
-  "band, but the stated percentage ran low in six of eight. How often " +
-  "any signal reaches +3% has ranged from 37% to 65% month to month over " +
-  "the past year, while these numbers are anchored to a 43% period, so " +
-  "expect them to understate in a rising market and overstate in a " +
-  "falling one. Calibrated on the validate split, which was scored " +
-  "repeatedly during model selection, so the interval is a lower bound " +
-  "on the true uncertainty, and coverage decays with distance from the " +
+export const PREDICTION_CAVEAT_SUMMARY =
+  "Use these to rank signals, not as exact odds.";
+
+/** The rest, shown only when the reader opens the disclosure. */
+export const PREDICTION_CAVEAT_DETAIL =
+  "Measured against live results, the ordering held across every " +
+  "probability band, but the stated percentage ran low in six of eight. " +
+  "How often any signal reaches +3% has ranged from 37% to 65% month to " +
+  "month over the past year, while these numbers are anchored to a 43% " +
+  "period, so expect them to understate in a rising market and overstate " +
+  "in a falling one. Calibrated on the validate split, which was scored " +
+  "repeatedly during model selection, so the interval is a lower bound on " +
+  "the true uncertainty, and coverage decays with distance from the " +
   "training window. Advisory only: this is what historically followed " +
   "signals like this one, not what will happen.";
 
+/**
+ * The whole thing, for any surface that cannot collapse it. Composed from
+ * the two above rather than restated, so the halves cannot drift apart.
+ */
+export const PREDICTION_CAVEAT = `${PREDICTION_CAVEAT_SUMMARY} ${PREDICTION_CAVEAT_DETAIL}`;
+
+/**
+ * **The window lives in the label, not in a column header.** A single
+ * "within 5 days" header would be wrong for one row in six: `p_touch_10`
+ * reads the ten-day head (`TARGETS` in `research/predict.py`), every other
+ * field the five-day one. A header states one thing about a column, so a
+ * column whose rows disagree cannot have one.
+ *
+ * "days" rather than "sessions" because that is how a reader thinks about
+ * a holding period; the tooltip says trading sessions, which is what they
+ * actually are.
+ */
 export const MODEL_FIELD_LABELS: Record<string, string> = {
-  p_touch_2: "Reaches +2%",
-  p_touch_3: "Reaches +3%",
-  p_touch_5: "Reaches +5%",
-  p_touch_10: "Reaches +10%",
+  p_touch_2: "Reaches +2% in 5 days",
+  p_touch_3: "Reaches +3% in 5 days",
+  p_touch_5: "Reaches +5% in 5 days",
+  p_touch_10: "Reaches +10% in 10 days",
   // Side-adjusted: "against" is down for a long and up for a short, which
   // is why it does not say "falls".
-  p_adverse_3: "Moves 3% against",
-  p_adverse_5: "Moves 5% against",
+  p_adverse_3: "Moves 3% against in 5 days",
+  p_adverse_5: "Moves 5% against in 5 days",
   // The percentile is in the label, not only in the help text. "Worst
   // case" alone is opaque -- worst of what, and how bad is worst? Naming
   // the level makes the number self-describing in a cell the reader may
@@ -78,14 +99,39 @@ export const MODEL_FIELD_LABELS: Record<string, string> = {
  * money" -- is the one the system must never imply (ADR 001, advisory
  * only).
  */
+/**
+ * Row help, generated rather than written six times. The threshold and the
+ * window are the only things that vary, and hand-writing each invites the
+ * drift that left four rows with no tooltip at all.
+ */
+function touchHelp(threshold: string, sessions: string): string {
+  return (
+    `How often price has reached ${threshold} in the signal's own ` +
+    `direction within ${sessions} sessions, for past signals that looked ` +
+    "like this one. Not a forecast that the trade is profitable."
+  );
+}
+
+function adverseHelp(threshold: string): string {
+  return (
+    `How often price has moved ${threshold} against the position within ` +
+    "five sessions — down for a long, up for a short."
+  );
+}
+
 export const MODEL_FIELD_HELP: Record<string, string> = {
-  p_touch_3:
-    "How often price has reached 3% in the signal's own direction within " +
-    "five sessions, for past signals that looked like this one. Not a " +
-    "forecast that the trade is profitable.",
-  p_adverse_3:
-    "How often price has moved 3% against the position within five " +
-    "sessions — down for a long, up for a short.",
+  // **Every row gets its own help, not just the headline.** Only
+  // `p_touch_3` and `p_adverse_3` had text, so four of the six rows
+  // offered a tooltip that never appeared -- worse than none, because the
+  // reader learns hovering does nothing and stops trying.
+  p_touch_2: touchHelp("2%", "five"),
+  p_touch_3: touchHelp("3%", "five"),
+  p_touch_5: touchHelp("5%", "five"),
+  p_touch_10: touchHelp("10%", "ten"),
+  // The one row on a different horizon, called out because the label's
+  // "10 days" is easy to read as a typo beside five rows saying 5.
+  p_adverse_3: adverseHelp("3%"),
+  p_adverse_5: adverseHelp("5%"),
   q05: "5 of every 100 comparable signals did worse than this.",
   q25: "25 of every 100 comparable signals did worse than this.",
   q50:
@@ -97,6 +143,25 @@ export const MODEL_FIELD_HELP: Record<string, string> = {
   calib_n_eff:
     "How many independent past signals stand behind this number, after " +
     "correcting for signals that fired together on the same day.",
+};
+
+/**
+ * The column headers, and the help behind each. A reader asked what
+ * "Range" and "Signals" meant, which is the answer: they did not say.
+ * "Range" now says what it is a range of, and both carry hover text.
+ */
+export const MODEL_COLUMN_HELP: Record<string, string> = {
+  outcome:
+    "What has to happen, and the window it has to happen in. Measured in " +
+    "trading sessions from the signal, not calendar days.",
+  chance:
+    "The share of comparable past signals that did this. A frequency " +
+    "already observed, not a forecast.",
+  error:
+    "The 95% margin of error on that chance. A bigger number means less " +
+    "certainty. It is set by how many independent past signals stand " +
+    "behind the estimate, so it already tells you how thin the evidence " +
+    "is.",
 };
 
 export const SIGNAL_LABELS: Record<string, string> = {
