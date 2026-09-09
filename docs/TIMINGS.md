@@ -307,6 +307,18 @@ measured — it came from reading wall-clock across two overlapping
 background jobs rather than from `runs`. Corrected 2026-09-05, and it is
 exactly the mistake the header of this file warns about.
 
-**`wivie` is unmeasured**, and this job is not scheduled anywhere. It needs
-the `neural` extra (a 2GB torch wheel) and stays on the workstation until
-someone benchmarks it. → `BACKLOG.md`
+**`wivie` is now measured: 3.41x the workstation on this hot path**
+(`scripts/cpu_bench.py`, 8 workers, ten minutes, 2026-09-08 -- steady
+**0.627 units/s** against the workstation's 2.138). So `predict`'s 10m46s
+projects to roughly **37 minutes** there.
+
+**Do not apply `BACKLOG.md`'s 1.58x to `wivie`.** That figure is the Flow
+X13, an 8-core 5950HS. `wivie` is an i5-7200U with **two** physical cores,
+and 1.58x understates it by better than a factor of two.
+
+The projection is arithmetic, not a measurement, and `predict` is the least
+likely job to obey it: it is the one step that would use the `neural`
+extra's 2GB torch wheel, whose threading does not scale the way the pandas
+hot path `cpu_bench` drives does. Run the job before quoting 37 minutes.
+This job is still not scheduled anywhere and stays on the workstation.
+→ `BACKLOG.md`
