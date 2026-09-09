@@ -318,6 +318,45 @@ only what the row claims about itself. Cheap, and it makes the count of
 "not computed yet" when it means the opposite -- the backtest looked and
 correctly wrote nothing. Now `N/A: awaiting next open`.
 
+### `predictions.event_id` cannot survive a sync -- the ids are database-local by design
+
+**Found 2026-09-08 after chasing three wrong explanations.** The
+`Inference` column is empty on recent dates and no amount of syncing fixes
+it. The cause is structural.
+
+`sync._drop_surrogate_id` removes the `id` column from any table whose key
+is not `id`. `events` keys on
+`(config_hash, ticker, signal_date, signal_type, entry_kind)`, so **its
+`id` is stripped and serving assigns its own from a local sequence.**
+Research's 09-08 events are ids 73.7M-74.5M; serving's are 72.70M-72.72M
+for the same natural keys.
+
+`predictions` keys on `id` and carries `event_id` -- a *research* id. ADR
+174 chose `event_id` because `(ticker, as_of)` is not unique (a name can
+fire long and short on one day), which was correct for research and does
+not survive the copy. The join works only where the two sequences happen
+to coincide, which is why August renders and September does not.
+
+**Three fixes, and this needs a decision rather than a patch:**
+
+1. **Join on the natural key.** Add `signal_type` and `entry_kind` to
+   `predictions` and have the views join on the same five columns `events`
+   syncs on. Correct by construction, no sequence coupling. Costs a
+   migration and a view change.
+2. **Preserve `events.id` through the sync.** One line in
+   `_drop_surrogate_id`, but it makes serving's sequence collide with the
+   poller's own inserts -- the poller writes serving directly (ADR 158) and
+   would need its ids reserved from a disjoint range.
+3. **Compute predictions on serving.** Removes the transfer entirely, and
+   is where ADR 179's live inference is heading anyway. Largest change.
+
+**(1) is the honest fix** and (3) supersedes it later. Until one lands,
+predictions only display for dates whose ids happened to line up.
+
+**What this does NOT affect:** the forward log. `outcomes` lives in
+research and joins research ids, so its 5,986 rows are unaffected. Only the
+serving display is broken.
+
 ### `sync --incremental` cannot see backwards -- a full sync is required after any historical rewrite
 
 **Found 2026-09-08 the hard way.** `_incremental_bounds` computes
