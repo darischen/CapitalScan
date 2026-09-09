@@ -238,6 +238,10 @@ class FrameReport:
     dropped_etf: int
     dropped_missing_sector: int
     dropped_no_label: int
+    #: Serving only: rows whose `signal_type` the model was never fitted
+    #: on. Counted rather than silently filtered, because the number going
+    #: up means training and serving have drifted apart.
+    dropped_untrained_type: int = 0
 
 
 # **`sector` is the one column not read from the event row**, and the
@@ -431,11 +435,31 @@ def build_training_frame(
     return kept, report
 
 
+def restrict_to_trained_types(
+    frame: pd.DataFrame, trained_types: Sequence[str] | None
+) -> tuple[pd.DataFrame, int]:
+    """Keep only rows whose `signal_type` the model was fitted on.
+
+    `None` means no restriction, for callers that have no fit in hand.
+
+    **An empty sequence drops everything, deliberately.** A fit that saw no
+    signal types is a broken fit, and scoring the whole population off it
+    would be the exact failure this guards against, so the empty case must
+    not read as "no filter".
+    """
+    if trained_types is None:
+        return frame, 0
+    before = len(frame)
+    kept = frame[frame["signal_type"].isin(list(trained_types))].reset_index(drop=True)
+    return kept, before - len(kept)
+
+
 def build_serving_frame(
     engine: Engine,
     config_hash: str,
     since: date,
     require_sector: bool = False,
+    trained_types: Sequence[str] | None = None,
 ) -> tuple[pd.DataFrame, FrameReport]:
     """Recent events, ready for inference, with the labels removed.
 
@@ -484,11 +508,30 @@ def build_serving_frame(
     kept = _coerce_boolean_features(kept)
     kept = _add_derived(kept)
     kept = kept.drop(columns=[c for c in LABEL_COLS if c in kept.columns])
+
+    # **Only signal types the model was actually fitted on.** Found
+    # 2026-09-08: 4,207 of 8,699 predictions -- 48% -- were for
+    # `stoch_oversold`/`stoch_overbought`, which the training frame contains
+    # ZERO of. The asymmetry is structural: training drops rows with NULL
+    # labels, which excludes them, while this frame drops `LABEL_COLS`
+    # outright (so a caller cannot score the holdout) and therefore has
+    # nothing left to filter on.
+    #
+    # A probability for a signal type the model never saw is extrapolation
+    # wearing a calibrated number, and it reached the screener looking
+    # exactly like the other half.
+    #
+    # Derived from the training frame rather than hardcoded, so the two
+    # cannot drift: when stochastic rows start carrying labels they enter
+    # training first and become predictable second, in that order.
+    kept, dropped_untrained = restrict_to_trained_types(kept, trained_types)
+
     return kept, FrameReport(
         rows=len(kept),
         dropped_etf=len(etf),
         dropped_missing_sector=len(missing),
         dropped_no_label=0,
+        dropped_untrained_type=dropped_untrained,
     )
 
 

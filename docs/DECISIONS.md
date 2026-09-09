@@ -220,6 +220,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 176 | Predictions are gated on market breadth | **Decided 2026-09-07.** `p_touch` is calibrated everywhere and only *ranks* in some regimes. Below 0.68 universe breadth: AUC **0.6255**, skill +5.62% (n=6,078). At or above: **0.5154**, −0.56% (n=3,037), and the low band inverts. Publish the probability always, gate the ranking. A gate, not a suppression -- the number is trustworthy, the ordering is not. Found by searching validate; `cscan outcomes` is the clean test |
 | 177 | The model trains and serves on `touch` entry, not `next_open` | **Decided 2026-09-08, corrected same day.** The first measurement included `breach_depth`, which is **look-ahead under a touch entry** (it reads the session's low); a test caught it. Re-measured without it, `p_touch_3` skill +6.57% -> **+10.14%** and `p_adverse_3` +3.83% -> **+7.17%** -- the decision holds, the adverse gain was two-thirds leak. `breach_depth` deleted (worth 0.0003 AUC where legal); every field improves, bias stays +0.0000. A `next_open` label measures from a price the features never saw, and the overnight gap is noise in the *label*. Costs the stochastic-only signals (no fill price, 42% of rows) -- but **zero** of those share a ticker-date with a confluence row, so confluence retains the stochastic condition entirely. Does not move `config_hash` |
 | 179 | The model refits on a rolling window; the forward log is never trained on | **Decided 2026-09-08.** Coverage error grows with distance from the training window (2024 0.0182 -> 2026 0.0480) and **46,232 labelled events** sit outside it -- 49% more than the 94,054 trained on. Weekly refit, all three bounds rolling. **`outcomes` is never trained on**: it is the only estimate nothing has iterated against, and training on it converts it irreversibly. Newly closed labels enter training only after serving as forward-log evidence |
+| 180 | Serving scores only the signal types the model was fitted on | **Decided 2026-09-08.** **4,207 of 8,699 predictions (48%) were extrapolation**: `stoch_oversold`/`stoch_overbought`, of which the training frame holds **zero** rows, shipped with a calibrated probability, a CI and an `n_eff` formatted exactly like the 4,492 legitimate ones. Cause is a correct guard -- `build_training_frame` drops NULL labels (removing them), `build_serving_frame` drops `LABEL_COLS` outright per ADR 174 (so it cannot filter). Measured on 5,986 resolved forward-log rows, Brier skill against each population's own base rate: in-population **0.079** (pred 51.7% vs actual 57.1%), outside **0.021** (pred 52.3% vs actual 49.0%) -- the model gives both ~52% while their real rates differ by 8pp, and the error flips from understating to **overstating**. Serving now filters on `predictor.trained_signal_types`, read off the fit, never a literal list. Existing rows flagged via `predictions.model_scored`, not deleted: their 1,966 outcomes are the only off-distribution measurement the project has. `v_forward` stays unfiltered. Does not move `config_hash` |
 
 ---
 
@@ -8726,9 +8727,26 @@ miscalibrates silently -- plausible numbers, never an error.
 
 **2022 eventually enters training.** Train's worst year is 2011 at 0.603 of
 sessions above the 200-day SMA, against 2022's 0.151, and the coverage gate
-fails on exactly that regime. A window reaching back five years from 2026
-includes it. That may close the gate without any architecture change, which
-is the cheapest available test of the label-shift diagnosis.
+fails on exactly that regime. A window reaching back into 2022 includes it.
+That may close the gate without any architecture change, which is the
+cheapest available test of the label-shift diagnosis.
+
+**Amended 2026-09-08: the window is seven years, not five.** The first
+version of this ADR said five, and five cannot select its own step count.
+`core.folds.walk_forward_folds` needs `DEFAULT_MIN_TRAIN_YEARS = 5` of
+training before its first validation year, so a five-year window builds
+**zero** inner folds, six builds one, seven builds two. `neural.fit` then
+fell through to `DEFAULT_STEPS = 300` and reported it in the same `steps`
+field a real selection writes.
+
+The test ran that way on 2026-09-08 and looked like a clean win -- the four
+heads the fixed arm fails all improved sharply -- while the rolling arms had
+simply trained 2.5x less than the fixed arm's [776, 909, 591]. Every one of
+those heads fails in the **over**-coverage direction, which is what a
+shorter fit produces. `RESULTS.md` carries the full retraction.
+
+`neural.fit` now raises on an empty ladder rather than falling through. Two
+folds against seven years is still a thin ladder and any re-run must say so.
 
 **Weekly, not nightly.** Labels close on a 5-10 day lag, so a daily refit
 would train on almost the same rows and burn ~11 minutes doing it.
@@ -8738,3 +8756,101 @@ would train on almost the same rows and burn ~11 minutes doing it.
 mistakes" in any online sense -- there is no feedback from a prediction's
 error into the next fit beyond that row's label entering the training set
 like any other. The gain is recency and volume, not correction.
+
+---
+
+## 180. Serving scores only the signal types the model was fitted on
+
+**Status:** accepted, 2026-09-08. Supersedes nothing; corrects a defect in
+ADR 174's serving path.
+
+**48% of shipped predictions were extrapolation, and nothing said so.**
+
+Measured on the live generation `0523841076f47293`:
+
+| signal_type | predictions | in the training frame |
+|---|---:|---|
+| `stoch_oversold` | 2,438 | **none** |
+| `stoch_overbought` | 1,769 | **none** |
+| `bb_upper_touch` | 1,178 | yes |
+| `confluence_high` | 1,119 | yes |
+| `bb_lower_touch` | 1,055 | yes |
+| `confluence_low` | 991 | yes |
+| `bear_close_above_upper` | 149 | yes |
+
+4,207 of 8,699 rows were for two signal types the model had never seen. The
+screener rendered each with a calibrated probability, a confidence interval
+and an `n_eff`, formatted identically to the 4,492 that were legitimate.
+Invariant 8 was satisfied to the letter and the number still meant nothing.
+
+### The cause is a correct safety measure, which is why it survived review
+
+`build_training_frame` drops rows with NULL labels. Stochastic-only signals
+carry no fill price under ADR 177's `touch` entry, so they have no forward
+return, so they were dropped -- silently and for a good reason.
+
+`build_serving_frame` drops `LABEL_COLS` **outright**. That is ADR 174's
+guard: a serving frame that cannot see a label cannot be pointed at the
+holdout by accident. Having dropped them, it has nothing left to filter on,
+so it keeps every row.
+
+Neither builder is wrong on its own. The population they disagree about is
+created *by* the guard in one of them, and no test compared the two.
+
+### What it cost, measured on the forward log
+
+1,966 out-of-population predictions had resolved by 2026-09-08, against
+4,020 in. Brier skill is scored against each population's own base rate, so
+a different underlying hit rate cannot flatter either arm:
+
+| | n | Brier | base-rate Brier | skill | predicted | actual | gap |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| in population | 4,020 | 0.2256 | 0.2450 | **0.079** | 51.7% | 57.1% | −5.4pp |
+| outside it | 1,966 | 0.2445 | 0.2499 | **0.021** | 52.3% | 49.0% | **+3.3pp** |
+
+The model hands both groups about 52%. Their real rates differ by eight
+points. It is not merely less accurate off-distribution, it is **blind to
+the distinction** -- and the sign of the error flips. In population it
+understates, which is the cheap direction. Outside it overstates by 3.3
+points while skill falls to roughly a quarter, which is the direction that
+costs a reader money.
+
+A separate oddity, recorded and **not** built on: all 1,966 out-of-population
+rows have a wholly NULL `q05..q95` fan, against 2,173 of 4,020 in population.
+The rate differs sharply but the in-population nulls have no explanation
+yet, so this is a `BACKLOG.md` item rather than a second guard.
+
+### The decision
+
+`build_serving_frame` takes `trained_types` and keeps only rows matching it.
+`run_predict` passes `predictor.trained_signal_types`, read off the fit
+itself.
+
+**Not a hardcoded list.** Which types training contains moves as the
+backtest prices more events: once stochastic rows carry fills they gain
+labels, enter training, and become predictable -- in that order, which is
+the correct order. A literal list would freeze that and drift silently.
+
+**An empty sequence drops everything, and `None` means no filter.** A fit
+that saw no signal types is a broken fit, and the natural `if not
+trained_types` would read it as "no restriction" and score the whole
+population off it. That is the exact failure this ADR exists to stop, so it
+gets its own test.
+
+### The 4,207 rows already written are flagged, not deleted
+
+`predictions.model_scored` (migration `a1c7f3b09d84`) defaults to `false`,
+is backfilled from `signal_type`, and is set explicitly by the writer.
+`v_screen` and `v_screen_live` join on it.
+
+They are kept because those 1,966 resolved outcomes are a third of the whole
+forward log and the only direct measurement the project has of what this
+model does off-distribution -- the evidence the table above rests on, and
+exactly what ADR 179's rolling refit needs to keep scoring.
+
+**`v_forward` is deliberately not filtered.** It is the scoring log. What
+the model does outside its training population is what that log is for.
+
+**`false` is the safe default** rather than a convenience. A row written by
+some future path that has not been filtered stays out of the screener until
+someone looks at it.

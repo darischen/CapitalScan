@@ -18,6 +18,7 @@ import pandas as pd
 import pytest
 
 from capitalscan.core import calibration as calib
+from capitalscan.jobs import predict as jp
 from capitalscan.research import features as feat
 from capitalscan.research import neural
 from capitalscan.research import predict as rp
@@ -136,7 +137,12 @@ class TestTheCaveatTravels:
         block = re.search(r"export const PREDICTION_CAVEAT =(.+?);", ts, re.S)
         assert block, "PREDICTION_CAVEAT is gone from screen.ts"
         copy = block.group(1).lower()
-        for claim in ("validate", "lower bound", "advisory", "coverage"):
+        # "rank" and "understate" pin the 2026-09-08 measurement: the
+        # ordering held across all eight probability bands while the shipped
+        # value missed the band's own 95% interval in six. A caveat that
+        # drops it leaves a number the project has measured as biased
+        # looking exactly as trustworthy as one it has not.
+        for claim in ("validate", "lower bound", "advisory", "coverage", "rank", "understate"):
             assert claim in copy, f"the UI caveat dropped '{claim}'"
 
 
@@ -161,6 +167,65 @@ class TestTheServingFrameCannotBeScored:
     def test_the_training_builder_still_refuses_the_holdout(self) -> None:
         src = code_of(feat.build_training_frame)
         assert "split == 'holdout'" in src
+
+
+class TestServingScoresOnlyWhatWasTrained:
+    """**The population the model saw must bound the population it scores.**
+
+    Found live on 2026-09-08: 4,207 of 8,699 shipped predictions -- 48% --
+    were for `stoch_oversold`/`stoch_overbought`, and the training frame
+    contained **zero** rows of either. The screener showed a calibrated
+    probability with an interval and an `n_eff` for signals the model had
+    never been fitted on, and nothing in the output distinguished them from
+    the half that were legitimate.
+
+    The cause is structural rather than a typo, which is why it needs a
+    test rather than a fix. `build_training_frame` drops rows with NULL
+    labels, and stochastic-only signals have no fill price and so no label.
+    `build_serving_frame` drops `LABEL_COLS` outright -- ADR 174's guard
+    against scoring the holdout -- so it has nothing left to filter on and
+    keeps every row. The two builders disagreed *because* of a correct
+    safety measure in one of them.
+    """
+
+    def test_it_keeps_only_the_types_the_fit_saw(self) -> None:
+        frame = pd.DataFrame(
+            {"signal_type": ["bb_lower_touch", "stoch_oversold", "confluence_low"]}
+        )
+        kept, dropped = feat.restrict_to_trained_types(frame, ["bb_lower_touch", "confluence_low"])
+        assert list(kept["signal_type"]) == ["bb_lower_touch", "confluence_low"]
+        assert dropped == 1
+
+    def test_no_fit_in_hand_means_no_filter(self) -> None:
+        frame = pd.DataFrame({"signal_type": ["stoch_oversold"]})
+        kept, dropped = feat.restrict_to_trained_types(frame, None)
+        assert len(kept) == 1 and dropped == 0
+
+    def test_a_fit_that_saw_nothing_scores_nothing(self) -> None:
+        """Empty must not fall through to "no restriction".
+
+        An empty sequence is falsy, so the obvious `if not trained_types`
+        would treat a broken fit as an unrestricted one and score the whole
+        population off it -- the precise failure this class exists to stop.
+        """
+        frame = pd.DataFrame({"signal_type": ["bb_lower_touch"]})
+        kept, dropped = feat.restrict_to_trained_types(frame, [])
+        assert len(kept) == 0 and dropped == 1
+
+    def test_the_serving_builder_applies_it(self) -> None:
+        assert "restrict_to_trained_types" in code_of(feat.build_serving_frame)
+
+    def test_the_job_passes_the_types_the_predictor_actually_saw(self) -> None:
+        """Read off the fit, never hardcoded.
+
+        Which types training contains moves as the backtest prices more
+        events: stochastic rows gain labels once they carry a fill, and
+        then they belong in both frames. A literal list would freeze that
+        and drift silently in whichever direction is worse.
+        """
+        src = code_of(jp.run_predict)
+        assert "predictor.trained_signal_types" in src
+        assert "trained_types=trained_types" in src
 
 
 def _fake(applied: pd.DataFrame) -> rp.FittedPredictor:

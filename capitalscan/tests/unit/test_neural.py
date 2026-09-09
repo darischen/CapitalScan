@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from capitalscan.core import folds as core_folds
 from capitalscan.research import neural
 from capitalscan.tests.unit._probe import code_of
 
@@ -123,6 +124,37 @@ class TestTheSelectionProtocol:
         """Two tasks are 5-day and two are 10-day. Purging every task at 10
         removes more training rows near each boundary, never fewer."""
         assert "fold_ladder(train_frame, 10, calendar)" in inspect.getsource(neural.fit)
+
+    def test_an_empty_ladder_stops_the_fit(self) -> None:
+        """A fallback you cannot tell from a selection is worse than a crash.
+
+        `steps` reads `median(picks) if picks else DEFAULT_STEPS`. With no
+        folds, `picks` stays empty and the fit trained a hardcoded 300
+        steps while reporting the same `steps` field a real selection
+        writes -- nothing downstream could tell the two apart.
+
+        Hit on 2026-09-08 testing ADR 179's rolling window.
+        `walk_forward_folds` needs `DEFAULT_MIN_TRAIN_YEARS` of training
+        before its first validation year, so a five-year window yields
+        **zero** folds. All three arms reported `steps [300, 300, 300]`
+        against the fixed arm's [776, 909, 591], and a 2.5x difference in
+        training length read as a modelling result.
+        """
+        src = inspect.getsource(neural.fit)
+        assert "if not ladder:" in src
+        assert "raise ValueError" in src
+
+    def test_a_five_year_window_has_no_ladder_and_seven_does(self) -> None:
+        """The arithmetic behind that failure, pinned.
+
+        Five years is one short: the ladder needs `DEFAULT_MIN_TRAIN_YEARS`
+        of training *before* its first validation year, so the window must
+        exceed it to hold even one fold. ADR 179 should quote seven.
+        """
+        assert core_folds.DEFAULT_MIN_TRAIN_YEARS == 5
+        assert len(core_folds.walk_forward_folds(2021, 2025)) == 0
+        assert len(core_folds.walk_forward_folds(2020, 2025)) == 1
+        assert len(core_folds.walk_forward_folds(2019, 2025)) == 2
 
 
 class TestTheDesignMatrix:

@@ -104,8 +104,14 @@ TRAINING: dict[str, Any] = {
 #: of the effects being claimed.
 DEFAULT_SEEDS: tuple[int, ...] = (20260903, 20260904, 20260905)
 
-#: Fallback when no fold produced a usable step count. Mirrors
-#: `promotion.DEFAULT_ROUNDS`, which exists for the same reason.
+#: Fallback when the ladder ran but **every** fold stopped at step 0.
+#: Mirrors `promotion.DEFAULT_ROUNDS`, which exists for the same reason.
+#:
+#: This is no longer reachable from an *empty* ladder -- `fit` raises for
+#: that case since 2026-09-08, because a fallback that cannot be told apart
+#: from a selection turns a broken experiment into a plausible-looking
+#: result. It still covers the narrower case of a ladder whose folds all
+#: degenerate, where the run at least happened.
 DEFAULT_STEPS = 300
 
 #: The two features carrying NaNs that a network cannot consume the way
@@ -482,6 +488,31 @@ def fit(
 
     resolved = ~np.isnan(y).any(axis=1)
     ladder = [(a & resolved, b & resolved) for a, b in fold_ladder(train_frame, 10, calendar)]
+
+    # **An empty ladder must stop the fit, not fall through to a default.**
+    #
+    # `steps` below reads `median(picks) if picks else DEFAULT_STEPS`, and
+    # `picks` is filled from the ladder. With no folds it stays empty, and
+    # the fit silently trained a hardcoded 300 steps instead of selecting
+    # a count -- exactly the single-split failure this docstring says the
+    # ladder exists to prevent, only quieter, because nothing in the output
+    # distinguishes a selected 300 from a fallback 300.
+    #
+    # Hit for real on 2026-09-08 testing ADR 179's rolling window.
+    # `walk_forward_folds` needs `DEFAULT_MIN_TRAIN_YEARS` (5) of training
+    # before its first validation year, so a **five**-year window yields
+    # zero folds, six yields one, and seven yields two. All three rolling
+    # arms reported `steps [300, 300, 300]` against the fixed arm's
+    # [776, 909, 591] and the comparison looked like a modelling result
+    # when it was a 2.5x difference in training length chosen by fallback.
+    if not ladder:
+        span = pd.to_datetime(train_frame["signal_date"]).dt
+        raise ValueError(
+            f"no walk-forward folds inside train ({span.year.min()}-{span.year.max()}): "
+            f"the ladder needs more than {core_folds.DEFAULT_MIN_TRAIN_YEARS} years "
+            "before its first validation year. Widen the window rather than fitting "
+            "on an unselected step count."
+        )
 
     def tensor(values):
         return torch.tensor(values, dtype=torch.float32, device=device)

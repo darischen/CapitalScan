@@ -21,12 +21,29 @@
  * screen. An unmapped key falls back to the identifier, which is ugly on
  * purpose: it is how a gap gets noticed.
  */
+/**
+ * Shorter than `core.calibration.MODEL_CAVEAT` and asserting the same
+ * things. `test_the_typescript_copy_has_not_drifted` pins the claims both
+ * must carry, comparing substance rather than characters.
+ *
+ * The ranking-versus-level sentence leads because it is the one measured
+ * against live results (2026-09-08, 4,020 resolved predictions): the
+ * ordering held across all eight probability bands while the stated
+ * percentage fell below the band's own 95% interval in six of them. See
+ * RESULTS.md.
+ */
 export const PREDICTION_CAVEAT =
-  "Calibrated on the validate split, which was scored repeatedly during " +
-  "model selection, so the interval is a lower bound on the true " +
-  "uncertainty. Coverage decays with distance from the training window. " +
-  "Advisory only: this is what historically followed signals like this " +
-  "one, not what will happen.";
+  "Use these to rank signals, not to read an exact chance. Measured " +
+  "against live results, the ordering held across every probability " +
+  "band, but the stated percentage ran low in six of eight. How often " +
+  "any signal reaches +3% has ranged from 37% to 65% month to month over " +
+  "the past year, while these numbers are anchored to a 43% period, so " +
+  "expect them to understate in a rising market and overstate in a " +
+  "falling one. Calibrated on the validate split, which was scored " +
+  "repeatedly during model selection, so the interval is a lower bound " +
+  "on the true uncertainty, and coverage decays with distance from the " +
+  "training window. Advisory only: this is what historically followed " +
+  "signals like this one, not what will happen.";
 
 export const MODEL_FIELD_LABELS: Record<string, string> = {
   p_touch_2: "Reaches +2%",
