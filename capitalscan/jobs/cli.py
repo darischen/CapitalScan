@@ -3101,9 +3101,15 @@ def nightly() -> None:
     try:
         from capitalscan.jobs import artifact as artifact_mod
         from capitalscan.jobs.predict import run_predict
+        from capitalscan.research import features as feat
 
         with ingest.run_job(engine, "predict", {"trigger": "nightly"}) as pj:
-            pred_report = run_predict(engine, chash, from_artifact=True)
+            # **Every event, not just the trade universe** (ADR 183).
+            # 1,040 of ~1,419 tickers only ever fire outside it, so
+            # scoring `trade` alone leaves three quarters of the ticker
+            # pages blank. The out-of-universe rows are written with
+            # `cosmetic = true` and carry their own caveat.
+            pred_report = run_predict(engine, chash, from_artifact=True, universe=feat.ANY_UNIVERSE)
             pj.rows_written = pred_report.rows_written
         console.print(f"predict: rows_written={pred_report.rows_written:,}")
     except artifact_mod.StaleArtifact as exc:
@@ -3348,9 +3354,15 @@ def weekly(
     # succeeds. A week-old model is a known quantity; no model is not.
     try:
         from capitalscan.jobs.predict import run_predict as _refit
+        from capitalscan.research import features as _feat
 
         with ingest.run_job(engine, "predict", {"trigger": "weekly", "refit": True}) as rj:
-            refit_report = _refit(engine, chash)
+            # Same coverage as nightly (ADR 183). The refit scores as
+            # well as fits, and a weekly that scored only the trade
+            # universe would blank every cosmetic ticker until the next
+            # nightly put it back -- a page that empties and refills on a
+            # weekly cycle reads as a bug.
+            refit_report = _refit(engine, chash, universe=_feat.ANY_UNIVERSE)
             rj.rows_written = refit_report.rows_written
         console.print(
             f"refit: {refit_report.rows_written:,} predictions, "

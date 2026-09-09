@@ -208,7 +208,16 @@ while kill -0 "$POLLER" 2>/dev/null; do
     # Output is swallowed on success and shown on failure. A scoring error
     # must not end the session -- the poller's job is capturing fires, and
     # an unscored fire is recoverable while a missed one is not.
-    if ! out=$(.venv/bin/cscan predict --serving --universe all 2>&1); then
+    # **`--since today`, not the 45-day default.** Measured 2026-09-09:
+    # 184 events today against 23,767 in the default window, so the
+    # unscoped call is 129x the work -- on a Pi, in a 60-second loop, it
+    # would not finish before the next tick.
+    #
+    # Older rows are not neglected: `nightly` re-scores the whole window,
+    # which is what keeps every displayed number from the *same* model
+    # after a weekly refit (ADR 184). This loop only has to keep today
+    # current.
+    if ! out=$(.venv/bin/cscan predict --serving --universe all                  --since "$(date +%F)" 2>&1); then
       say SCORE "predict failed: $(echo "$out" | tail -2 | tr '
 ' ' ')"
     fi
@@ -224,7 +233,7 @@ wait "$POLLER"; rc=$?
 # This is the one that matters: it is what the site serves overnight until
 # nightly runs.
 say SCORE "Final scoring pass"
-if ! out=$(.venv/bin/cscan predict --serving --universe all 2>&1); then
+if ! out=$(.venv/bin/cscan predict --serving --universe all --since "$(date +%F)" 2>&1); then
   say SCORE "final predict failed: $(echo "$out" | tail -2 | tr '
 ' ' ')"
 else

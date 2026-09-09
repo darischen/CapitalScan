@@ -9186,6 +9186,26 @@ the rest. It says the model never saw this population and nothing here was
 checked, which is equally true either way. Splitting it would imply a
 gradient the evidence does not support.
 
+### The scheduled jobs score every universe too, 2026-09-09
+
+`--universe all` on the CLI is not enough. `nightly` and `weekly` both call
+`run_predict` directly, and both defaulted to `trade` — so the cosmetic
+coverage would have survived exactly until the next scheduled run and then
+vanished.
+
+**The weekly case is the worse one.** The refit scores as well as fits, so
+a `trade`-only weekly would blank every cosmetic ticker until the next
+nightly filled them back in. A page that empties and refills on a weekly
+cycle reads as a bug, and the likely response is to "fix" it by narrowing
+something else.
+
+Both now pass `ANY_UNIVERSE`, pinned by tests — including one asserting the
+constant is genuinely unrestricted, because the other two are source checks
+that would still pass if it were quietly redefined.
+
+**Training is untouched and stays `TRADE_ONLY`**, asserted separately.
+Widening serving is this ADR; widening training would be ADR 180 again.
+
 ### What keeps this from being ADR 180 again
 
 ADR 180 was 48% of predictions silently extrapolating. The difference is
