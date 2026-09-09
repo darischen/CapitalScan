@@ -1913,3 +1913,39 @@ non-finite quantile points at the inversion, not at the distribution.
 
 Cheap first cut: pull one such row, print its pmf, and see whether the CDF
 ever crosses the quantile level at all.
+
+## `wivie` is 12 migrations behind, and must NOT be caught up with `db migrate`
+
+Checked 2026-09-08. `wivie`'s local research database sits at
+`b7f3c5d21a94`; head is `a1c7f3b09d84`. The twelve in between are the whole
+prediction chain:
+
+```
+e2c7a94b3d15  universe_watch_near_trade      c1e6b73f9a02  market_days_breadth
+c3f8a1e07b26  predictions_carry_calibration  d8c40a5b71e9  ticker_events_in_watch
+d5a02b18c937  screener_views_prediction_ci   e4b19c86d275  predictions_natural_key
+e7b4c92f1a08  predictions_key_on_event_id    f7d3a02e5c18  views_join_natural_key
+f2a71d6e8c34  events_trough_ret_columns      a1c7f3b09d84  predictions_model_scored
+a9d3e05f7b21  predictions_calibration_json
+b4f8c17d29e6  views_expose_calibration_json
+```
+
+Its *serving* pointer is fine and already reads the Pi at head — only the
+local research database is stale.
+
+**Running `cscan db migrate` there is the wrong move, and the reason is
+ordering rather than risk.** The cutover restores a workstation dump onto
+`wivie`, which is the only direction that works (ADR 164: 16.14 restores
+into 17.11, never the reverse). That dump carries the workstation's schema
+*and* its data, both at head. Migrating the stale database first spends
+twelve migrations on rows that a `pg_restore` is about to replace, and
+leaves a window where `wivie` holds head's schema over an old generation's
+data — which looks exactly like a working research database and is not.
+
+Restore first, then confirm `cscan db status` reads head because the dump
+put it there. The schema is not a separate task from the data sync; it is
+the same task.
+
+**Still true and separate:** WAL and autovacuum tuning live on the server,
+not in a migration, so they must be re-applied by hand on `wivie` after any
+restore. → `CLAUDE.md`, `pi-postgres-tuning`.
