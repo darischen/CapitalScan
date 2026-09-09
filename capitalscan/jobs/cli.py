@@ -2968,6 +2968,36 @@ def nightly() -> None:
             backfill_extremum_labels(engine, chash, config.stats.fwd_ret_horizons, family)
             for family in FAMILIES
         )
+    # **Inference, after the labels it trains on and before the sync that
+    # ships it.** That ordering is the whole point: `peak_labels` above
+    # just closed another day of forward windows, so a fit here sees them,
+    # and `sync` below carries the predictions to serving the same night.
+    # Run it after the sync and the site shows yesterday's model for a day.
+    #
+    # **Skipped visibly, never fatally, when the `neural` extra is absent.**
+    # It is a 2GB torch wheel and the Debian boxes do not carry it. A
+    # missing optional dependency must read like the `skip <target>` line
+    # `cscan db migrate` prints, not like a failed ingest — everything
+    # above is already committed to the research store and a chain that
+    # dies here would mark a good night bad.
+    #
+    # **This reverses a documented decision.** CLAUDE.md said `predict` is
+    # deliberately not in `nightly`, on the grounds that it refits three
+    # seeds every run and costs ~11 minutes. The user's call, 2026-09-08:
+    # stale predictions on the home page are worse than a longer nightly.
+    # The cost is real and lands on whichever box holds research — ~11 min
+    # on the workstation, ~37 min projected on `wivie` at its measured
+    # 3.41x, which is the number to check before the cutover.
+    try:
+        from capitalscan.jobs.predict import run_predict
+
+        with ingest.run_job(engine, "predict", {"trigger": "nightly"}) as pj:
+            pred_report = run_predict(engine, chash)
+            pj.rows_written = pred_report.rows_written
+        console.print(f"predict: rows_written={pred_report.rows_written:,}")
+    except ModuleNotFoundError as exc:
+        console.print(f"skip predict: {exc}. Install the `neural` extra to enable it.")
+
     # Closes the slot `record` opened above. Without it the row stays
     # `'started'` forever and `cscan system-status` cannot tell a chain that
     # finished from one that died halfway (ADR 080 lists `status` and

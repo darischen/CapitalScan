@@ -18,7 +18,7 @@ import {
   PREDICTION_CAVEAT_SUMMARY,
   pct,
 } from "@/lib/format";
-import type { Band, Prediction, ScreenRow } from "@/lib/screen";
+import type { Band, Prediction } from "@/lib/screen";
 
 /**
  * The model's output for one signal, in full.
@@ -108,11 +108,24 @@ function BandRow({ field, band }: { field: string; band: Band }) {
   );
 }
 
+/**
+ * **Narrowed to the three things this dialog reads**, rather than taking a
+ * whole `ScreenRow`. The graph page has no screener row — it asks for a
+ * ticker's latest scored prediction, which is a different query with an
+ * answer on days the name did not fire — and faking a `ScreenRow` there
+ * would mean inventing a dozen fields the modal never touches.
+ */
+export interface InferenceSubject {
+  ticker: string;
+  signalDate: string;
+  prediction: Prediction | null;
+}
+
 export function InferenceModal({
   row,
   onClose,
 }: {
-  row: ScreenRow;
+  row: InferenceSubject;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);

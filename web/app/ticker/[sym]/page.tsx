@@ -13,7 +13,15 @@ import {
 import TickerChart from "@/components/TickerChart";
 import { normalizeSymbol } from "@/lib/format";
 import { readMeta } from "@/lib/screen";
-import { chart, countEvents, events, liveQuote, parseRange, state } from "@/lib/ticker";
+import {
+  chart,
+  countEvents,
+  events,
+  latestPrediction,
+  liveQuote,
+  parseRange,
+  state,
+} from "@/lib/ticker";
 
 /**
  * `/ticker/[sym]` — chart, current state, event history.
@@ -86,12 +94,16 @@ export default async function TickerPage({
       );
     }
 
-    const [bars, history, total, live, meta] = await Promise.all([
+    // `latestPrediction` joins the same Promise.all rather than awaiting
+    // after it: it is an independent single-row lookup, and sequencing it
+    // would add its latency to a page that already waits on five queries.
+    const [bars, history, total, live, meta, prediction] = await Promise.all([
       chart(sym, range),
       events(sym, { all, limit: query.limit ? Number(query.limit) : undefined }),
       countEvents(sym, all),
       liveQuote(sym, current.asOf),
       readMeta(),
+      latestPrediction(sym),
     ]);
 
     return (
@@ -120,6 +132,7 @@ export default async function TickerPage({
           all={all}
           total={total}
           inTrade={current.inTrade}
+          prediction={prediction}
         />
       </main>
     );

@@ -166,7 +166,7 @@ export interface Reversal {
  * rendered: a probability without its interval is exactly what invariant 8
  * forbids, and a modal is the one place with room to show both.
  */
-function allBands(payload: Record<string, unknown> | null): Record<string, Band> {
+export function allBands(payload: Record<string, unknown> | null): Record<string, Band> {
   const out: Record<string, Band> = {};
   if (!payload) return out;
   for (const field of Object.keys(payload)) {
@@ -185,7 +185,7 @@ function allBands(payload: Record<string, unknown> | null): Record<string, Band>
  * have it, so absence is an expected state and not an error — and a band
  * with a probability but no interval must never reach the screen.
  */
-function band(payload: Record<string, unknown> | null, field: string): Band | null {
+export function band(payload: Record<string, unknown> | null, field: string): Band | null {
   if (!payload) return null;
   const raw = payload[field];
   if (!raw || typeof raw !== "object") return null;
@@ -259,6 +259,14 @@ export interface Prediction {
    * different quantity.
    */
   bands: Record<string, Band>;
+  /**
+   * The signal date and type this prediction is about. Optional because
+   * the screener already knows both from the row it renders beside; the
+   * graph page does not, since it asks for a ticker's latest prediction
+   * rather than one tied to a day it is already displaying.
+   */
+  asOf?: string | null;
+  signalType?: string | null;
   /**
    * The adverse side (ADR 175): probability of a 3% move **against** the
    * position within five sessions, with its own interval.

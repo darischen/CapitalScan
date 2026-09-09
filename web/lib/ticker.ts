@@ -1,6 +1,13 @@
 import { num, query } from "./db";
 import { EQUITY_LOOKBACK_SESSIONS, compoundEquity } from "./equity";
-import { isoDate, sideFor, type Side } from "./screen";
+import {
+  allBands,
+  band,
+  isoDate,
+  sideFor,
+  type Prediction,
+  type Side,
+} from "./screen";
 
 /**
  * The ticker page's three reads: series, state, history.
@@ -885,4 +892,58 @@ export function toLiveQuote(
   // `quotes_live` read needed is gone with the table it guarded.
   const sessionDate = isoDate(row.session_date);
   return { price, ts: row.ts.toISOString(), aheadOfBar: sessionDate > barDate };
+}
+
+/**
+ * The most recent scored prediction for one ticker, for the graph page's
+ * "Predict movement" panel.
+ *
+ * **Reads `predictions` directly rather than a screener view.** The views
+ * are anchored on `signal_date` and answer "what fired that day"; this
+ * answers "what does the model last say about this name", which is a
+ * different question and has an answer on days the ticker did not fire.
+ *
+ * **`model_scored` is not optional here.** ADR 180: rows outside the
+ * fitted signal-type population carry a probability the model cannot back,
+ * and this query would happily surface one for a ticker whose only
+ * prediction is a stochastic signal. The screener filters them in the
+ * view; nothing filters them here but this clause.
+ *
+ * Returns `null` when the name has no scored prediction at all, which is
+ * common and not an error — the button is simply not rendered.
+ */
+export async function latestPrediction(sym: string): Promise<Prediction | null> {
+  const rows = await query<{
+    as_of: Date;
+    signal_type: string;
+    p_touch_3: string | number | null;
+    ci_low: string | number | null;
+    ci_high: string | number | null;
+    calib_n_eff: string | number | null;
+    model_version: string | null;
+    calibration_json: Record<string, unknown> | null;
+  }>(
+    `SELECT p.as_of, p.signal_type, p.p_touch_3, p.ci_low, p.ci_high,
+            p.calib_n_eff, p.model_version, p.calibration_json
+       FROM predictions p
+      WHERE p.ticker = $1
+        AND p.model_scored
+        AND p.config_hash = current_setting('capitalscan.default_config_hash', true)
+      ORDER BY p.as_of DESC, p.id DESC
+      LIMIT 1`,
+    [sym],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    pTouch3: num(r.p_touch_3),
+    ciLow: num(r.ci_low),
+    ciHigh: num(r.ci_high),
+    nEff: num(r.calib_n_eff),
+    modelVersion: r.model_version,
+    adverse3: band(r.calibration_json, "p_adverse_3"),
+    asOf: isoDate(r.as_of),
+    signalType: r.signal_type,
+    bands: allBands(r.calibration_json),
+  };
 }
