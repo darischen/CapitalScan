@@ -76,11 +76,31 @@ DEFAULT_BUCKETS = 10
 #: row; `handlers/predict.py` re-exports it to the wire. A handler that
 #: imported `research` to reach a string would drag the fitting stack into
 #: the serving path, and no handler has ever done that.
+#: **Measured against the live forward log on 2026-09-08**, not asserted.
+#: Across 4,020 resolved in-population predictions the ordering held across
+#: all eight probability buckets (41.6% to 87.1% realised) while the shipped
+#: value fell below the bucket's own 95% interval in six of the eight. The
+#: cause is a base rate that will not sit still: the isotonic tables are
+#: anchored to the validate split's 43.2%, the last twelve months average
+#: about 49.5%, and the month-to-month range is 36.5% to 65.0%. That swing
+#: is larger than the model's entire Brier skill of 0.079, so the ordering
+#: is the durable part of the output and the level is not.
+#:
+#: Saying so is the point. A number carrying an interval that has been
+#: measured to miss reads as more trustworthy than one that admits it,
+#: which is the worse failure. → RESULTS.md 2026-09-08.
 MODEL_CAVEAT = (
-    "Probabilities are calibrated on the validate split, which has been "
-    "scored repeatedly during model selection, so the intervals are a lower "
-    "bound on the true uncertainty. Coverage also decays with distance from "
-    "the training window (2024 0.0182, 2025 0.0311, 2026 0.0480). Advisory "
+    "Use these to rank signals, not to read an exact chance. Measured "
+    "against live results through 2026-09-08, the ordering held across "
+    "every probability band, but the stated percentage ran low in six of "
+    "eight bands. The reason is the market, not the signal: how often any "
+    "signal reaches +3% has ranged from 37% to 65% month to month over the "
+    "past year, while these numbers are anchored to a 43% period. Expect "
+    "the figure to understate in a rising market and overstate in a "
+    "falling one. Calibration also uses the validate split, which model "
+    "selection has scored repeatedly, so the intervals are a lower bound "
+    "on the true uncertainty, and accuracy decays with distance from the "
+    "training window (2024 0.0182, 2025 0.0311, 2026 0.0480). Advisory "
     "only: this states what historically followed signals like this one, "
     "not what will happen."
 )

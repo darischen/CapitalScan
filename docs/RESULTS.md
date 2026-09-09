@@ -7758,3 +7758,84 @@ validate on different years, so a lower error could mean 2026 was easier.
 
 **No conclusion is recorded about rolling windows.** The question ADR 179
 asks is still open.
+
+---
+
+## 2026-09-08 — the model ranks well and its level is wrong, and the reason is not the model
+
+The question behind this: are the predictions workable for manual
+observation backtesting? Measured on the forward log, restricted to the
+4,020 resolved in-population rows ADR 180 leaves standing.
+
+### Ranking: reliable
+
+Eight equal-ish buckets of `p_touch_3` against the realised `touched_3`:
+
+| bucket | n | predicted | actual | 95% CI on actual | shipped value inside? |
+|---:|---:|---:|---:|---:|---|
+| 0 | 308 | 0.285 | 0.416 | [0.362, 0.471] | **no, too low** |
+| 1 | 279 | 0.371 | 0.444 | [0.387, 0.503] | **no, too low** |
+| 2 | 717 | 0.404 | 0.449 | [0.413, 0.486] | **no, too low** |
+| 3 | 1,083 | 0.488 | 0.512 | [0.483, 0.542] | yes |
+| 4 | 681 | 0.569 | 0.604 | [0.566, 0.640] | yes |
+| 5 | 347 | 0.643 | 0.700 | [0.650, 0.746] | **no, too low** |
+| 6 | 180 | 0.713 | 0.789 | [0.724, 0.842] | **no, too low** |
+| 7 | 425 | 0.781 | 0.871 | [0.835, 0.899] | **no, too low** |
+
+The actual rate is **monotone across all eight buckets**, 41.6% to 87.1%.
+Nothing crosses. As an ordering of which signals are more likely to reach
++3%, the model works.
+
+### Level: systematically low, in six of eight buckets
+
+The shipped probability falls outside the bucket's own 95% Wilson interval
+six times, and always on the same side. That is not sampling noise, and it
+is the reason the pooled gap is −5.4pp.
+
+### The cause is a non-stationary base rate, not a broken model
+
+The 3% touch rate by split, same population, same `entry_kind`:
+
+| split | period | n | touch rate |
+|---|---|---:|---:|
+| train | 2010-03-31..2021-12-31 | 94,401 | 35.1% |
+| **validate** — where ADR 174 fits the reliability tables | 2022-01-03..2023-12-29 | 19,624 | **43.2%** |
+| holdout | 2024-01-02..2026-08-28 | 46,324 | 44.1% |
+| forward log | Aug-Sep 2026 | 4,020 | **57.1%** |
+
+And by month over the last year:
+
+```
+2025-09 0.374   2025-12 0.366   2026-03 0.544   2026-06 0.539
+2025-10 0.514   2026-01 0.488   2026-04 0.408   2026-07 0.650
+2025-11 0.561   2026-02 0.520   2026-05 0.495   2026-08 0.505
+```
+
+**The month-to-month swing is 36.5% to 65.0%, and the twelve-month mean is
+about 49.5% against the calibration era's 43.2%.** The isotonic tables are
+anchored to a base rate that has since moved and keeps moving.
+
+### What this means for using the numbers
+
+The base rate's month-to-month variation, roughly ±14 points, is **larger
+than the model's whole discriminating skill** — Brier skill 0.079 against
+that same base rate. So:
+
+- **Rank with it.** The ordering held across all eight buckets and is what
+  the skill score is actually measuring.
+- **Do not read the level as a probability.** In a rising market it
+  understates; in a falling one it will overstate by the same mechanism,
+  and nothing in the current output flags which regime you are in.
+- The correct comparison for any signal is against **the same month's**
+  realised rate, not against the shipped number.
+
+### What is deliberately not done about it
+
+Recalibrating on the forward log would fix the level and destroy the only
+clean evidence the project has. ADR 179 forbids it, and this measurement is
+the reason that rule is absolute rather than a default: the moment the
+forward log is trained on, tables like the one above stop meaning anything.
+
+The legitimate fix is ADR 179's rolling refit, which moves the calibration
+window forward with the data. That test is still open — see the retraction
+above.

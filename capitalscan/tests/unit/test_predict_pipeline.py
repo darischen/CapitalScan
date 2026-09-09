@@ -137,7 +137,12 @@ class TestTheCaveatTravels:
         block = re.search(r"export const PREDICTION_CAVEAT =(.+?);", ts, re.S)
         assert block, "PREDICTION_CAVEAT is gone from screen.ts"
         copy = block.group(1).lower()
-        for claim in ("validate", "lower bound", "advisory", "coverage"):
+        # "rank" and "understate" pin the 2026-09-08 measurement: the
+        # ordering held across all eight probability bands while the shipped
+        # value missed the band's own 95% interval in six. A caveat that
+        # drops it leaves a number the project has measured as biased
+        # looking exactly as trustworthy as one it has not.
+        for claim in ("validate", "lower bound", "advisory", "coverage", "rank", "understate"):
             assert claim in copy, f"the UI caveat dropped '{claim}'"
 
 
