@@ -7839,3 +7839,91 @@ forward log is trained on, tables like the one above stop meaning anything.
 The legitimate fix is ADR 179's rolling refit, which moves the calibration
 window forward with the data. That test is still open — see the retraction
 above.
+
+---
+
+## 2026-09-08 — ADR 179 answered: **no rolling window**, and the coverage gate has been guarding the wrong family
+
+Re-run at seven years with a real ladder (`scripts/rolling_window_test.py`).
+The five-year run was void — see the retraction above. This one selects its
+step counts properly (`[244, 323, 244]`, varied across seeds, against the
+void run's three identical fallbacks) and trains on 91,379 rows against the
+fixed arm's 91,546, a 0.2% difference. Finally like-for-like.
+
+Run twice. **Identical to four decimals across all three arms and all nine
+step counts**, so the fits are deterministic and nothing below is seed luck.
+
+### The aggregate says "slightly worse" and is nearly uninformative
+
+| arm | train | steps | heads pass | mean abs err |
+|---|---:|---|---:|---:|
+| `fixed` | 91,546 | [776, 909, 591] | 26/30 | 0.0307 |
+| `roll7` | 91,379 | [244, 323, 244] | 24/30 | 0.0311 |
+| `roll7_purge` | 91,180 | [243, 322, 322] | 24/30 | 0.0327 |
+
+`purge effect: 0.0311 -> 0.0327`, no leak detected.
+
+### Split by task family it is not marginal, it is an inversion
+
+| family | shipped as | `fixed` | `roll7` | `roll7_purge` |
+|---|---|---|---|---|
+| **peak** | `p_touch_2/3/5/10` | **10/10** (0.0225) | 6/10 (0.0370) | 6/10 (0.0426) |
+| **trough** | `p_adverse_3/5` | **10/10** (0.0257) | 8/10 (0.0286) | 8/10 (0.0307) |
+| terminal | **nothing displays it** | 6/10 (0.0440) | **10/10** (0.0278) | **10/10** (0.0248) |
+
+Rolling takes `terminal` from 6/10 to 10/10 and `peak` from 10/10 to 6/10.
+The six heads it breaks and the four it fixes are not scattered:
+
+```
+BREAKS   peak_h5  q0.50  -0.0114 -> -0.0638      FIXES  terminal_h5  q0.25  +0.0836 -> +0.0410
+         peak_h5  q0.75  -0.0331 -> -0.0670             terminal_h5  q0.50  +0.0625 -> +0.0186
+         peak_h10 q0.50  -0.0207 -> -0.0575             terminal_h10 q0.25  +0.0886 -> +0.0443
+         peak_h10 q0.75  -0.0488 -> -0.0615             terminal_h10 q0.50  +0.0669 -> +0.0258
+         trough_h10 q0.25 +0.0459 -> +0.0602
+         trough_h10 q0.50 +0.0437 -> +0.0529
+```
+
+The signs are consistent within family. `peak` errors are negative and get
+more so; `trough` errors are positive and get more so. Coverage below `tau`
+means the quantile sits too high, so under a rolling window the model
+predicts **larger favorable extremes and shallower adverse ones** — the
+2019-2025 window is dominated by rising markets and teaches exactly that.
+`terminal` improves for the same reason: recent data matches the recent
+base rate for net realised return.
+
+### The decision
+
+**Do not adopt a rolling window.** Every shipped probability reads `peak` or
+`trough` (`HEADLINE = p_touch_3`, family `peak`). The `terminal` head backs
+only `q05..q95`, which ADR 172 established is negative out of sample and
+which **no surface displays**. Rolling improves the family nobody sees and
+degrades both families the product ships.
+
+The aggregate hid this completely: 26/30 against 24/30 reads as a marginal
+loss when it is a total inversion of which family works.
+
+### The bigger finding: the gate has been watching the wrong family
+
+**All four heads the fixed arm fails are `terminal` heads.** The coverage
+failure that drove five hypotheses, four refutations, this ADR, and two
+22-minute runs is a failure in the one family the product does not display.
+`peak` and `trough` are at **10/10 and 10/10** under the shipped
+configuration.
+
+This does not make the work wasted — a miscalibrated head is worth knowing
+about, and the diagnostics that came out of it are real. It does mean the
+priority was wrong, and that any future coverage work should weight by
+whether a head reaches a surface.
+
+**It also does not explain the live calibration bias.** That is measured on
+`p_touch_3`, a `peak` head, against the forward log — a different question
+from the coverage gate, and still open. Its cause is the non-stationary base
+rate documented above, and the rolling window is now ruled out as the fix.
+
+### The caveat that still stands
+
+The arms validate on different years, so "rolling degrades `peak`" could in
+part be "2026 peaks are harder to calibrate than 2022-2023 peaks". What the
+year confound cannot easily explain is the *structure*: a clean inversion
+between the displayed and undisplayed families, with consistent signs inside
+each. Read the direction as established and the magnitude as approximate.
