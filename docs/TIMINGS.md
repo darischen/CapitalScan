@@ -396,3 +396,45 @@ because the universe slices share tickers.
 **The failure presented as "system is running low on memory" and was
 commit exhaustion, not RAM** — 2.9 GB resident against a 70.7 GB
 reservation. → `OPERATIONS.md`
+
+
+## 2026-09-09, measured end to end
+
+Everything below came off `runs` or a `time` on the command. The sync is
+absent because it had not finished when this was written; quoting it from
+the 2026-09-08 figure would be exactly the guess this file exists to stop.
+
+| step | duration | note |
+|---|---|---|
+| `nightly`, full chain | **41m34s** | 13:15:13 -> 13:56:47 |
+| ├ `bars_daily` | 3m31s | |
+| ├ `bars_hourly` | 3m29s | |
+| ├ `actions` | 12m53s | the longest single step |
+| ├ `shares` | 10m06s | 151 of 1,463 tickers had no SEC rows |
+| ├ `indicators` | 1m24s | |
+| ├ `events` | 1m22s | |
+| ├ `path_capture` | **2m36s** | was 1h53m on 2026-09-08 |
+| ├ `peak_labels` | 4m01s | |
+| ├ `predict` | 13s, **failed** | v1 artifact refused; chain continued |
+| └ `sync` (incremental) | 1m20s | |
+| `cscan predict --universe all` | **12m54s** | 13,090 predictions, 1,391 tickers |
+| `cscan predict --universe all` (earlier) | 14m55s | 12,561 predictions |
+| `cscan predict --serving` **on the Pi** | **12.7s** | 498 events, numpy only, no torch |
+| `backtest --phase harness` | **10m19s** | passed; 1,898,575 events, 773 tickers |
+| `pg_dump -Fc` (in container) | **8m00s** | 33 GB -> 3.57 GB |
+| `VACUUM (PARALLEL 0, ANALYZE) events` | 50s | `n_live_tup` 874 -> 22,794,821 |
+
+**`path_capture` at 2m36s is the checkpoint working.** It ran 1h53m on
+2026-09-08 and was killed; those rows now carry `fwd_window_days`, so the
+per-ticker checkpoint skips them. The same job, an order of magnitude
+apart, purely on what was already done.
+
+**`predict` failing for 13 seconds is the designed behaviour**, not an
+incident. ADR 184 makes a stale artifact reported-and-skipped rather than
+fatal, and this was its first production exercise: the guard refused a
+version-1 artifact, `nightly` printed why, and the remaining steps ran.
+
+**The Pi number is the one worth keeping.** 12.7 seconds on a Raspberry Pi
+with no torch installed, having fetched a 3.5 MB artifact out of the
+serving database because the local copy had been deleted. Against ~13
+minutes to refit. That ratio is what ADR 181/184/185 exist for.
