@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -111,3 +111,57 @@ def ensemble_pmf(members: Sequence[NetworkWeights], x: np.ndarray) -> np.ndarray
     if not members:
         raise ValueError("an ensemble with no members cannot produce a pmf")
     return np.mean([m.pmf(x) for m in members], axis=0)
+
+
+#: The columns whose missingness is carried as its own indicator column,
+#: mirroring `research.neural.IMPUTE_COLS`. Duplicated rather than imported
+#: because `research` pulls sqlalchemy and torch, and this module has to
+#: stay importable with numpy alone. `test_inference_parity.py` asserts the
+#: two lists agree, so the duplication cannot drift.
+IMPUTE_COLS: tuple[str, ...] = ("days_to_earnings", "spx_ret_1d")
+
+
+def design_matrix(
+    frame: Any,
+    columns: Sequence[str],
+    mean: np.ndarray,
+    std: np.ndarray,
+    categorical_levels: Sequence[tuple[str, Sequence[str]]],
+) -> np.ndarray:
+    """`research.neural.DesignMatrix.transform`, without torch or pandas state.
+
+    **The second place two implementations could disagree**, and a quieter
+    one than the forward pass: a column order that differs by one produces
+    a full matrix of plausible numbers rather than an error. So this is
+    parity-tested against `DesignMatrix.transform` exactly as the network
+    is against torch.
+
+    `mean` and `std` are the *train* statistics, carried rather than
+    recomputed. Standardising a serving frame on its own moments would
+    erase the regime difference the model is supposed to see, and it would
+    do so invisibly.
+
+    Takes a DataFrame because that is what the caller has; it reads columns
+    and does no IO, so invariant 1 holds.
+    """
+    block = frame[list(columns)].copy()
+    for col in block.columns:
+        if block[col].dtype == bool:
+            block[col] = block[col].astype(float)
+    numeric = block.astype(float)
+
+    # Built before scaling: `fillna(0.0)` below erases the missingness that
+    # these columns exist to record.
+    indicators = [numeric[c].isna().to_numpy(dtype=float)[:, None] for c in IMPUTE_COLS]
+
+    scaled = ((numeric - mean) / std).fillna(0.0)
+    blocks: list[np.ndarray] = [scaled.to_numpy(dtype=float)]
+
+    # A level unseen in train encodes as all-zero, which is the honest
+    # representation of "not a level this model was fitted on".
+    for col, levels in categorical_levels:
+        values = frame[col].to_numpy()
+        blocks.append(np.stack([(values == lv).astype(float) for lv in levels], axis=1))
+
+    blocks.extend(indicators)
+    return np.concatenate(blocks, axis=1)

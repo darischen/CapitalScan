@@ -20,6 +20,7 @@ depend on torch being installed.
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from capitalscan.core import inference as cinf
@@ -153,3 +154,102 @@ class TestEnsembleAveraging:
         """`np.mean([])` is NaN with a warning, which would ship silently."""
         with pytest.raises(ValueError, match="no members"):
             cinf.ensemble_pmf([], np.zeros((1, 2)))
+
+
+class TestDesignMatrixParity:
+    """The quieter of the two drift risks.
+
+    A forward pass that disagrees tends to disagree visibly. A design
+    matrix whose column order is off by one produces a full matrix of
+    plausible numbers and no error at all, and every probability built on
+    it is wrong. So it gets the same treatment as the network.
+    """
+
+    @staticmethod
+    def _frame() -> pd.DataFrame:
+        rng = np.random.default_rng(19)
+        n = 30
+        frame = pd.DataFrame(
+            {
+                "bb_pctb": rng.normal(size=n),
+                "k_full": rng.normal(size=n) * 20 + 50,
+                "above_sma200": rng.integers(0, 2, size=n).astype(bool),
+                "days_to_earnings": rng.normal(size=n),
+                "spx_ret_1d": rng.normal(size=n) / 100,
+                "sector": rng.choice(["Tech", "Energy", "Health"], size=n),
+                "signal_type": rng.choice(["confluence_low", "bb_lower_touch"], size=n),
+            }
+        )
+        # Missingness in both impute columns, which is the whole reason the
+        # indicator columns exist -- a frame without NaNs would pass even if
+        # they were dropped.
+        frame.loc[frame.index[:5], "days_to_earnings"] = np.nan
+        frame.loc[frame.index[3:8], "spx_ret_1d"] = np.nan
+        return frame
+
+    def test_it_matches_the_fitted_transform(self) -> None:
+        from capitalscan.research import neural
+
+        frame = self._frame()
+        numeric_cols = ["bb_pctb", "k_full", "above_sma200", "days_to_earnings", "spx_ret_1d"]
+        block = frame[numeric_cols].astype(float)
+        design = neural.DesignMatrix(
+            columns=tuple(numeric_cols),
+            mean=block.mean(),
+            std=block.std().replace(0.0, 1.0),
+            categorical_levels=(
+                ("sector", ("Energy", "Health", "Tech")),
+                ("signal_type", ("bb_lower_touch", "confluence_low")),
+            ),
+        )
+        expected = design.transform(frame)
+        got = cinf.design_matrix(
+            frame,
+            design.columns,
+            design.mean.to_numpy(dtype=float),
+            design.std.to_numpy(dtype=float),
+            design.categorical_levels,
+        )
+        assert got.shape == expected.shape
+        assert np.allclose(got, expected, equal_nan=False)
+        assert isinstance(design.mean, pd.Series)  # the fitted stats stay pandas
+
+    def test_the_impute_columns_have_not_drifted(self) -> None:
+        """`core` duplicates the list so it can import without `research`.
+
+        Duplication is fine; silent divergence is not. If `research` gains
+        a third imputed column and this does not, the matrix loses a column
+        and every downstream number shifts.
+        """
+        from capitalscan.research import neural
+
+        assert cinf.IMPUTE_COLS == neural.IMPUTE_COLS
+
+    def test_an_unseen_categorical_level_encodes_as_all_zero(self) -> None:
+        """The honest encoding of "not a level this model was fitted on".
+
+        `IMPUTE_COLS` are in `columns` because the transform reads their
+        missingness out of the numeric block. That is not a quirk of this
+        test: `fit_design` always includes them, and a caller who omitted
+        them would get a `KeyError` rather than a silently short matrix,
+        which is the right failure.
+        """
+        frame = pd.DataFrame(
+            {
+                "days_to_earnings": [5.0],
+                "spx_ret_1d": [0.01],
+                "sector": ["Utilities"],  # never in the fitted levels
+            }
+        )
+        cols = ["days_to_earnings", "spx_ret_1d"]
+        got = cinf.design_matrix(
+            frame,
+            cols,
+            np.zeros(2),
+            np.ones(2),
+            [("sector", ("Tech", "Energy"))],
+        )
+        # Two numeric, then the sector one-hot, then the two indicators.
+        assert got.shape == (1, 2 + 2 + 2)
+        assert got[0, 2] == 0.0
+        assert got[0, 3] == 0.0
