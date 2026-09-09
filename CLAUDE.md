@@ -280,6 +280,30 @@ Zero backends and no `cscan` process means the row is stale. Mark it `failed`, b
 
 ---
 
+**Weight model diagnostics by whether a head reaches a surface.** The
+coverage gate reports 30 heads as one number, and that number is misleading.
+Split by task family (2026-09-08, `RESULTS.md`): `peak` **10/10**, `trough`
+**10/10**, `terminal` **6/10**. Every probability a reader sees comes from
+`peak` (`p_touch_*`) or `trough` (`p_adverse_*`), and both are perfect. The
+`terminal` head backs only `q05..q95`, negative out of sample under ADR 172
+and displayed nowhere.
+
+All four failing heads are `terminal` heads. Five hypotheses, four
+refutations, ADR 179 and two 22-minute runs went into a miscalibration in
+the one family nobody sees. **Split by family before drawing any conclusion
+from an aggregate**, and fix a displayed head before an undisplayed one.
+→ `BACKLOG.md`
+
+**The shipped probabilities run ~5 points low, and it is not a bug.** The
+isotonic tables are anchored to the validate split's 43.2% 3% touch rate;
+the trailing twelve months average ~49.5% and range 36.5-65.0%. That swing
+exceeds the model's whole Brier skill of 0.079, so **ranking is the durable
+output and the level is not**. ADR 179's rolling window is refuted as the
+fix, and recalibrating on the forward log is forbidden — it would destroy
+the only clean evidence the project has. → `BACKLOG.md`
+
+---
+
 **Verify before you assert.** Query the database rather than trusting a prior report, including this one — several confident claims in earlier session reports did not hold up under direct measurement.
 
 ---
@@ -294,7 +318,7 @@ Zero backends and no `cscan` process means the row is stale. Mark it `failed`, b
 5b. **No view or query may join statistics on an event's own `split_key`.** Live events carry `split_key = 'holdout'`; inheriting it would surface holdout numbers continuously. Serving views hardcode `split_key = 'validate'`. `cell_id` is derived from component columns, never stored on `events`.
 6. **Every generated row carries `run_id` and `git_sha`.**
 7. **No broker client, no order placement, no brokerage credentials.** The absence is the safety property, not a disabled flag.
-8. **Every response carrying a probability carries `n_eff` and a confidence interval.**
+8. **Every response carrying a probability carries `n_eff` and a confidence interval.** The modal shows the interval as a margin of error and moves `n_eff` to hover text — a display choice; the payload still carries both.
 9. **No magic numbers outside `core/config.py`.** This includes thresholds that happen to match a default elsewhere. A literal `80.0` in the exit path while `stoch_overbought` is sweepable lets entry and exit disagree inside one backtest, and the output looks fine.
 10. **`core/config.py` holds dataclasses only.** Sole import is `dataclasses`. Resolution lives in `jobs/config.py`. Invariant 1 applies to the config module too.
 
