@@ -36,7 +36,7 @@ for the shift ladder.
 
 from __future__ import annotations
 
-import math
+import gc
 import tempfile
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
@@ -85,6 +85,20 @@ _SHUFFLE_SEED = 20260801
 # Everything else on the frame is treated as an indicator column for the
 # shift ladder and the control shuffle.
 _BAR_COLUMNS = frozenset({"ticker", "ts", "open", "high", "low", "close", "adj_close", "volume"})
+
+#: Tickers per parallel chunk, **independent of `max_workers`**.
+#:
+#: Roughly 300k events per chunk at the 2026-09 universe size, which is a
+#: few hundred MB in a worker rather than the several GB a
+#: `universe / workers` split produced. 40 gives ~37 chunks over ~1,470
+#: tickers -- enough for the pool to balance without the per-chunk parquet
+#: round trip dominating.
+#:
+#: Measured 2026-08-30 at the old shape: 671s of checks over 1.38M events
+#: at 8 workers, which is 0.0039 worker-seconds per event. The table is
+#: 10.8M events now, so the work is ~5,300 worker-seconds and the only
+#: question is how many workers can be held at once.
+TICKERS_PER_CHUNK = 40
 
 # Prices are rounded to 4 decimals before any comparison (CLAUDE.md
 # Conventions; `core.signals._breach` does the same). Two independently
@@ -1112,7 +1126,18 @@ def _run_harness_parallel(
     # its 0.15 floor for reasons unrelated to look-ahead.
     shuffled = _shuffled_control(combined, indicator_cols, _SHUFFLE_SEED)
 
-    size = math.ceil(len(tickers) / max_workers)
+    # **Chunk size is fixed, not `len(tickers) / max_workers`.**
+    #
+    # Tying it to the worker count is why more workers never helped: at two
+    # workers each chunk was *half the universe*, so a worker held ~5.4M
+    # events, and raising the count shrank chunks while multiplying
+    # concurrent copies. The two effects cancelled and memory stayed the
+    # binding constraint either way.
+    #
+    # A fixed size decouples them. `TICKERS_PER_CHUNK` tickers is roughly
+    # 300k events regardless of how many workers consume the queue, so
+    # worker count becomes a throughput dial instead of a memory one.
+    size = TICKERS_PER_CHUNK
     chunks = [tickers[i : i + size] for i in range(0, len(tickers), size)]
 
     with tempfile.TemporaryDirectory(prefix="cscan_harness_") as raw_tmp:
@@ -1134,6 +1159,18 @@ def _run_harness_parallel(
                         hourly_p, index=False
                     )
             args.append((events_p, bars_p, hourly_p, shuffled_p, config))
+
+        # **Release the whole-universe frames before the pool starts.**
+        # Everything they hold is now on disk in the chunk files, and
+        # keeping them alive costs the parent ~13 GB for the entire
+        # parallel phase -- memory the workers need. Spawn copies nothing,
+        # so this is pure headroom rather than a correctness change.
+        #
+        # `bars_by_ticker` and `hourly_by_ticker` belong to the caller and
+        # are left alone; `combined`, `shuffled` and the `events` frame were
+        # built here or are re-readable from the chunk files.
+        del combined, shuffled
+        gc.collect()
 
         with ProcessPoolExecutor(max_workers=max_workers) as pool:
             results = list(pool.map(_harness_chunk_worker, args))

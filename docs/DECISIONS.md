@@ -227,6 +227,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 184 | The refit is weekly; everything else scores from the artifact | **Decided 2026-09-09.** `cscan predict` refits AND scores, and ADR 181 put the whole command in `nightly`. Wrong, and not mainly on cost: **a refit replaces the model**, so nightly retraining means Monday's and Tuesday's numbers came from different models with nothing on the surface saying whether the signal moved or the model did. Split: `weekly` refits (~11 min, after the backtest that wrote this week's labels -- order is load-bearing), `nightly` and the live path score from the artifact in milliseconds. A stale artifact is reported and skipped in both, never fatal: everything above it is committed, and **a week-old model is a known quantity; no model is not.** This is what makes per-fire scoring possible -- it could not work while the model was replaced nightly. Does not move `config_hash` |
 | 185 | The fitted model travels in the database | **Decided 2026-09-09.** The Pi scores from a saved artifact, so the artifact must reach it. `scp` makes the autonomous path depend on ssh keys between two boxes and breaks differently after the `wivie` cutover, when the pushing machine changes. The Pi already holds a serving connection; one `model_artifact` row rides it. `weekly` publishes after the refit, `predict --serving` fetches before scoring, no-op when the local copy matches (the poller asks every 20s, payload is 3.6 MB). One row per `config_hash`, replaced -- an append-only log would let a scorer prefer a half-written row. `bytea` with `STORAGE EXTERNAL`: already compressed, so TOAST would re-compress for nothing. Publish failure is reported, never fatal. Does not move `config_hash` |
 | 186 | The staleness guard is a design fingerprint, not `git_sha` | **Decided 2026-09-09.** Corrects ADR 181. Measured: the Pi refused a good artifact because the only intervening commit added a `--serving` CLI flag, which cannot reach the design matrix. `git_sha` is a proxy for "did the feature code move" and a poor one -- it moves on docs, CSS, comments -- and with a weekly refit the Pi would spend most of the week unable to score. **A guard that fires on changes it can prove are irrelevant gets worked around, and then it guards nothing.** Replaced by a hash of the feature columns **in order**, categorical levels **in order**, network shape and `IMPUTE_COLS` -- **stricter** where it matters, since it catches a reorder that an amended commit would hide from `git_sha`. The sha is still recorded, just not gated on. `ARTIFACT_VERSION` -> 2. Does not move `config_hash` |
+| 187 | The harness validates the universe, not the cosmetic rows | **Decided 2026-09-09.** The gate failed with entry 2, exit 7, non-overlap 328 after the event count went 1.38M -> 10.8M. Proved per slice before changing anything: `in_trade` (1,129,486) **all five PASS**, `in_watch` (769,089) **all five PASS**, everything fails. All 337 violations come from the 8.9M out-of-universe rows ADR 178's cosmetic backfill priced -- never produced by the engine whose invariants these checks assert. Scoped to `in_trade OR in_watch`. The boundary is principled: **the harness validates rows that enter a statistic**, and cosmetic rows enter none -- `non_overlap` exists so a position is not double-counted, which has no content for a row nothing counts. `in_watch` stays in scope on evidence, because it is shown as guidance and it passes. Rejected: keeping the full population with known failures -- **a gate expected to fail is a gate nobody reads**. Does not move `config_hash` |
 
 ---
 
@@ -9344,3 +9345,57 @@ population, which the fingerprint cannot see.
 
 `ARTIFACT_VERSION` goes to 2, so an artifact written before this refuses
 rather than loading without a fingerprint.
+
+---
+
+## 187. The harness validates the universe, not the cosmetic rows
+
+**Status:** accepted, 2026-09-09.
+
+The harness failed on 2026-09-09 with `entry_sanity` 2, `exit_sanity` 7,
+`non_overlap` 328. It last passed 2026-08-30 over 1,379,144 events; the
+table now holds 10,824,053.
+
+**The engine is not the problem, and that was worth proving before
+touching anything.** Run per slice:
+
+| slice | events | verdict |
+|---|---:|---|
+| `in_trade` | 1,129,486 | **all five PASS** |
+| `in_watch` | 769,089 | **all five PASS** |
+| everything | 10,824,053 | entry 2, exit 7, non-overlap 328 |
+
+Every violation comes from the **8,925,478 out-of-universe rows**, which
+ADR 178's cosmetic backfill priced so a ticker page would not be blank.
+Those were never produced by the backtest engine whose invariants these
+checks assert.
+
+### Why this is a boundary and not a convenience
+
+**The harness validates rows that enter a statistic.** Cosmetic rows never
+do: they are excluded from every cell, flagged `cosmetic` (ADR 183), and
+rendered with a caveat saying the model never saw their population.
+`non_overlap` in particular asserts that two cluster heads on one
+`(ticker, side)` do not overlap — which exists so a position is not counted
+twice. For a row nothing counts, the assertion has no content.
+
+**`in_watch` is included on evidence, not on principle.** Those rows are
+shown to a reader as guidance, so a wrong entry price there is misleading
+rather than merely untidy. They stay in scope because they pass, and if
+they ever stop passing that is a finding about the guidance rather than a
+reason to narrow the scope again.
+
+### The alternative that was rejected
+
+Keeping the full population and accepting known failures. **A gate expected
+to fail is a gate nobody reads.** It would still cost 26 minutes, and the
+next real `entry_sanity` regression would look like the usual noise. The
+scope moves or the failures get fixed; leaving both is the one option that
+degrades the check.
+
+### Cost
+
+The narrowing is also most of the runtime. 10.8M events took 235s of loads
+and 1,199s of checks; `in_trade` alone took 171s and 722s. Scoping puts the
+harness back near its historical ~11 minutes, on top of the memory fix that
+made it runnable at all.
