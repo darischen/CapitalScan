@@ -223,6 +223,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 180 | Serving scores only the signal types the model was fitted on | **Decided 2026-09-08.** **4,207 of 8,699 predictions (48%) were extrapolation**: `stoch_oversold`/`stoch_overbought`, of which the training frame holds **zero** rows, shipped with a calibrated probability, a CI and an `n_eff` formatted exactly like the 4,492 legitimate ones. Cause is a correct guard -- `build_training_frame` drops NULL labels (removing them), `build_serving_frame` drops `LABEL_COLS` outright per ADR 174 (so it cannot filter). Measured on 5,986 resolved forward-log rows, Brier skill against each population's own base rate: in-population **0.079** (pred 51.7% vs actual 57.1%), outside **0.021** (pred 52.3% vs actual 49.0%) -- the model gives both ~52% while their real rates differ by 8pp, and the error flips from understating to **overstating**. Serving now filters on `predictor.trained_signal_types`, read off the fit, never a literal list. Existing rows flagged via `predictions.model_scored`, not deleted: their 1,966 outcomes are the only off-distribution measurement the project has. `v_forward` stays unfiltered. Does not move `config_hash` |
 | 181 | A fitted predictor is persisted, and refused on any mismatch | **Decided 2026-09-09.** Amends ADR 174/175's "refit, never load a pickle". A signal must carry a prediction when it reaches the screen; refitting on a cadence costs **24 model fits and ~11 min per run** (~4h45m/day at 15-min cadence) and buys nothing, since both paths score the same live features and differ only by one day of labels on 91k rows. **The 11 minutes is training; the forward pass is milliseconds.** The old rule stopped a fit outliving its feature code -- a real failure, but caused by loading unchecked, not by persisting. So: persist, and refuse on any `config_hash` **or** `git_sha` mismatch. Neither is redundant -- `config_hash` catches a sweep moving the population, `git_sha` catches a feature reordered in code, which no config hash sees. `.npz`+JSON not pickle: the file travels to the Pi and must not execute on load. `core/inference.py` reruns the net in numpy (4 matmuls, GELU, softmax) so the Pi needs no 2GB ARM torch wheel; parity with torch is tested to 1e-5 because a drifting second implementation is worse than none. Does not move `config_hash` |
 | 182 | Phase 6's two remaining gates, restated | **Decided 2026-09-09.** Two of four are met. The Brier gate was under-specified on **population** (ADR 180: in-population skill 0.079 vs 0.021 outside) and on **family** (the aggregate hid an inversion -- `peak` 10/10, `trough` 10/10, `terminal` 6/10, and only the first two reach a surface); restated as beats-base-rate on the fitted population, per family, displayed families first. "Reliability diagram renders" was a UI gate for an evidence gate -- the data already shows the shipped value missing its own 95% interval in **six of eight** buckets; restated so that fact must be visible, not merely charted. "Promotion gate rejects a flattened model" stands unchanged and is now the most important: 45 tests pass and none makes the gate refuse anything. Does not move `config_hash` |
+| 183 | `in_watch` events are scored cosmetically, and say so | **Decided 2026-09-09.** A reader clicking any ticker expects a number; 8,780 recent `in_watch` events had none. **Cannot be fixed by training on them**: `peak_labels` labels `in_trade` rows only, so `in_watch` has **347 trainable rows against 94,335** -- they are priced but unlabelled. Removing that filter is a model change needing measurement, not a display change. So: serve them flagged. `include_watch=True` widens serving to `TRADE_OR_WATCH`; training keeps `TRADE_ONLY`. `predictions.cosmetic` is separate from ADR 180's `model_scored` on purpose -- that one answers "was this signal *type* fitted", this one "was this *population*", and a row can be a fitted type on an unfitted population. The caveat **replaces** the normal one and opens by default: "rank, not exact odds" still asserts the ordering means something, and here it does not. Off by default so `nightly` cannot start writing extrapolation. Does not move `config_hash` |
 
 ---
 
@@ -9095,3 +9096,97 @@ meaningfully overstates. Rank with it; do not read the level.
 
 The other two Phase 6 gates stand as written and are met. Holdout is still
 evaluated exactly once, at the end, and published whatever it says.
+
+---
+
+## 183. `in_watch` events are scored cosmetically, and say so
+
+**Status:** accepted, 2026-09-09.
+
+**A reader clicking any ticker expects a number.** Today 8,780 recent
+`in_watch` events carry none, because `features._SQL` filters `AND
+e.in_trade` and both the training and serving frames read it.
+
+### Why this cannot be fixed by training on them instead
+
+That was the first thing checked, and the population is not there.
+`peak_labels.py:120` writes labels for `in_trade` rows only, so measured
+2026-09-09 on the live generation:
+
+| universe | events | filled | **labelled** | trainable |
+|---|---:|---:|---:|---:|
+| `in_trade` | 160,821 | 160,757 | **160,473** | 94,335 |
+| `in_watch` | 107,533 | 107,501 | **443** | **347** |
+
+347 trainable rows against 94,335. Path capture prices these events, so
+they have entry prices; nothing computes their labels. Removing the
+`in_trade` filter from `peak_labels` and rebuilding would produce them,
+and that is a **model change** — it moves the training population and
+needs measuring, not a display change made in passing.
+
+### The decision
+
+Serve them, flagged. `build_serving_frame(include_watch=True)` widens the
+filter to `TRADE_OR_WATCH`; the training frame keeps `TRADE_ONLY` and a
+test asserts both.
+
+**`predictions.cosmetic` is a separate column from ADR 180's
+`model_scored`, and the distinction is the point.** `model_scored` answers
+"was this signal *type* in the training frame". `cosmetic` answers "was
+this *population*". A row can be a fitted type — `confluence_low`, say —
+on a population the model never saw, so one overloaded flag would leave the
+reader unable to tell which caveat applies.
+
+`in_trade` joins `META_COLS` so `build_rows` can read it. **Carried, never
+a feature**: it is constant across the training frame by construction, so a
+model splitting on it would split on nothing, and on a widened serving
+frame it would let the network read universe membership the fit never saw
+vary.
+
+### The caveat replaces the normal one rather than appending to it
+
+The standing caveat says "use these to rank, not as exact odds", which
+still asserts the ordering means something. For a cosmetic row it does not:
+there is no measured ranking claim either, because nothing here has been
+checked against what happened to names in this state.
+
+So a cosmetic row gets its own text, **opened by default** rather than
+collapsed. The normal caveat collapses because it qualifies a working
+number. A reader who never expands this one would take an extrapolation for
+a measurement.
+
+### Extended to every event, 2026-09-09
+
+The first version scored `in_watch` only. Measured in the 45-day serving
+window:
+
+| universe | events | **tickers** |
+|---|---:|---:|
+| `in_trade` | 2,104 | 246 |
+| `in_watch` | 1,224 | 133 |
+| **neither** | **9,545** | **1,040** |
+
+**Most tickers live in neither.** 1,040 of roughly 1,419 have events only
+outside both universes, so "a probability for any ticker you click" was
+false for three quarters of them with `in_watch` alone.
+
+`--universe` replaces the boolean: `trade` (fitted, the default), `watch`,
+`all`. `ANY_UNIVERSE` is the empty string rather than `AND TRUE`, so the
+generated SQL reads as though the clause was never there — someone
+auditing what the serving frame selects should not have to work out
+whether a filter is deliberately inert.
+
+**No third caveat.** `cosmetic` already means "not in the trade universe
+when scored", which is true of both cases, and the caveat text does not
+claim the model is *nearly* right about `in_watch` and *very* wrong about
+the rest. It says the model never saw this population and nothing here was
+checked, which is equally true either way. Splitting it would imply a
+gradient the evidence does not support.
+
+### What keeps this from being ADR 180 again
+
+ADR 180 was 48% of predictions silently extrapolating. The difference is
+not the extrapolation, it is the silence: this is off by default
+(`include_watch=False`, asserted by test, so `nightly` cannot start writing
+it because a default flipped), restricted to serving, marked on the row,
+and stated in the dialog before the reader sees the number.

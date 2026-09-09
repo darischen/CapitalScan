@@ -86,6 +86,7 @@ def run_predict(
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
     n_buckets: int | None = None,
     from_artifact: bool = False,
+    universe: str = feat.TRADE_ONLY,
 ) -> PredictReport:
     """Fit, calibrate, and upsert `predictions` for recent events.
 
@@ -177,7 +178,11 @@ def run_predict(
         # serving and training in step by construction.
         trained_types = sorted(set(predictor.trained_signal_types))
         frame, frame_report = feat.build_serving_frame(
-            engine, config_hash, since, trained_types=trained_types
+            engine,
+            config_hash,
+            since,
+            trained_types=trained_types,
+            universe=universe,
         )
         report.rows_scored = frame_report.rows
         report.model_version = predictor.model_version

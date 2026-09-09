@@ -276,3 +276,50 @@ def test_the_query_scopes_config_split_grain_and_population():
         "e.split_key = :split",
     ):
         assert fragment in rendered
+
+
+class TestTheCosmeticUniverse:
+    """`in_watch` may be served, never trained on (ADR 183).
+
+    The user asked for a probability on every ticker, including names
+    outside the trade universe. The model is fitted on `in_trade` rows
+    only, so those numbers are extrapolation -- which is exactly what ADR
+    180 caught shipping unflagged for 48% of predictions. The difference
+    between then and now is that this is deliberate, restricted to serving,
+    and marked on the row.
+    """
+
+    def test_training_is_trade_only_and_the_constant_says_so(self) -> None:
+        """The filter is a named constant so the two callers cannot diverge."""
+        assert feat.TRADE_ONLY == "AND e.in_trade"
+        assert feat.TRADE_ONLY in feat.training_sql(feat._select_columns())
+
+    def test_the_widened_filter_admits_watch_rows(self) -> None:
+        assert feat.TRADE_OR_WATCH == "AND (e.in_trade OR e.in_watch)"
+
+    def test_the_unrestricted_filter_is_empty_not_a_tautology(self) -> None:
+        """`AND TRUE` would read as a filter doing nothing on purpose.
+
+        Empty means the generated SQL looks as though the clause was never
+        there, which is what someone auditing the serving query needs.
+        """
+        assert feat.ANY_UNIVERSE == ""
+
+    def test_serving_defaults_to_the_training_universe(self) -> None:
+        """**Off unless asked for.** `nightly` must not start writing
+        extrapolation because a default flipped."""
+        import inspect
+
+        sig = inspect.signature(feat.build_serving_frame)
+        assert sig.parameters["universe"].default == feat.TRADE_ONLY
+
+    def test_in_trade_is_carried_but_never_a_feature(self) -> None:
+        """It must reach `build_rows` without reaching the design matrix.
+
+        Constant across the training frame by construction, so a model that
+        split on it would be splitting on nothing -- and on the serving
+        frame it would let the network read universe membership, which the
+        fit never saw vary.
+        """
+        assert "in_trade" in feat.META_COLS
+        assert "in_trade" not in feat.FEATURE_COLS

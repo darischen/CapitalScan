@@ -161,12 +161,43 @@ META_COLS: tuple[str, ...] = (
     # a feature -- `signal_type` already encodes direction and a second copy
     # would let the model split on the same fact twice.
     "side",
+    # **Carried so a cosmetic row can be told apart at write time (ADR 183).**
+    # Never a feature: the training frame is `in_trade` only, so this column
+    # is constant there and a model that split on it would be splitting on
+    # nothing. On the serving frame with `include_watch` it varies, and
+    # `build_rows` reads it to set `predictions.cosmetic`.
+    "in_trade",
     # Raw inputs to `breach_depth`, dropped from the matrix once derived.
     "bar_low",
     "bar_high",
     "band_lower",
     "band_upper",
 )
+
+#: **The training universe, and the only one a fit may see.**
+#: `peak_labels` writes labels for `in_trade` rows only, so `in_watch`
+#: carries 443 labelled rows against `in_trade`'s 160,473 -- there is no
+#: population there to fit on even if you wanted to.
+TRADE_ONLY: str = "AND e.in_trade"
+
+#: Serving only, and **cosmetic** (ADR 183). Scores rows the model was
+#: never fitted on, so every probability is extrapolation and is flagged on
+#: the row and in the dialog. ADR 180 is why these are separate constants
+#: rather than a default: 48% of predictions were silent extrapolation once
+#: already.
+TRADE_OR_WATCH: str = "AND (e.in_trade OR e.in_watch)"
+
+#: No universe restriction at all. **Most tickers live here**: in the
+#: 45-day serving window, 1,040 of the ~1,419 tickers have events only
+#: outside both universes, against 246 in trade and 133 in watch. Without
+#: this, "a probability for any ticker you click" is false for three
+#: quarters of them.
+#:
+#: Empty rather than a tautology like `AND TRUE`, so the generated SQL
+#: reads as though the clause was never there. A reader auditing what the
+#: serving frame selects should not have to decide whether a filter is
+#: doing nothing on purpose.
+ANY_UNIVERSE: str = ""
 
 #: Outcome columns. A feature set that touches one of these is not a model.
 #:
@@ -320,7 +351,7 @@ SELECT {cols}
   ) ind ON TRUE
  WHERE e.config_hash = :chash
    AND e.entry_kind = :entry_kind
-   AND e.in_trade
+   {universe_filter}
    {row_filter}
 """
 
@@ -361,7 +392,11 @@ def training_sql(cols: Sequence[str]) -> str:
     This is where it lives now, so the guard has one thing to assert on
     and there is still exactly one copy of the string.
     """
-    return _SQL.format(cols=", ".join(cols), row_filter="AND e.split_key = :split")
+    return _SQL.format(
+        cols=", ".join(cols),
+        universe_filter=TRADE_ONLY,
+        row_filter="AND e.split_key = :split",
+    )
 
 
 def build_training_frame(
@@ -460,6 +495,7 @@ def build_serving_frame(
     since: date,
     require_sector: bool = False,
     trained_types: Sequence[str] | None = None,
+    universe: str = TRADE_ONLY,
 ) -> tuple[pd.DataFrame, FrameReport]:
     """Recent events, ready for inference, with the labels removed.
 
@@ -492,7 +528,13 @@ def build_serving_frame(
     }
     with engine.connect() as conn:
         frame = pd.read_sql(
-            text(_SQL.format(cols=", ".join(cols), row_filter="AND e.signal_date >= :since")),
+            text(
+                _SQL.format(
+                    cols=", ".join(cols),
+                    universe_filter=universe,
+                    row_filter="AND e.signal_date >= :since",
+                )
+            ),
             conn,
             params=params,
         )

@@ -2524,3 +2524,16 @@ table.screen th.r .sortlink {
   font-size: 11px;
   white-space: nowrap;
 }
+
+/* **A cosmetic row's caveat is open by default and coloured** (ADR 183).
+ * The normal caveat collapses because it qualifies a number that means
+ * something. This one says the number was never checked against reality,
+ * which is not a footnote -- a reader who never expands it would take an
+ * extrapolation for a measurement. */
+.modal-note.cosmetic > summary {
+  color: var(--short);
+}
+
+.modal-note.cosmetic {
+  border-top-color: var(--short);
+}

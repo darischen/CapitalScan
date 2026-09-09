@@ -285,6 +285,14 @@ def build_rows(
     event_ids = frame["id"].astype("int64").tolist()
     signal_types = frame["signal_type"].astype(str).tolist()
     sides = frame["side"].astype(str).tolist()
+    # Absent when the caller built a trade-only frame, which is the default
+    # and the only shape `nightly` produces. Defaulting to True there keeps
+    # every existing path writing `cosmetic = false`.
+    in_trade = (
+        frame["in_trade"].fillna(False).astype(bool).tolist()
+        if "in_trade" in frame.columns
+        else [True] * len(frame)
+    )
     columns = (
         [t.field for t in TARGETS]
         + [f"{HEADLINE}_raw", "calib_n_eff", "ci_low", "ci_high"]
@@ -325,6 +333,18 @@ def build_rows(
             # screener until someone looks at it. Setting it explicitly is
             # this path asserting it did the check.
             "model_scored": True,
+            # **Cosmetic when the event was not in the trade universe
+            # (ADR 183).** The model is fitted on `in_trade` rows only --
+            # `peak_labels` writes labels for those alone, so `in_watch`
+            # has 443 labelled rows against 160,473 and there is nothing
+            # there to fit on. A probability for one is extrapolation, and
+            # ADR 180 is what happens when that ships unflagged.
+            #
+            # `model_scored` does not cover this. That flag answers "was
+            # this signal *type* fitted"; a cosmetic row can be a fitted
+            # type on an unfitted population, and both must be visible
+            # separately or the reader cannot tell which caveat applies.
+            "cosmetic": not bool(in_trade[i]),
             "calib_bucket": buckets[i],
             "calib_n_eff": float(probs["calib_n_eff"][i]),
             "ci_low": float(probs["ci_low"][i]),

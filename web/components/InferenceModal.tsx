@@ -14,6 +14,8 @@ import {
   MODEL_COLUMN_HELP,
   MODEL_FIELD_HELP,
   MODEL_FIELD_LABELS,
+  COSMETIC_CAVEAT_DETAIL,
+  COSMETIC_CAVEAT_SUMMARY,
   PREDICTION_CAVEAT_DETAIL,
   PREDICTION_CAVEAT_SUMMARY,
   pct,
@@ -231,9 +233,19 @@ export function InferenceModal({
          * this dialog is for. It stays on the row object, so anyone
          * debugging a stale generation can still reach it; it is only off
          * the surface. */}
-        <details className="modal-note">
-          <summary>{PREDICTION_CAVEAT_SUMMARY}</summary>
-          <p>{PREDICTION_CAVEAT_DETAIL}</p>
+        {/* **Open by default when cosmetic.** The normal caveat collapses
+         * because it qualifies a number that means something. This one
+         * says the number was never checked against reality, and a reader
+         * who never expands it would take an extrapolation for a
+         * measurement. */}
+        <details
+          className={prediction.cosmetic ? "modal-note cosmetic" : "modal-note"}
+          open={prediction.cosmetic}
+        >
+          <summary>
+            {prediction.cosmetic ? COSMETIC_CAVEAT_SUMMARY : PREDICTION_CAVEAT_SUMMARY}
+          </summary>
+          <p>{prediction.cosmetic ? COSMETIC_CAVEAT_DETAIL : PREDICTION_CAVEAT_DETAIL}</p>
         </details>
       </div>
     </div>
