@@ -2,9 +2,7 @@
 
 import { useState } from "react";
 
-import type { ScreenRow } from "@/lib/screen";
-
-import { InferenceModal } from "./InferenceModal";
+import { InferenceModal, type InferenceSubject } from "./InferenceModal";
 
 /**
  * The button in the grid, and the modal it opens.
@@ -14,7 +12,7 @@ import { InferenceModal } from "./InferenceModal";
  * these; keeping the state here means the table itself never ships to the
  * browser.
  */
-export function InferenceCell({ row }: { row: ScreenRow }) {
+export function InferenceCell({ row }: { row: InferenceSubject }) {
   const [open, setOpen] = useState(false);
   return (
     <>

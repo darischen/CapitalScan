@@ -322,3 +322,36 @@ extra's 2GB torch wheel, whose threading does not scale the way the pandas
 hot path `cpu_bench` drives does. Run the job before quoting 37 minutes.
 This job is still not scheduled anywhere and stays on the workstation.
 → `BACKLOG.md`
+
+## `cscan predict`: fitting against loading (ADR 181)
+
+Measured 2026-09-09 on the workstation, live database, six heads:
+
+| | wall clock | output |
+|---|---:|---|
+| `cscan predict` (fits) | **11m38s** | 2,074 predictions, 242 tickers |
+| `cscan predict --from-artifact` | **22.8s** | 2,074 predictions, 242 tickers |
+
+**31x.** The artifact is 3.4 MB.
+
+The eleven minutes is training, not inference: 24 model fits per run (three
+seeds, each a seven-fold inner ladder plus a final fit). The forward pass
+was always milliseconds.
+
+**Verified row by row, not by counts.** Predictions written from the
+artifact were snapshotted, a full refit was run over the same events, and
+the two compared across all 8,699 rows of the generation:
+
+```
+p_touch_3, p_adverse_3, ci_low, calib_n_eff   0 rows differ
+max |Δ p_touch_3|                              0.000000000000000
+max |Δ q50|                                    0.000000041331645
+```
+
+Every published probability is **exactly** equal. The 4e-8 on `q50` is
+float32-versus-float64 rounding inside the quantile interpolation, five
+orders of magnitude below the `numeric(12,6)` the column stores.
+
+Matching counts would not have shown this. The first check was "2,074 both
+times", which is satisfied by a scorer that returns the wrong numbers for
+the right events.

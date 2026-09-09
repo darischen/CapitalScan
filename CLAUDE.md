@@ -192,6 +192,19 @@ Three commits reached `main` red on 2026-09-08 because `ruff format` and
 onto one line by the formatter, so wrapping it by hand does not stick. A
 named function satisfies both.
 
+**Never chain `next build` and `systemctl restart` in one command.**
+Hit twice on 2026-09-08/09, both times taking the site down. `cd web &&
+npx next build && sudo systemctl restart capitalscan-web` over SSH lets the
+restart begin against a `.next/` the build has not finished writing, so the
+service starts, finds no `BUILD_ID`, exits 1, and systemd retries into
+`activating` forever. The journal says `Could not find a production build
+in the '.next' directory`, which reads like a missing build rather than a
+half-written one.
+
+Run the build, **wait for it to exit**, confirm `.next/BUILD_ID` exists,
+and only then restart. Recovery is the same as any broken build:
+`rm -rf .next`, rebuild, restart.
+
 **`npm run build` invalidates a running `next start`.** The server holds its chunk hashes in memory; a build rewrites `.next/` and every asset 404s, rendering as unstyled text that looks like broken CSS. Restart the server after any build; never point `next dev` at a `.next/` a production server is serving. → `OPERATIONS.md`
 
 ---
@@ -205,7 +218,7 @@ Budgets, so nobody starts one blind. Per-step tables, regimes, and the history o
 | job | budget |
 |---|---|
 | `cscan backtest --workers 8`, full universe (~1,470 tickers) | **~2 h** (compute 82 min, finalize 4 min, harness 36 min) |
-| `cscan nightly`, cold | **35-40 min** (not 21; `shares` alone is ~10 min at this universe size) |
+| `cscan nightly`, cold | **~30 min** measured 2026-09-04 (29m54s) and 2026-09-07 (31m42s) from `runs`; the older 35-40 min figure was never measured. **Add ~11 min** now that `predict` is in the chain. A bad night is longer: 2026-09-08 took 1h53m when `path_capture` hit the cosmetic scope. |
 | `cscan weekly` | ~36 min (runs the backtest, skips the harness) |
 | `cscan bars --daily --lookback 8000` | ~11 min / 521 tickers |
 | `cscan bars --hourly --backfill`, all tickers | ~4.5-5.5 h, no incremental path |
@@ -216,8 +229,14 @@ Budgets, so nobody starts one blind. Per-step tables, regimes, and the history o
 - **`compute`'s `cofire_count` is only correct within a chunk** and is excluded from that write. `finalize` is the whole-universe pass that corrects it, and only if `compute` finished for the config.
 - **`cscan indicators` writes nothing until it finishes** -- it collects across all tickers then upserts once. Querying mid-run returns the pre-run count and looks exactly like a hang. Pass `--workers 8`; it defaults to 1.
 - **Never run `cscan universe --quarter` while a backtest runs.** Not locking -- determinism: workers resolving eligibility against a `universe` that changes mid-run violate ADR 060.
-- **`cscan predict` needs the optional `neural` extra and is deliberately
-  not in `nightly`.** `uv sync --extra neural --extra dev` — the plain
+- **`cscan predict` is IN `nightly` as of 2026-09-08**, between
+  `peak_labels` and `sync` — after the labels it trains on, before the copy
+  that ships it. Run it after the sync and the site serves yesterday's model
+  for a day. It **skips visibly** when the `neural` extra is absent rather
+  than failing the chain, matching `db migrate`'s `skip <target>` line.
+  This reverses the earlier rule below, on the user's call: stale
+  predictions on the home page are worse than a longer nightly.
+- **`cscan predict` needs the optional `neural` extra.** `uv sync --extra neural --extra dev` — the plain
   `--extra neural` **prunes the dev group**, which silently removes pytest's
   `testcontainers` and breaks the integration tier. It refits rather than
   loading a pickle, so a fit can never outlive the feature code that built
@@ -280,6 +299,30 @@ Zero backends and no `cscan` process means the row is stale. Mark it `failed`, b
 
 ---
 
+**Weight model diagnostics by whether a head reaches a surface.** The
+coverage gate reports 30 heads as one number, and that number is misleading.
+Split by task family (2026-09-08, `RESULTS.md`): `peak` **10/10**, `trough`
+**10/10**, `terminal` **6/10**. Every probability a reader sees comes from
+`peak` (`p_touch_*`) or `trough` (`p_adverse_*`), and both are perfect. The
+`terminal` head backs only `q05..q95`, negative out of sample under ADR 172
+and displayed nowhere.
+
+All four failing heads are `terminal` heads. Five hypotheses, four
+refutations, ADR 179 and two 22-minute runs went into a miscalibration in
+the one family nobody sees. **Split by family before drawing any conclusion
+from an aggregate**, and fix a displayed head before an undisplayed one.
+→ `BACKLOG.md`
+
+**The shipped probabilities run ~5 points low, and it is not a bug.** The
+isotonic tables are anchored to the validate split's 43.2% 3% touch rate;
+the trailing twelve months average ~49.5% and range 36.5-65.0%. That swing
+exceeds the model's whole Brier skill of 0.079, so **ranking is the durable
+output and the level is not**. ADR 179's rolling window is refuted as the
+fix, and recalibrating on the forward log is forbidden — it would destroy
+the only clean evidence the project has. → `BACKLOG.md`
+
+---
+
 **Verify before you assert.** Query the database rather than trusting a prior report, including this one — several confident claims in earlier session reports did not hold up under direct measurement.
 
 ---
@@ -294,7 +337,7 @@ Zero backends and no `cscan` process means the row is stale. Mark it `failed`, b
 5b. **No view or query may join statistics on an event's own `split_key`.** Live events carry `split_key = 'holdout'`; inheriting it would surface holdout numbers continuously. Serving views hardcode `split_key = 'validate'`. `cell_id` is derived from component columns, never stored on `events`.
 6. **Every generated row carries `run_id` and `git_sha`.**
 7. **No broker client, no order placement, no brokerage credentials.** The absence is the safety property, not a disabled flag.
-8. **Every response carrying a probability carries `n_eff` and a confidence interval.**
+8. **Every response carrying a probability carries `n_eff` and a confidence interval.** The modal shows the interval as a margin of error and moves `n_eff` to hover text — a display choice; the payload still carries both.
 9. **No magic numbers outside `core/config.py`.** This includes thresholds that happen to match a default elsewhere. A literal `80.0` in the exit path while `stoch_overbought` is sweepable lets entry and exit disagree inside one backtest, and the output looks fine.
 10. **`core/config.py` holds dataclasses only.** Sole import is `dataclasses`. Resolution lives in `jobs/config.py`. Invariant 1 applies to the config module too.
 

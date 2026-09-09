@@ -281,16 +281,31 @@ def predict(
     since: Optional[str] = typer.Option(None, help="Earliest signal_date to score (YYYY-MM-DD)"),
     lookback: int = typer.Option(45, help="Days back from the newest event, when --since is unset"),
     clear: bool = typer.Option(False, help="Delete this config's predictions and exit"),
+    from_artifact: bool = typer.Option(
+        False,
+        "--from-artifact",
+        help="Score from the last saved fit instead of refitting (~11 min -> seconds)",
+    ),
 ) -> None:
     """Write calibrated p_touch predictions for recent events (ADR 174).
 
     Fits the four-task model on train, calibrates on validate, and upserts
-    one row per recent event. Takes a few minutes: the model is refitted
-    every run rather than loaded, so the fit can never outlive the feature
-    code that produced it.
+    one row per recent event. The fit is 24 model fits and takes about
+    eleven minutes.
+
+    `--from-artifact` skips it and scores from what the last fit wrote
+    (ADR 181), which is milliseconds. Use it when a signal has just fired
+    and should carry a probability now; use the default when the labels
+    have moved, which is what `nightly` does.
+
+    It refuses rather than silently refitting when the artifact does not
+    match this config and commit -- a fast path that quietly becomes an
+    eleven-minute one is worse than an error, and it would hide the change
+    that invalidated the model.
     """
     from datetime import date as _date
 
+    from capitalscan.jobs import artifact as artifact_mod
     from capitalscan.jobs import db_io
     from capitalscan.jobs import predict as jp
 
@@ -312,7 +327,14 @@ def predict(
         return
 
     parsed = _date.fromisoformat(since) if since else None
-    report = jp.run_predict(config_hash=chash, since=parsed, lookback_days=lookback)
+    try:
+        report = jp.run_predict(
+            config_hash=chash, since=parsed, lookback_days=lookback, from_artifact=from_artifact
+        )
+    except artifact_mod.StaleArtifact as exc:
+        console.print(f"[red]refused[/red]: {exc}")
+        console.print("Run `cscan predict` without --from-artifact to refit.")
+        raise typer.Exit(code=1) from exc
     console.print(f"predict: {report.summary()}")
     if report.rows_written == 0:
         console.print("[yellow]warning[/yellow]: no predictions written")
@@ -2968,6 +2990,36 @@ def nightly() -> None:
             backfill_extremum_labels(engine, chash, config.stats.fwd_ret_horizons, family)
             for family in FAMILIES
         )
+    # **Inference, after the labels it trains on and before the sync that
+    # ships it.** That ordering is the whole point: `peak_labels` above
+    # just closed another day of forward windows, so a fit here sees them,
+    # and `sync` below carries the predictions to serving the same night.
+    # Run it after the sync and the site shows yesterday's model for a day.
+    #
+    # **Skipped visibly, never fatally, when the `neural` extra is absent.**
+    # It is a 2GB torch wheel and the Debian boxes do not carry it. A
+    # missing optional dependency must read like the `skip <target>` line
+    # `cscan db migrate` prints, not like a failed ingest — everything
+    # above is already committed to the research store and a chain that
+    # dies here would mark a good night bad.
+    #
+    # **This reverses a documented decision.** CLAUDE.md said `predict` is
+    # deliberately not in `nightly`, on the grounds that it refits three
+    # seeds every run and costs ~11 minutes. The user's call, 2026-09-08:
+    # stale predictions on the home page are worse than a longer nightly.
+    # The cost is real and lands on whichever box holds research — ~11 min
+    # on the workstation, ~37 min projected on `wivie` at its measured
+    # 3.41x, which is the number to check before the cutover.
+    try:
+        from capitalscan.jobs.predict import run_predict
+
+        with ingest.run_job(engine, "predict", {"trigger": "nightly"}) as pj:
+            pred_report = run_predict(engine, chash)
+            pj.rows_written = pred_report.rows_written
+        console.print(f"predict: rows_written={pred_report.rows_written:,}")
+    except ModuleNotFoundError as exc:
+        console.print(f"skip predict: {exc}. Install the `neural` extra to enable it.")
+
     # Closes the slot `record` opened above. Without it the row stays
     # `'started'` forever and `cscan system-status` cannot tell a chain that
     # finished from one that died halfway (ADR 080 lists `status` and

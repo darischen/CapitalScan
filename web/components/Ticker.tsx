@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import EventRows from "./EventRows";
 import LivePrice from "./LivePrice";
+import PredictButton from "./PredictButton";
 import TickerSearch from "./TickerSearch";
 
 import {
@@ -14,7 +15,7 @@ import {
   vol,
 } from "@/lib/format";
 import { watchLabel } from "@/lib/screen";
-import type { Meta } from "@/lib/screen";
+import type { Meta, Prediction } from "@/lib/screen";
 import type {
   ChartBar,
   LiveQuote,
@@ -456,6 +457,7 @@ export function EventHistory({
   all,
   total,
   inTrade = true,
+  prediction = null,
 }: {
   sym: string;
   events: TickerEvent[];
@@ -467,6 +469,9 @@ export function EventHistory({
    * history gets, because the two have different causes and only one of
    * them is worth acting on. */
   inTrade?: boolean | null;
+  /** The ticker's most recent scored prediction, or `null`. Fetched by the
+   * page rather than here so this stays a server component. */
+  prediction?: Prediction | null;
 }) {
   // A history that stops years before the newest bar has the same cause as
   // an empty one, and reads far more like a bug. Both get the note.
@@ -478,6 +483,14 @@ export function EventHistory({
       <div className="history-head">
         <h2>Event history</h2>
         <nav className="toggles">
+          {/* Left of the toggles, and a box rather than an underline: it
+           * opens a dialog instead of changing which rows are listed.
+           * Renders nothing when the ticker has no scored prediction. */}
+          <PredictButton
+            ticker={sym}
+            signalDate={prediction?.asOf ?? newest ?? ""}
+            prediction={prediction ?? null}
+          />
           <Link href={`/ticker/${sym}`} className={all ? undefined : "on"}>
             confluence
           </Link>

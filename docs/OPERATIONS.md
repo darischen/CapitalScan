@@ -838,3 +838,39 @@ uv venv --python 3.13 && uv sync --extra dev
 rebuilt.** `uv run` reads it immediately and then refuses to run at all
 until the venv matches, which turns a cosmetic mismatch into a broken
 toolchain.
+
+## 2026-09-08/09 — the Pi went down twice on the same chained command
+
+**Symptom.** `systemctl is-active capitalscan-web` reports `activating`
+indefinitely, restart counter climbing. The journal:
+
+```
+[Error: Could not find a production build in the '.next' directory.
+ Try building your app with 'next build' before starting the production
+ server.]
+capitalscan-web.service: Main process exited, code=exited, status=1/FAILURE
+```
+
+**Cause.** A single SSH command chaining build and restart:
+
+```
+cd ~/CapitalScan/web && npx next build && sudo systemctl restart capitalscan-web
+```
+
+The restart runs against a `.next/` the build has not finished writing.
+`BUILD_ID` is among the last files produced, so the server finds a
+directory that exists, is populated, and is unusable. systemd's
+`Restart=` then loops on it.
+
+**Why the message misleads.** It reads as "you forgot to build". The build
+did run, and `ls .next/` shows `cache`, `server`, `types` — everything but
+`BUILD_ID`. Checking that one file is what tells a half-written build from
+an absent one.
+
+**Recovery**, the same as any broken build (see the 2026-09-08 value-import
+entry above): `rm -rf .next`, rebuild, restart. Deleting is not optional —
+a partial `.next/` is not repaired by building over it.
+
+**Fix.** Do not chain them. Build, wait for exit, confirm
+`.next/BUILD_ID`, then restart. The build takes minutes on the Pi and a
+backgrounded SSH makes it easy to think it finished when it has not.

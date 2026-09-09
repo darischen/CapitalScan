@@ -241,14 +241,30 @@ untouched throughout.
 units are installed with their **timers disabled** (`systemctl is-enabled
 capitalscan-nightly.timer` -> `disabled`).
 
-**`wivie` state as of 2026-09-01.** Part A done, `cscan preflight` all-OK,
-research schema at head but **no data** (the `pg_restore` in step 2 has not
-run). The `capitalscan-{nightly,weekly}.{service,timer}` units in
-`/etc/systemd/system` carry the ADR 160 changes (`Type=simple`,
-`Restart=on-failure`, `OnBootSec`, the 19:00 nightly retry), rendered from
-the repo and `daemon-reload`ed. **All three timers are `disabled`** —
-enabling them is step 3 below, the point of cutover. Nothing fires on
-`wivie` until then.
+**`wivie` state, re-measured 2026-09-09.** Part A done, no data, all six
+`capitalscan-{nightly,weekly,monthly}.{service,timer}` units present in
+`/etc/systemd/system` carrying the ADR 160 changes (`Type=simple`,
+`Restart=on-failure`, `OnBootSec`, the 19:00 nightly retry). **All three
+timers are `disabled`** — enabling them is step 3, the point of cutover.
+Nothing fires there until then.
+
+**Corrected: the schema is NOT at head.** This section said it was, on
+2026-09-01, and it was true then. `wivie` sits at `b7f3c5d21a94` against
+head `a1c7f3b09d84` — **twelve migrations behind**, the whole prediction
+chain (ADR 174 through 181).
+
+**Do not fix that with `cscan db migrate`.** The `pg_restore` in step 2
+carries the workstation's schema *and* data, both at head, so migrating
+first spends twelve migrations on rows the restore is about to replace —
+and leaves a window where `wivie` holds head's schema over an old
+generation's data, which looks exactly like a working research database
+and is not. The schema is not a separate task from the data.
+
+**Sizing, measured 2026-09-09.** Research is **33 GB** (`events` 17 GB,
+`path` 11 GB, `indicators` 1.9 GB, `bars` 1.8 GB). `wivie` has 394 GB free,
+so space is not the constraint; its **two physical cores** are. Expect the
+restore to take hours rather than minutes, and run it when nothing else
+needs the box.
 
 If that holds, the switch is four steps:
 
@@ -286,8 +302,36 @@ If that holds, the switch is four steps:
    - Linux: `sudo scripts/systemd/install.sh --remove`
 
 Then update `CLAUDE.md` — the machine-specific notes that named the old
-box or a `C:\Users\daris\...` path now describe the new one. The old
-machine can be wiped.
+box or a `C:\Users\daris\...` path now describe the new one.
+
+**The workstation is NOT wiped, and an earlier version of this line said it
+could be.** This is a permanent two-machine arrangement: `wivie` takes the
+*scheduled* role and the workstation stays the heavy-research box. Measured
+2026-09-09, `wivie` is **3.41x** slower on this workload
+(`scripts/cpu_bench.py`, steady 0.627 units/s against 2.138), so a full
+`cscan backtest --workers 8` projects to **~6.8 h** there against ~2 h here,
+on two physical cores and 7 GB of RAM. Arms and full backtests stay on the
+workstation, which is what `CLAUDE.md` already says.
+
+**Nothing on the Pi changes.** Its `DATABASE_URL_SERVING` is `localhost` —
+it reads its own serving store and never touches research. What moves is
+which machine *holds* research and *pushes* to it. `wivie`'s
+`DATABASE_URL_SERVING` already points at `192.168.1.30`.
+
+### After the restore, three things the dump does not carry
+
+- **WAL and autovacuum tuning.** Server settings, not migrations, so they
+  must be re-applied by hand. → `CLAUDE.md`
+- **The `neural` extra.** Without it `nightly` skips `predict` visibly
+  rather than failing. `uv sync --extra neural --extra dev` — the plain
+  `--extra neural` prunes the dev group and breaks the integration tier.
+  Budget ~37 min for `predict` there (11 min here × 3.41, projected not
+  measured; torch's threading does not scale like the pandas hot path
+  `cpu_bench` drives, so measure before quoting it).
+- **`data/model/predictor.npz`** (ADR 181). Gitignored and stamped with the
+  `config_hash` and `git_sha` it was fit under, so a copied one would be
+  refused on any mismatch anyway. The first `nightly` on `wivie` refits and
+  writes its own.
 
 ## C2. From scratch — new machine not yet staged
 

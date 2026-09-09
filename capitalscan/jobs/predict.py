@@ -5,12 +5,23 @@ probability is and `core.calibration` decides what interval goes with it,
 so this module only chooses which events to score, writes the rows, and
 records the run.
 
-**Fitting happens every run, and that is a choice rather than an oversight.**
-Three seeds over 158k rows is a few minutes, which is small against
-`nightly`'s 35-40 minutes, and it removes the entire class of failure where
-a serialised model outlives the feature code that built it. The model spec
-in `docs/model_spec_adr170.json` exists so a fit is reproducible; a pickle
-would make it merely repeatable, which is not the same guarantee.
+**Fitting happens every run by default, and `--from-artifact` skips it.**
+The default is still a fit: `nightly` should train on the labels that
+closed today, and 24 model fits at ~11 minutes is small against the chain
+around it.
+
+`--from-artifact` exists because that cost is unacceptable on the path
+where a signal fires intraday and should carry a probability by the time it
+reaches the screen. It loads what the last fit wrote (ADR 181) and scores
+in milliseconds.
+
+**This used to say a pickle was the wrong trade, and the reasoning was
+half right.** The failure it named is real -- a serialised model outliving
+the feature code that built it produces numbers, not errors. But that comes
+from loading *unchecked*, not from persisting, so `jobs/artifact.py`
+persists and refuses on any `config_hash` or `git_sha` mismatch. Same
+guarantee, and it no longer costs eleven minutes to score one event. The
+model spec in `docs/model_spec_adr170.json` still makes a fit reproducible.
 
 **The write is an upsert on `event_id`**, which both screener views now
 join on (migration `e7b4c92f1a08`). The first attempt keyed on
@@ -28,7 +39,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import Engine, text
 
-from capitalscan.jobs import db_io, ingest
+from capitalscan.jobs import artifact, db_io, ingest, scorer
 from capitalscan.jobs.provenance import git_sha
 from capitalscan.research import features as feat
 from capitalscan.research import predict as rp
@@ -53,6 +64,10 @@ class PredictReport:
     rows_written: int = 0
     rows_dropped: int = 0
     tickers: int = 0
+    #: Where the fitted model was written, or why it was not. Carried in
+    #: `runs.notes` so a scorer that later refuses a stale artifact can be
+    #: traced back to the run that wrote it.
+    artifact_path: str = ""
     since: date | None = None
     model_version: str = ""
 
@@ -70,6 +85,7 @@ def run_predict(
     since: date | None = None,
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
     n_buckets: int | None = None,
+    from_artifact: bool = False,
 ) -> PredictReport:
     """Fit, calibrate, and upsert `predictions` for recent events.
 
@@ -78,6 +94,12 @@ def run_predict(
             `lookback_days` before the newest event, **not** before today:
             anchoring on the data means a stale database produces a small
             correct write rather than an empty one that looks like success.
+
+    Args (continued):
+        from_artifact: score from the saved model instead of refitting.
+            ~11 minutes becomes milliseconds. Raises `StaleArtifact` if the
+            artifact does not match this `config_hash` and `git_sha`, which
+            the caller must not swallow.
 
     Raises:
         ValueError: if validate has too few rows to calibrate against. A
@@ -105,11 +127,43 @@ def run_predict(
         "predict",
         {"config_hash": config_hash, "since": str(since), "adr": 174},
     ) as run:
-        predictor = (
-            rp.fit_and_calibrate(engine, config_hash, sha, n_buckets=n_buckets)
-            if n_buckets
-            else rp.fit_and_calibrate(engine, config_hash, sha)
-        )
+        # **`from_artifact` skips the fit, and that is the whole point of
+        # ADR 181.** Fitting is 24 model fits and ~11 minutes; the forward
+        # pass is milliseconds. A signal that fires intraday should carry a
+        # probability by the time it reaches the screen, and it cannot if
+        # scoring it means refitting first.
+        #
+        # **`StaleArtifact` propagates rather than falling back to a fit.**
+        # A silent refit here would turn a fast path into an eleven-minute
+        # one at the exact moment someone is waiting on it, and hide the
+        # config or code change that invalidated the artifact. The caller
+        # decides: `nightly` refits, a per-fire scorer must fail loudly.
+        if from_artifact:
+            predictor = scorer.load_predictor(config_hash, sha)
+            report.artifact_path = f"loaded {artifact.DEFAULT_PATH}"
+        else:
+            predictor = (
+                rp.fit_and_calibrate(engine, config_hash, sha, n_buckets=n_buckets)
+                if n_buckets
+                else rp.fit_and_calibrate(engine, config_hash, sha)
+            )
+            # **Persist the fit before scoring anything with it (ADR 181).**
+            # Written here rather than by the caller so every path that fits
+            # also saves -- a scorer that finds no artifact has to refit,
+            # which is the eleven minutes this exists to avoid.
+            #
+            # A failure to write must not fail the run. The predictions
+            # below are the product; the artifact is an optimisation for
+            # whoever scores next, and a full disk should not cost a night.
+            try:
+                saved = artifact.save(predictor, config_hash, sha)
+                report.artifact_path = str(saved)
+            except OSError as exc:  # pragma: no cover - disk-dependent
+                report.artifact_path = f"not written: {exc}"
+
+        # Checked on both paths. A loaded artifact carries the `n_calibrate`
+        # of the run that wrote it, so a thin fit stays refused after a
+        # restart rather than being laundered through the file.
         if predictor.n_calibrate < MIN_CALIBRATION_ROWS:
             raise ValueError(
                 f"only {predictor.n_calibrate} validate rows; "

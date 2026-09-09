@@ -241,6 +241,13 @@ describe("the client boundary", () => {
     // `ScreenerTable` -- which renders dozens of them -- stays on the
     // server. Putting the state in the table would have shipped the whole
     // grid to the browser to open a dialog.
+    //
+    // `PredictButton` joined 2026-09-08 for the same reason as
+    // `InferenceCell`: it holds one boolean and opens the same
+    // `InferenceModal`. The graph page stays a server component. Note it
+    // takes `prediction` as a prop rather than fetching one -- a client
+    // component that queried would pull `lib/db` into the bundle, which is
+    // exactly the failure the transitive check below exists for.
     expect(clients).toEqual([
       "components/Chat.tsx",
       "components/DatePicker.tsx",
@@ -249,6 +256,7 @@ describe("the client boundary", () => {
       "components/InferenceModal.tsx",
       "components/LivePrice.tsx",
       "components/OpenSelected.tsx",
+      "components/PredictButton.tsx",
       "components/TickerChart.tsx",
       "components/TickerSearch.tsx",
     ]);

@@ -1949,3 +1949,112 @@ the same task.
 **Still true and separate:** WAL and autovacuum tuning live on the server,
 not in a migration, so they must be re-applied by hand on `wivie` after any
 restore. → `CLAUDE.md`, `pi-postgres-tuning`.
+
+## The coverage gate watches a family the product does not display
+
+Established 2026-09-08 by the seven-year rolling test (`RESULTS.md`), run
+twice and identical to four decimals.
+
+Under the shipped configuration, split by task family:
+
+| family | shipped as | heads within 5% |
+|---|---|---|
+| `peak` | `p_touch_2` / `_3` / `_5` / `_10` | **10/10** |
+| `trough` | `p_adverse_3` / `_5` | **10/10** |
+| `terminal` | **nothing** | 6/10 |
+
+**All four heads the model fails are `terminal` heads.** The `terminal` head
+backs only `q05..q95`, which ADR 172 established is negative out of sample
+and which no surface displays. Every probability that reaches a reader comes
+from `peak` or `trough`, and both are perfect.
+
+That is the whole coverage failure: five hypotheses, four refutations, ADR
+179, and two 22-minute runs chasing a miscalibration in the one family
+nobody sees.
+
+**The rule this leaves: weight coverage work by whether a head reaches a
+surface.** A head that no view reads is worth fixing only after every head
+that is displayed is already right. The aggregate "26/30 heads pass" hides
+exactly this, and reading it as a single number is what kept the wrong
+target in view for so long — split by family before drawing any conclusion
+from it.
+
+**Open question this raises and does not answer:** why the `terminal` head
+alone is miscalibrated when it shares a trunk with the other two families.
+Multi-task interference was tested and refuted earlier, but that test was
+pooled across families and this result says pooling is exactly what hides
+the signal. Worth re-running per family.
+
+Not urgent. Nothing a reader sees is wrong because of it.
+
+## The shipped probabilities run about 5 points low, and the cause is not the model
+
+Measured 2026-09-08 on 4,020 resolved in-population forward-log rows
+(`RESULTS.md` has the full table).
+
+Ranking is sound: bucket `p_touch_3` eight ways and the realised rate is
+**monotone across all eight**, 41.6% to 87.1%. Nothing crosses.
+
+The level is not: the shipped value falls outside the bucket's **own** 95%
+Wilson interval in most bands, always too low. **The exact count depends on
+the partition** — six of eight with equal-width buckets, **four of eight**
+with the equal-count buckets the shipped page uses, one of which sits 0.3pp
+from its edge. `RESULTS.md` 2026-09-09 carries the reconciliation. The
+direction is the durable part; the count is not.
+
+The cause is a base rate that will not sit still:
+
+| population | 3% touch rate |
+|---|---:|
+| train (2010-2021) | 35.1% |
+| **validate (2022-2023)** — where ADR 174 fits the isotonic tables | **43.2%** |
+| holdout (2024-2026) | 44.1% |
+| last twelve months | ~49.5%, ranging **36.5% to 65.0%** |
+| forward log (Aug-Sep 2026) | 57.1% |
+
+**The month-to-month swing is larger than the model's entire Brier skill of
+0.079.** So the ordering is the durable part of the output and the level is
+not: expect understatement in a rising market and overstatement in a falling
+one.
+
+**What is ruled out.** ADR 179's rolling window was the obvious fix and is
+refuted — it degrades `peak`, which is the family `p_touch_3` comes from.
+
+**What must not be done.** Recalibrating on the forward log would correct the
+level and destroy the only clean evidence the project has. ADR 179 forbids
+it, and this measurement is why that rule is absolute rather than a default.
+
+**What is shipped instead.** The modal says it in plain terms: "Use these to
+rank signals, not as exact odds." Honest, and not a fix.
+
+**Ideas, none tested.** A recency-weighted calibration sample that still
+never touches the forward log. Conditioning the reliability table on a
+regime feature such as the ADR 176 breadth reading, which is already
+computed and already known to separate. Publishing the trailing realised
+rate beside the model's number so a reader can see the gap themselves.
+
+## `bars` and `indicators` are joined into every feature frame for four dead columns
+
+Found 2026-09-08. `META_COLS` carries `bar_low`, `bar_high`, `band_lower`
+and `band_upper`, commented "Raw inputs to `breach_depth`, dropped from the
+matrix once derived." **`breach_depth` was deleted the same day** (ADR 177's
+correction — it reads the signal session's low, which is look-ahead under a
+`touch` entry). `DERIVED_FEATURE_COLS` is now `("k_minus_d", "mcap_log")`
+and nothing consumes the four.
+
+They are in `META_COLS`, so **this is not a leak** — they never reach the
+design matrix, and the signature probe still holds. It is waste, and the
+waste is not small: `_SQL` keeps a join against `bars` (4.5M+ rows) and one
+against `indicators` purely to populate columns that are then discarded, on
+every training and serving frame build.
+
+Delete the four columns, both joins, and the stale comment. Check
+`partition_for_training` and `_add_derived` for other references first
+(`features.py:98`, `:159`, `:164`, `:583` all still name `breach_depth`,
+three of them as history rather than code).
+
+Measure the frame build before and after rather than assuming: this is the
+kind of change that looks free and occasionally is not, because a join that
+also constrains row count is doing more than it appears to. If it turns out
+these joins are inner joins, dropping them **changes the training
+population**, which is a config-hash question and not a cleanup.

@@ -221,6 +221,8 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 177 | The model trains and serves on `touch` entry, not `next_open` | **Decided 2026-09-08, corrected same day.** The first measurement included `breach_depth`, which is **look-ahead under a touch entry** (it reads the session's low); a test caught it. Re-measured without it, `p_touch_3` skill +6.57% -> **+10.14%** and `p_adverse_3` +3.83% -> **+7.17%** -- the decision holds, the adverse gain was two-thirds leak. `breach_depth` deleted (worth 0.0003 AUC where legal); every field improves, bias stays +0.0000. A `next_open` label measures from a price the features never saw, and the overnight gap is noise in the *label*. Costs the stochastic-only signals (no fill price, 42% of rows) -- but **zero** of those share a ticker-date with a confluence row, so confluence retains the stochastic condition entirely. Does not move `config_hash` |
 | 179 | The model refits on a rolling window; the forward log is never trained on | **Decided 2026-09-08.** Coverage error grows with distance from the training window (2024 0.0182 -> 2026 0.0480) and **46,232 labelled events** sit outside it -- 49% more than the 94,054 trained on. Weekly refit, all three bounds rolling. **`outcomes` is never trained on**: it is the only estimate nothing has iterated against, and training on it converts it irreversibly. Newly closed labels enter training only after serving as forward-log evidence |
 | 180 | Serving scores only the signal types the model was fitted on | **Decided 2026-09-08.** **4,207 of 8,699 predictions (48%) were extrapolation**: `stoch_oversold`/`stoch_overbought`, of which the training frame holds **zero** rows, shipped with a calibrated probability, a CI and an `n_eff` formatted exactly like the 4,492 legitimate ones. Cause is a correct guard -- `build_training_frame` drops NULL labels (removing them), `build_serving_frame` drops `LABEL_COLS` outright per ADR 174 (so it cannot filter). Measured on 5,986 resolved forward-log rows, Brier skill against each population's own base rate: in-population **0.079** (pred 51.7% vs actual 57.1%), outside **0.021** (pred 52.3% vs actual 49.0%) -- the model gives both ~52% while their real rates differ by 8pp, and the error flips from understating to **overstating**. Serving now filters on `predictor.trained_signal_types`, read off the fit, never a literal list. Existing rows flagged via `predictions.model_scored`, not deleted: their 1,966 outcomes are the only off-distribution measurement the project has. `v_forward` stays unfiltered. Does not move `config_hash` |
+| 181 | A fitted predictor is persisted, and refused on any mismatch | **Decided 2026-09-09.** Amends ADR 174/175's "refit, never load a pickle". A signal must carry a prediction when it reaches the screen; refitting on a cadence costs **24 model fits and ~11 min per run** (~4h45m/day at 15-min cadence) and buys nothing, since both paths score the same live features and differ only by one day of labels on 91k rows. **The 11 minutes is training; the forward pass is milliseconds.** The old rule stopped a fit outliving its feature code -- a real failure, but caused by loading unchecked, not by persisting. So: persist, and refuse on any `config_hash` **or** `git_sha` mismatch. Neither is redundant -- `config_hash` catches a sweep moving the population, `git_sha` catches a feature reordered in code, which no config hash sees. `.npz`+JSON not pickle: the file travels to the Pi and must not execute on load. `core/inference.py` reruns the net in numpy (4 matmuls, GELU, softmax) so the Pi needs no 2GB ARM torch wheel; parity with torch is tested to 1e-5 because a drifting second implementation is worse than none. Does not move `config_hash` |
+| 182 | Phase 6's two remaining gates, restated | **Decided 2026-09-09.** Two of four are met. The Brier gate was under-specified on **population** (ADR 180: in-population skill 0.079 vs 0.021 outside) and on **family** (the aggregate hid an inversion -- `peak` 10/10, `trough` 10/10, `terminal` 6/10, and only the first two reach a surface); restated as beats-base-rate on the fitted population, per family, displayed families first. "Reliability diagram renders" was a UI gate for an evidence gate -- the data already shows the shipped value missing its own 95% interval in **six of eight** buckets; restated so that fact must be visible, not merely charted. "Promotion gate rejects a flattened model" stands unchanged and is now the most important: 45 tests pass and none makes the gate refuse anything. Does not move `config_hash` |
 
 ---
 
@@ -8889,3 +8891,207 @@ the model does outside its training population is what that log is for.
 **`false` is the safe default** rather than a convenience. A row written by
 some future path that has not been filtered stays out of the screener until
 someone looks at it.
+
+---
+
+## 181. A fitted predictor is persisted, and refused on any mismatch
+
+**Status:** accepted, 2026-09-09. Amends ADR 174/175's "refit, never load
+a pickle".
+
+**A signal should carry a prediction by the time it reaches the screen.**
+It cannot today: the screener shows a poller fire the moment it lands, and
+the probability appears at the next `nightly`.
+
+### Why the obvious fix does not work
+
+Run `cscan predict` on a short cadence during the session. Measured, that
+is **24 model fits per run** — three seeds, each a seven-fold inner
+walk-forward ladder plus a final fit — for about eleven minutes. At a
+fifteen-minute cadence it is roughly **4h45m of CPU per day** to produce a
+few hundred forward passes.
+
+And it buys nothing. The refit differs from last night's only by one more
+day of closed labels on ~91,000 training rows. The features being scored
+are identical either way: both paths read the live fire.
+
+**The eleven minutes is training. The forward pass is milliseconds.**
+
+### What the old rule protected
+
+"Refit, never load a pickle" existed so a fit could never outlive the
+feature code that built it. That danger is real and specific: reorder a
+feature column, load the old weights, and every number produced is wrong
+against the new design, with no error anywhere.
+
+**But that failure is not caused by persisting. It is caused by loading
+without checking.** The rule prevented it by making the artifact
+impossible, which also made per-fire scoring impossible.
+
+### The decision
+
+Persist the fit; refuse to load it whenever `config_hash` **or** `git_sha`
+has moved. Same guarantee, enforced at load rather than by never writing.
+
+Both hashes are needed and neither is redundant:
+
+- `config_hash` catches a threshold sweep, which moves the **population**
+  the calibration was fitted on. The weights would still load and still
+  produce probabilities — about a different population.
+- `git_sha` catches a feature reordered or redefined in **code**. That
+  does not touch the config, so its hash is unchanged. Only `git_sha`
+  notices.
+
+A refusal is loud and recoverable. A silent mismatch is neither.
+
+**`.npz` and JSON, not pickle.** A pickle executes on load and encodes
+Python classes, so it runs arbitrary code from disk and breaks on a
+refactor that renames a dataclass. The artifact travels to the Pi, which
+makes both properties unacceptable. It is read with `allow_pickle=False`,
+and a test asserts the written file is actually readable that way.
+
+### The forward pass is reimplemented in numpy, and that needs a guard
+
+`core/inference.py` runs the network without torch: the model is a
+three-layer MLP with linear heads, so it is four matmuls, a GELU and a
+softmax. Dropout is the identity at inference. This is what lets the Pi
+score a fire — numpy is already there via pandas, against a 2GB ARM torch
+wheel that has no business on that board.
+
+**A second implementation that drifts from the first is worse than no
+second implementation**: it produces plausible numbers that are wrong, on
+a surface a reader looks at. So the contract is not "numpy inference
+works", it is "numpy inference is the same arithmetic", and
+`test_inference_parity.py` holds it — GELU to 1e-9, softmax to 1e-12, the
+full pmf to 1e-5 on random input (float32 in torch against float64 here,
+so tighter would fail on precision rather than on disagreement).
+
+Three specifics have their own tests because each is a way to be quietly
+wrong:
+
+- `torch.nn.GELU()` defaults to the **exact erf** form, not tanh. They
+  differ by ~1e-3 near the elbow, a hundred times the tolerance, so the
+  wrong choice fails loudly. A test asserts we are *not* the tanh form.
+- `softmax` shifts by the row max before exponentiating. Without it a
+  logit near 750 overflows to `inf` and the row returns NaN, which reaches
+  the screen as a *missing* probability rather than an error.
+- The ensemble averages probability **mass**, not logits. Averaging logits
+  then softmaxing is a different, sharper distribution.
+
+`export_weights` walks `nn.Linear` children in order rather than naming
+layers, so a change to `_build_module` is picked up instead of silently
+exporting a stale architecture.
+
+### What this does not change
+
+`nightly` still refits every run, and the forward log is still never
+trained on (ADR 179). The artifact is a **cache of tonight's fit**, not a
+model that persists across code changes — which is precisely what the two
+hashes enforce.
+
+`core/inference.py` performs no IO, per invariant 1. `jobs/artifact.py`
+owns the file.
+
+---
+
+## 182. Phase 6's two remaining gates, restated
+
+**Status:** accepted, 2026-09-09. Amends the Phase 6 gate list in
+`docs/TESTS.md` §10.
+
+Two of the four Phase 6 gates are met: the forward log accumulates and
+resolves (5,986 rows, all scored), and the model beats its base rate. The
+other two were written before ADR 180 and 181, and this session found the
+reasons both are under-specified.
+
+### "Model beats cell-lookup Brier score on validation"
+
+**Under-specified in two ways, and both were hit for real.**
+
+*Which population.* ADR 180 found 48% of shipped predictions were for
+signal types the model was never fitted on. In-population Brier skill is
+**0.079**; outside it, **0.021**. A gate that pools them reports something
+between two numbers that mean different things.
+
+*Which family.* The seven-year rolling test showed the aggregate hides an
+inversion. Split by task family under the shipped configuration: `peak`
+**10/10**, `trough` **10/10**, `terminal` **6/10** — and every shipped
+probability reads `peak` or `trough`, while `terminal` backs only
+`q05..q95`, which no surface displays. A pooled "26/30 heads pass" reads as
+a mild problem when it is a total inversion of which family works.
+
+**Restated:** the model beats the base rate **on the fitted population**
+(ADR 180's `model_scored` rows), reported **per task family**, and a family
+that reaches a surface must pass before one that does not.
+
+### "Reliability diagram renders"
+
+**"Renders" is a UI gate for what is an evidence gate.** The diagram
+already exists as data, and what it shows is the finding: bucketing
+`p_touch_3` eight ways over the forward log gives a monotone realised rate
+(41.6% to 87.1%, nothing crossing) while the **shipped value falls outside
+the bucket's own 95% Wilson interval in six of the eight**, always low.
+
+A gate satisfied by a chart appearing would have passed without anyone
+checking that.
+
+**Restated:** the reliability table is computed from the forward log,
+published with Wilson intervals on Kish `n_eff`, and a bucket whose shipped
+probability lies outside its own interval is **visible as such**. Rendering
+is how it is delivered, not what is being asserted.
+
+### "Promotion gate rejects a deliberately flattened model"
+
+**Left exactly as written, and it is now the most important of the four.**
+`test_promotion_gate.py` has 45 passing tests and not one of them makes the
+gate refuse anything. A gate never shown to reject is a gate nobody has
+tested.
+
+This session's recurring failure was a broken measurement agreeing with
+itself: a void rolling test that looked like a clean win, a coverage gate
+guarding a family nothing displays, 48% of predictions extrapolating with a
+calibrated number attached. Feeding the promotion gate a model flattened to
+the base rate and asserting refusal is cheap, and it is the only evidence
+the gate does its job.
+
+
+### Correction, 2026-09-09: the miss count depends on the partition
+
+This ADR and `RESULTS.md` said **six of eight** bands miss their own
+interval, and that the realised rate is **monotone across all eight**. Both
+came from equal-**width** buckets. The shipped page uses equal-**count**
+(`ntile(8)`), which is the better partition and gives different numbers:
+
+```
+band  n     stated  observed  95% range        verdict
+1     503   0.319   0.439     [0.397, 0.483]   understates
+2     503   0.388   0.443     [0.401, 0.487]   understates
+3     503   0.444   0.429     [0.387, 0.473]   ok
+4     503   0.478   0.525     [0.481, 0.568]   understates (by 0.3pp)
+5     502   0.514   0.542     [0.498, 0.585]   ok
+6     502   0.578   0.606     [0.562, 0.647]   ok
+7     502   0.650   0.727     [0.686, 0.764]   understates
+8     502   0.773   0.857     [0.823, 0.885]   understates
+```
+
+**Four of eight, not six**, and band 4 sits 0.3pp from its edge — close
+enough that rounding the inputs to four decimals flips it to five. The page
+computes at full precision and reports four.
+
+**And the ordering is not perfectly monotone.** Band 3 realises 42.9%
+against band 2's 44.3%. That inversion is 1.4pp between two bands whose
+intervals overlap almost entirely ([0.401, 0.487] against [0.387, 0.473]),
+so it is not evidence of a real crossing — but "monotone across all eight,
+nothing crosses" was a stronger claim than the data supports under the
+shipped partition, and it should not have been written as though the
+bucketing were incidental to it.
+
+**What survives all three partitions**, and is the finding: the trend rises
+strongly and consistently, from roughly 44% at the bottom band to 86% at the
+top, while the stated chance understates in most bands and never
+meaningfully overstates. Rank with it; do not read the level.
+
+### What this does not change
+
+The other two Phase 6 gates stand as written and are met. Holdout is still
+evaluated exactly once, at the end, and published whatever it says.

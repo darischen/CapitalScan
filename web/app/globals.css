@@ -270,6 +270,38 @@ table.screen th.sig + th.r {
   border-color: var(--muted);
 }
 
+/* **The ellipsis button's box, at text width.** Same border, radius,
+ * muted-to-text hover and mono face as `.infer`, because it opens the same
+ * dialog and a reader should recognise it as the same control.
+ *
+ * A box rather than the underline its sibling toggles wear: those swap
+ * which rows the list shows, this opens a dialog and leaves the page
+ * where it is. Two behaviours, two affordances. */
+.predict-btn {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 7px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.predict-btn:hover,
+.predict-btn:focus-visible {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+/* The toggles centre on their text; the button is taller than its label,
+ * so the row needs to align on centres rather than baselines or the
+ * underline sits a pixel off. */
+.toggles {
+  align-items: center;
+}
+
 .infer:focus-visible {
   outline: 2px solid var(--muted);
   outline-offset: 1px;
@@ -2455,4 +2487,40 @@ table.screen th.r .sortlink {
 
 .modal-note > p {
   margin: 8px 0 0;
+}
+
+/* The calibration table (ADR 182). Shares `.modal-table` so the numbers
+ * line up the same way they do in the inference dialog -- a reader
+ * comparing the two is comparing the same quantities. */
+.rel {
+  padding: 18px 0;
+}
+
+.rel-verdict {
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 70ch;
+  color: var(--text);
+  margin: 10px 0 14px;
+}
+
+.rel-table {
+  width: 100%;
+}
+
+/* **Not colour alone.** The row also says "understates" or "overstates" in
+ * words, because the whole point of this table is that a miss is legible,
+ * and a reader who cannot separate the hues would otherwise see a table
+ * where every row looks the same. */
+.rel-miss td,
+.rel-miss th {
+  color: var(--short);
+}
+
+.rel-flag {
+  padding-left: 10px;
+  font-family: var(--sans);
+  font-size: 11px;
+  white-space: nowrap;
 }
