@@ -1016,3 +1016,35 @@ so it is a loop.
 Steps 1-4 touch research only and are safe during market hours -- the
 poller writes serving, which is the whole point of it living there. Step 5
 onward must wait for the 13:00 close.
+
+---
+
+## An unphased backtest loses everything when it is killed (2026-09-10)
+
+`cscan backtest` without `--phase` ran 10 minutes, was killed by the
+low-memory reaper, and left **zero** events behind. The same job the day
+before had survived 45 minutes unphased, which is why the shortcut kept
+looking safe.
+
+CLAUDE.md already says to use `--phase` for anything long. The reason is
+narrower than "it is resumable": the unphased path collects across the
+whole universe and upserts at the end, so a kill at 90% costs 100%.
+`--phase compute` writes a `backtest_compute` run row per `--chunk-size`
+chunk, and `_chunk_already_done` keys on `(config_hash, chunk, of)`.
+
+**Keep `--chunk-size` identical across restarts.** It is part of the
+checkpoint key, so resuming with a different value re-runs every chunk and
+looks like the checkpoints did not work.
+
+**Two different reapers, and they need different diagnoses.** The three
+`cscan sync` kills earlier the same night were Windows commit exhaustion --
+70.7 GB committed against 2.9 GB resident, diagnosed by `FreeVirtualMemory`
+rather than by free RAM. This one was not: both counters read healthy
+immediately afterwards (14.6 GB physical free of 31.9, 39.0 GB commit free
+of 67.7). It was the agent harness killing a background task at peak.
+
+Reaching for the previous explanation is the trap. Read both counters
+before concluding, because the remedies differ -- commit exhaustion wants
+the pagefile or a streaming read, harness pressure wants fewer workers.
+Dropping 8 workers to 5 is what the second one needs; it would not have
+helped the first.
