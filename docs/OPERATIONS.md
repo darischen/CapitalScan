@@ -1081,7 +1081,9 @@ The correct order across a `config_hash` change:
  7. cscan stats rho   --config-hash <new>                    research only
  8. cscan stats cells --config-hash <new> --split-key train
     cscan stats cells --config-hash <new> --split-key validate
- 9. cscan stats benchmarks --config-hash <new>               research only
+ 9. cscan stats benchmarks --config-hash <new> --split-key train
+    cscan stats benchmarks --config-hash <new> --split-key validate
+                                                            research only
 10. cscan predict                                            research only
 11. cscan sync                    ships the new generation AND, as its
                                   last table, flips the pin
@@ -1097,6 +1099,23 @@ status -- a blank page returns 200:
 ```
 curl -s http://localhost:3000/ | grep -o 'class="ticker"' | wc -l
 ```
+
+**Both splits, and this is not symmetry for its own sake.** Step 9 read
+`cscan stats benchmarks --config-hash <new>` until 2026-09-10, with no
+`--split-key`. It **defaults to `train`**, so the new generation got 409
+train rows and zero validate ones -- while invariant 5b has every serving
+view hardcode `split_key = 'validate'`. The `/research` page would have
+rendered empty after the cutover with nothing erroring, which is the same
+shape as the empty-table failures below.
+
+Step 8 already ran both splits; step 9 was the one that did not, and the
+asymmetry is invisible unless the two lines are read side by side.
+
+Caught by `web/tests/research.test.ts`, which reads
+`DATABASE_URL_RESEARCH` and therefore resolves the *new* hash:
+`the signal arm has a row per breadth split` returned 0 rows instead of 2.
+**The web suite is not in the four gates** -- those are Python only -- so
+`npx vitest run` belongs in any cutover that touches a generation.
 
 **Steps 3, 7, 8 and 9 all populate config-keyed tables that start EMPTY on
 a new generation**, and every one of them fails quietly rather than
