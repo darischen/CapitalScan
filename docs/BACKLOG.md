@@ -2303,3 +2303,26 @@ the data written since has not been through it.
 
 That is a real gap and should be closed before the wivie cutover, not
 after.
+
+## OPEN NOW: the scheduled nightly is DISABLED and must be re-enabled
+
+Disabled 2026-09-10 12:25 PT so it would not fire at 13:15 into a running
+`config_hash` rebuild. Its chain is
+`events -> path_capture -> peak_labels -> predict -> sync`, and every step
+would have collided: `events` upserting the same natural keys the backtest
+was writing, `path_capture` racing `path backfill`, `predict` on a
+half-built generation, and `sync` shipping that generation to serving --
+`run_sync` reads the research GUC, which already points at the new hash.
+
+**Re-enable after the serving steps finish:**
+
+```powershell
+Enable-ScheduledTask -TaskName "CapitalScan nightly"
+Get-ScheduledTask -TaskName "CapitalScan nightly" | Select-Object State
+```
+
+Verify `State = Ready`. A forgotten disable is silent: no nightly runs, no
+error appears anywhere, and the first symptom is stale data days later.
+`Get-ScheduledTaskInfo`'s `NextRunTime` still shows a time while disabled,
+so that field does **not** confirm it is armed -- read `State`.
+
