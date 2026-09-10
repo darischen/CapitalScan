@@ -230,6 +230,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 187 | The harness validates the universe, not the cosmetic rows | **Decided 2026-09-09.** The gate failed with entry 2, exit 7, non-overlap 328 after the event count went 1.38M -> 10.8M. Proved per slice before changing anything: `in_trade` (1,129,486) **all five PASS**, `in_watch` (769,089) **all five PASS**, everything fails. All 337 violations come from the 8.9M out-of-universe rows ADR 178's cosmetic backfill priced -- never produced by the engine whose invariants these checks assert. Scoped to `in_trade OR in_watch`. The boundary is principled: **the harness validates rows that enter a statistic**, and cosmetic rows enter none -- `non_overlap` exists so a position is not double-counted, which has no content for a row nothing counts. `in_watch` stays in scope on evidence, because it is shown as guidance and it passes. Rejected: keeping the full population with known failures -- **a gate expected to fail is a gate nobody reads**. Does not move `config_hash` |
 | 188 | `json_safe` recurses, and both reversals reach the screener | **Decided 2026-09-09.** `db_io.json_safe` handled scalars and ended in `return str(value)`, with no branch for `dict`. `append` routes every dict field through `json_safe_payload`, which walks the **top level only**, so from 2026-08-26 every nested container was stored as a Python repr: `"{'above_band': True, 'confirmed': False}"`. **Four layers declined to complain** -- a fallback that stringifies anything cannot fail, JSONB accepts a string, `->>` on a string returns NULL not an error, and the tests asserted key presence, which a repr satisfies. It reached the reader as "no reversal today", indistinguishable from a quiet market. Boundary exact: 1,871 broken / 544 correct; the two COPY commits at that boundary were innocent. Scope was wider than the reversals -- `call_overlay_json.strikes` (1,042) and `runs.params.config`, the entire resolved config of 106 backtests. **Backfilled, not accepted**: 6,761 values research / 6,672 serving, 0 parse failures, `ast.literal_eval` rather than recompute so the rows carry what the poller actually decided. With the data readable, ADR 144's **bull reversal** turned out computed since 2026-08-21 and projected nowhere; four columns added on their own lateral, one badge component for both sides, `aboveBand` renamed `beyondBand` in TS because the dataclass's side-relative docstring does not travel to a React prop. **Rule: a coercion function whose fallback is `str()` needs a test per container type, not per scalar type.** Not fixed, in BACKLOG: the badge still freezes at fire time (`_already_fired` writes one report per ticker/day), which is why EXPE shows its 09:46 near-miss and not the close. Does not move `config_hash` |
 | 189 | Only a confirmed reversal gets a label | **Decided 2026-09-09.** Amends ADR 117, which chose to show every confluence with its distance from confirming rather than only the ones that confirmed. That reasoning is unchanged and still lost: what ADR 117 could not weigh is how it reads **in place**, because the column had never rendered -- ADR 188's JSON bug made every reversal field NULL from 2026-08-26, so the decision was made against a mock-up and reviewed against a blank column. In place, `0.42 ATR vs open` is a bare number where a badge should be, on the **majority** of rows (20 near-miss cells against 9 confirmed on the first page that rendered). **Only the promotion is lost**: `open_gap_atr` is still written every tick, still projected as `rev_open_gap_atr`/`bull_rev_open_gap_atr`, still in the payload -- restoring the badge is a display change against data that never stopped being collected. The **`beyondBand` guard stays untouched**: it stops a long-side row reporting a short-side measurement (DAL, `-1.99 ATR vs open` on a `confluence_low`), which is correctness, not volume. Tested as a negative across all three non-rendering states rather than per side. Does not move `config_hash` |
+| 190 | A probability label names its own direction | **Decided 2026-09-09.** `p_touch_*` is side-adjusted at the source -- `peak_labels.py` builds `path.favorable` as `(high-entry)/entry` for a long and `(entry-low)/entry` for a short -- so on a short it is the probability of a **fall**. The label read `Reaches +3% in 5 days`. Found by the user on VOD (`bear_close_above_upper`, short, 47.8%), read as the model forecasting a 3% *rise* on a confirmed bear reversal; it meant a 3% fall. **Wrong in the worst available direction** for an advisory tool -- a reader either abandons a good short or takes the opposite position. Three layers were already correct and are why it survived: the tooltip ("in the signal's own direction"), the modal group header ("In the signal's direction"), and `p_adverse_*`, which carries a comment explaining it avoids "falls" *because* the quantity is side-adjusted -- the touch labels never got the same treatment, so the accurate wording sat one hover away from a label contradicting it. Fixed with `modelFieldLabel(field, side)`: `Falls 3% in 5 days` on a short, `Rises` on a long, adverse flipped. **"In favour" rejected as primary** -- accurate but still makes the reader translate, and not translating is the failure; kept as the side-less fallback, because a missing direction is recoverable and a wrong one is not. `side` joined from `events` on the natural key, not a `CASE` on `signal_type` (invariant 2). **No number changed** -- display only. Does not move `config_hash` |
 
 ---
 
@@ -9599,3 +9600,73 @@ reach the cell — close-confirmed, live-confirmed, near miss, not applicable
 — only the first two render. Asserted as a negative over all three
 non-rendering states, because a per-side test would not notice a fourth
 state being added later.
+
+---
+
+## 190. A probability label names its own direction
+
+**Status:** accepted, 2026-09-09.
+
+`p_touch_*` is side-adjusted at the source and the label said `+`.
+
+### The defect
+
+`research/peak_labels.py` builds `path.favorable` as `(high - entry)/entry`
+for a long and `(entry - low)/entry` for a short, and the `peak` family
+takes `max` over it. So `p_touch_3` is the probability of a **favourable**
+excursion for the side the signal assigned — on a short, the probability of
+a *fall*.
+
+The label read `Reaches +3% in 5 days`.
+
+Found by the user on VOD, 2026-09-09: `bear_close_above_upper`, side short,
+`p_touch_3` 47.8%. They read it as the model expecting a 3% rise and asked
+why a confirmed bear reversal — a short setup — carried a bullish forecast.
+It did not. It was saying 48% chance of a 3% fall, which is what they
+expected the signal to mean.
+
+### Why this one matters more than a wording nit
+
+**It is wrong in the worst available direction.** A reader acting on a short
+signal, seeing a number that reads bullish, either abandons a good setup or
+takes the opposite position. This is an advisory tool whose entire output is
+probabilities attached to directions; a probability with the direction
+inverted is worse than no probability.
+
+**Three layers were already correct**, which is what let it survive:
+
+- the tooltip: *"in the signal's own direction"* (`touchHelp`)
+- the modal's group header: *"In the signal's direction"*
+- `p_adverse_*`, which carries a comment explaining it avoids saying
+  "falls" **because** the quantity is side-adjusted
+
+So the convention was understood and documented at three points around the
+label. The touch labels simply never got the same treatment, and the
+accurate wording sat one hover away from a label contradicting it. **The
+hover is the half nobody reads.**
+
+### The fix
+
+`modelFieldLabel(field, side)` names the real direction where the side is
+known — `Falls 3% in 5 days` on a short, `Rises 3% in 5 days` on a long, and
+the adverse rows flip the other way.
+
+**"In favour" was rejected as the primary wording.** It is accurate and it
+still makes the reader translate: a short-side reader has to remember that
+favour means down before the number means anything, and not making that
+translation is precisely the failure. Where the row knows its side, say the
+direction and delete the step. It survives as the side-less fallback, which
+is honest rather than a guess — **a missing direction is recoverable, a
+wrong one is not.**
+
+`side` reaches the graph page by joining `events` on the natural key rather
+than by a `CASE` on `signal_type`: `events.side` is the authority and a
+second derivation would violate invariant 2. Joined on the natural key
+rather than `event_id` because that column does not survive the sync.
+
+### What this does not change
+
+The numbers. Nothing about the model, the labels it trains on, or the
+calibration moved — `path.favorable` was side-correct the whole time. This
+is a display fix, and the only thing that was ever wrong was the sentence
+next to the number.

@@ -25,6 +25,7 @@ import { InferenceModal, type InferenceSubject } from "./InferenceModal";
 export function PredictButton({
   ticker,
   signalDate,
+  side,
   prediction,
 }: InferenceSubject) {
   const [open, setOpen] = useState(false);
@@ -44,7 +45,7 @@ export function PredictButton({
       </button>
       {open && (
         <InferenceModal
-          row={{ ticker, signalDate, prediction }}
+          row={{ ticker, signalDate, side, prediction }}
           onClose={() => setOpen(false)}
         />
       )}

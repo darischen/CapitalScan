@@ -489,6 +489,7 @@ export function EventHistory({
           <PredictButton
             ticker={sym}
             signalDate={prediction?.asOf ?? newest ?? ""}
+            side={prediction?.side ?? null}
             prediction={prediction ?? null}
           />
           <Link href={`/ticker/${sym}`} className={all ? undefined : "on"}>

@@ -13,7 +13,7 @@ import {
 
   MODEL_COLUMN_HELP,
   MODEL_FIELD_HELP,
-  MODEL_FIELD_LABELS,
+  modelFieldLabel,
   COSMETIC_CAVEAT_DETAIL,
   COSMETIC_CAVEAT_SUMMARY,
   PREDICTION_CAVEAT_DETAIL,
@@ -33,8 +33,11 @@ import type { Band, Prediction } from "@/lib/screen";
  * effective sample and the caveat beside every number, which is the shape
  * invariant 8 asks for and a 60px cell cannot hold.
  *
- * **Every label is translated** (`MODEL_FIELD_LABELS`). A reader who knows
- * markets should not have to know that `p_touch_3` means "reaches +3%" or
+ * **Every label is translated and names its direction**
+ * (`modelFieldLabel`). A reader who knows markets should not have to know
+ * that `p_touch_3` is side-adjusted — on a short it is the chance of a
+ * *fall*, and until 2026-09-09 this said "Reaches +3%", which read as the
+ * opposite. A reader should not have to know that `p_touch_3` means that or
  * that `q05` is the 5th percentile. The screener already works this way --
  * "Bollinger Lower / Mid / Upper", not `bb_lower` -- and this matches it.
  */
@@ -48,8 +51,8 @@ import type { Band, Prediction } from "@/lib/screen";
 const TOUCH_FIELDS = ["p_touch_2", "p_touch_3", "p_touch_5", "p_touch_10"] as const;
 const ADVERSE_FIELDS = ["p_adverse_3", "p_adverse_5"] as const;
 
-function label(field: string): string {
-  return MODEL_FIELD_LABELS[field] ?? field;
+function label(field: string, side?: string | null): string {
+  return modelFieldLabel(field, side);
 }
 
 /**
@@ -73,7 +76,15 @@ const MAX_ASYMMETRY = 0.01;
  * the invariant, not a style choice — a bare probability is the thing the
  * response validator rejects everywhere else in this system.
  */
-function BandRow({ field, band }: { field: string; band: Band }) {
+function BandRow({
+  field,
+  band,
+  side,
+}: {
+  field: string;
+  band: Band;
+  side?: string | null;
+}) {
   const help = MODEL_FIELD_HELP[field];
 
   // **`±` is a claim that the interval is centred, so check rather than
@@ -95,7 +106,7 @@ function BandRow({ field, band }: { field: string; band: Band }) {
   return (
     <tr>
       <th scope="row" title={help}>
-        {label(field)}
+        {label(field, side)}
       </th>
       <td className="r num">{pct(band.p)}</td>
       <td
@@ -120,6 +131,15 @@ function BandRow({ field, band }: { field: string; band: Band }) {
 export interface InferenceSubject {
   ticker: string;
   signalDate: string;
+  /**
+   * `"long"` or `"short"`, so every label can name the direction the
+   * number actually describes.
+   *
+   * Optional because a caller that genuinely does not know the side is
+   * better served by the direction-neutral wording than by a guess — a
+   * missing direction is recoverable, a wrong one is not.
+   */
+  side?: string | null;
   prediction: Prediction | null;
 }
 
@@ -200,7 +220,7 @@ export function InferenceModal({
               </tr>
             )}
             {touch.map((f) => (
-              <BandRow key={f} field={f} band={bands[f]} />
+              <BandRow key={f} field={f} band={bands[f]} side={row.side} />
             ))}
             {adverse.length > 0 && (
               <tr className="modal-group">
@@ -210,7 +230,7 @@ export function InferenceModal({
               </tr>
             )}
             {adverse.map((f) => (
-              <BandRow key={f} field={f} band={bands[f]} />
+              <BandRow key={f} field={f} band={bands[f]} side={row.side} />
             ))}
           </tbody>
         </table>
