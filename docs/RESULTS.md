@@ -8179,3 +8179,34 @@ readable. All three stores now agree.
 `pg_hba.conf` on `wivie` refuses remote connections for that database, so
 the script grew a `--target url` and ran locally there rather than having a
 firewall rule edited on a machine under a no-migrate constraint.
+
+### Re-dumped after the backfill
+
+The 14:28 dump was taken before the 17:45 backfill, so the first stage came
+up damaged and had to be repaired in place. Re-dumped at 19:4x from the
+repaired research store and re-staged, which is the difference between a
+copy that was fixed and a copy that was never wrong.
+
+Verified at every step, with each exit code captured directly rather than
+through a pipe — the `dump_exit=$?` trap from earlier in the session:
+
+| check | value |
+|---|---|
+| `pg_dump` exit | 0 |
+| size in container / after `docker cp` / on `wivie` | 3,574,730,745 (all three) |
+| SHA256 both sides | `a09ce0c2…62352944` |
+| `pg_restore` | `EXIT=0`, empty log, 26 GB |
+
+Row counts match research exactly across seven tables and 109M rows, and
+the check that mattered:
+
+```
+repr strings anywhere in state_json  ->  0
+bear/bull blocks both objects        ->  2,272
+bear only (predates ADR 144)         ->  143
+readable through the view's cast     ->  2,415 / 2,415
+```
+
+**Zero repr strings**, so this stage needed no post-restore repair. The
+previous one is what a faithful restore of damaged data looks like; this one
+is what the same command produces when the source is correct.
