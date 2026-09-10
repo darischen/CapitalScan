@@ -160,8 +160,14 @@ export function modelFieldLabel(field: string, side?: string | null): string {
   const adverse = /^p_adverse_(\d+)$/.exec(field);
   if (adverse) {
     // The adverse move is the other direction by definition.
+    //
+    // **No "against you" once the direction is named** (user, 2026-09-09).
+    // "Rises 3% against you" says the same thing twice on a short, and the
+    // modal already groups these rows under "Against the position". The
+    // qualifier only earns its place in the side-less fallback below,
+    // where there is no direction to state.
     const verb = side === "short" ? "Rises" : "Falls";
-    return `${verb} ${adverse[1]}% against you in 5 days`;
+    return `${verb} ${adverse[1]}% in 5 days`;
   }
 
   return base;

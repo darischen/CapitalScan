@@ -110,6 +110,46 @@ def _rows_per_batch(n_columns: int) -> int:
 
 
 @dataclass(frozen=True)
+class Remap:
+    """Rewrite a surrogate reference into the *target's* id space.
+
+    **A surrogate id does not survive this copy, and a stale one resolves.**
+    `events` syncs on a natural tuple, so serving mints `events.id` from its
+    own sequence and the two stores allocate independently out of one
+    numeric range. A `predictions.event_id` copied verbatim therefore names
+    whatever row happens to hold that integer on the other side.
+
+    Measured on serving 2026-09-09, before this existed: of 20,200
+    predictions, 7,403 had an `event_id` matching no event at all and
+    **3,035 matched the wrong one** — PRGO's 2026-08-05 prediction pointed
+    at an SMTC event from 2020-07-13, NRG's at PKX from 2018. Those links
+    resolve, join cleanly, and are wrong, which is the failure mode that
+    reports nothing.
+
+    So the column is rewritten rather than shipped or nulled. `column` is
+    resolved by looking `source_key` up in `table` on the target and taking
+    its id; a row whose key finds nothing gets NULL, which is the honest
+    value and the one `pull_live_records` already writes for
+    `signal_reports.event_id`.
+    """
+
+    #: The frame column holding the source's id, overwritten in place.
+    column: str
+    #: Target table to resolve against.
+    table: str
+    #: Frame columns forming the natural key, paired positionally with
+    #: `target_key`. Named separately because `predictions.as_of` is
+    #: `events.signal_date`.
+    source_key: tuple[str, ...]
+    target_key: tuple[str, ...]
+    #: Target column to read back. Its own surrogate, by definition.
+    target_id: str = "id"
+    #: The target enforces uniqueness on `column`, so a row already holding
+    #: a remapped value must give way. See `_clear_remap_collisions`.
+    unique_on_target: bool = False
+
+
+@dataclass(frozen=True)
 class SyncTable:
     """One table's subset, as a query and a conflict key.
 
@@ -122,6 +162,8 @@ class SyncTable:
     name: str
     sql: str
     key: tuple[str, ...]
+    #: Surrogate references to rewrite before writing. See `Remap`.
+    remaps: tuple[Remap, ...] = ()
 
 
 _RESET_SEQUENCES_SQL = """
@@ -178,6 +220,118 @@ def _reset_sequences(engine: Engine) -> None:
     """
     with engine.begin() as conn:
         conn.execute(text(_RESET_SEQUENCES_SQL))
+
+
+def _apply_remap(frame: pd.DataFrame, target: Engine, spec: Remap) -> pd.DataFrame:
+    """Rewrite `spec.column` into the target's id space. See `Remap`.
+
+    **Bounded by the keys actually present, not by the table.** Serving
+    holds 5,413,083 events for the live generation and the predictions
+    being written span 41 distinct dates, so the lookup is restricted to
+    those — the alternative, reading the whole table into a dict, moves
+    five million rows to resolve twenty thousand.
+
+    Rows whose key resolves to nothing get NULL rather than keeping the
+    source id. Keeping it is what produced the 3,035 wrong links: an id
+    from the other store is not a worse answer than NULL, it is a
+    confidently wrong one.
+    """
+    if frame.empty or spec.column not in frame.columns:
+        return frame
+    missing = [c for c in spec.source_key if c not in frame.columns]
+    if missing:
+        raise ValueError(
+            f"remap of {spec.column!r} needs {missing!r} in the frame; "
+            "widen the table's SELECT to carry the natural key"
+        )
+
+    keys = frame[list(spec.source_key)].drop_duplicates()
+    if keys.empty:
+        return frame
+
+    # One bounded SELECT per key column, ANDed. Every key column here is
+    # low-cardinality over the rows being written (41 dates, ~700 tickers,
+    # 7 signal types), so this narrows to a few thousand candidate rows
+    # before the join in pandas does the exact matching.
+    where = " AND ".join(f'"{t}" = ANY(:v{i})' for i, t in enumerate(spec.target_key))
+    params = {
+        f"v{i}": keys[src].drop_duplicates().tolist() for i, src in enumerate(spec.source_key)
+    }
+    cols = ", ".join(f'"{c}"' for c in (*spec.target_key, spec.target_id))
+    lookup = pd.read_sql(
+        text(f'SELECT {cols} FROM "{spec.table}" WHERE {where}'),  # noqa: S608 - fixed names
+        target,
+        params=params,  # type: ignore[arg-type]
+    )
+    if lookup.empty:
+        return frame.assign(**{spec.column: None})
+
+    # The ANY() filter is a superset — it matches any combination of the
+    # values, not the tuples that actually occur — so the exact pairing is
+    # this merge, not the query.
+    lookup = lookup.rename(
+        columns=dict(zip(spec.target_key, spec.source_key, strict=True))
+        | {spec.target_id: "__new_id"}
+    ).drop_duplicates(subset=list(spec.source_key))
+
+    merged = frame.drop(columns=[spec.column]).merge(lookup, on=list(spec.source_key), how="left")
+    merged = merged.rename(columns={"__new_id": spec.column})
+    # `merge` reorders nothing but appends; put the column back where the
+    # table expects to find it so `copy_upsert`'s column list is stable.
+    return merged[[c for c in frame.columns if c in merged.columns]]
+
+
+def _clear_remap_collisions(
+    frame: pd.DataFrame,
+    target: Engine,
+    table: str,
+    key: tuple[str, ...],
+    spec: Remap,
+) -> int:
+    """Delete target rows that hold a remapped value the incoming rows claim.
+
+    **Two writers reach serving and they identify a prediction
+    differently.** `jobs/predict.py` upserts on `event_id`; this sync
+    upserts on `id`. Before the remap they never collided, because the ids
+    they carried were from different stores and never matched — which is
+    the same reason the links were wrong. Making `event_id` correct makes
+    the collision real: the Pi's row and research's row for one event now
+    claim the same `event_id`, and `predictions_event_id` is UNIQUE.
+
+    Research is the authority for a row it has scored, so its row wins and
+    the other is deleted. Verified before writing this: the pairs carry
+    identical probabilities, so nothing measured is lost — only the second
+    copy of it.
+
+    **Scoped to values this chunk actually claims**, and never touching a
+    row the incoming set also identifies by `key`. A prediction the Pi
+    wrote for an event research has not scored yet is not a collision and
+    is left alone.
+
+    A foreign key pointing at a deleted row raises rather than cascades,
+    which is the failure worth having: `outcomes.prediction_id` is the
+    forward log, and a sync silently deleting evidence is worse than a sync
+    that stops.
+    """
+    if frame.empty or spec.column not in frame.columns:
+        return 0
+    claimed = frame[spec.column].dropna().unique().tolist()
+    if not claimed:
+        return 0
+    keep = frame[list(key)].drop_duplicates()
+    if len(key) != 1:
+        raise ValueError(f"collision clearing needs a single-column key, got {key!r}")
+    keep_ids = keep[key[0]].dropna().tolist()
+
+    with target.begin() as conn:
+        result = conn.execute(
+            text(
+                f'DELETE FROM "{table}" '  # noqa: S608 - fixed names
+                f'WHERE "{spec.column}" = ANY(:claimed) AND "{key[0]}" <> ALL(:keep)'
+            ),
+            {"claimed": claimed, "keep": keep_ids or [None]},
+        )
+        return int(result.rowcount or 0)
 
 
 def _drop_surrogate_id(frame: pd.DataFrame, key: tuple[str, ...]) -> pd.DataFrame:
@@ -352,7 +506,34 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
             "SELECT * FROM benchmarks WHERE config_hash = :config_hash",
             ("id",),
         ),
-        SyncTable("predictions", "SELECT * FROM predictions", ("id",)),
+        # **`event_id` is rewritten into serving's id space (ADR 191).**
+        #
+        # Copied verbatim it named a different event on the other side:
+        # measured 2026-09-09, 7,403 of 20,200 pointed at nothing and
+        # 3,035 pointed at the *wrong* event. `predictions` still keys on
+        # `("id",)`, which is what lets `outcomes` below key on
+        # `prediction_id` — only the reference is remapped, not the
+        # identity.
+        SyncTable(
+            "predictions",
+            "SELECT * FROM predictions",
+            ("id",),
+            remaps=(
+                Remap(
+                    column="event_id",
+                    table="events",
+                    source_key=("config_hash", "ticker", "as_of", "signal_type", "entry_kind"),
+                    target_key=(
+                        "config_hash",
+                        "ticker",
+                        "signal_date",
+                        "signal_type",
+                        "entry_kind",
+                    ),
+                    unique_on_target=True,
+                ),
+            ),
+        ),
         # **After `predictions`, and that order is load-bearing.**
         # `outcomes.prediction_id` references it, so copying outcomes first
         # would fail the foreign key on a fresh serving store.
@@ -765,6 +946,22 @@ def run_sync(
                 # re-run converges. Bounded memory is worth that.
                 copied = 0
                 for chunk in chunks:
+                    # **Remap before the write, per chunk.** The lookup is
+                    # bounded by the keys in this chunk, so it stays small
+                    # regardless of how large the table is.
+                    for spec in table.remaps:
+                        chunk = _apply_remap(chunk, target, spec)
+                        if spec.unique_on_target:
+                            dropped = _clear_remap_collisions(
+                                chunk, target, table.name, table.key, spec
+                            )
+                            if dropped:
+                                logger.info(
+                                    "sync %s: cleared %d row(s) colliding on %s",
+                                    table.name,
+                                    dropped,
+                                    spec.column,
+                                )
                     copied += db_io.copy_upsert(
                         target,
                         table.name,

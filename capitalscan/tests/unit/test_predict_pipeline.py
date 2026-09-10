@@ -437,13 +437,55 @@ class TestCalibrationHoldsOnRealShapedData:
 
         assert brier < ref, "calibration must beat the base rate"
         for p in raw[:500]:
+            # **Against `band`, not against `lookup` (ADR 192).**
+            #
+            # This asserted the point against its *bucket's* interval, and
+            # that is precisely the pairing ADR 174 warned interpolation
+            # would break -- correctly: it broke here first, on raw
+            # 0.2726, publishing 0.3486 against a bucket ceiling of
+            # 0.3464.
+            #
+            # The property is unchanged and the interval is the one that
+            # actually ships. `band` interpolates the point and both
+            # bounds together, so containment holds everywhere rather than
+            # only at anchors. Reverting this to `lookup` would assert a
+            # contract nothing renders.
+            value, lo, hi, n_eff = table.band(float(p))
+            assert lo <= value <= hi
+            assert value == table.calibrate(float(p)), "the two must not diverge"
             bucket = table.lookup(float(p))
-            assert bucket.ci_low <= table.calibrate(float(p)) <= bucket.ci_high
             # Kish is bounded above by the count of the population it was
             # computed over, and after pooling both fields describe the
             # merged block. Strictly less, because these weights are unequal.
             assert bucket.n_eff < bucket.n, "clustered events must lose effective sample"
+            assert n_eff <= bucket.n, "an interpolated point cannot gain support"
         assert all(not math.isnan(v) for v in published)
+
+    def test_interpolation_did_not_cost_calibration(self) -> None:
+        """**The reversal has to pay for itself in the metric, not only in
+        distinctness.** ADR 192 buys ordering; it must not buy it with
+        skill. Same fixture, comparing the shipped map against the
+        piecewise-constant one it replaced.
+        """
+        rng = np.random.default_rng(174)
+        n = 20_000
+        raw = rng.beta(2.0, 2.0, n)
+        realised = (rng.uniform(size=n) < 0.2 + 0.6 * raw).astype(float)
+        weights = np.repeat(1.0 / rng.integers(1, 12, n // 20 + 1), 20)[:n]
+        table = calib.build_reliability("p_touch_3", raw, realised, weights=weights)
+
+        def brier(values: np.ndarray) -> float:
+            return float((weights * (values - realised) ** 2).sum() / weights.sum())
+
+        interpolated = np.array([table.calibrate(float(p)) for p in raw])
+        stepwise = np.array([table.lookup(float(p)).p_hat for p in raw])
+
+        assert brier(interpolated) <= brier(stepwise) + 1e-6, (
+            "interpolation made the published probabilities worse"
+        )
+        assert len(set(interpolated.round(6))) > len(set(stepwise.round(6))), (
+            "interpolation must produce more distinct values than the step map"
+        )
 
 
 class TestTheQuantileFanIsActuallyWritten:

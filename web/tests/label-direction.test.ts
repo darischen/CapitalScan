@@ -36,12 +36,42 @@ describe("a label never implies a direction the number does not have", () => {
 
   it("flips the adverse direction too", () => {
     // Adverse is the other way by definition, so a short's adverse is a rise.
-    expect(modelFieldLabel("p_adverse_3", "short")).toBe(
-      "Rises 3% against you in 5 days",
-    );
-    expect(modelFieldLabel("p_adverse_5", "long")).toBe(
-      "Falls 5% against you in 5 days",
-    );
+    expect(modelFieldLabel("p_adverse_3", "short")).toBe("Rises 3% in 5 days");
+    expect(modelFieldLabel("p_adverse_5", "long")).toBe("Falls 5% in 5 days");
+  });
+
+  /**
+   * **The direction is the whole label; "against you" would repeat it.**
+   * User, 2026-09-09. The modal already groups these rows under "Against
+   * the position", so the qualifier said the same thing a third time.
+   */
+  it("does not say 'against' once it has named the direction", () => {
+    for (const f of ADVERSE) {
+      expect(modelFieldLabel(f, "short")).not.toContain("against");
+      expect(modelFieldLabel(f, "long")).not.toContain("against");
+    }
+  });
+
+  /**
+   * The qualifier survives where it is the only thing distinguishing the
+   * two blocks: with no side, neither label can name a direction, so
+   * "in favour" and "against" are all the reader has.
+   */
+  it("keeps 'against' in the side-less fallback", () => {
+    expect(modelFieldLabel("p_adverse_3", null)).toContain("against");
+    expect(modelFieldLabel("p_touch_3", null)).toContain("in favour");
+  });
+
+  /**
+   * A short's favourable and adverse rows must not collapse to one string.
+   * Dropping the qualifier is only safe because the verbs differ.
+   */
+  it("keeps the two blocks distinguishable on both sides", () => {
+    for (const side of ["short", "long"]) {
+      expect(modelFieldLabel("p_touch_3", side)).not.toBe(
+        modelFieldLabel("p_adverse_3", side),
+      );
+    }
   });
 
   /**
