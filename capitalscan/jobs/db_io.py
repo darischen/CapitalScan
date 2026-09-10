@@ -439,6 +439,20 @@ def json_safe(value: object) -> object:
     236,008 rows. The data landed, the job reported `failed`, and that
     aborted the eight remaining nightly steps. A reject log took down the
     pipeline it exists to annotate.
+
+    **It must recurse, and for two months it did not.** The version written
+    that day handled scalars only, so a nested `dict` fell through to the
+    `str(value)` at the bottom and was stored as a Python repr --
+    `"{'confirmed': False, 'band_gap': -24.05}"`, single quotes and
+    capitalised booleans. `json_safe_payload` walks the top level, so the
+    column itself was a valid JSONB object and only its children were
+    destroyed. Nothing raised, because a string is a legal JSONB value.
+
+    `v_screen_live` reads the reversal blocks with `->> 'confirmed'`, which
+    returns NULL against a JSON string rather than erroring, so the
+    frontend rendered "no reversal" for 1,871 reports across two weeks and
+    the failure looked exactly like an absence of signals. Backfilled
+    2026-09-09; `test_json_safe.py` now asserts nesting survives.
     """
     import math
     from datetime import date as _date
@@ -448,6 +462,12 @@ def json_safe(value: object) -> object:
 
     if value is None or isinstance(value, (str, bool, int)):
         return value
+    # Before the scalar branches: a `dict` or `list` is a container to walk,
+    # never a leaf to stringify. This is the whole bug above.
+    if isinstance(value, dict):
+        return {str(k): json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
     if isinstance(value, float):
         # `json.dumps` emits bare `NaN`/`Infinity` for these, which is not
         # valid JSON and Postgres rejects into JSONB. Absent stays absent.

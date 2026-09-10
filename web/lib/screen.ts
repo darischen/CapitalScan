@@ -76,6 +76,17 @@ export interface ScreenRow {
    * runs.
    */
   reversal: Reversal | null;
+  /**
+   * The long-side mirror (ADR 144), or `null` when no quote has been
+   * evaluated for this event.
+   *
+   * **Separate from `reversal` rather than replacing it.** A wide bar can
+   * break both bands, and the poller stores the two blocks side by side for
+   * exactly that reason, so collapsing them into one field would drop
+   * whichever side lost the coin toss. In practice one of the two has
+   * `beyondBand` true and the badge renders only that one.
+   */
+  bullReversal: Reversal | null;
   cellId: string | null;
   /**
    * `null` while the poller has written the row and clustering has not run.
@@ -142,19 +153,37 @@ export function watchLabel(reason: WatchReason | string | null): string {
 }
 
 export interface Reversal {
-  /** Price is above the band **and** below today's open. */
-  confirmed: boolean;
-  /** Price is above the band at all. A confluence with `aboveBand` false
-   * has fallen back inside since it fired. */
-  aboveBand: boolean;
   /**
-   * Distance from today's open in ATR units. **Negative is below the open**
-   * and therefore reversing; positive is not.
+   * The band condition holds **and** price has crossed back past today's
+   * open. Which direction "past" means depends on `side` — see below.
+   */
+  confirmed: boolean;
+  /**
+   * Price is beyond the band on this signal's own side at all: above the
+   * upper band for a bear, below the lower band for a bull. A signal with
+   * `beyondBand` false has fallen back inside since it fired.
+   *
+   * Named for the side-neutral meaning rather than `aboveBand`, because
+   * ADR 144's bull state reuses the same field to mean *below*, and a
+   * frontend field called `aboveBand` holding "below" is read wrong once.
+   */
+  beyondBand: boolean;
+  /**
+   * Distance from today's open in ATR units, always `(price - open) / ATR`.
+   *
+   * **The sign confirms in opposite directions.** Negative is below the
+   * open, which confirms a *bear* reversal; positive is above it, which
+   * confirms a *bull* one. The stored value keeps one convention (ADR 144)
+   * rather than being negated per side, so the reader interprets it once
+   * against `side` instead of trusting a number whose meaning silently
+   * depends on a sibling field.
    *
    * The number is the point: ADR 117 chose to show every confluence and say
    * how far each is from confirming, rather than hiding the near-misses.
    */
   openGapAtr: number | null;
+  /** Which band this judgement is about. */
+  side: "bear" | "bull";
   /** The quote this judgement was made on. */
   ts: string;
 }
@@ -695,6 +724,8 @@ const feedSql = (order: string) => `
          s.open, s.high, s.low, s.close, s.volume,
          s.live_price, s.live_price_ts, s.fired_at,
          s.rev_confirmed, s.rev_above_band, s.rev_open_gap_atr, s.rev_ts,
+         s.bull_rev_confirmed, s.bull_rev_below_band,
+         s.bull_rev_open_gap_atr, s.bull_rev_ts,
          s.in_watch, s.watch_reason,
          s.p_touch_3, s.pred_ci_low, s.pred_ci_high, s.pred_n_eff,
          s.model_version, s.calibration_json
@@ -749,6 +780,10 @@ interface FeedRowRaw {
   rev_above_band: boolean | null;
   rev_open_gap_atr: string | null;
   rev_ts: Date | null;
+  bull_rev_confirmed: boolean | null;
+  bull_rev_below_band: boolean | null;
+  bull_rev_open_gap_atr: string | null;
+  bull_rev_ts: Date | null;
   in_watch: boolean | null;
   watch_reason: string | null;
   p_touch_3: string | null;
@@ -847,9 +882,22 @@ export async function screen(
     reversal: r.rev_ts
       ? {
           confirmed: r.rev_confirmed === true,
-          aboveBand: r.rev_above_band === true,
+          beyondBand: r.rev_above_band === true,
           openGapAtr: num(r.rev_open_gap_atr),
+          side: "bear",
           ts: r.rev_ts.toISOString(),
+        }
+      : null,
+    // Same shape, same presence rule, opposite band. `bull_rev_below_band`
+    // is the view's rename of the stored `above_band`, which ADR 144
+    // documents as "the band condition holds on this signal's own side".
+    bullReversal: r.bull_rev_ts
+      ? {
+          confirmed: r.bull_rev_confirmed === true,
+          beyondBand: r.bull_rev_below_band === true,
+          openGapAtr: num(r.bull_rev_open_gap_atr),
+          side: "bull",
+          ts: r.bull_rev_ts.toISOString(),
         }
       : null,
     ddBucket: r.dd_bucket,

@@ -295,7 +295,8 @@ describe("the two reversals are told apart", () => {
     const html = render({
       reversal: {
         confirmed: true,
-        aboveBand: true,
+        beyondBand: true,
+        side: "bear" as const,
         openGapAtr: -0.31,
         ts: "2026-08-19T14:05:00.000Z",
       },
@@ -314,7 +315,8 @@ describe("the two reversals are told apart", () => {
       signalTypesAll: ["bear_close_above_upper", "confluence_high"],
       reversal: {
         confirmed: true,
-        aboveBand: true,
+        beyondBand: true,
+        side: "bear" as const,
         openGapAtr: -0.31,
         ts: "2026-08-19T14:05:00.000Z",
       },
@@ -332,7 +334,8 @@ describe("the two reversals are told apart", () => {
     const html = render({
       reversal: {
         confirmed: false,
-        aboveBand: true,
+        beyondBand: true,
+        side: "bear" as const,
         openGapAtr: 0.42,
         ts: "2026-08-19T14:05:00.000Z",
       },
@@ -364,7 +367,8 @@ describe("the two reversals are told apart", () => {
       signalTypesAll: ["confluence_low", "bb_lower_touch", "stoch_oversold"],
       reversal: {
         confirmed: false,
-        aboveBand: false,
+        beyondBand: false,
+        side: "bear" as const,
         openGapAtr: 0.13,
         ts: "2026-08-20T18:05:00.000Z",
       },
@@ -385,12 +389,159 @@ describe("the two reversals are told apart", () => {
       signalType: "confluence_low",
       reversal: {
         confirmed: false,
-        aboveBand: false,
+        beyondBand: false,
+        side: "bear" as const,
         openGapAtr: -1.99,
         ts: "2026-08-20T18:05:00.000Z",
       },
     });
     expect(html).not.toContain("-1.99");
+  });
+
+  /* --- ADR 144's long side, exposed 2026-09-09 ------------------------- */
+
+  /**
+   * **The bull half was computed for two weeks and displayed nowhere.**
+   *
+   * `bull_reversal_state` has run on every poll tick since 2026-08-21 and
+   * the block was written into `state_json` beside the bear one, but
+   * `v_screen_live` projected only the bear side. EXPE on 2026-09-09 closed
+   * back inside its lower band -- the exact mirror of VOD and BE the same
+   * day -- and the page could not say so.
+   *
+   * These mirror the bear tests above one for one. Anything asserted about
+   * one side and not the other is how the two drift apart.
+   */
+  it("shows the poller's live bull reversal, marked as live", () => {
+    const html = render({
+      signalType: "confluence_low",
+      signalTypesAll: ["confluence_low", "bb_lower_touch"],
+      bullReversal: {
+        confirmed: true,
+        beyondBand: true,
+        side: "bull" as const,
+        openGapAtr: 0.31,
+        ts: "2026-09-09T20:05:00.000Z",
+      },
+    });
+    expect(html).toContain("↑ live reversal");
+    expect(html).toContain("reversal live");
+  });
+
+  /**
+   * The arrow is the only thing that differs. The user's requirement,
+   * 2026-09-09: "the exact same styling as the bear reversal just with an
+   * arrow pointing up".
+   */
+  it("uses the same class as the bear badge, with the arrow flipped", () => {
+    const bear = render({
+      reversal: {
+        confirmed: true,
+        beyondBand: true,
+        side: "bear" as const,
+        openGapAtr: -0.31,
+        ts: "2026-09-09T20:05:00.000Z",
+      },
+    });
+    const bull = render({
+      bullReversal: {
+        confirmed: true,
+        beyondBand: true,
+        side: "bull" as const,
+        openGapAtr: 0.31,
+        ts: "2026-09-09T20:05:00.000Z",
+      },
+    });
+    // Byte equality is the wrong assertion: the tooltips *should* differ
+    // ("above the band and below today's open" against its mirror). What
+    // must match is the styling and the structure, so the comparison is
+    // made on the badge element with only the arrow and the tooltip
+    // normalised away.
+    const badge = (html: string) =>
+      /<span class="([^"]*reversal[^"]*)"[^>]*>(.*?)<\/span>/.exec(html);
+
+    const bearBadge = badge(bear);
+    const bullBadge = badge(bull);
+    expect(bearBadge).not.toBeNull();
+    expect(bullBadge).not.toBeNull();
+    // Same class, so the same CSS applies to both.
+    expect(bullBadge![1]).toEqual(bearBadge![1]);
+    // Same text, arrow apart.
+    expect(bullBadge![2]).toEqual("↑ live reversal");
+    expect(bearBadge![2]).toEqual("↓ live reversal");
+    expect(bullBadge![2].replace("↑", "↓")).toEqual(bearBadge![2]);
+  });
+
+  it("shows the close-confirmed bull reversal as a solid badge", () => {
+    const html = render({
+      signalTypesAll: ["bull_close_below_lower", "confluence_low"],
+    });
+    expect(html).toContain("↑ reversal");
+    expect(html).not.toContain("live reversal");
+  });
+
+  it("renders a bull near miss with its distance rather than nothing", () => {
+    const html = render({
+      signalType: "confluence_low",
+      bullReversal: {
+        confirmed: false,
+        beyondBand: true,
+        side: "bull" as const,
+        openGapAtr: -0.14,
+        ts: "2026-09-09T20:05:00.000Z",
+      },
+    });
+    expect(html).toContain("-0.14 ATR vs open");
+    expect(html).toContain("reversal near");
+  });
+
+  /**
+   * The bull mirror of the DAL guard. The poller attaches a `bull_reversal`
+   * block to every report regardless of side, so a `confluence_high` sitting
+   * well above its upper band still carries one whose only honest field is
+   * `below_band: false`.
+   */
+  it("says nothing about a bull reversal on a row that is not below its band", () => {
+    const html = render({
+      signalType: "confluence_high",
+      signalTypesAll: ["confluence_high", "bb_upper_touch"],
+      bullReversal: {
+        confirmed: false,
+        beyondBand: false,
+        side: "bull" as const,
+        openGapAtr: 1.87,
+        ts: "2026-09-09T20:05:00.000Z",
+      },
+    });
+    expect(html).not.toContain("ATR vs open");
+    expect(html).not.toContain("reversal");
+  });
+
+  /**
+   * **The sign is printed as stored, and it confirms the other way.**
+   *
+   * `openGapAtr` is always `(price - open) / ATR`, so a *positive* value is
+   * what a confirming bull reversal looks like -- the opposite of the bear
+   * side. Negating it for display would put a number on the page that does
+   * not match `state_json`, which is the column a reader checks it against.
+   */
+  it("prints a positive bull gap unnegated", () => {
+    const html = render({
+      bullReversal: {
+        confirmed: true,
+        beyondBand: true,
+        side: "bull" as const,
+        openGapAtr: 0.42,
+        ts: "2026-09-09T20:05:00.000Z",
+      },
+    });
+    expect(html).toContain("0.42 ATR vs open");
+    expect(html).not.toContain("-0.42");
+  });
+
+  it("shows nothing when the poller has evaluated neither side", () => {
+    const html = render({ reversal: null, bullReversal: null });
+    expect(html).not.toContain("reversal");
   });
 });
 

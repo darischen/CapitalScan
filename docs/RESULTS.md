@@ -7969,3 +7969,136 @@ meaningfully overstates. Rank with it; do not read the level.
 
 The shipped page (`/model`, `web/lib/reliability.ts`) uses equal-count
 and reports four. `docs/DECISIONS.md` ADR 182 carries the same correction.
+
+---
+
+# 2026-09-09 (evening): a coercion function's `str()` fallback, and what it hid
+
+## The finding
+
+`db_io.json_safe` stored every nested dict as a Python repr string for two
+weeks, and nothing anywhere reported it.
+
+```
+jsonb_typeof(state_json)                    -> object    correct
+jsonb_typeof(state_json->'bear_reversal')   -> string    WRONG
+jsonb_typeof(state_json->'bull_reversal')   -> string    WRONG
+jsonb_typeof(state_json->'bands')           -> string    WRONG
+```
+
+The function handles scalars and ends in `return str(value)`. `append`
+routes every dict-valued field through `json_safe_payload`, which walks the
+**top** level and calls `json_safe` on each value — so the column stayed a
+valid JSONB object and its children became
+`"{'above_band': True, 'confirmed': False, 'band_gap': -24.049838}"`.
+
+**Four layers each declined to complain**, and that is the finding rather
+than the missing branch:
+
+- a fallback that stringifies anything cannot fail
+- JSONB accepts a string as a legal value
+- `->>` against a JSON string returns NULL, not an error
+- the tests asserted key presence, which a repr string satisfies
+
+It surfaced to the reader as *"no reversal fired today"* — indistinguishable
+from a quiet market. **A failure that renders as a plausible absence has no
+reporter.**
+
+## Scope, measured
+
+Boundary exact: 2026-08-25 and earlier are objects, 2026-08-26 onward are
+strings. 1,871 broken against 544 correct. The two COPY-path commits sitting
+on that boundary (`bd8cbc5`, `f63a449`) were the obvious suspects and both
+were innocent — the same day's `bar_rejects` date fix introduced
+`json_safe`.
+
+| column | broken values |
+|---|---:|
+| `signal_reports.state_json` (`bands`, both reversal blocks) | 5,613 across 1,871 rows |
+| `signal_reports.call_overlay_json` (`strikes` + nested `payoff_at_reach`) | 1,042 |
+| `runs.params` (`config` — the full resolved config of 106 backtests) | 106 |
+| `bar_rejects.payload` | 0 |
+
+Backfilled both stores: **6,761 values on research, 6,672 on serving, 0
+parse failures**, ~5s each. Parsed with `ast.literal_eval` rather than
+recomputed — the reversal blocks are pure functions of `(price, day_open,
+bands)` and all three are in the row, but a recompute would paper over any
+case where today's rule disagrees with the rule that ran that morning.
+
+Recovered, verified through the view's own casts: **2,415 of 2,415** bear
+blocks readable, 2,272 bull, **68 bull-confirmed and 56 bear-confirmed**
+reversals that had been invisible.
+
+## What the repair then exposed
+
+ADR 144's bull reversal had been computed on every poll tick since
+2026-08-21 and projected nowhere. Four columns added to `v_screen_live`, one
+badge component rendering both sides so they cannot drift.
+
+## Two things measured that changed the plan
+
+**1. The badge freezes at fire time.** `_already_fired` writes one
+`signal_reports` row per (ticker, signal_type, day), so the reversal state
+is never revisited. EXPE fired once at 09:46 ET at 265.12 against a 266.95
+open — below its band, still below its open. It crossed later and nothing
+re-evaluated it, so the page shows the near-miss and not the close. **This
+is why EXPE still does not display a confirmed bull reversal**, and it
+affects the bear side identically. Three candidate fixes with real
+trade-offs; in `BACKLOG.md` pending a decision.
+
+**2. Deploying the natural-key writer to the Pi would have broken the
+page.** `predictions_natural_key` is not UNIQUE, and `jobs/predict.py`
+upserts on `event_id` while `v_screen_live` matches on the natural key.
+
+Measured on serving rather than reasoned about: backfilling the Pi's 472
+missing keys inside a transaction took the view from **163 rows to 264** for
+2026-09-09 — 101 signals rendered twice — then rolled back. After migration
+`a7c2e9f4b105` the same simulated backfill leaves it at 163.
+
+The two prediction sets are complementary, which is why neither could be
+deleted: serving carries a three-year subset (ADR 137), so a
+research-origin prediction's `event_id` resolves **0 of 498** times, while
+the Pi reads serving's own events and resolves **472 of 472** with no
+natural key. One is joinable only by key; the other is the only one that
+knows which event it is about.
+
+## Corrections to what this session believed earlier
+
+Recorded because the pattern matters more than the individual errors.
+
+- **The sync was reported still running at 15:30 and had finished** at
+  18:11:35, ok, 2h48m55s, 12,551,450 rows.
+- **PRs #61 and #62 were reported unmerged and were both merged.**
+- **The 498 serving predictions were reported as NULL-keyed and are the
+  keyed ones.** 498 have the key (synced), 472 do not (Pi-written). Inverted.
+- **`event_id` was reported not to resolve on serving for the Pi's rows.**
+  It resolves for all 472 of them. It is the *synced* rows whose `event_id`
+  resolves for none.
+- I suspected two COPY commits for the JSON bug on timing alone. Both
+  innocent.
+- I ran `cscan db migrate` while the sync was still running, against the
+  standing rule. `CREATE OR REPLACE VIEW` locks only the view and it
+  completed instantly, but the rule existed and I should have said so first.
+
+## Gates
+
+All four whole-repo, plus the bundler: `ruff check .`, `ruff format
+--check .`, `uv run mypy` (321 files), 3,093 tests at 95.96% core coverage,
+580 web tests, `tsc --noEmit`, `next build`.
+
+`test_json_safe.py` was checked against the defect rather than only against
+the fix: **10 of its 11 tests fail** with the recursion branch removed. The
+eleventh is the `str()` fallback test, which should pass in both.
+
+One unexplained result, recorded rather than dismissed:
+`test_stop_exits_land_at_or_beyond_the_stop_level` failed once in a combined
+run and would not reproduce across three subsequent runs including the
+identical command. `TESTS.md` §3 names the exit invariants as load-bearing,
+so it is in `BACKLOG.md` with the evidence to collect next time.
+
+## The rule this leaves behind
+
+**A coercion function whose fallback is `str()` needs a test per container
+type, not per scalar type.** Every scalar was covered. The gap was a shape
+nobody enumerated, and the fallback guaranteed it would never announce
+itself.

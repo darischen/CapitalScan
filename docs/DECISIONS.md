@@ -228,6 +228,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 185 | The fitted model travels in the database | **Decided 2026-09-09.** The Pi scores from a saved artifact, so the artifact must reach it. `scp` makes the autonomous path depend on ssh keys between two boxes and breaks differently after the `wivie` cutover, when the pushing machine changes. The Pi already holds a serving connection; one `model_artifact` row rides it. `weekly` publishes after the refit, `predict --serving` fetches before scoring, no-op when the local copy matches (the poller asks every 20s, payload is 3.6 MB). One row per `config_hash`, replaced -- an append-only log would let a scorer prefer a half-written row. `bytea` with `STORAGE EXTERNAL`: already compressed, so TOAST would re-compress for nothing. Publish failure is reported, never fatal. Does not move `config_hash` |
 | 186 | The staleness guard is a design fingerprint, not `git_sha` | **Decided 2026-09-09.** Corrects ADR 181. Measured: the Pi refused a good artifact because the only intervening commit added a `--serving` CLI flag, which cannot reach the design matrix. `git_sha` is a proxy for "did the feature code move" and a poor one -- it moves on docs, CSS, comments -- and with a weekly refit the Pi would spend most of the week unable to score. **A guard that fires on changes it can prove are irrelevant gets worked around, and then it guards nothing.** Replaced by a hash of the feature columns **in order**, categorical levels **in order**, network shape and `IMPUTE_COLS` -- **stricter** where it matters, since it catches a reorder that an amended commit would hide from `git_sha`. The sha is still recorded, just not gated on. `ARTIFACT_VERSION` -> 2. Does not move `config_hash` |
 | 187 | The harness validates the universe, not the cosmetic rows | **Decided 2026-09-09.** The gate failed with entry 2, exit 7, non-overlap 328 after the event count went 1.38M -> 10.8M. Proved per slice before changing anything: `in_trade` (1,129,486) **all five PASS**, `in_watch` (769,089) **all five PASS**, everything fails. All 337 violations come from the 8.9M out-of-universe rows ADR 178's cosmetic backfill priced -- never produced by the engine whose invariants these checks assert. Scoped to `in_trade OR in_watch`. The boundary is principled: **the harness validates rows that enter a statistic**, and cosmetic rows enter none -- `non_overlap` exists so a position is not double-counted, which has no content for a row nothing counts. `in_watch` stays in scope on evidence, because it is shown as guidance and it passes. Rejected: keeping the full population with known failures -- **a gate expected to fail is a gate nobody reads**. Does not move `config_hash` |
+| 188 | `json_safe` recurses, and both reversals reach the screener | **Decided 2026-09-09.** `db_io.json_safe` handled scalars and ended in `return str(value)`, with no branch for `dict`. `append` routes every dict field through `json_safe_payload`, which walks the **top level only**, so from 2026-08-26 every nested container was stored as a Python repr: `"{'above_band': True, 'confirmed': False}"`. **Four layers declined to complain** -- a fallback that stringifies anything cannot fail, JSONB accepts a string, `->>` on a string returns NULL not an error, and the tests asserted key presence, which a repr satisfies. It reached the reader as "no reversal today", indistinguishable from a quiet market. Boundary exact: 1,871 broken / 544 correct; the two COPY commits at that boundary were innocent. Scope was wider than the reversals -- `call_overlay_json.strikes` (1,042) and `runs.params.config`, the entire resolved config of 106 backtests. **Backfilled, not accepted**: 6,761 values research / 6,672 serving, 0 parse failures, `ast.literal_eval` rather than recompute so the rows carry what the poller actually decided. With the data readable, ADR 144's **bull reversal** turned out computed since 2026-08-21 and projected nowhere; four columns added on their own lateral, one badge component for both sides, `aboveBand` renamed `beyondBand` in TS because the dataclass's side-relative docstring does not travel to a React prop. **Rule: a coercion function whose fallback is `str()` needs a test per container type, not per scalar type.** Not fixed, in BACKLOG: the badge still freezes at fire time (`_already_fired` writes one report per ticker/day), which is why EXPE shows its 09:46 near-miss and not the close. Does not move `config_hash` |
 
 ---
 
@@ -9399,3 +9400,134 @@ The narrowing is also most of the runtime. 10.8M events took 235s of loads
 and 1,199s of checks; `in_trade` alone took 171s and 722s. Scoping puts the
 harness back near its historical ~11 minutes, on top of the memory fix that
 made it runnable at all.
+
+---
+
+## 188. `json_safe` recurses, and both reversals reach the screener
+
+**Status:** accepted, 2026-09-09.
+
+Two findings, one root cause, and the second is only visible because of the
+first.
+
+### The bug
+
+`db_io.json_safe` coerces one value into something `json.dumps` accepts. It
+was written on 2026-08-26 for a `bar_rejects` payload whose `filed_on` was a
+`date`, and it handled scalars: `None`, `str`, `bool`, `int`, `float`,
+`NaT`, `datetime`, `date`, and the four numpy scalar types. Anything else
+fell through to `return str(value)`.
+
+A `dict` is anything else.
+
+`append` routes every dict-valued field through `json_safe_payload`, which
+walks the **top** level and calls `json_safe` on each value. So the column
+itself was a valid JSONB object and every nested container inside it became
+a Python repr:
+
+```
+"{'above_band': True, 'confirmed': False, 'band_gap': -24.049838}"
+```
+
+### Why nothing caught it for two weeks
+
+Four layers each declined to complain:
+
+- **`json_safe` cannot fail.** Its last resort stringifies anything, so a
+  missing type branch is silent data loss rather than a traceback. This is
+  the design flaw; the missing `dict` branch is only the instance of it.
+- **JSONB accepts a string.** It is a legal JSON value, so the write
+  succeeded and the column type was still `jsonb`.
+- **`->>` on a JSON string returns NULL**, not an error. `v_screen_live`
+  casts `(state_json -> 'bear_reversal') ->> 'confirmed'` to boolean and got
+  NULL on every row.
+- **The tests asserted presence, not type.** `state_json` did carry a
+  `bear_reversal` key, and a repr string satisfies that.
+
+The result reached the reader as *"no reversal fired today"*, which is
+indistinguishable from a quiet market. A failure that renders as a plausible
+absence has no reporter.
+
+### Scope, measured
+
+2,415 reports carry a `bear_reversal` block. **1,871 broken, 544 correct**,
+with an exact boundary: 2026-08-25 and earlier are objects, 2026-08-26
+onward are strings. The commits at that boundary (`bd8cbc5`, `f63a449`,
+both touching the COPY write path) were the obvious suspects and both were
+innocent — the same day's `json_safe` was the cause.
+
+The sweep found more than the reversals:
+
+| column | broken values |
+|---|---:|
+| `signal_reports.state_json` (`bands`, `bear_reversal`, `bull_reversal`) | 5,613 across 1,871 rows |
+| `signal_reports.call_overlay_json` (`strikes`, and the `payoff_at_reach` inside each) | 1,042 |
+| `runs.params` (`config` — the entire resolved config of 106 backtests) | 106 |
+| `bar_rejects.payload` | 0 |
+
+### Repaired, not accepted
+
+`scripts/backfill_json_reprs.py` parses each repr with `ast.literal_eval`
+and rewrites it. 6,761 values, 0 parse failures, ~5 seconds.
+
+**Parsed rather than recomputed.** The reversal blocks are pure functions of
+`(price, day_open, bands)` and all three are in the same row, so a recompute
+was available. Parsing restores what the poller actually decided at the
+time; a recompute would silently paper over any case where today's rule
+disagrees with the rule that ran that morning. This is a serialisation bug
+and the fix belongs at the serialisation layer.
+
+**`literal_eval`, never `eval`.** Zero rows contain `nan` or `inf` (measured
+before writing the script), which `literal_eval` would reject, and the
+script counts a parse failure rather than skipping it.
+
+### The second finding
+
+With the data readable, ADR 144's bull reversal turned out to have been
+computed on every poll tick since 2026-08-21 and displayed nowhere:
+`v_screen_live` projected the bear block and not the bull one. EXPE closed
+back inside its lower band on 2026-09-09 — the exact mirror of VOD and BE
+the same day — and the page could not say so.
+
+Four columns added, mirroring the bear four, appended rather than reordered
+because `CREATE OR REPLACE VIEW` permits additions only at the end. A
+separate lateral rather than a widened one: a wide bar can break both bands
+and the poller stores the blocks side by side for that reason, so sharing a
+lateral would drop the bull side whenever `state_json ? 'bear_reversal'`
+missed.
+
+`bull_close_below_lower` — the close-confirmed long-side type — is wired in
+the badge and **dormant**: it is not in `SignalParams.enabled_signal_types`,
+so that branch is correct code that does not fire yet. The live poller badge
+does.
+
+### What changes in the code, beyond the branch
+
+**`aboveBand` is `beyondBand` in TypeScript.** `bull_reversal_state` reuses
+`ReversalState` and documents `above_band` as "the band condition holds on
+this signal's own side", which for a long is *below* the lower band. That
+works in Python because the docstring travels with the dataclass. A bare
+`aboveBand: boolean` in a React prop has no docstring at the call site, and
+the rename is what stops the next reader writing `if (rev.aboveBand)` and
+getting the long side backwards. The view names the side too:
+`bull_rev_below_band`.
+
+**`openGapAtr` keeps one sign convention and gains a `side` field.** It is
+always `(price - open) / ATR`, so negative confirms a bear and positive
+confirms a bull. Negating the bull's for display would put a number on the
+page that does not match `state_json`, which is the column a reader checks
+it against.
+
+**One badge component, parameterised.** The bull half is rendered by the
+same code as the bear half rather than a parallel component, so the two
+cannot drift: same states, same classes, same wording, arrow flipped. The
+tests mirror one for one for the same reason.
+
+### The rule this leaves behind
+
+**A coercion function whose fallback is `str()` needs a test per container
+type, not per scalar type.** The scalars were all covered. The gap was a
+shape nobody enumerated, and the fallback guaranteed it would never
+announce itself. `test_json_safe.py` asserts on `jsonb_typeof` and on
+readback rather than on key presence; 10 of its 11 tests fail against the
+old function, verified by removing the branch and re-running.
