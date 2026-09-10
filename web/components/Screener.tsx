@@ -16,6 +16,7 @@ import type {
   CellStats,
   Meta,
   Prediction,
+  Reversal,
   ScreenRow,
   SortDir,
   SortKey,
@@ -303,43 +304,86 @@ function InferenceButton({ row }: { row: ScreenRow }) {
 
 
 /**
- * The reversal state, in whichever of its two forms this row has.
+ * The reversal state, in whichever of its forms this row has.
  *
- * **Close-confirmed wins when both exist.** `bear_close_above_upper` is a
- * settled fact about a finished session (ADR 108/109); the poller's
- * judgement is a statement about a moment, and once the close has spoken
- * the moment no longer matters.
+ * **Close-confirmed wins when both exist.** `bear_close_above_upper` and
+ * `bull_close_below_lower` are settled facts about a finished session (ADR
+ * 108/109, ADR 144); the poller's judgement is a statement about a moment,
+ * and once the close has spoken the moment no longer matters.
  *
  * The live form is styled apart from it — dashed, prefixed `live` — because
- * the two carry different certainty and a reader deciding on a short needs
- * to know which one they are looking at. ADR 111 makes the *confirmed* one
- * the actionable condition.
+ * the two carry different certainty and a reader deciding needs to know
+ * which one they are looking at. ADR 111 makes the *confirmed* one the
+ * actionable condition.
  *
  * The near-miss renders too, with its distance. ADR 117 chose to show every
  * confluence and say how far each is from confirming rather than hide the
  * ones that had not; a badge that appeared only on confirmation would put
  * that decision back.
+ *
+ * **One component, two sides.** The bull half (ADR 144) has been computed on
+ * every poll tick since 2026-08-21 and reached no surface until 2026-09-09.
+ * It is rendered by the same code rather than a parallel component, so the
+ * two cannot drift: same states, same styles, same wording, arrow flipped.
  */
+
+/** Everything that differs between the two sides, in one place. */
+const REVERSAL_SIDES = {
+  bear: {
+    closeType: "bear_close_above_upper",
+    arrow: "↓",
+    band: "above the band",
+    open: "below today's open",
+  },
+  bull: {
+    closeType: "bull_close_below_lower",
+    arrow: "↑",
+    band: "below the band",
+    open: "above today's open",
+  },
+} as const;
+
 function ReversalBadge({ row }: { row: ScreenRow }) {
-  if (row.signalTypesAll.includes("bear_close_above_upper")) {
+  // Both are attempted. Each returns null unless price is actually beyond
+  // that side's band, so a row renders at most one in practice -- and a bar
+  // wide enough to break both bands honestly has two things to say.
+  return (
+    <>
+      <OneReversal row={row} rev={row.reversal} side="bear" />
+      <OneReversal row={row} rev={row.bullReversal} side="bull" />
+    </>
+  );
+}
+
+function OneReversal({
+  row,
+  rev,
+  side,
+}: {
+  row: ScreenRow;
+  rev: Reversal | null;
+  side: "bear" | "bull";
+}) {
+  const spec = REVERSAL_SIDES[side];
+
+  if (row.signalTypesAll.includes(spec.closeType)) {
     return (
       <span
         className="reversal"
-        title="closed above the band and below its open: ADR 111's confirming reversal"
+        title={`closed ${spec.band} and ${spec.open}: ADR 111's confirming reversal`}
       >
-        ↓ reversal
+        {spec.arrow} reversal
       </span>
     );
   }
 
-  const rev = row.reversal;
   if (!rev) return null;
 
-  // **Only where a bear reversal is a thing that could happen.** The poller
-  // attaches a `bear_reversal` block to every report regardless of side
-  // (`poll.py::_state_json`), so a `confluence_low` carries one too — and
-  // `open_gap_atr` is computed from the open and the ATR, which exist on
-  // every row. Rendering it there states a short-side near-miss about a
+  // **Only where a reversal of this side is a thing that could happen.** The
+  // poller attaches both blocks to every report regardless of side
+  // (`poll.py::_state_json`), so a `confluence_low` carries a bear block too
+  // — and `open_gap_atr` is computed from the open and the ATR, which exist
+  // on every row. Rendering it there states a short-side near-miss about a
   // long-side signal.
   //
   // It read as *confirming* rather than as noise, which is what makes it
@@ -348,13 +392,17 @@ function ReversalBadge({ row }: { row: ScreenRow }) {
   // reversal; on this one the measurement does not apply. 68 of that day's
   // 80 rows were in this state.
   //
-  // `above_band` is the field that says so, it has been in the view as
-  // `rev_above_band` since ADR 117, and `ReversalState.label` already
-  // returns "n/a" for it. The judgement existed at every layer and was
-  // dropped at the last one.
-  if (!rev.aboveBand) return null;
+  // `beyondBand` is the field that says so, it has been in the view since
+  // ADR 117, and `ReversalState.label` already returns "n/a" for it. The
+  // judgement existed at every layer and was dropped at the last one.
+  if (!rev.beyondBand) return null;
 
-  // Negative is below the open and therefore reversing.
+  // **The sign means opposite things and the number is printed as stored.**
+  // `openGapAtr` is always `(price - open) / ATR`, so negative confirms a
+  // bear and positive confirms a bull. Flipping the bull's sign so both read
+  // "negative is good" would put a number on the page that does not match
+  // the one in `state_json`, which is the column a reader checks this
+  // against.
   const gap =
     rev.openGapAtr === null ? null : `${rev.openGapAtr.toFixed(2)} ATR vs open`;
 
@@ -362,9 +410,9 @@ function ReversalBadge({ row }: { row: ScreenRow }) {
     return (
       <span
         className="reversal live"
-        title={`poller at ${clock(rev.ts)} ${DISPLAY_TZ_LABEL}: above the band and below today's open${gap ? ` (${gap})` : ""}`}
+        title={`poller at ${clock(rev.ts)} ${DISPLAY_TZ_LABEL}: ${spec.band} and ${spec.open}${gap ? ` (${gap})` : ""}`}
       >
-        ↓ live reversal
+        {spec.arrow} live reversal
       </span>
     );
   }
@@ -380,6 +428,7 @@ function ReversalBadge({ row }: { row: ScreenRow }) {
     </span>
   );
 }
+
 
 /**
  * A column header that sorts (user's request, 2026-08-20).

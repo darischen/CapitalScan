@@ -1,5 +1,86 @@
 # Backlog
 
+# HIGHEST PRIORITY
+
+## The reversal badge freezes at fire time, not at the close
+
+Found 2026-09-09 while exposing the bull reversal, and it is the reason
+EXPE still does not show the reversal the reader saw that afternoon.
+
+`poll.py::_already_fired` gates the `signal_reports` write to **one row per
+(ticker, signal_type, day)**. The reversal blocks are computed from the
+quote on that one tick and never revisited, so the badge reports where price
+sat when the signal *fired*, not where it sits now.
+
+EXPE, 2026-09-09:
+
+| | value |
+|---|---|
+| fired | 09:46 ET, the only report that day |
+| price at fire | 265.12 |
+| day open | 266.95 |
+| lower band | 289.17 |
+| stored `bull_reversal.confirmed` | **false** — below the band, still below its open |
+
+By the close it had crossed above its open, which is the bullish reversal.
+Nothing re-evaluated it, so the page shows the 09:46 near-miss.
+
+**This contradicts what the view believes it is doing.** `v_screen_live`'s
+reversal lateral takes `ORDER BY r2.fired_at DESC LIMIT 1` and the comment
+says "the newest report, not the first ... because it is a statement about
+where price is *now*". With the dedup in place the newest is almost always
+the only one, so the ordering buys nothing. The intent was right at the view
+and was never delivered at the writer.
+
+**It affects the bear side identically.** This is not a bull-side gap; it
+has been true of ADR 117's badge since it shipped and was invisible while
+the JSON bug (ADR 188) made every badge NULL anyway.
+
+### The shape of the fix, unresolved
+
+The reversal state wants to be **updated per tick**, while the report row
+wants to stay **one per fire** — `_already_fired` exists so the poller does
+not re-notify, and that is correct. Those are two different lifetimes in one
+row, which is the real decision:
+
+- **Update `state_json` on the existing row** each tick, leaving notification
+  dedup alone. Cheapest. Destroys the fire-time snapshot, which is the thing
+  a reader asking "what did we know when we alerted?" needs.
+- **A second column** (`state_json_latest`) beside the fire-time one. Keeps
+  both. One more thing to keep in step.
+- **Write a report per tick** and let the notifier dedup separately. Truest
+  to the view's existing assumption, and multiplies `signal_reports` by the
+  tick count — 194 rows today becomes a few thousand.
+
+Needs a decision before code. Nothing about it is urgent enough to guess.
+
+---
+
+## `test_stop_exits_land_at_or_beyond_the_stop_level` failed once and would not reproduce
+
+2026-09-09, during the four-gate run for ADR 188. It failed in the combined
+`unit + property` run with coverage on, then passed on:
+
+- the single test, replayed (hypothesis stores falsifying examples, so a
+  real counterexample should have come back)
+- the whole property tier alone, 29 passed
+- the identical combined command, twice, 3,092 passed
+
+Nothing in that change touches exits, config or the resolver.
+
+**Worth chasing rather than shrugging at.** `TESTS.md` §3 names the exit
+invariants as one of the five tests carrying the correctness load, and a
+gate that fails one run in four teaches everyone to re-run it. The two
+candidates are a hypothesis deadline tripped by coverage instrumentation
+(which would be a test-harness problem, not a code one) and genuine
+cross-test state leaking under `-p no:randomly`.
+
+The evidence to get next time it happens: the full `Falsifying example`
+block. It was lost to a `tail` on the first run and never came back.
+
+---
+
+
 Work that is understood but deliberately not done, with the reason. An item
 leaves this file by being built or by being rejected in an ADR — not by
 being forgotten.

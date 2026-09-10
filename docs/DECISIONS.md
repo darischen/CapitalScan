@@ -9399,3 +9399,134 @@ The narrowing is also most of the runtime. 10.8M events took 235s of loads
 and 1,199s of checks; `in_trade` alone took 171s and 722s. Scoping puts the
 harness back near its historical ~11 minutes, on top of the memory fix that
 made it runnable at all.
+
+---
+
+## 188. `json_safe` recurses, and both reversals reach the screener
+
+**Status:** accepted, 2026-09-09.
+
+Two findings, one root cause, and the second is only visible because of the
+first.
+
+### The bug
+
+`db_io.json_safe` coerces one value into something `json.dumps` accepts. It
+was written on 2026-08-26 for a `bar_rejects` payload whose `filed_on` was a
+`date`, and it handled scalars: `None`, `str`, `bool`, `int`, `float`,
+`NaT`, `datetime`, `date`, and the four numpy scalar types. Anything else
+fell through to `return str(value)`.
+
+A `dict` is anything else.
+
+`append` routes every dict-valued field through `json_safe_payload`, which
+walks the **top** level and calls `json_safe` on each value. So the column
+itself was a valid JSONB object and every nested container inside it became
+a Python repr:
+
+```
+"{'above_band': True, 'confirmed': False, 'band_gap': -24.049838}"
+```
+
+### Why nothing caught it for two weeks
+
+Four layers each declined to complain:
+
+- **`json_safe` cannot fail.** Its last resort stringifies anything, so a
+  missing type branch is silent data loss rather than a traceback. This is
+  the design flaw; the missing `dict` branch is only the instance of it.
+- **JSONB accepts a string.** It is a legal JSON value, so the write
+  succeeded and the column type was still `jsonb`.
+- **`->>` on a JSON string returns NULL**, not an error. `v_screen_live`
+  casts `(state_json -> 'bear_reversal') ->> 'confirmed'` to boolean and got
+  NULL on every row.
+- **The tests asserted presence, not type.** `state_json` did carry a
+  `bear_reversal` key, and a repr string satisfies that.
+
+The result reached the reader as *"no reversal fired today"*, which is
+indistinguishable from a quiet market. A failure that renders as a plausible
+absence has no reporter.
+
+### Scope, measured
+
+2,415 reports carry a `bear_reversal` block. **1,871 broken, 544 correct**,
+with an exact boundary: 2026-08-25 and earlier are objects, 2026-08-26
+onward are strings. The commits at that boundary (`bd8cbc5`, `f63a449`,
+both touching the COPY write path) were the obvious suspects and both were
+innocent — the same day's `json_safe` was the cause.
+
+The sweep found more than the reversals:
+
+| column | broken values |
+|---|---:|
+| `signal_reports.state_json` (`bands`, `bear_reversal`, `bull_reversal`) | 5,613 across 1,871 rows |
+| `signal_reports.call_overlay_json` (`strikes`, and the `payoff_at_reach` inside each) | 1,042 |
+| `runs.params` (`config` — the entire resolved config of 106 backtests) | 106 |
+| `bar_rejects.payload` | 0 |
+
+### Repaired, not accepted
+
+`scripts/backfill_json_reprs.py` parses each repr with `ast.literal_eval`
+and rewrites it. 6,761 values, 0 parse failures, ~5 seconds.
+
+**Parsed rather than recomputed.** The reversal blocks are pure functions of
+`(price, day_open, bands)` and all three are in the same row, so a recompute
+was available. Parsing restores what the poller actually decided at the
+time; a recompute would silently paper over any case where today's rule
+disagrees with the rule that ran that morning. This is a serialisation bug
+and the fix belongs at the serialisation layer.
+
+**`literal_eval`, never `eval`.** Zero rows contain `nan` or `inf` (measured
+before writing the script), which `literal_eval` would reject, and the
+script counts a parse failure rather than skipping it.
+
+### The second finding
+
+With the data readable, ADR 144's bull reversal turned out to have been
+computed on every poll tick since 2026-08-21 and displayed nowhere:
+`v_screen_live` projected the bear block and not the bull one. EXPE closed
+back inside its lower band on 2026-09-09 — the exact mirror of VOD and BE
+the same day — and the page could not say so.
+
+Four columns added, mirroring the bear four, appended rather than reordered
+because `CREATE OR REPLACE VIEW` permits additions only at the end. A
+separate lateral rather than a widened one: a wide bar can break both bands
+and the poller stores the blocks side by side for that reason, so sharing a
+lateral would drop the bull side whenever `state_json ? 'bear_reversal'`
+missed.
+
+`bull_close_below_lower` — the close-confirmed long-side type — is wired in
+the badge and **dormant**: it is not in `SignalParams.enabled_signal_types`,
+so that branch is correct code that does not fire yet. The live poller badge
+does.
+
+### What changes in the code, beyond the branch
+
+**`aboveBand` is `beyondBand` in TypeScript.** `bull_reversal_state` reuses
+`ReversalState` and documents `above_band` as "the band condition holds on
+this signal's own side", which for a long is *below* the lower band. That
+works in Python because the docstring travels with the dataclass. A bare
+`aboveBand: boolean` in a React prop has no docstring at the call site, and
+the rename is what stops the next reader writing `if (rev.aboveBand)` and
+getting the long side backwards. The view names the side too:
+`bull_rev_below_band`.
+
+**`openGapAtr` keeps one sign convention and gains a `side` field.** It is
+always `(price - open) / ATR`, so negative confirms a bear and positive
+confirms a bull. Negating the bull's for display would put a number on the
+page that does not match `state_json`, which is the column a reader checks
+it against.
+
+**One badge component, parameterised.** The bull half is rendered by the
+same code as the bear half rather than a parallel component, so the two
+cannot drift: same states, same classes, same wording, arrow flipped. The
+tests mirror one for one for the same reason.
+
+### The rule this leaves behind
+
+**A coercion function whose fallback is `str()` needs a test per container
+type, not per scalar type.** The scalars were all covered. The gap was a
+shape nobody enumerated, and the fallback guaranteed it would never
+announce itself. `test_json_safe.py` asserts on `jsonb_typeof` and on
+readback rather than on key presence; 10 of its 11 tests fail against the
+old function, verified by removing the branch and re-running.
