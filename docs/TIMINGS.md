@@ -438,3 +438,72 @@ version-1 artifact, `nightly` printed why, and the remaining steps ran.
 with no torch installed, having fetched a 3.5 MB artifact out of the
 serving database because the local copy had been deleted. Against ~13
 minutes to refit. That ratio is what ADR 181/184/185 exist for.
+
+---
+
+## `cscan sync`, full, 2026-09-09: five attempts and 2h48m55s
+
+The measured number first, because the four failures are the interesting
+part and it is easy to lose the answer in them.
+
+| | |
+|---|---|
+| **full sync, research -> serving** | **2h48m55s**, 12,551,450 rows |
+| throughput | ~1,240 rows/s end to end |
+
+Per table, from the run's own output:
+
+```
+indicators       3,516,673
+events           5,413,082
+predictions         19,705
+outcomes             5,986
+signal_reports       3,230
+benchmarks             818
+cell_stats             512
+runs                    66
+positions                0
+```
+
+**This is the first full sync that finished since the COPY rewrite.** The
+1,090 rows/s figure in the ADR is the pre-COPY parameter path and is not
+comparable; the 78,589 rows/s is a single-table COPY microbenchmark and is
+not comparable either. **2h48m55s over 12.5M rows across nine tables is the
+number to quote** for the whole job.
+
+### The four failures, and what each wrong diagnosis was
+
+Worth recording in full, because the failure was the same every time and
+the diagnosis was different and wrong every time.
+
+| # | started | what happened | what I concluded | why that was wrong |
+|---|---|---|---|---|
+| 1 | 12:0x | killed | "the 3.5 GB scp was competing for I/O" | I had *asserted in the same message* that the transfer "didn't compete". Both cannot be true. Never measured either. |
+| 2 | 13:0x | killed, alone | "so it is not the transfer -- must be RAM" | Correct that it was not the transfer. Wrong about RAM: resident was **2.9 GB** against 32 GB installed. |
+| 3 | 14:31 | killed, with `chunksize=` | "the streaming fix is holding" — **said 96 seconds in** | `pd.read_sql(chunksize=)` chunks *DataFrame construction*, not the fetch. psycopg buffers the entire result set without a server-side cursor. Nothing was streaming. |
+| 4 | 14:47 | killed | (same) | (same) |
+| 5 | 15:19 | `DECLARE ... CURSOR FOR SET TRANSACTION READ ONLY` | syntax error, 0.07s | `stream_results` was applied to the *connection*, so it wrapped the next statement — which was the READ ONLY pragma, not the SELECT. |
+| 6 | **15:22** | **ok, 2h48m55s** | | `stream_results` applied to the snapshot **after** the READ ONLY pragma. |
+
+**The actual cause was Windows commit charge, not physical RAM.** 70.7 GB
+committed against 2.9 GB resident. `FreeVirtualMemory` is the counter that
+says so and I read it fifth, after spending two `wsl --shutdown` cycles on
+a theory that predicted nothing.
+
+### The pattern worth keeping
+
+**Attempt 3 is the one to remember.** I declared the fix holding after 96
+seconds of a job whose previous failures took 20+ minutes to arrive. The
+observation was real and the inference was unsupported: 96 seconds of not
+dying is not evidence about a memory ceiling reached at minute 20.
+
+It then got worse. I merged that version to `main` as PR #61 — the version
+I had already proven does not work — because the `stream_results` half was
+still uncommitted in the working tree. Nothing caught it except `git
+checkout` refusing to switch branches over a dirty file. PR #62 carries the
+half that works.
+
+Two smaller instruments lied in the same session and both are fixed:
+`dump_exit=$?` captured `tail`'s exit code and reported 0 for a failed
+`pg_dump`, and an earlier `scp` left 582 MB of 3.57 GB on `wivie` and
+reported nothing wrong — caught only by comparing byte counts.
