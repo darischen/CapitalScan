@@ -555,3 +555,72 @@ direction.
 
 The delete also makes that dump smaller: the 3.57 GB transferred on
 2026-09-09 carried 22.8M events, and the next one carries 10.8M.
+
+---
+
+## The backtest was 70% single-threaded, and `copy_upsert` fixed it (2026-09-10)
+
+**Measured on the cosmetic rebuild, like-for-like on row count:**
+
+| chunk | writer | duration | rows |
+|---|---|---:|---:|
+| 6 | `upsert` | 524s | 183,308 |
+| 7 | `upsert` | 586s | 190,236 |
+| 8 | `upsert` | 568s | 176,760 |
+| 9 | `upsert` | 608s | 183,920 |
+| **10** | **`copy_upsert`** | **212s** | 184,280 |
+| **11** | **`copy_upsert`** | **~224s** | — |
+
+**2.7x, from a one-line change** to a function that already existed.
+
+### How the bottleneck was found, since the obvious answers were wrong
+
+More workers did nothing: 5 workers and 8 workers both produced ~9.3
+min/chunk. The disk sat at **2% busy** on an NVMe, so I/O was not it
+either.
+
+Sampling the Python process count every 6 seconds showed it plainly:
+
+```
+12 12 12 12 12 12 12 12 12 | 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 ...
+└──── parallel, ~54s ─────┘ └──────── serial, 8+ minutes ────────┘
+```
+
+**~30% of a chunk is parallel and ~70% is one core.** `ProcessPoolExecutor`
+is created and torn down *per chunk*, so between chunks only the parent
+exists -- which is also why a single CPU sample can look like a stall when
+it is really the serial tail.
+
+Amdahl's law then explains the worker result exactly: with 70% serial,
+adding cores cannot help, and the NVMe was never the constraint.
+
+### The serial tail
+
+```python
+events = pd.concat(frames)
+events = add_cofire_count(events)
+events = events.sort_values([...])
+db_io.upsert(...)                      # <- ~370s of the ~560s
+db_io.fill_event_sector_and_mcap(...)
+db_io.fill_event_derived_state(...)
+```
+
+`upsert` builds a dict per row and re-binds each as parameters --
+**1,090 rows/s**, profiled during the 2026-08-26 sync work, against
+**78,589 rows/s** for `COPY` into a staging table. `sync` was migrated
+then; `run_backtest` was not, and nobody noticed because a trade-only
+chunk is ~14k rows. `--cosmetic` takes it to ~145k and the tail becomes
+the job.
+
+### Budget
+
+| | |
+|---|---|
+| cosmetic full rebuild, `upsert` | ~9 hours |
+| cosmetic full rebuild, `copy_upsert` | **~3 hours** |
+| trade+watch only (no `--cosmetic`) | ~2h15m |
+
+**Judge a long job by its per-chunk duration in `runs`, not by wall clock
+since launch.** Dividing elapsed time by chunks completed includes startup
+and ticker resolution, and it produced a 7.5 min/chunk estimate against an
+actual 2 min early in this same session.
