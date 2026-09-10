@@ -12,3 +12,61 @@
   14/30 heads within 5%   mean |err| 0.0518
 
 === expand: train 144,788 (2010-03-31..2025-12-31)  validate 11,690 (2026-01-01..2026-09-04) ===
+  steps [1042, 863, 880]
+  validate 3%/5d base rate 0.6330 (the isotonic anchor)
+  wrote C:\Users\daris\Desktop\School\CapitalScan\reports\rolling\coverage_expand.csv
+  25/30 heads within 5%   mean |err| 0.0338
+
+=== expand_purge: train 144,589 (2010-03-31..2025-12-31, purged 10d)  validate 11,690 (2026-01-01..2026-09-04) ===
+  steps [956, 790, 920]
+  validate 3%/5d base rate 0.6330 (the isotonic anchor)
+  wrote C:\Users\daris\Desktop\School\CapitalScan\reports\rolling\coverage_expand_purge.csv
+  24/30 heads within 5%   mean |err| 0.0358
+
+==============================================================================
+COVERAGE BY ARM  (different validation years -- see the docstring)
+==============================================================================
+arm              heads pass   mean |err|
+fixed                 25/30       0.0300
+fixed_v26             14/30       0.0518
+expand                25/30       0.0338
+expand_purge          24/30       0.0358
+
+purge effect: 0.0338 -> 0.0358  (no leak detected)
+
+==============================================================================
+THE CONTROLLED CONTRASTS
+==============================================================================
+  training window, same validation data (2026):
+    fixed_v26 0.0518  ->  expand 0.0338   expanding HELPS
+  validation year, same training data:
+    2022-23 0.0300  ->  2026 0.0518   (2026 is the harder year)
+
+==============================================================================
+BY TASK FAMILY  (peak and trough ship; terminal displays nowhere)
+==============================================================================
+arm                    peak       trough     terminal
+fixed                 10/10         9/10         6/10
+fixed_v26              4/10         4/10         6/10
+expand                 6/10         9/10        10/10
+expand_purge           6/10         8/10        10/10
+
+==============================================================================
+ISOTONIC ANCHOR  (validate 3%/5d base rate -- speaks to the ~5pp bias)
+==============================================================================
+  fixed          0.5482
+  fixed_v26      0.6330
+  expand         0.6330
+  expand_purge   0.6330
+  The shipped table is anchored to the `fixed` arm's rate. A published
+  probability inherits the gap between its anchor and the period being
+  scored, however well the model ranks.
+
+the five heads the fixed arm fails:
+  terminal_h5 q0.25: fixed +0.0800  fixed_v26 +0.0612  expand +0.0443  expand_purge +0.0375  
+  terminal_h5 q0.5: fixed +0.0661  fixed_v26 +0.0218  expand +0.0144  expand_purge +0.0113  
+  terminal_h10 q0.25: fixed +0.0758  fixed_v26 +0.0571  expand +0.0388  expand_purge +0.0385  
+  terminal_h10 q0.5: fixed +0.0609  fixed_v26 +0.0218  expand +0.0251  expand_purge +0.0219  
+  trough_h10 q0.5: fixed +0.0528  fixed_v26 +0.0921  expand +0.0405  expand_purge +0.0596  
+
+=== ROLLING DONE ===

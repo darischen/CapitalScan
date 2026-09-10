@@ -513,6 +513,16 @@ For every migration:
 | Push `ExitParams` to the serving views | `cscan db sync-config` |
 | Provision the MCP read-only role | `cscan db grant-readonly --password <pw>` |
 
+**`cscan db sync-config` writes BOTH stores, and it is serving-visible.**
+It opens with `db_io.get_engine()` (research), and the serving write is
+further down -- reading the first half gives exactly the wrong answer. On
+2026-09-10 it was run before the new generation was synced, serving pinned
+a `config_hash` with zero rows, and the home page went blank for four
+minutes with every command reporting success. **Run it after `cscan sync`,
+never before**, and restart `capitalscan-web` afterwards: ADR 115 sets the
+hash per connection, so correcting the row alone leaves the pool serving
+the old value. -> `OPERATIONS.md`
+
 **`cscan db sync-config` is not optional after a threshold change.**
 `v_positions` reads its exit policy from the one-row `serving_config` table
 rather than from SQL literals (ADR 115), so sweeping `exit_stoch_threshold`

@@ -163,3 +163,92 @@ def cluster_weights(cluster_ids: Sequence[str | None]) -> list[float]:
     """
     sizes = Counter(cid for cid in cluster_ids if cid is not None)
     return [1.0 if cid is None else 1.0 / sizes[cid] for cid in cluster_ids]
+
+
+#: Days of closed labels held back from training as the forward log. Labels
+#: close on a 5-10 day lag, so this is the band whose outcomes may not exist
+#: yet -- and the band `outcomes` scores predictions over.
+FORWARD_LOG_DAYS = 5
+
+#: Months of recent history reserved for calibration.
+VALIDATE_MONTHS = 6
+
+#: Trading days dropped from the end of train, because a 10-day forward
+#: label reaches past the boundary into validate.
+TRAIN_EMBARGO_DAYS = 10
+
+
+@dataclass(frozen=True)
+class TrainingWindow:
+    """Which dates a refit may train and calibrate on (ADR 193).
+
+    **Expanding, not sliding.** `train_start` is the beginning of history
+    and does not move; only the boundaries do. ADR 179 tested a *sliding*
+    seven-year window, which moved the window forward and cut it by 42% at
+    the same time, then attributed the resulting damage to recency.
+    Measured 2026-09-10 on identical validation rows, expanding instead of
+    sliding takes coverage from 14/30 to 25/30.
+
+    **This never touches `split_key`.** ADR 019 assigns it at event
+    creation and invariant 5 forbids recomputing it, so this is a
+    training-time filter on `signal_date` and nothing else. It therefore
+    does not move `config_hash` either: the population a statistic is
+    computed over is unchanged, only which rows a fit reads.
+    """
+
+    train_start: date
+    train_end: date
+    validate_start: date
+    validate_end: date
+
+    def __post_init__(self) -> None:
+        if not self.train_start < self.train_end < self.validate_start <= self.validate_end:
+            raise ValueError(
+                "training window bounds must ascend "
+                f"(got {self.train_start}, {self.train_end}, "
+                f"{self.validate_start}, {self.validate_end})"
+            )
+
+
+def training_window(
+    today: date,
+    train_start: date,
+    forward_log_days: int = FORWARD_LOG_DAYS,
+    validate_months: int = VALIDATE_MONTHS,
+    embargo_days: int = TRAIN_EMBARGO_DAYS,
+) -> TrainingWindow:
+    """The expanding window for a refit run on `today` (ADR 193).
+
+        train_start .. today-6mo-10d     train   (embargoed at the end)
+        today-6mo   .. today-5d          validate
+        today-5d    .. today             forward log, never trained on
+
+    **The embargo is the load-bearing detail.** A 10-day forward label on
+    the last day of train resolves inside validate, so without dropping
+    that band the model reads its own validation labels and every number
+    after is optimistic. `expand_purge` measured the cost at one head and
+    0.002 mean error -- cheap enough that it is applied unconditionally
+    rather than offered as an option.
+
+    **The forward log is carved out first and is never returned.** It is
+    the only estimate in this project that nothing has iterated against
+    (ADR 179), and training on it is irreversible: once a row has taught
+    the model, no later run can un-teach it. Newly closed labels do enter
+    training, but only after they have served as forward-log evidence.
+
+    `today` is passed in rather than read from the clock, because
+    `core/` performs no IO (invariant 1) and a refit must be reproducible
+    from its inputs.
+    """
+    validate_end = today - timedelta(days=forward_log_days)
+    # 30-day months: the boundary only has to be approximately six months
+    # back, and calendar arithmetic here would add a dependency for no
+    # measurable difference in what gets selected.
+    validate_start = validate_end - timedelta(days=validate_months * 30)
+    train_end = validate_start - timedelta(days=embargo_days)
+    return TrainingWindow(
+        train_start=train_start,
+        train_end=train_end,
+        validate_start=validate_start,
+        validate_end=validate_end,
+    )

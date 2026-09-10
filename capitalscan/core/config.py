@@ -172,6 +172,23 @@ class SignalParams:
         "confluence_low",
         "confluence_high",
         "bear_close_above_upper",
+        # **Enabled 2026-09-10, moving `config_hash` to `f183b0f5209a4677`
+        # (ADR 194).** ADR 144 defined the long-side mirror and left it
+        # dormant, so `bull_close_below_lower` had an indicator column, an
+        # enum member, a signal rule, a frontend label and a badge branch --
+        # everything except membership in this tuple.
+        #
+        # The cost of that: the bear side has a live badge *and* a
+        # close-confirmed one, so a bear reversal developing after its
+        # signal fires is caught the next morning. The bull side had only
+        # the live badge, which freezes at fire time, so a bull reversal
+        # developing later was caught by nothing. EXPE on 2026-09-09 fired
+        # 09:46 below its band and still below its open, crossed above the
+        # open later, and displayed nothing at all.
+        #
+        # Fires 41,997 times against `bear_close_above_upper`'s 52,803 on
+        # the daily corpus, so this is a real signal rather than a rarity.
+        "bull_close_below_lower",
     )
 
 

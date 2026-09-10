@@ -921,3 +921,98 @@ explicit `docker start`. `CLAUDE.md` documents this for reboots only. The
 first `docker start` after the shutdown fails with `500 Internal Server
 Error ... check if the server supports the requested API version`, which
 reads like a version mismatch and is just the engine not being up yet.
+
+---
+
+## `cscan db sync-config` writes BOTH stores, and it blanked the site (2026-09-10)
+
+**Four minutes of an empty home page at 04:15, market closed.** Every
+command in the sequence reported success.
+
+### What happened
+
+Mid-way through a deliberate `config_hash` change (ADR 194, enabling
+`bull_close_below_lower`), the plan was to pin the new hash on *research*
+only, rebuild, and flip serving afterwards -- so the site would keep
+serving the old generation until the new one existed.
+
+`cscan db sync-config` was run as step 3 on the belief it touched research
+alone. It writes **both**. Serving's `serving_config` moved to
+`f183b0f5209a4677`, a generation with zero rows, and `v_screen_live`
+filters on `current_setting('capitalscan.default_config_hash')`. The view
+returned nothing, the page rendered nothing, and no error appeared anywhere.
+
+### Why the wrong belief survived a check
+
+The function opens with `db_io.get_engine()`, which is
+`DATABASE_URL_RESEARCH`. Reading the first ~35 lines and stopping there
+gives exactly the wrong answer, because the serving write is further down.
+
+**The command said so and it was read past.** Its own last line was:
+
+    serving: serving_config set to f183b0f5209a4677
+
+That is the whole failure: the *design* was inspected, the *behaviour* was
+printed, and the printed behaviour lost. A backlog entry warning about this
+exact sequence had been written twenty minutes earlier.
+
+### Recovery, which takes two steps and not one
+
+```sql
+UPDATE serving_config SET config_hash = '<previous hash>';
+```
+
+**is not enough on its own.** ADR 115 has `web/lib/db.ts` set the hash
+*per connection* from `serving_config`, so pooled connections keep serving
+the new value. The page stayed empty after the row was corrected.
+
+    sudo systemctl restart capitalscan-web
+
+drops the pool and the rows come back. Verify by counting rendered rows,
+not by the HTTP status -- the blank page returns 200:
+
+    curl -s http://localhost:3000/ | grep -o 'class="ticker"' | wc -l
+
+### The rule
+
+**`cscan db sync-config` is a serving-visible write. Run it AFTER the data
+is synced, never before.** The correct order across a `config_hash` change:
+
+```
+1. edit core/config.py
+2. ALTER DATABASE ... SET capitalscan.default_config_hash   (research only)
+3. cscan universe --quarter <q>  FOR ALL 66 QUARTERS        (research only)
+4. cscan backtest --workers 8                               (research only)
+5. cscan predict                                            (research only)
+6. cscan sync                    ships the new generation
+7. cscan db sync-config          flips serving, data already there
+8. restart capitalscan-web       drops the connection pool
+9. git pull on the Pi            last, always
+```
+
+**Step 3 is the one that gets forgotten, and skipping it fails silently.**
+`universe` is keyed on `config_hash`, so a new generation starts with zero
+eligibility rows. `run_backtest` then finds no ticker eligible and writes
+nothing:
+
+    backtest: run_id=... rows_written=0
+    tickers=0/1463
+    harness skipped: no events written
+
+**That run exits 0 and records `status = 'ok'`.** Measured 2026-09-10: nine
+minutes, 1,463 tickers dispatched, zero events, a green run row, and the
+harness politely declining to validate an empty generation. The only
+signal is `tickers=0/1463` in output nobody reads when the exit code is 0.
+
+It is easy to miss twice over, because the *previous* generation's universe
+rows are still there -- the table is not empty, it just has nothing under
+the new hash. `SELECT config_hash, count(*) FROM universe GROUP BY 1`
+before starting a rebuild.
+
+Budget ~20 minutes for the 66 quarters (2010Q1 to 2026Q2), and note there
+is no "all quarters" flag: `cscan universe --quarter` takes one at a time,
+so it is a loop.
+
+Steps 1-4 touch research only and are safe during market hours -- the
+poller writes serving, which is the whole point of it living there. Step 5
+onward must wait for the 13:00 close.

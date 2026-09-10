@@ -2,6 +2,46 @@
 
 # HIGHEST PRIORITY
 
+## The Pi must be pulled LAST across a `config_hash` change
+
+Written 2026-09-10 while sequencing the bull-reversal rebuild, before it
+could bite.
+
+`cscan poll` resolves config from the Pi's own checkout, so a Pi holding
+new code writes events under the **new** hash. `serving_config` still pins
+the old one until `cscan db sync-config` and `cscan sync` have run, and
+`v_screen_live` filters on `current_setting('capitalscan.default_config_hash')`.
+A Pi pulled early therefore writes rows the site cannot see, and **the page
+goes blank with every job reporting success** -- the same failure CLAUDE.md
+records for an ablation-arm config left on the Pi.
+
+The order is not negotiable:
+
+```
+1. config change, then the full rebuild        (research machine)
+2. ALTER DATABASE ... SET default_config_hash  (research)
+3. cscan db sync-config                        (writes serving_config)
+4. cscan sync                                  (ships the new generation)
+5. verify serving_config reads the new hash
+6. only now: git pull on the Pi
+```
+
+**Only steps 4 and 6 are time-constrained, and the distinction is easy to
+get wrong.** The rebuild in step 1 writes *research*, which has no live
+writer during market hours -- that is the whole point of the poller writing
+serving instead. `cscan sync` is the step that writes serving and must not
+overlap a live poller session. Steps 1-3 can run any time; step 4 waits for
+the 13:00 close, and step 6 waits for step 5.
+
+Recorded because the first pass at this sequencing held the *rebuild* back
+for the poller, which costs half a day for no reason.
+
+**The poller runs the day on old code against the generation serving
+actually holds**, and picks up the new one after the close. Rushing the Pi
+pull to "keep it in sync" is the mistake.
+
+---
+
 ## ~~`predictions` upserts on `event_id`, but the view reads a natural key~~ — **resolved 2026-09-10, ADR 191/192**
 
 The cause is gone. `Remap` rewrites `event_id` into the target's id space at
