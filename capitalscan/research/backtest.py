@@ -949,7 +949,25 @@ def run_backtest(
 
     rows_written = 0
     if not events.empty:
-        rows_written = db_io.upsert(
+        # **`copy_upsert`, not `upsert` (2026-09-10).** Same contract, and
+        # the difference is the whole cost of a cosmetic rebuild.
+        #
+        # Measured on this run: each chunk spends ~54s in the worker pool
+        # and 8+ minutes single-threaded afterwards, of which this write is
+        # the bulk. `upsert` turns every row into a dict and re-binds it as
+        # parameters -- profiled at **1,090 rows/s** during the 2026-08-26
+        # sync work, against **78,589 rows/s** for `COPY` into a staging
+        # table. `sync` was migrated then; this path was not.
+        #
+        # It matters here and not before because `--cosmetic` multiplies a
+        # chunk from ~14k rows to ~145k. Amdahl does the rest: with ~70% of
+        # a chunk serial, more workers bought nothing -- 5 and 8 workers
+        # both produced 9.3 min/chunk.
+        #
+        # Safe on this table specifically: `sync` already `copy_upsert`s
+        # `events`, including its `signal_types_all` array column, and
+        # moved 5.4M rows through it.
+        rows_written = db_io.copy_upsert(
             engine,
             "events",
             events,

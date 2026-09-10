@@ -384,7 +384,7 @@ class TestRunBacktestDispatchAndWrite:
             )
             return len(data)
 
-        monkeypatch.setattr(backtest.db_io, "upsert", fake_upsert)
+        monkeypatch.setattr(backtest.db_io, "copy_upsert", fake_upsert)
 
         report = backtest.run_backtest([TICKER], Config(), "run-1", engine=_FakeEngine())
 
@@ -417,7 +417,7 @@ class TestRunBacktestDispatchAndWrite:
             return backtest._empty_events_frame()
 
         monkeypatch.setattr(backtest, "_backtest_one_ticker", fake_worker)
-        monkeypatch.setattr(backtest.db_io, "upsert", lambda *a, **k: 0)
+        monkeypatch.setattr(backtest.db_io, "copy_upsert", lambda *a, **k: 0)
 
         backtest.run_backtest(["ZZZ", "AAA", "MMM"], Config(), "run-1", engine=_FakeEngine())
 
@@ -464,7 +464,7 @@ class TestRunBacktestDispatchAndWrite:
             captured["data"] = data
             return len(data)
 
-        monkeypatch.setattr(backtest.db_io, "upsert", fake_upsert)
+        monkeypatch.setattr(backtest.db_io, "copy_upsert", fake_upsert)
 
         backtest.run_backtest(["ZZZ", "AAA"], Config(), "run-1", engine=_FakeEngine())
 
@@ -524,7 +524,7 @@ class TestRunBacktestDispatchAndWrite:
             captured["data"] = data
             return len(data)
 
-        monkeypatch.setattr(backtest.db_io, "upsert", fake_upsert)
+        monkeypatch.setattr(backtest.db_io, "copy_upsert", fake_upsert)
 
         backtest.run_backtest(["AAA"], Config(), "run-1", engine=_FakeEngine())
 
@@ -546,7 +546,7 @@ class TestRunBacktestDispatchAndWrite:
             captured["data"] = data
             return len(data)
 
-        monkeypatch.setattr(backtest.db_io, "upsert", fake_upsert)
+        monkeypatch.setattr(backtest.db_io, "copy_upsert", fake_upsert)
 
         backtest.run_backtest([TICKER], Config(), "run-1", engine=_FakeEngine())
 
@@ -563,7 +563,7 @@ class TestRunBacktestDispatchAndWrite:
             called["upsert"] = True
             return 0
 
-        monkeypatch.setattr(backtest.db_io, "upsert", fake_upsert)
+        monkeypatch.setattr(backtest.db_io, "copy_upsert", fake_upsert)
 
         report = backtest.run_backtest([TICKER], Config(), "run-1", engine=_FakeEngine())
 
@@ -588,7 +588,7 @@ class TestRunBacktestFullUniverseCofire:
         captured: dict = {}
         monkeypatch.setattr(
             backtest.db_io,
-            "upsert",
+            "copy_upsert",
             lambda engine, table_name, data, conflict_cols, update_columns=None: (
                 captured.update(update_columns=update_columns) or len(data)
             ),
@@ -609,7 +609,7 @@ class TestRunBacktestFullUniverseCofire:
         captured: dict = {}
         monkeypatch.setattr(
             backtest.db_io,
-            "upsert",
+            "copy_upsert",
             lambda engine, table_name, data, conflict_cols, update_columns=None: (
                 captured.update(update_columns=update_columns, data=data) or len(data)
             ),
@@ -629,7 +629,7 @@ class TestRunBacktestFullUniverseCofire:
         monkeypatch.setattr(
             backtest, "_backtest_one_ticker", lambda *a, **k: backtest._empty_events_frame()
         )
-        monkeypatch.setattr(backtest.db_io, "upsert", lambda *a, **k: 0)
+        monkeypatch.setattr(backtest.db_io, "copy_upsert", lambda *a, **k: 0)
 
         backtest.run_backtest(["AAA"], Config(), "run-1", engine=_FakeEngine())
 
@@ -661,7 +661,7 @@ class TestRunBacktestPerTickerFailureIsolation:
         captured: dict = {}
         monkeypatch.setattr(
             backtest.db_io,
-            "upsert",
+            "copy_upsert",
             lambda engine, table_name, data, conflict_cols, update_columns=None: (
                 captured.update(data=data) or len(data)
             ),
@@ -691,7 +691,7 @@ class TestRunBacktestPerTickerFailureIsolation:
         monkeypatch.setattr(backtest, "_backtest_one_ticker", always_fails)
         called = {"upsert": False}
         monkeypatch.setattr(
-            backtest.db_io, "upsert", lambda *a, **k: called.__setitem__("upsert", True) or 0
+            backtest.db_io, "copy_upsert", lambda *a, **k: called.__setitem__("upsert", True) or 0
         )
 
         with pytest.raises(backtest.BacktestRunFailed) as excinfo:
@@ -724,7 +724,7 @@ class TestRunBacktestPerTickerFailureIsolation:
         captured: dict = {}
         monkeypatch.setattr(
             backtest.db_io,
-            "upsert",
+            "copy_upsert",
             lambda engine, table_name, data, conflict_cols, update_columns=None: (
                 captured.update(data=data) or len(data)
             ),

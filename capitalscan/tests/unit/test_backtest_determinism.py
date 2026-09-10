@@ -216,7 +216,7 @@ class TestRunBacktestDeterminism:
             captured.append(data)
             return len(data)
 
-        monkeypatch.setattr(backtest.db_io, "upsert", fake_upsert)
+        monkeypatch.setattr(backtest.db_io, "copy_upsert", fake_upsert)
 
         backtest.run_backtest([TICKER], Config(), "run-1", engine=_FakeEngine())
         backtest.run_backtest([TICKER], Config(), "run-2", engine=_FakeEngine())
@@ -281,7 +281,7 @@ class TestRunBacktestDeterminism:
             captured.append(data)
             return len(data)
 
-        monkeypatch.setattr(backtest.db_io, "upsert", fake_upsert)
+        monkeypatch.setattr(backtest.db_io, "copy_upsert", fake_upsert)
 
         backtest.run_backtest(["ZZZ", "AAA"], Config(), "run-1", engine=_FakeEngine())
         backtest.run_backtest(["ZZZ", "AAA"], Config(), "run-2", engine=_FakeEngine())

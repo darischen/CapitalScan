@@ -197,18 +197,29 @@ def stub_backtest_reads(monkeypatch):
 @pytest.fixture()
 def captured_events_upsert(monkeypatch):
     """Both `compute.py` and `research/backtest.py` do `from capitalscan.jobs
-    import db_io` — the identical module object, not two copies — so
-    patching `db_io.upsert` here is the ONE patch point for every job under
-    test, `run_events` and `run_backtest` alike. Patching it twice (once per
-    module reference) would just have the second patch silently clobber the
-    first's, since they are the same attribute."""
+    import db_io` — the identical module object, not two copies — so one
+    patch per *writer* covers every job under test. Patching the same
+    attribute twice (once per module reference) would just have the second
+    clobber the first, since they are the same attribute.
+
+    **Two writers as of 2026-09-10, not one.** `run_events` still calls
+    `upsert`; `run_backtest` moved to `copy_upsert`, because a cosmetic
+    rebuild spends ~70% of each chunk single-threaded and that write is
+    most of it (1,090 rows/s against 78,589). Patching only `upsert` left
+    `run_backtest` reaching the real `copy_upsert`, which calls `_table()`
+    and fails inspection on `_FakeEngine` — a clear error rather than a
+    silent pass, which is why this fixture is worth keeping strict.
+
+    Both are captured into the same list: the tests here assert on what was
+    written, not on which function wrote it."""
     calls: list[dict] = []
 
-    def fake_upsert(engine, table_name, data, conflict_cols, update_columns=None):
+    def fake_write(engine, table_name, data, conflict_cols, update_columns=None):
         calls.append({"table_name": table_name, "data": data})
         return len(data) if hasattr(data, "__len__") else 0
 
-    monkeypatch.setattr(db_io, "upsert", fake_upsert)
+    monkeypatch.setattr(db_io, "upsert", fake_write)
+    monkeypatch.setattr(db_io, "copy_upsert", fake_write)
     return calls
 
 
