@@ -921,3 +921,74 @@ explicit `docker start`. `CLAUDE.md` documents this for reboots only. The
 first `docker start` after the shutdown fails with `500 Internal Server
 Error ... check if the server supports the requested API version`, which
 reads like a version mismatch and is just the engine not being up yet.
+
+---
+
+## `cscan db sync-config` writes BOTH stores, and it blanked the site (2026-09-10)
+
+**Four minutes of an empty home page at 04:15, market closed.** Every
+command in the sequence reported success.
+
+### What happened
+
+Mid-way through a deliberate `config_hash` change (ADR 194, enabling
+`bull_close_below_lower`), the plan was to pin the new hash on *research*
+only, rebuild, and flip serving afterwards -- so the site would keep
+serving the old generation until the new one existed.
+
+`cscan db sync-config` was run as step 3 on the belief it touched research
+alone. It writes **both**. Serving's `serving_config` moved to
+`f183b0f5209a4677`, a generation with zero rows, and `v_screen_live`
+filters on `current_setting('capitalscan.default_config_hash')`. The view
+returned nothing, the page rendered nothing, and no error appeared anywhere.
+
+### Why the wrong belief survived a check
+
+The function opens with `db_io.get_engine()`, which is
+`DATABASE_URL_RESEARCH`. Reading the first ~35 lines and stopping there
+gives exactly the wrong answer, because the serving write is further down.
+
+**The command said so and it was read past.** Its own last line was:
+
+    serving: serving_config set to f183b0f5209a4677
+
+That is the whole failure: the *design* was inspected, the *behaviour* was
+printed, and the printed behaviour lost. A backlog entry warning about this
+exact sequence had been written twenty minutes earlier.
+
+### Recovery, which takes two steps and not one
+
+```sql
+UPDATE serving_config SET config_hash = '<previous hash>';
+```
+
+**is not enough on its own.** ADR 115 has `web/lib/db.ts` set the hash
+*per connection* from `serving_config`, so pooled connections keep serving
+the new value. The page stayed empty after the row was corrected.
+
+    sudo systemctl restart capitalscan-web
+
+drops the pool and the rows come back. Verify by counting rendered rows,
+not by the HTTP status -- the blank page returns 200:
+
+    curl -s http://localhost:3000/ | grep -o 'class="ticker"' | wc -l
+
+### The rule
+
+**`cscan db sync-config` is a serving-visible write. Run it AFTER the data
+is synced, never before.** The correct order across a `config_hash` change:
+
+```
+1. edit core/config.py
+2. ALTER DATABASE ... SET capitalscan.default_config_hash   (research only)
+3. rebuild                                                  (research only)
+4. cscan predict                                            (research only)
+5. cscan sync                    ships the new generation
+6. cscan db sync-config          flips serving, data already there
+7. restart capitalscan-web       drops the connection pool
+8. git pull on the Pi            last, always
+```
+
+Steps 1-4 touch research only and are safe during market hours -- the
+poller writes serving, which is the whole point of it living there. Step 5
+onward must wait for the 13:00 close.
