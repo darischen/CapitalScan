@@ -449,9 +449,22 @@ export function clampLimit(value: number | undefined): number | null {
  * carrying it as its `signal_type` is the strongest short signal on the
  * page, and "high above low" puts it above `confluence_high` rather than
  * below anything.
+ *
+ * **`bull_close_below_lower` joins at rank 1 (ADR 194.)** It was dormant
+ * until 2026-09-10 and therefore never appeared in data, so its absence
+ * here was invisible: an unlisted type falls to the `ELSE` branch and
+ * sorts *below every other signal*, which for the most specific type on
+ * the page is the exact inverse of correct.
+ *
+ * Rank 1 rather than anywhere else follows the rule already stated above,
+ * applied consistently: most specific first, short above long within each
+ * pair. The two close-confirmed types are a pair, so they lead, bear then
+ * bull — the same relation `confluence_high`/`confluence_low` and
+ * `bb_upper_touch`/`bb_lower_touch` already have.
  */
 export const SIGNAL_ORDER = [
   "bear_close_above_upper",
+  "bull_close_below_lower",
   "confluence_high",
   "confluence_low",
   "bb_upper_touch",

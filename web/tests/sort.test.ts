@@ -81,7 +81,9 @@ describe("the signal order is the one that was asked for", () => {
    * worth pinning is its order.
    */
   it("ranks the six named types in the specified order", () => {
-    const named = SIGNAL_ORDER.filter((t) => t !== "bear_close_above_upper");
+    const named = SIGNAL_ORDER.filter(
+      (t) => t !== "bear_close_above_upper" && t !== "bull_close_below_lower",
+    );
     expect(named).toEqual([
       "confluence_high",
       "confluence_low",
@@ -101,19 +103,27 @@ describe("the signal order is the one that was asked for", () => {
 
   it("ranks every signal type the database produces", () => {
     // A type missing from the map falls into the `ELSE` bucket and sorts
-    // last as a group, silently. These are the seven in
-    // `SignalParams.enabled_signal_types`.
-    expect([...SIGNAL_ORDER].sort()).toEqual(
-      [
-        "bb_lower_touch",
-        "bb_upper_touch",
-        "bear_close_above_upper",
-        "confluence_high",
-        "confluence_low",
-        "stoch_overbought",
-        "stoch_oversold",
-      ].sort(),
+    // last as a group, silently.
+    //
+    // **Read from `core/config.py`, not from a copy.** This assertion held
+    // a hardcoded list of seven until 2026-09-10, which meant it pinned
+    // `SIGNAL_ORDER` against itself: enabling an eighth type in Python
+    // left both sides unchanged and the test green, while
+    // `bull_close_below_lower` sorted below every other row on the page.
+    // A guard for cross-language drift has to read the other language.
+    const py = readFileSync(
+      join(__dirname, "..", "..", "capitalscan", "core", "config.py"),
+      "utf8",
     );
+    // Anchored on the tuple's own closing line, not the first `)`: the
+    // block carries prose comments and one of them contains "(ADR 194)",
+    // which a non-greedy `\)` matches instead — silently truncating the
+    // parsed list to the entries above the comment and passing.
+    const block = /enabled_signal_types:[^=]*=\s*\(([\s\S]*?)\n {4}\)/.exec(py);
+    expect(block, "could not find enabled_signal_types in core/config.py").not.toBeNull();
+    const enabled = [...block![1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+    expect(enabled.length).toBeGreaterThan(0);
+    expect([...SIGNAL_ORDER].sort()).toEqual([...enabled].sort());
   });
 });
 
