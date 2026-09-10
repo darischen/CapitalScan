@@ -178,22 +178,32 @@ class FittedPredictor:
             k = neural.TASKS.index((target.family, target.horizon))
             raw = target.probability(pmf[:, k, :], self.ensemble.grids[k])
             table = self.tables[target.field]
+            # **One call for the point and its interval (ADR 192).** They
+            # are interpolated together, so taking the point from `band`
+            # and the bounds from `lookup` would pair a value with an
+            # interval that need not contain it -- the exact failure the
+            # old piecewise-constant design existed to avoid.
+            #
+            # `lookup` is still the source of the *bucket index*, which is
+            # a statement about which block the raw score fell in and stays
+            # discrete by nature.
+            bands = [table.band(float(v)) for v in raw]
             buckets = [table.lookup(float(v)) for v in raw]
             out[f"{target.field}_raw"] = raw
-            out[target.field] = [table.calibrate(float(v)) for v in raw]
-            # Every field keeps its own bucket, not just the headline.
+            out[target.field] = [b[0] for b in bands]
+            # Every field keeps its own interval, not just the headline.
             # Invariant 8 attaches to each published probability, and an
             # interval borrowed from another field's reliability table is
             # an interval for a different quantity that renders correctly.
-            out[f"{target.field}__lo"] = [b.ci_low for b in buckets]
-            out[f"{target.field}__hi"] = [b.ci_high for b in buckets]
-            out[f"{target.field}__n_eff"] = [b.n_eff for b in buckets]
+            out[f"{target.field}__lo"] = [b[1] for b in bands]
+            out[f"{target.field}__hi"] = [b[2] for b in bands]
+            out[f"{target.field}__n_eff"] = [b[3] for b in bands]
             out[f"{target.field}__bucket"] = [b.index for b in buckets]
             if target.field == HEADLINE:
                 out["calib_bucket"] = [f"{target.field}:b{b.index}" for b in buckets]
-                out["calib_n_eff"] = [b.n_eff for b in buckets]
-                out["ci_low"] = [b.ci_low for b in buckets]
-                out["ci_high"] = [b.ci_high for b in buckets]
+                out["calib_n_eff"] = [b[3] for b in bands]
+                out["ci_low"] = [b[1] for b in bands]
+                out["ci_high"] = [b[2] for b in bands]
         return out
 
 

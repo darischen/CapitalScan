@@ -40,13 +40,39 @@ Pool-adjacent-violators merges offending neighbours into a single block
 with a pooled rate *and a pooled interval*, so a merged block correctly
 reports itself as the wider, less certain thing it is.
 
-**Piecewise-constant, not interpolated.** Interpolating between bucket
-centres looks smoother and quietly breaks the one property that matters for
-display: the published point must lie inside its own published interval.
-Interpolation moves the point by up to the gap between adjacent rates,
-which exceeds the half-width whenever buckets are well separated. Ten
-distinct values is not a defect. It is the resolution the sample supports,
-and saying so is the point of the module.
+**Interpolated between block anchors, and the interval comes with it**
+(ADR 192, amending ADR 174; this module argued the opposite until
+2026-09-10 and the original text is worth keeping):
+
+    Piecewise-constant, not interpolated. Interpolating between bucket
+    centres looks smoother and quietly breaks the one property that
+    matters for display: the published point must lie inside its own
+    published interval. Interpolation moves the point by up to the gap
+    between adjacent rates, which exceeds the half-width whenever buckets
+    are well separated. Ten distinct values is not a defect. It is the
+    resolution the sample supports, and saying so is the point of the
+    module.
+
+That objection is correct about interpolating the *point alone*, which is
+what it assumed. `band()` interpolates `p_hat`, `ci_low` and `ci_high`
+together, and since `ci_low <= p_hat <= ci_high` holds at every anchor, a
+convex combination preserves it everywhere. The property is kept, not
+traded.
+
+What the original text got right and this does not overturn: the *level* is
+supported to about a bucket half-width, ~2.7pp at `n_eff` around 1,300.
+Interpolation does not buy precision in the level and does not claim to --
+the interval says so, and it widens where the blocks are least sure.
+
+What forced the change is **ranking**, which the level's own unreliability
+makes the durable output (`CLAUDE.md`, and ADR 179 on the base rate moving
+36.5-65.0% year to year). Measured on serving 2026-09-09: 498 predictions
+carried **498 distinct raw scores and 9 distinct published values**, and a
+single pooled block put **142 tickers on exactly 0.4780** spanning raw
+0.375 to 0.495. Within that block the model's ordering was not coarse, it
+was *gone* -- and a reader comparing two rows saw a tie the model never
+expressed. Ten distinct values is a defect once it destroys the one output
+the module can defend.
 
 **Invariant 1.** No IO. The table is built from arrays by `research/`,
 persisted by `jobs/`, and read back through `from_dict`.
@@ -190,17 +216,111 @@ class ReliabilityTable:
                 return b
         return self.buckets[-1]
 
+    def _anchors(self) -> tuple[tuple[float, float, float, float, float], ...]:
+        """One `(x, p_hat, lo, hi, n_eff)` per isotonic **block**, ascending.
+
+        **Blocks, not buckets.** PAVA merges violating neighbours, and
+        every bucket in a merged block reports the block's rate. Anchoring
+        per bucket would place two anchors at the same height and
+        interpolate a flat segment between them -- reproducing exactly the
+        tie this exists to remove. On 2026-09-09 the largest block spanned
+        two buckets and 142 tickers.
+
+        `x` is the block's midpoint in predicted space. The outer blocks
+        are half-open, so they borrow the median finite block width rather
+        than trying to average an infinity.
+
+        Anchors are forced strictly ascending. Ties in `x` would make the
+        interpolation weight undefined, and PAVA guarantees ascending
+        `p_hat` between blocks but says nothing about their spans.
+        """
+        blocks: list[list[Bucket]] = []
+        for b in self.buckets:
+            if blocks and blocks[-1][0].p_hat == b.p_hat:
+                blocks[-1].append(b)
+            else:
+                blocks.append([b])
+
+        widths = [
+            blk[-1].hi - blk[0].lo
+            for blk in blocks
+            if math.isfinite(blk[0].lo) and math.isfinite(blk[-1].hi)
+        ]
+        fallback = (sorted(widths)[len(widths) // 2] / 2.0) if widths else 0.05
+
+        out: list[tuple[float, float, float, float, float]] = []
+        for blk in blocks:
+            lo_edge, hi_edge = blk[0].lo, blk[-1].hi
+            if math.isfinite(lo_edge) and math.isfinite(hi_edge):
+                x = (lo_edge + hi_edge) / 2.0
+            elif math.isfinite(hi_edge):
+                x = hi_edge - fallback
+            elif math.isfinite(lo_edge):
+                x = lo_edge + fallback
+            else:
+                x = blk[0].p_hat
+            head = blk[0]
+            if out and x <= out[-1][0]:
+                x = math.nextafter(out[-1][0], math.inf)
+            out.append((x, head.p_hat, head.ci_low, head.ci_high, head.n_eff))
+        return tuple(out)
+
+    def band(self, p: float) -> tuple[float, float, float, float]:
+        """`(p_hat, ci_low, ci_high, n_eff)` for a raw prediction `p`.
+
+        **The point and its interval are interpolated together**, which is
+        what keeps `ci_low <= p_hat <= ci_high` true: the relation holds at
+        every anchor, and a convex combination of two anchors preserves it.
+        Interpolating the point alone would not, and that is the objection
+        the module docstring used to make against doing this at all.
+
+        Outside the outermost anchors the nearest block's values are used
+        unchanged rather than extrapolated. The model is allowed to go
+        where the calibration sample did not; inventing a rate out there
+        would be the one thing this module exists to refuse.
+
+        `n_eff` takes the **smaller** of the two bracketing blocks, because
+        an interpolated point is supported by neither block alone and the
+        weaker claim is the honest one.
+        """
+        anchors = self._anchors()
+        if not anchors:
+            return (float("nan"), 0.0, 1.0, 0.0)
+        if math.isnan(p):
+            widest = max(self.buckets, key=lambda b: b.width)
+            return (float("nan"), widest.ci_low, widest.ci_high, widest.n_eff)
+
+        if p <= anchors[0][0]:
+            _, y, lo, hi, n = anchors[0]
+            return (y, lo, hi, n)
+        if p >= anchors[-1][0]:
+            _, y, lo, hi, n = anchors[-1]
+            return (y, lo, hi, n)
+
+        for left, right in zip(anchors, anchors[1:], strict=False):
+            if left[0] <= p <= right[0]:
+                span = right[0] - left[0]
+                t = 0.0 if span <= 0 else (p - left[0]) / span
+                return (
+                    left[1] + t * (right[1] - left[1]),
+                    left[2] + t * (right[2] - left[2]),
+                    left[3] + t * (right[3] - left[3]),
+                    min(left[4], right[4]),
+                )
+        _, y, lo, hi, n = anchors[-1]
+        return (y, lo, hi, n)
+
     def calibrate(self, p: float) -> float:
         """The probability to publish for a raw prediction `p`.
 
-        Piecewise constant by design (see the module docstring): the return
-        is the pooled realised rate of `p`'s bucket, which is guaranteed to
-        sit inside that bucket's interval. NaN in, NaN out -- a missing
+        Interpolated between block anchors (ADR 192) so two raw scores that
+        differ produce published values that differ -- the ordering the
+        model expressed survives to the page. NaN in, NaN out: a missing
         feature must not become a number.
         """
         if math.isnan(p):
             return float("nan")
-        return self.lookup(p).p_hat
+        return self.band(p)[0]
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-safe form, for `predictions.features_json` and audit."""

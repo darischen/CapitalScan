@@ -231,6 +231,8 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 188 | `json_safe` recurses, and both reversals reach the screener | **Decided 2026-09-09.** `db_io.json_safe` handled scalars and ended in `return str(value)`, with no branch for `dict`. `append` routes every dict field through `json_safe_payload`, which walks the **top level only**, so from 2026-08-26 every nested container was stored as a Python repr: `"{'above_band': True, 'confirmed': False}"`. **Four layers declined to complain** -- a fallback that stringifies anything cannot fail, JSONB accepts a string, `->>` on a string returns NULL not an error, and the tests asserted key presence, which a repr satisfies. It reached the reader as "no reversal today", indistinguishable from a quiet market. Boundary exact: 1,871 broken / 544 correct; the two COPY commits at that boundary were innocent. Scope was wider than the reversals -- `call_overlay_json.strikes` (1,042) and `runs.params.config`, the entire resolved config of 106 backtests. **Backfilled, not accepted**: 6,761 values research / 6,672 serving, 0 parse failures, `ast.literal_eval` rather than recompute so the rows carry what the poller actually decided. With the data readable, ADR 144's **bull reversal** turned out computed since 2026-08-21 and projected nowhere; four columns added on their own lateral, one badge component for both sides, `aboveBand` renamed `beyondBand` in TS because the dataclass's side-relative docstring does not travel to a React prop. **Rule: a coercion function whose fallback is `str()` needs a test per container type, not per scalar type.** Not fixed, in BACKLOG: the badge still freezes at fire time (`_already_fired` writes one report per ticker/day), which is why EXPE shows its 09:46 near-miss and not the close. Does not move `config_hash` |
 | 189 | Only a confirmed reversal gets a label | **Decided 2026-09-09.** Amends ADR 117, which chose to show every confluence with its distance from confirming rather than only the ones that confirmed. That reasoning is unchanged and still lost: what ADR 117 could not weigh is how it reads **in place**, because the column had never rendered -- ADR 188's JSON bug made every reversal field NULL from 2026-08-26, so the decision was made against a mock-up and reviewed against a blank column. In place, `0.42 ATR vs open` is a bare number where a badge should be, on the **majority** of rows (20 near-miss cells against 9 confirmed on the first page that rendered). **Only the promotion is lost**: `open_gap_atr` is still written every tick, still projected as `rev_open_gap_atr`/`bull_rev_open_gap_atr`, still in the payload -- restoring the badge is a display change against data that never stopped being collected. The **`beyondBand` guard stays untouched**: it stops a long-side row reporting a short-side measurement (DAL, `-1.99 ATR vs open` on a `confluence_low`), which is correctness, not volume. Tested as a negative across all three non-rendering states rather than per side. Does not move `config_hash` |
 | 190 | A probability label names its own direction | **Decided 2026-09-09.** `p_touch_*` is side-adjusted at the source -- `peak_labels.py` builds `path.favorable` as `(high-entry)/entry` for a long and `(entry-low)/entry` for a short -- so on a short it is the probability of a **fall**. The label read `Reaches +3% in 5 days`. Found by the user on VOD (`bear_close_above_upper`, short, 47.8%), read as the model forecasting a 3% *rise* on a confirmed bear reversal; it meant a 3% fall. **Wrong in the worst available direction** for an advisory tool -- a reader either abandons a good short or takes the opposite position. Three layers were already correct and are why it survived: the tooltip ("in the signal's own direction"), the modal group header ("In the signal's direction"), and `p_adverse_*`, which carries a comment explaining it avoids "falls" *because* the quantity is side-adjusted -- the touch labels never got the same treatment, so the accurate wording sat one hover away from a label contradicting it. Fixed with `modelFieldLabel(field, side)`: `Falls 3% in 5 days` on a short, `Rises` on a long, adverse flipped. **"In favour" rejected as primary** -- accurate but still makes the reader translate, and not translating is the failure; kept as the side-less fallback, because a missing direction is recoverable and a wrong one is not. `side` joined from `events` on the natural key, not a `CASE` on `signal_type` (invariant 2). **No number changed** -- display only. Does not move `config_hash` |
+| 191 | A surrogate reference is remapped at the sync boundary | **Decided 2026-09-09.** `events` syncs on a natural tuple, so serving mints `events.id` from its own sequence; `predictions` syncs on `("id",)` and carried `event_id` **verbatim** — a research id interpreted on serving. Measured on 20,200 serving predictions: 7,403 matched no event and **3,035 matched the WRONG one** (PRGO's 2026-08-05 prediction pointed at an SMTC event from 2020-07-13, NRG's at PKX from 2018). Those links resolve and join cleanly. Invisible because `v_screen_live` stopped joining on `event_id` in `d5e91a7c3b48`, so nothing read the broken column — and **a dangling id is findable with an outer join while one that resolves to the wrong row is invisible to every check that asks whether it joins**. The codebase already knew the hazard the other way (`pull_live_records` nulls `signal_reports.event_id`; `_drop_surrogate_id` exists because this collision failed the 2026-09-01 nightly); the push direction was the one place it was not applied. `Remap` rewrites the surrogate at write time from the natural key, bounded by the keys present (5.4M serving events, 41 distinct prediction dates); a miss becomes NULL, because an id from the other store is not a worse answer than NULL but a confidently wrong one. `predictions` still keys on `("id",)` — only the reference moves, not the identity — which is what keeps `outcomes.prediction_id` working (5,986/5,986 verified). Correcting `event_id` makes a real collision with the Pi's `event_id`-keyed writes, resolved in research's favour by `_clear_remap_collisions` after checking the pairs carry identical probabilities. Repaired in one pass rather than left to a full sync: 498 duplicates collapsed, 10,438 ids rewritten, **0 dangling / 0 wrong**, `v_screen_live` unchanged at 163 rows. Does **not** unique the natural key — `next_open` and `touch` are genuinely two events per signal. Does not move `config_hash` |
+| 192 | Calibration interpolates, and the interval interpolates with it | **Decided 2026-09-10.** Amends ADR 174, which argued against this in the module docstring. Measured on serving 2026-09-09: 498 predictions carried **498 distinct raw scores and 9 distinct published values**, one pooled block putting **142 tickers on exactly 0.4780** across raw 0.375-0.495. Found by the user comparing two rows. Inside that block the model's ordering was not coarse but **gone** -- and ranking is the durable output precisely because the level is not (ADR 179: base rate 36.5-65.0% against Brier skill 0.079). ADR 174's objection -- "the published point must lie inside its own published interval" -- is **correct about interpolating the point alone** and it broke exactly as predicted on the first run (raw 0.2726 published 0.3486 against a bucket ceiling of 0.3464). `band()` interpolates `p_hat`, `ci_low` and `ci_high` **together**, so containment is preserved by convexity and asserted across 501 points. Anchors are **per isotonic block, not per bucket** -- per-bucket anchors would place two at the same height and interpolate a flat segment, reproducing the tie. Edges clamp rather than extrapolate; `n_eff` takes the smaller bracketing block. The level is still worth ~2.7pp and the margin says so; the added decimal separates rows that differ without claiming the third digit. **Costs no skill**, asserted by comparing weighted Brier against the step map on the same fixture. Existing rows keep stepwise values until re-scored; no refit needed, the tables are unchanged. Does not move `config_hash` |
 
 ---
 
@@ -9670,3 +9672,187 @@ The numbers. Nothing about the model, the labels it trains on, or the
 calibration moved — `path.favorable` was side-correct the whole time. This
 is a display fix, and the only thing that was ever wrong was the sentence
 next to the number.
+
+---
+
+## 191. A surrogate reference is remapped at the sync boundary
+
+**Status:** accepted, 2026-09-09.
+
+`predictions.event_id` was copied verbatim into a store that mints
+`events.id` from its own sequence.
+
+### The defect
+
+`events` syncs on a natural tuple `(config_hash, ticker, signal_date,
+signal_type, entry_kind)`, so serving allocates its own ids and the two
+stores hand out integers from one range independently. `predictions` syncs
+on `("id",)` and carried `event_id` unchanged — a research id, interpreted
+on serving.
+
+Measured before the fix, on 20,200 serving predictions:
+
+| | |
+|---|---:|
+| `event_id` matching no event | 7,403 |
+| `event_id` matching the **wrong** event | **3,035** |
+
+PRGO's 2026-08-05 prediction pointed at an SMTC event from 2020-07-13;
+NRG's at PKX from 2018. **Those links resolve.** They join cleanly, return a
+row, and describe a different security in a different year.
+
+The same logical event carried id 75022087 on research and 72728015 on
+serving — verified directly on AA, 2026-09-09.
+
+### Why it was invisible
+
+`v_screen_live` stopped joining on `event_id` in `d5e91a7c3b48` and matches
+the natural key instead, so nothing on the site read the broken column. The
+codebase already knew the hazard in the other direction —
+`pull_live_records` nulls `signal_reports.event_id` with a comment saying
+the stores mint ids independently, and `_drop_surrogate_id` exists because
+this exact collision failed the 2026-09-01 nightly on `events_pkey`. The
+push direction for `predictions` was the one place the rule was not
+applied.
+
+**A dangling id is findable with one outer join. An id that resolves to the
+wrong row is invisible to every check that asks whether it joins**, which is
+why the count that mattered was the one nobody had measured.
+
+### The fix
+
+`Remap` rewrites a surrogate into the target's id space at write time,
+resolving the natural key against the target. `predictions.event_id` is its
+first user. A key that resolves to nothing becomes NULL, matching what
+`pull_live_records` already does — **an id from the other store is not a
+worse answer than NULL, it is a confidently wrong one.**
+
+Bounded by the keys present rather than by the table: serving holds
+5,413,083 events for the live generation and the predictions being written
+span 41 distinct dates.
+
+**`predictions` still keys on `("id",)`.** Only the reference is remapped,
+not the identity, which is what lets `outcomes` keep keying on
+`prediction_id` — the constraint its own comment already warned about.
+Verified after the repair: 5,986 of 5,986 outcomes still resolve.
+
+### The collision the fix creates
+
+Two writers reach serving and identify a prediction differently:
+`jobs/predict.py` upserts on `event_id`, the sync on `id`. Before the remap
+they never collided, because the ids came from different stores and never
+matched — the same reason the links were wrong. Making `event_id` correct
+makes the collision real, and `predictions_event_id` is UNIQUE.
+
+`_clear_remap_collisions` resolves it in research's favour: research is the
+authority for a row it has scored, and its id is the one the forward log can
+reference. The pairs were checked first and carry identical probabilities,
+so the second copy is all that is lost. A prediction the Pi wrote for an
+event research has not scored yet is not a collision and is left alone.
+
+A foreign key pointing at a deleted row raises rather than cascades. That is
+the failure worth having: `outcomes` is the only clean out-of-sample
+evidence the project has, and a sync that silently deletes it is worse than
+one that stops.
+
+### Repaired, not left to drift
+
+`nightly` syncs incrementally, so historical rows would have kept their
+wrong ids until someone ran a full sync — 2h48m to repair a column no query
+reads. `scripts/repair_prediction_event_ids.py` did it in one pass: 498
+duplicate keys collapsed, 10,438 ids rewritten, **0 dangling and 0 wrong**
+afterwards, and `v_screen_live` unchanged at 163 rows.
+
+### What this does not do
+
+It does not make the natural key UNIQUE, and it should not. `predictions`
+holds one row per `(natural key, entry_kind)` and `next_open` and `touch`
+are genuinely different events for one signal — KO on 2026-08-24 carries
+`p_touch_3` of 28.2% and 39.6% for exactly that reason. The uniqueness that
+matters is on `event_id`, and it already existed.
+
+---
+
+## 192. Calibration interpolates, and the interval interpolates with it
+
+**Status:** accepted, 2026-09-10. **Amends ADR 174.**
+
+`core/calibration.py` argued against this in its own docstring and the
+argument was half right.
+
+### What forced it
+
+Measured on serving 2026-09-09, 498 predictions for one session:
+
+| quantity | distinct values |
+|---|---:|
+| `p_touch_3_raw` | **498** |
+| `q50` | **498** |
+| `p_touch_3` (published) | **9** |
+
+The model discriminated every ticker. The published number collapsed to
+nine values, and one pooled block put **142 tickers on exactly 0.4780**
+across raw scores from 0.375 to 0.495.
+
+Found by the user comparing two rows on the page and asking whether
+inference had actually run per ticker. It had. **Inside that block the
+model's ordering was not coarse, it was gone** — and `CLAUDE.md` already
+says ranking is the durable output precisely because the level is not
+(ADR 179: the base rate ranges 36.5-65.0% year to year, exceeding the
+model's whole Brier skill of 0.079). The old design protected the level and
+destroyed the thing it had already conceded was more trustworthy.
+
+### The objection ADR 174 made, and why it does not survive
+
+> Interpolating between bucket centres ... quietly breaks the one property
+> that matters for display: the published point must lie inside its own
+> published interval.
+
+**Correct about interpolating the point alone**, which is what it assumed
+and what any naive implementation does. It broke exactly as predicted:
+`test_predict_pipeline` failed on the first run at raw 0.2726, publishing
+0.3486 against a bucket ceiling of 0.3464.
+
+`band()` interpolates `p_hat`, `ci_low` and `ci_high` **together**. Since
+`ci_low <= p_hat <= ci_high` holds at every anchor, a convex combination of
+two anchors preserves it — containment holds everywhere, not only at
+anchors, and is asserted across 501 points of the range for two fixtures.
+The property is kept rather than traded.
+
+### Anchors are per block, not per bucket
+
+PAVA merges violating neighbours and every bucket in a merged block reports
+the block's rate. Anchoring per bucket would put two anchors at the same
+height and interpolate a flat segment between them — **reproducing the
+exact 142-ticker tie this exists to remove**. Anchors are one per block, at
+the block's midpoint in predicted space; the half-open outer blocks borrow
+the median finite block width rather than averaging an infinity.
+
+### What is deliberately unchanged
+
+**The edges clamp, they do not extrapolate.** Beyond the outermost anchor
+the nearest block's values are used unchanged. Inventing a rate where the
+calibration sample never went is the one thing this module exists to
+refuse, and the tails hold 5 and 3 rows.
+
+**`n_eff` takes the smaller bracketing block.** An interpolated point is
+supported by neither block alone, so the weaker claim is the honest one.
+
+**The level is still worth about a bucket half-width**, ~2.7pp at `n_eff`
+near 1,300. Interpolation does not buy precision in the level and does not
+claim to — the margin beside the number says so, and it widens where the
+blocks are least sure. The extra decimal place the display now shows
+(user, 2026-09-10) separates rows that genuinely differ; it does not assert
+the third digit is meaningful, which is what the interval is for.
+
+**It costs no skill**, and that is asserted rather than assumed:
+`test_interpolation_did_not_cost_calibration` compares weighted Brier for
+the interpolated map against the step map it replaces on the same fixture,
+and requires the new one to be no worse while producing strictly more
+distinct values.
+
+### Consequence
+
+Existing rows keep their stepwise values until re-scored. `predict` writes
+the new map on its next run; nothing needs a refit, because the reliability
+tables are unchanged — only how they are read.

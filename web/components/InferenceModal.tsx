@@ -108,7 +108,13 @@ function BandRow({
       <th scope="row" title={help}>
         {label(field, side)}
       </th>
-      <td className="r num">{pct(band.p)}</td>
+      {/* **One decimal** (user, 2026-09-10). Whole percent was the right
+        * precision while calibration was piecewise constant and the whole
+        * universe shared nine values — a decimal place would have shown
+        * more digits of the same nine numbers. ADR 192 makes the map
+        * continuous, so the extra digit now separates rows that really do
+        * differ. The margin beside it still says what the level is worth. */}
+      <td className="r num">{pct(band.p, 1)}</td>
       <td
         className="r num dim"
         title={`Based on ${Math.round(band.nEff).toLocaleString()} comparable past signals, counted by independent information rather than row count.`}
