@@ -88,10 +88,32 @@ export const PREDICTION_CAVEAT = `${PREDICTION_CAVEAT_SUMMARY} ${PREDICTION_CAVE
  * actually are.
  */
 export const MODEL_FIELD_LABELS: Record<string, string> = {
-  p_touch_2: "Reaches +2% in 5 days",
-  p_touch_3: "Reaches +3% in 5 days",
-  p_touch_5: "Reaches +5% in 5 days",
-  p_touch_10: "Reaches +10% in 10 days",
+  // **These say "in favour", never "+".**
+  //
+  // `p_touch_*` is side-adjusted at the source: `path.favorable` is
+  // `(high - entry)/entry` for a long and `(entry - low)/entry` for a
+  // short (`research/peak_labels.py`), so on a short signal the number is
+  // the probability of a *fall*.
+  //
+  // These labels said "Reaches +3%" until 2026-09-09, and a reader looking
+  // at VOD — `bear_close_above_upper`, side short, 47.8% — read it as the
+  // model expecting a 3% rise, which is the exact opposite of what it
+  // means. On a short setup that is the worst available direction to be
+  // wrong in, and the tooltip had said "in the signal's own direction"
+  // correctly the whole time. The accurate wording was one hover away from
+  // a label that contradicted it.
+  //
+  // `p_adverse_*` was already careful for the same reason — the comment
+  // below is the original, and it is why "against" never became "falls".
+  // The touch labels simply never got the same treatment.
+  //
+  // Prefer `modelFieldLabel(field, side)`, which names the actual
+  // direction when the side is known. This map is the side-less fallback
+  // and must stay direction-neutral.
+  p_touch_2: "Moves 2% in favour in 5 days",
+  p_touch_3: "Moves 3% in favour in 5 days",
+  p_touch_5: "Moves 5% in favour in 5 days",
+  p_touch_10: "Moves 10% in favour in 10 days",
   // Side-adjusted: "against" is down for a long and up for a short, which
   // is why it does not say "falls".
   p_adverse_3: "Moves 3% against in 5 days",
@@ -110,6 +132,40 @@ export const MODEL_FIELD_LABELS: Record<string, string> = {
   ci_high: "Range high",
   model_version: "Model version",
 };
+
+/**
+ * The label for a field, naming the real direction when the side is known.
+ *
+ * **"In favour" is correct and still makes the reader do the translation.**
+ * A short-side reader seeing "Moves 3% in favour" has to remember that
+ * favour means down before the number means anything, and the failure this
+ * fixes was exactly a reader not making that translation. Where the row
+ * knows its side, say "Falls" or "Rises" and remove the step.
+ *
+ * Falls back to the direction-neutral map when the side is absent, which
+ * is honest rather than guessing — an unlabelled direction is recoverable,
+ * a wrong one is not.
+ */
+export function modelFieldLabel(field: string, side?: string | null): string {
+  const base = MODEL_FIELD_LABELS[field] ?? field;
+  if (side !== "long" && side !== "short") return base;
+
+  const touch = /^p_touch_(\d+)$/.exec(field);
+  if (touch) {
+    const days = field === "p_touch_10" ? 10 : 5;
+    const verb = side === "short" ? "Falls" : "Rises";
+    return `${verb} ${touch[1]}% in ${days} days`;
+  }
+
+  const adverse = /^p_adverse_(\d+)$/.exec(field);
+  if (adverse) {
+    // The adverse move is the other direction by definition.
+    const verb = side === "short" ? "Rises" : "Falls";
+    return `${verb} ${adverse[1]}% against you in 5 days`;
+  }
+
+  return base;
+}
 
 /**
  * How each model output should be read, in one sentence.

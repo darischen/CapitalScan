@@ -297,6 +297,12 @@ export interface Prediction {
   asOf?: string | null;
   signalType?: string | null;
   /**
+   * `"long"` or `"short"`, so the modal can name the direction each
+   * probability describes. `p_touch_*` is side-adjusted at the source, so
+   * on a short it is the chance of a *fall*.
+   */
+  side?: string | null;
+  /**
    * The event was outside the trade universe when scored, so the model was
    * never fitted on its population (ADR 183). The number is shown because
    * a reader clicking any ticker expects one; it carries its own caveat

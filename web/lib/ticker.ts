@@ -916,6 +916,7 @@ export async function latestPrediction(sym: string): Promise<Prediction | null> 
   const rows = await query<{
     as_of: Date;
     signal_type: string;
+    side: string | null;
     cosmetic: boolean;
     p_touch_3: string | number | null;
     ci_low: string | number | null;
@@ -924,9 +925,28 @@ export async function latestPrediction(sym: string): Promise<Prediction | null> 
     model_version: string | null;
     calibration_json: Record<string, unknown> | null;
   }>(
-    `SELECT p.as_of, p.signal_type, p.cosmetic, p.p_touch_3, p.ci_low, p.ci_high,
+    // **`side` comes from `events`, joined on the natural key.**
+    //
+    // Every label in the modal is side-dependent — `p_touch_*` is
+    // side-adjusted at the source, so on a short it is the chance of a
+    // fall — and without this the graph page falls back to the
+    // direction-neutral wording while the screener names the direction.
+    //
+    // Joined rather than derived from `signal_type` in SQL: `events.side`
+    // is the authority and a CASE here would be a second implementation of
+    // a `core/` rule (invariant 2). Joined on the natural key rather than
+    // `event_id` because that column does not survive the sync — the ids
+    // are minted per store, so it resolves to an unrelated event.
+    //
+    // LEFT JOIN, so a prediction whose event has aged out of serving's
+    // window still renders, with the neutral label rather than none.
+    `SELECT p.as_of, p.signal_type, e.side, p.cosmetic, p.p_touch_3, p.ci_low, p.ci_high,
             p.calib_n_eff, p.model_version, p.calibration_json
        FROM predictions p
+       LEFT JOIN events e
+              ON e.config_hash = p.config_hash AND e.ticker = p.ticker
+             AND e.signal_date = p.as_of AND e.signal_type = p.signal_type
+             AND e.entry_kind = p.entry_kind
       WHERE p.ticker = $1
         AND p.model_scored
         AND p.config_hash = current_setting('capitalscan.default_config_hash', true)
@@ -945,6 +965,7 @@ export async function latestPrediction(sym: string): Promise<Prediction | null> 
     adverse3: band(r.calibration_json, "p_adverse_3"),
     asOf: isoDate(r.as_of),
     signalType: r.signal_type,
+    side: r.side,
     cosmetic: Boolean(r.cosmetic),
     bands: allBands(r.calibration_json),
   };
