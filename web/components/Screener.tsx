@@ -417,16 +417,26 @@ function OneReversal({
     );
   }
 
-  // Evaluated and not reversing. Muted, and it carries the distance — this
-  // is the row a reader checks to see how close it came.
-  return (
-    <span
-      className="reversal near"
-      title={`poller at ${clock(rev.ts)} ${DISPLAY_TZ_LABEL}: not reversing${gap ? ` (${gap})` : ""}`}
-    >
-      {gap ?? "no reversal"}
-    </span>
-  );
+  // **Evaluated and not reversing renders nothing** (user, 2026-09-09).
+  //
+  // This reverses ADR 117's option B, which chose to show every confluence
+  // with its distance rather than only the ones that confirmed. The reason
+  // it was chosen still holds — a near miss and a name running hard away
+  // from its open are genuinely different, and the number is the only thing
+  // that separates them — but it was a judgement about a column nobody had
+  // seen in place, and in place it reads as a bare number sitting where a
+  // badge should be, on the majority of rows.
+  //
+  // The distance is not lost, only unpromoted: it is still in
+  // `state_json.{bear,bull}_reversal.open_gap_atr` and still projected by
+  // `v_screen_live` as `rev_open_gap_atr` / `bull_rev_open_gap_atr`, so
+  // restoring this is a display change and nothing has to be re-derived.
+  //
+  // The two guards above stay exactly as they were. `beyondBand` still
+  // decides whether this side applies at all, which is what stops a
+  // long-side row reporting a short-side measurement (the DAL case) — that
+  // guard is about correctness, not about how loud the badge is.
+  return null;
 }
 
 

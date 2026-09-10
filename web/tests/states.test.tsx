@@ -326,11 +326,16 @@ describe("the two reversals are told apart", () => {
   });
 
   /**
-   * The near-miss is the reason ADR 117 chose option B: show every
-   * confluence and say how far each is from confirming. A badge that
-   * appeared only on confirmation would put that decision back.
+   * **Reversed on the user's call, 2026-09-09.** ADR 117 chose option B —
+   * show every confluence with its distance — and in place that put a bare
+   * number where a badge should be, on most rows. Only a confirmed reversal
+   * gets a label now.
+   *
+   * The distance is unpromoted, not discarded: `open_gap_atr` is still in
+   * `state_json` and still projected by the view, so restoring this is a
+   * display change.
    */
-  it("renders a near miss with its distance rather than nothing", () => {
+  it("renders nothing for a bear near miss", () => {
     const html = render({
       reversal: {
         confirmed: false,
@@ -340,8 +345,9 @@ describe("the two reversals are told apart", () => {
         ts: "2026-08-19T14:05:00.000Z",
       },
     });
-    expect(html).toContain("0.42 ATR vs open");
-    expect(html).toContain("reversal near");
+    expect(html).not.toContain("ATR vs open");
+    expect(html).not.toContain("reversal near");
+    expect(html).not.toContain("no reversal");
   });
 
   it("shows nothing when the poller has not evaluated the row", () => {
@@ -480,7 +486,7 @@ describe("the two reversals are told apart", () => {
     expect(html).not.toContain("live reversal");
   });
 
-  it("renders a bull near miss with its distance rather than nothing", () => {
+  it("renders nothing for a bull near miss", () => {
     const html = render({
       signalType: "confluence_low",
       bullReversal: {
@@ -491,8 +497,8 @@ describe("the two reversals are told apart", () => {
         ts: "2026-09-09T20:05:00.000Z",
       },
     });
-    expect(html).toContain("-0.14 ATR vs open");
-    expect(html).toContain("reversal near");
+    expect(html).not.toContain("ATR vs open");
+    expect(html).not.toContain("reversal near");
   });
 
   /**
@@ -537,6 +543,40 @@ describe("the two reversals are told apart", () => {
     });
     expect(html).toContain("0.42 ATR vs open");
     expect(html).not.toContain("-0.42");
+  });
+
+  /**
+   * **The whole contract, in one test** (user, 2026-09-09): "I only need the
+   * two reversal labels."
+   *
+   * Four states can reach this cell — close-confirmed, live-confirmed, near
+   * miss, and not-applicable — and only the first two may render. This
+   * asserts the negative directly, because the two tests above each check
+   * one side and a third state could be added without either of them
+   * noticing.
+   */
+  it("renders a label only when a reversal is confirmed", () => {
+    const confirmed = render({
+      reversal: {
+        confirmed: true,
+        beyondBand: true,
+        side: "bear" as const,
+        openGapAtr: -0.31,
+        ts: "2026-09-09T20:05:00.000Z",
+      },
+    });
+    expect(confirmed).toContain("live reversal");
+
+    for (const rev of [
+      { confirmed: false, beyondBand: true, openGapAtr: 0.42 },
+      { confirmed: false, beyondBand: true, openGapAtr: null },
+      { confirmed: false, beyondBand: false, openGapAtr: -1.99 },
+    ]) {
+      const html = render({
+        reversal: { ...rev, side: "bear" as const, ts: "2026-09-09T20:05:00.000Z" },
+      });
+      expect(html).not.toContain("reversal");
+    }
   });
 
   it("shows nothing when the poller has evaluated neither side", () => {

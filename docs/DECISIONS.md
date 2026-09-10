@@ -229,6 +229,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 186 | The staleness guard is a design fingerprint, not `git_sha` | **Decided 2026-09-09.** Corrects ADR 181. Measured: the Pi refused a good artifact because the only intervening commit added a `--serving` CLI flag, which cannot reach the design matrix. `git_sha` is a proxy for "did the feature code move" and a poor one -- it moves on docs, CSS, comments -- and with a weekly refit the Pi would spend most of the week unable to score. **A guard that fires on changes it can prove are irrelevant gets worked around, and then it guards nothing.** Replaced by a hash of the feature columns **in order**, categorical levels **in order**, network shape and `IMPUTE_COLS` -- **stricter** where it matters, since it catches a reorder that an amended commit would hide from `git_sha`. The sha is still recorded, just not gated on. `ARTIFACT_VERSION` -> 2. Does not move `config_hash` |
 | 187 | The harness validates the universe, not the cosmetic rows | **Decided 2026-09-09.** The gate failed with entry 2, exit 7, non-overlap 328 after the event count went 1.38M -> 10.8M. Proved per slice before changing anything: `in_trade` (1,129,486) **all five PASS**, `in_watch` (769,089) **all five PASS**, everything fails. All 337 violations come from the 8.9M out-of-universe rows ADR 178's cosmetic backfill priced -- never produced by the engine whose invariants these checks assert. Scoped to `in_trade OR in_watch`. The boundary is principled: **the harness validates rows that enter a statistic**, and cosmetic rows enter none -- `non_overlap` exists so a position is not double-counted, which has no content for a row nothing counts. `in_watch` stays in scope on evidence, because it is shown as guidance and it passes. Rejected: keeping the full population with known failures -- **a gate expected to fail is a gate nobody reads**. Does not move `config_hash` |
 | 188 | `json_safe` recurses, and both reversals reach the screener | **Decided 2026-09-09.** `db_io.json_safe` handled scalars and ended in `return str(value)`, with no branch for `dict`. `append` routes every dict field through `json_safe_payload`, which walks the **top level only**, so from 2026-08-26 every nested container was stored as a Python repr: `"{'above_band': True, 'confirmed': False}"`. **Four layers declined to complain** -- a fallback that stringifies anything cannot fail, JSONB accepts a string, `->>` on a string returns NULL not an error, and the tests asserted key presence, which a repr satisfies. It reached the reader as "no reversal today", indistinguishable from a quiet market. Boundary exact: 1,871 broken / 544 correct; the two COPY commits at that boundary were innocent. Scope was wider than the reversals -- `call_overlay_json.strikes` (1,042) and `runs.params.config`, the entire resolved config of 106 backtests. **Backfilled, not accepted**: 6,761 values research / 6,672 serving, 0 parse failures, `ast.literal_eval` rather than recompute so the rows carry what the poller actually decided. With the data readable, ADR 144's **bull reversal** turned out computed since 2026-08-21 and projected nowhere; four columns added on their own lateral, one badge component for both sides, `aboveBand` renamed `beyondBand` in TS because the dataclass's side-relative docstring does not travel to a React prop. **Rule: a coercion function whose fallback is `str()` needs a test per container type, not per scalar type.** Not fixed, in BACKLOG: the badge still freezes at fire time (`_already_fired` writes one report per ticker/day), which is why EXPE shows its 09:46 near-miss and not the close. Does not move `config_hash` |
+| 189 | Only a confirmed reversal gets a label | **Decided 2026-09-09.** Amends ADR 117, which chose to show every confluence with its distance from confirming rather than only the ones that confirmed. That reasoning is unchanged and still lost: what ADR 117 could not weigh is how it reads **in place**, because the column had never rendered -- ADR 188's JSON bug made every reversal field NULL from 2026-08-26, so the decision was made against a mock-up and reviewed against a blank column. In place, `0.42 ATR vs open` is a bare number where a badge should be, on the **majority** of rows (20 near-miss cells against 9 confirmed on the first page that rendered). **Only the promotion is lost**: `open_gap_atr` is still written every tick, still projected as `rev_open_gap_atr`/`bull_rev_open_gap_atr`, still in the payload -- restoring the badge is a display change against data that never stopped being collected. The **`beyondBand` guard stays untouched**: it stops a long-side row reporting a short-side measurement (DAL, `-1.99 ATR vs open` on a `confluence_low`), which is correctness, not volume. Tested as a negative across all three non-rendering states rather than per side. Does not move `config_hash` |
 
 ---
 
@@ -9531,3 +9532,56 @@ shape nobody enumerated, and the fallback guaranteed it would never
 announce itself. `test_json_safe.py` asserts on `jsonb_typeof` and on
 readback rather than on key presence; 10 of its 11 tests fail against the
 old function, verified by removing the branch and re-running.
+
+---
+
+## 189. Only a confirmed reversal gets a label
+
+**Status:** accepted, 2026-09-09. **Amends ADR 117.**
+
+ADR 117 chose option B: show every confluence and say how far each is from
+confirming, rather than showing only the ones that confirmed. This reverses
+the display half of that, on the user's call the evening the column first
+became visible.
+
+### Why the original reasoning was sound and still lost
+
+The case for option B was real and is unchanged. MPC on 2026-08-18 fired
+6.14 above its band and 0.39 ATR above its open — a reversal that had not
+happened *yet*, as against one that was not going to — and the yes/no answer
+alone cannot separate those. The number is the only thing that can.
+
+What ADR 117 could not weigh is how it reads **in place**, because the
+column had never rendered: the JSON bug (ADR 188) made every reversal field
+NULL from 2026-08-26, so the badge was blank on every row until this
+evening. The decision was made against a mock-up and reviewed against a
+blank column.
+
+In place, `0.42 ATR vs open` is a bare number sitting where a badge should
+be, on the **majority** of rows — 20 near-miss cells against 9 confirmed on
+the first page that rendered. A column whose common case is an unlabelled
+float is not communicating a near miss; it is noise that the eye has to
+skip to find the two labels that mean something.
+
+### What is not lost
+
+**Only the promotion.** `open_gap_atr` is still written to
+`state_json.{bear,bull}_reversal` on every tick, still projected by
+`v_screen_live` as `rev_open_gap_atr` and `bull_rev_open_gap_atr`, and still
+carried in the `ScreenRow` payload. Restoring the badge is a display change
+against data that never stopped being collected — which is the property that
+made this reversible enough to just do.
+
+### What deliberately did not change
+
+**The `beyondBand` guard stays.** It is what stops a long-side row reporting
+a short-side measurement — DAL fired `confluence_low` on 2026-08-20 showing
+`-1.99 ATR vs open`, which on a row above its band is a confirming reversal
+and on that one is meaningless. That guard is about correctness, not about
+how loud the badge is, and it survives untouched.
+
+`test_states` now asserts the contract directly: of the four states that can
+reach the cell — close-confirmed, live-confirmed, near miss, not applicable
+— only the first two render. Asserted as a negative over all three
+non-rendering states, because a per-side test would not notice a fourth
+state being added later.
