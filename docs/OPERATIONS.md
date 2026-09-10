@@ -981,13 +981,37 @@ is synced, never before.** The correct order across a `config_hash` change:
 ```
 1. edit core/config.py
 2. ALTER DATABASE ... SET capitalscan.default_config_hash   (research only)
-3. rebuild                                                  (research only)
-4. cscan predict                                            (research only)
-5. cscan sync                    ships the new generation
-6. cscan db sync-config          flips serving, data already there
-7. restart capitalscan-web       drops the connection pool
-8. git pull on the Pi            last, always
+3. cscan universe --quarter <q>  FOR ALL 66 QUARTERS        (research only)
+4. cscan backtest --workers 8                               (research only)
+5. cscan predict                                            (research only)
+6. cscan sync                    ships the new generation
+7. cscan db sync-config          flips serving, data already there
+8. restart capitalscan-web       drops the connection pool
+9. git pull on the Pi            last, always
 ```
+
+**Step 3 is the one that gets forgotten, and skipping it fails silently.**
+`universe` is keyed on `config_hash`, so a new generation starts with zero
+eligibility rows. `run_backtest` then finds no ticker eligible and writes
+nothing:
+
+    backtest: run_id=... rows_written=0
+    tickers=0/1463
+    harness skipped: no events written
+
+**That run exits 0 and records `status = 'ok'`.** Measured 2026-09-10: nine
+minutes, 1,463 tickers dispatched, zero events, a green run row, and the
+harness politely declining to validate an empty generation. The only
+signal is `tickers=0/1463` in output nobody reads when the exit code is 0.
+
+It is easy to miss twice over, because the *previous* generation's universe
+rows are still there -- the table is not empty, it just has nothing under
+the new hash. `SELECT config_hash, count(*) FROM universe GROUP BY 1`
+before starting a rebuild.
+
+Budget ~20 minutes for the 66 quarters (2010Q1 to 2026Q2), and note there
+is no "all quarters" flag: `cscan universe --quarter` takes one at a time,
+so it is a loop.
 
 Steps 1-4 touch research only and are safe during market hours -- the
 poller writes serving, which is the whole point of it living there. Step 5

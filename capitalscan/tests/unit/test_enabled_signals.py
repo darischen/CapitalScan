@@ -120,7 +120,15 @@ def test_the_hash_is_sensitive_to_the_order_the_set_is_written_in():
 # than left implicit, because the guard below is what stops "added a type and
 # forgot to enable it" -- a silent, permanent no-op -- and that guard is only
 # as good as this line being maintained.
-DORMANT_BY_DESIGN = {"bull_close_below_lower"}
+# **Empty as of 2026-09-10 (ADR 194).** `bull_close_below_lower` was the
+# sole entry from 2026-08-21 until then: defined so it could be reviewed and
+# tested while a backtest ran under the old hash, since enabling it moves
+# `config_hash`. Enabling it was the deliberate act, and the set emptied.
+#
+# Kept as a named set rather than deleted, because the guard below is what
+# stops "added a type and forgot to enable it" -- a silent, permanent no-op.
+# A future dormant type belongs here, not in a relaxed assertion.
+DORMANT_BY_DESIGN: set[str] = set()
 
 
 def test_the_default_is_written_in_enum_declaration_order():
@@ -157,7 +165,19 @@ def test_every_type_is_enabled_except_the_ones_deliberately_dormant():
 
 
 def test_a_dormant_type_cannot_fire():
-    """The consequence, asserted end to end rather than assumed from config."""
+    """The consequence, asserted end to end rather than assumed from config.
+
+    **`DORMANT_BY_DESIGN` is empty as of ADR 194, so this loop would pass
+    vacuously.** A test that asserts nothing is worse than a deleted one,
+    because it reads as coverage. The emptiness is asserted explicitly, so
+    this becomes a real test again the moment a type is made dormant, and
+    fails now if one is made dormant without anyone noticing.
+    """
+    if not DORMANT_BY_DESIGN:
+        assert set(SignalParams().enabled_signal_types) == {s.value for s in SignalType}, (
+            "nothing is dormant, so every declared type must be enabled"
+        )
+        return
     for value in DORMANT_BY_DESIGN:
         assert value not in SignalParams().enabled_signal_types
         assert SignalType(value) not in sig.enabled_types(SignalParams())

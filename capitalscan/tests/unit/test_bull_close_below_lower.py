@@ -124,18 +124,32 @@ class TestItMirrorsTheBearFlag:
 # ---------------------------------------------------------------------------
 
 
-class TestItIsDefinedButDisabled:
-    def test_not_in_the_enabled_set(self):
-        assert "bull_close_below_lower" not in SignalParams().enabled_signal_types
+class TestItIsEnabled:
+    """**Enabled 2026-09-10 by ADR 194.** This class asserted the opposite
+    until then, and the inversion is the point rather than a rewrite for
+    its own sake.
 
-    def test_enabled_types_does_not_resolve_it(self):
-        assert SignalType.BULL_CLOSE_BELOW_LOWER not in sig.enabled_types(SignalParams())
+    ADR 144 defined the type and left it out of `enabled_signal_types`, so
+    it had an indicator column, an enum member, a signal rule, a frontend
+    label and a badge branch -- everything except the one tuple that makes
+    it fire. The cost was asymmetric: the bear side has a live badge *and*
+    a close-confirmed one, so a bear reversal developing after its signal
+    fires is caught next morning, while a bull reversal developing later
+    was caught by nothing at all. EXPE fired 2026-09-09 below its band and
+    still below its open, crossed later, and displayed nothing.
+    """
 
-    def test_it_cannot_fire_while_disabled(self):
-        """The end-to-end guarantee, not just the config value.
+    def test_it_is_in_the_enabled_set(self):
+        assert "bull_close_below_lower" in SignalParams().enabled_signal_types
 
-        `_types_fired` filters by `allowed`, so even with the flag set on the
-        bar the type is dropped before it reaches a hit.
+    def test_enabled_types_resolves_it(self):
+        assert SignalType.BULL_CLOSE_BELOW_LOWER in sig.enabled_types(SignalParams())
+
+    def test_it_fires_end_to_end(self):
+        """The guarantee, not just the config value.
+
+        `_types_fired` filters by `allowed`, so this passing means the flag
+        on the bar reaches a hit rather than being dropped.
         """
         fired = sig._types_fired(
             low=90.0,
@@ -144,29 +158,35 @@ class TestItIsDefinedButDisabled:
             sp=SignalParams(),
             bull_close=True,
         )
-        assert SignalType.BULL_CLOSE_BELOW_LOWER not in fired[Side.LONG]
-
-    def test_it_does_fire_once_enabled(self):
-        """The other half: dormancy is a config choice, not a broken wire.
-
-        Without this, every test above would pass on an implementation that
-        never worked at all.
-        """
-        sp = SignalParams(
-            enabled_signal_types=SignalParams().enabled_signal_types + ("bull_close_below_lower",)
-        )
-        fired = sig._types_fired(low=90.0, high=95.0, ind=_ind_row(), sp=sp, bull_close=True)
         assert SignalType.BULL_CLOSE_BELOW_LOWER in fired[Side.LONG]
 
-    def test_adding_the_enum_member_did_not_move_config_hash(self):
-        """ADR 108's trap, used deliberately.
+    def test_it_still_cannot_fire_when_disabled(self):
+        """The other half, kept from the original class.
 
-        `config_hash` is over `dataclasses.asdict(Config)` and an enum member
-        is not a field, so defining the type costs nothing. That is what let
-        this land while a backtest was running under this exact hash.
-        Enabling it is the deliberate act that moves it.
+        Dormancy must remain reachable from a config -- DESIGN 3.10 wants an
+        ablated rule to be a config change, and ADR 108's population stays
+        reconstructible only if disabling still works.
+        """
+        sp = SignalParams(
+            enabled_signal_types=tuple(
+                t for t in SignalParams().enabled_signal_types if t != "bull_close_below_lower"
+            )
+        )
+        fired = sig._types_fired(low=90.0, high=95.0, ind=_ind_row(), sp=sp, bull_close=True)
+        assert SignalType.BULL_CLOSE_BELOW_LOWER not in fired[Side.LONG]
+
+    def test_enabling_it_moved_config_hash(self):
+        """ADR 108's trap, now sprung deliberately.
+
+        Defining the enum member cost nothing, because `config_hash` is over
+        `dataclasses.asdict(Config)` and a member is not a field -- which is
+        what let ADR 144 land while a backtest ran under the old hash.
+        **Enabling it is the deliberate act that moves it**, and this asserts
+        the move happened rather than that some value is stable.
         """
         assert config_hash(Config()) == DEFAULT_CONFIG_HASH
+        assert DEFAULT_CONFIG_HASH == "f183b0f5209a4677"
+        assert config_hash(Config()) != "0523841076f47293", "the hash did not move"
 
 
 def _ind_row(**kw) -> pd.Series:

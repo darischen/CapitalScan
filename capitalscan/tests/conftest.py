@@ -58,4 +58,6 @@ settings.load_profile(os.getenv("CAPSCAN_HYPOTHESIS_PROFILE", "dev"))
 # purpose, and nine tests failed for a change none of them was written about.
 # The pin now lives here, so a deliberate config change is one edit and an
 # accidental one still fails every guard.
-DEFAULT_CONFIG_HASH = "0523841076f47293"
+# Moved 2026-09-10 from `0523841076f47293` by ADR 194, which enabled
+# `bull_close_below_lower`. One edit, as designed.
+DEFAULT_CONFIG_HASH = "f183b0f5209a4677"
