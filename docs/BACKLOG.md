@@ -353,33 +353,64 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    month. The current intervals are fitted on validate and are a lower
    bound on the true uncertainty.
 
-### ADR 179 is decided but not built -- the rolling refit
+### ~~ADR 179 is decided but not built -- the rolling refit~~ — **wrong; built, tested and REFUTED 2026-09-08**
 
-Written 2026-09-08, no code yet. What it needs, in order:
+**This entry was stale for two days and cost real time on 2026-09-10.** It
+was read as an open task and work started against it; only reading ADR 179
+itself stopped the build. The ADR carries two amendments this entry never
+picked up, and the second withdraws the exact clause described here.
 
-1. **A rolling `SplitParams`.** Today's bounds are ISO strings fixed in
-   `core/config.py`. The refit needs them computed from a reference date --
-   `today - 5y / -6mo / -5d` -- while `split_key` on existing rows stays
-   exactly as assigned (ADR 019, invariant 5). That means the rolling
-   window is a *training-time filter*, not a rewrite of the column, and the
-   two must not be confused.
+What actually happened: `roll7` against `fixed` **inverted which task family
+works** -- `terminal` 6/10 -> 10/10, `peak` 10/10 -> 6/10, `trough` 10/10 ->
+8/10. Every shipped probability reads `peak` or `trough`; `terminal`
+displays nowhere. The aggregate, 26/30 against 24/30, concealed it.
 
-2. **Verify the purge covers the new boundary.** `core/folds.py` embargoes
-   the walk-forward ladder already. A rolling train/validate boundary needs
-   the same 10-day purge, and it needs a test that fails if the boundary
-   moves without it -- otherwise the model reads its own validation labels
-   and every number after that is optimistic.
+**What survives ADR 179 and already ships:** the forward log is never
+trained on, weekly rather than nightly (ADR 184), a refit means refitted
+reliability tables, and newly closed labels enter training only after
+serving as forward-log evidence.
 
-3. **Refit the reliability tables with the ensemble.** ADR 174's tables are
-   fitted per model. A refit that reuses them miscalibrates silently.
+**The lesson for this file:** an entry describing an ADR must not outlive an
+amendment to it. Check the ADR before treating any entry here as open.
 
-4. **Wire it into `weekly`**, after the backtest that produces the labels.
+### The weekly refit currently learns nothing, and the fix is untested
 
-**The cheap test worth running first:** a window reaching back five years
-from 2026 pulls **2022** into training -- the regime the coverage gate
-fails on, and the one the label-shift diagnosis says is missing. That may
-close the gate with no architecture change at all. One fit answers it, and
-it is the cheapest test of the whole label-shift story.
+**Measured 2026-09-10.** This is the real open item the entry above hid.
+
+`split_key` is assigned at event creation and never moves (invariant 5), so
+the fixed bounds mean the weekly refit trains on identical rows every week:
+
+| split | events | range |
+|---|---:|---|
+| train | 1,815,728 | 2010-01-05 -> **2021-12-31** |
+| validate | 374,869 | 2022-01-03 -> 2023-12-29 |
+| holdout | 516,615 | 2024-01-02 -> 2026-09-09 |
+
+**516,615 events since 2024 never enter training**, and the reliability
+tables are equally frozen on 2022-2023. The refit differs only by seed.
+ADR 184's split of refit-from-score is right; the refit half is a no-op in
+information terms.
+
+**`roll7` does not settle this, because it changed two things at once:**
+
+    fixed   train 2010-2021 -> 12 years, validate 2022-2023
+    roll7   train 2019-2025 ->  7 years, validate 2026
+
+It moved the window forward **and cut it by 42%**, then scored a different
+period. The loss was attributed to recency; a shorter fit is the other
+explanation, and it had already produced one false result in this same test
+when a five-year window fell through to `DEFAULT_STEPS`.
+
+**The untested option is an expanding window** -- keep the 2010 start, move
+only the end. More recent data *and* more of it, where `roll7` traded one
+for the other. Running 2026-09-10 with the control the first test lacked:
+`fixed_v26` is today's training window scored on 2026, so the window and the
+validation year can finally be separated. `scripts/rolling_window_test.py`.
+
+Adoption, if it wins, is `config_hash`-neutral -- a training-time filter
+slicing on `signal_date`, never a rewrite of `split_key`. Editing
+`SplitParams.train_end` would move the hash and is the wrong lever.
+
 
 ### `exit_reason = 'timeout'` covers two different facts
 
@@ -408,44 +439,44 @@ only what the row claims about itself. Cheap, and it makes the count of
 "not computed yet" when it means the opposite -- the backtest looked and
 correctly wrote nothing. Now `N/A: awaiting next open`.
 
-### `predictions.event_id` cannot survive a sync -- the ids are database-local by design
+### ~~`predictions.event_id` cannot survive a sync~~ — **fixed 2026-09-10, ADR 191**
 
-**Found 2026-09-08 after chasing three wrong explanations.** The
-`Inference` column is empty on recent dates and no amount of syncing fixes
-it. The cause is structural.
+Both proposed fixes landed, in the order the entry recommended.
 
-`sync._drop_surrogate_id` removes the `id` column from any table whose key
-is not `id`. `events` keys on
-`(config_hash, ticker, signal_date, signal_type, entry_kind)`, so **its
-`id` is stripped and serving assigns its own from a local sequence.**
-Research's 09-08 events are ids 73.7M-74.5M; serving's are 72.70M-72.72M
-for the same natural keys.
+**(1) Join on the natural key** — shipped 2026-09-09 (`f7d3a02e5c18`).
+`predictions` gained `signal_type` and `entry_kind` and the views join the
+same five columns `events` syncs on. That restored the display.
 
-`predictions` keys on `id` and carries `event_id` -- a *research* id. ADR
-174 chose `event_id` because `(ticker, as_of)` is not unique (a name can
-fire long and short on one day), which was correct for research and does
-not survive the copy. The join works only where the two sequences happen
-to coincide, which is why August renders and September does not.
+**The deeper defect it left behind, and the entry did not see it.** Fixing
+the *join* left the *column* wrong, and a wrong column that resolves is
+worse than one that does not. Measured on serving 2026-09-09, before ADR
+191:
 
-**Three fixes, and this needs a decision rather than a patch:**
+| | |
+|---|---:|
+| serving predictions | 20,200 |
+| `event_id` matching no event | 7,403 |
+| `event_id` matching the **WRONG** event | **3,035** |
 
-1. **Join on the natural key.** Add `signal_type` and `entry_kind` to
-   `predictions` and have the views join on the same five columns `events`
-   syncs on. Correct by construction, no sequence coupling. Costs a
-   migration and a view change.
-2. **Preserve `events.id` through the sync.** One line in
-   `_drop_surrogate_id`, but it makes serving's sequence collide with the
-   poller's own inserts -- the poller writes serving directly (ADR 158) and
-   would need its ids reserved from a disjoint range.
-3. **Compute predictions on serving.** Removes the transfer entirely, and
-   is where ADR 179's live inference is heading anyway. Largest change.
+PRGO's 2026-08-05 prediction pointed at an SMTC event from 2020-07-13;
+NRG's at PKX from 2018. Those links resolve and join cleanly. Nothing read
+the column after the natural-key join, which is the only reason it was
+harmless — **a dangling id is findable with one outer join; one that
+resolves to the wrong row is invisible to every check that asks whether it
+joins.**
 
-**(1) is the honest fix** and (3) supersedes it later. Until one lands,
-predictions only display for dates whose ids happened to line up.
+**ADR 191 remaps the reference at the sync boundary** rather than shipping
+or nulling it, and the existing UNIQUE index on `event_id` then deduplicates
+for free. Verified after the first production run: **19,705 of 19,705
+resolve and point at their own event, 0 duplicate natural keys**,
+`v_screen_live` unchanged at 163 rows.
 
-**What this does NOT affect:** the forward log. `outcomes` lives in
-research and joins research ids, so its 5,986 rows are unaffected. Only the
-serving display is broken.
+Option (2), preserving `events.id` through the sync, stays rejected for the
+reason given: it collides with the poller's own inserts. Option (3),
+computing predictions on serving, shipped separately as ADR 181/184/185 and
+now runs on the Pi in seconds — the two coexist, which is exactly why the
+collision handling in ADR 191 was needed.
+
 
 ### `sync --incremental` cannot see backwards -- a full sync is required after any historical rewrite
 

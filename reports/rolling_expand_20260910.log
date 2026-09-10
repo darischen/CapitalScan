@@ -1,0 +1,8 @@
+
+=== fixed: train 91,827 (2010-03-31..2021-12-31)  validate 19,164 (2022-01-01..2023-12-29) ===
+  steps [578, 702, 694]
+  validate 3%/5d base rate 0.5482 (the isotonic anchor)
+  wrote C:\Users\daris\Desktop\School\CapitalScan\reports\rolling\coverage_fixed.csv
+  25/30 heads within 5%   mean |err| 0.0300
+
+=== fixed_v26: train 91,827 (2010-03-31..2021-12-31)  validate 11,690 (2026-01-01..2026-09-04) ===

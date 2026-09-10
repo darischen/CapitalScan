@@ -4,7 +4,7 @@ Architecture decision record for `CapitalScan`.
 
 Format: each entry states the decision, why, and what it costs. Status is one of Pinned, Provisional, or Superseded. Never delete an entry. Mark it Superseded and add the replacement below it.
 
-Last updated: 2026-08-17
+Last updated: 2026-09-10
 
 Recent structural changes: ADR 097 added 2026-08-08 and reverted 2026-08-09
 without ever taking effect (its window emptied the train and validate splits
@@ -22,6 +22,24 @@ headline grid against measured clustering rather than an assumed sample size
 breadth denominator, 105 adds `cell_stats.arm`, 106 supersedes ADR 016 and
 removes the short side's regime filter). ADR 011 is superseded in part by 102
 and ADR 016 by 106.
+
+**2026-09-09 to 2026-09-10 (ADRs 188-192)** were all found by reading data
+rather than code, and four of the five are cases where the output looked
+correct. ADR 188: `json_safe` stored every nested dict as a Python repr for
+two weeks and four layers each declined to complain, so the reversal badge
+read as "no reversal today" -- indistinguishable from a quiet market. ADR
+189 removes the near-miss label, on the argument that nobody had ever seen
+it (188 had made it NULL since 2026-08-26), so it was a decision not to add
+rather than to remove. ADR 190: `p_touch_*` is side-adjusted and the label
+said `+`, so a short-side reader saw a bullish number on a bear reversal --
+the tooltip had been correct the whole time, one hover away. ADR 191:
+`predictions.event_id` was copied verbatim into a store that mints its own
+`events.id`, leaving **3,035 predictions pointing at the wrong event**, all
+of which resolved and joined cleanly. ADR 192 reverses ADR 174's
+piecewise-constant calibration after 498 predictions came back with 9
+distinct published values and 142 tickers tied at one number; the original
+objection was correct about interpolating the point alone and is answered
+by interpolating the interval with it.
 
 ADRs 107-109 added 2026-08-12 to 2026-08-13 (serving-layer cell selection, the
 close-confirmed reversal signal, and the band-date correction to it); ADRs

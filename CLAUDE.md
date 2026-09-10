@@ -25,7 +25,13 @@ expansion to other markets and more ETFs is in `BACKLOG.md`.
 
 ## Before writing any code
 
-Read `docs/DECISIONS.md`. It holds 175 ADRs. They are decisions, not suggestions.
+Read `docs/DECISIONS.md`. It holds 192 ADRs. They are decisions, not suggestions.
+
+**An entry in `BACKLOG.md` can be older than the ADR it describes.** On
+2026-09-10 a backlog item read "ADR 179 is decided but not built" two days
+after that ADR was amended twice and the clause withdrawn; work started
+against it before anyone read the ADR. Check the ADR, not the backlog
+summary of it.
 
 If a task appears to require contradicting one, **stop and ask.** Do not work around it.
 
