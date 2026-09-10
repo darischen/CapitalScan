@@ -8102,3 +8102,57 @@ so it is in `BACKLOG.md` with the evidence to collect next time.
 type, not per scalar type.** Every scalar was covered. The gap was a shape
 nobody enumerated, and the fallback guaranteed it would never announce
 itself.
+
+## Deploy and verification, same evening
+
+PR #63 merged as `52fd612`; the Pi pulled it, built (exit 0, `BUILD_ID`
+`Qrl3QIrkoE_2AOAeupI9S`), and restarted as three separate steps.
+
+**The bull reversal is live.** The home page serves 200 and renders **7 ↑
+and 2 ↓** live-reversal badges, with tooltips reading "below the band and
+above today's open". Before tonight that column was empty on every row for
+two weeks.
+
+**Pi live scoring: 498 predictions in 13.5s**, from the artifact, on a
+Raspberry Pi with no torch installed.
+
+**The duplication prediction was confirmed in production.** After the Pi
+scored, **498 natural keys carry more than one row** — exactly the collision
+measured earlier in a rolled-back transaction. `v_screen_live` returns
+**163 rows and 163 distinct signals** regardless, because migration
+`a7c2e9f4b105` landed first. Without it the page would have been showing
+~264 rows tonight with 101 signals doubled.
+
+**Coverage, verified by joining the way the view joins** rather than by
+counting rows — counting is what hid the original natural-key bug:
+
+| signal_type | rows | with prediction |
+|---|---:|---:|
+| `bb_lower_touch` | 43 | 43 |
+| `confluence_low` | 31 | 31 |
+| `bb_upper_touch` | 27 | 27 |
+| `confluence_high` | 7 | 7 |
+| `bear_close_above_upper` | 2 | 2 |
+| `stoch_oversold` | 32 | **0** |
+| `stoch_overbought` | 21 | **0** |
+
+**Every trained type is at 100%.** The two at zero are exactly the pair ADR
+180 excluded for having no training rows, so the 53 uncovered signals are
+the filter working rather than a gap.
+
+## `wivie` staged
+
+Dump transferred and verified by **SHA256 on both sides**
+(`a68e7434…8f4fdce8`), not by size alone. The `scp exit: 0` printed in the
+same command was meaningless — it captured `tail`'s exit code, the identical
+trap written up in `TIMINGS.md` an hour earlier. The checksum is the
+instrument that actually proves the transfer.
+
+**Restored into `capitalscan_stage`, not over `capitalscan`.** The plan
+called for `--clean --if-exists`, and `wivie` turned out to already hold an
+18 GB staged copy from 2026-09-01 with real data (52.8M `path` rows, 13.3M
+events). Overwriting it unattended would have left no fallback if the
+multi-hour restore died midway, and since nothing repoints at either
+database under the no-migrate constraint, a second database costs only disk
+— of which `wivie` has 389 GB. The 2026-09-01 copy survives for the user to
+retire deliberately.
