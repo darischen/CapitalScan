@@ -8156,3 +8156,26 @@ multi-hour restore died midway, and since nothing repoints at either
 database under the no-migrate constraint, a second database costs only disk
 — of which `wivie` has 389 GB. The 2026-09-01 copy survives for the user to
 retire deliberately.
+
+### The stage carried the bug forward
+
+`pg_restore` finished `EXIT=0` with an empty log, 26 GB, and the row counts
+match research exactly across seven tables and 109M rows:
+
+```
+bars 8,254,907   events 22,779,255   indicators 6,004,349
+path 72,081,768  predictions 19,705  signal_reports 3,230  outcomes 5,986
+```
+
+**And the copy was still broken**, because the dump was taken at 14:28 and
+the backfill ran at 17:45. `capitalscan_stage` came up holding all 1,871
+repr rows. A clean exit code, matching row counts and a correct byte-for-byte
+transfer are all compatible with restoring damaged data faithfully — the
+restore did its job perfectly and the content was wrong before it started.
+
+Repaired in place: 6,761 values, 0 parse failures, verified 2,415/2,415
+readable. All three stores now agree.
+
+`pg_hba.conf` on `wivie` refuses remote connections for that database, so
+the script grew a `--target url` and ran locally there rather than having a
+firewall rule edited on a machine under a no-migrate constraint.
