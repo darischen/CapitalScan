@@ -252,6 +252,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 191 | A surrogate reference is remapped at the sync boundary | **Decided 2026-09-09.** `events` syncs on a natural tuple, so serving mints `events.id` from its own sequence; `predictions` syncs on `("id",)` and carried `event_id` **verbatim** — a research id interpreted on serving. Measured on 20,200 serving predictions: 7,403 matched no event and **3,035 matched the WRONG one** (PRGO's 2026-08-05 prediction pointed at an SMTC event from 2020-07-13, NRG's at PKX from 2018). Those links resolve and join cleanly. Invisible because `v_screen_live` stopped joining on `event_id` in `d5e91a7c3b48`, so nothing read the broken column — and **a dangling id is findable with an outer join while one that resolves to the wrong row is invisible to every check that asks whether it joins**. The codebase already knew the hazard the other way (`pull_live_records` nulls `signal_reports.event_id`; `_drop_surrogate_id` exists because this collision failed the 2026-09-01 nightly); the push direction was the one place it was not applied. `Remap` rewrites the surrogate at write time from the natural key, bounded by the keys present (5.4M serving events, 41 distinct prediction dates); a miss becomes NULL, because an id from the other store is not a worse answer than NULL but a confidently wrong one. `predictions` still keys on `("id",)` — only the reference moves, not the identity — which is what keeps `outcomes.prediction_id` working (5,986/5,986 verified). Correcting `event_id` makes a real collision with the Pi's `event_id`-keyed writes, resolved in research's favour by `_clear_remap_collisions` after checking the pairs carry identical probabilities. Repaired in one pass rather than left to a full sync: 498 duplicates collapsed, 10,438 ids rewritten, **0 dangling / 0 wrong**, `v_screen_live` unchanged at 163 rows. Does **not** unique the natural key — `next_open` and `touch` are genuinely two events per signal. Does not move `config_hash` |
 | 192 | Calibration interpolates, and the interval interpolates with it | **Decided 2026-09-10.** Amends ADR 174, which argued against this in the module docstring. Measured on serving 2026-09-09: 498 predictions carried **498 distinct raw scores and 9 distinct published values**, one pooled block putting **142 tickers on exactly 0.4780** across raw 0.375-0.495. Found by the user comparing two rows. Inside that block the model's ordering was not coarse but **gone** -- and ranking is the durable output precisely because the level is not (ADR 179: base rate 36.5-65.0% against Brier skill 0.079). ADR 174's objection -- "the published point must lie inside its own published interval" -- is **correct about interpolating the point alone** and it broke exactly as predicted on the first run (raw 0.2726 published 0.3486 against a bucket ceiling of 0.3464). `band()` interpolates `p_hat`, `ci_low` and `ci_high` **together**, so containment is preserved by convexity and asserted across 501 points. Anchors are **per isotonic block, not per bucket** -- per-bucket anchors would place two at the same height and interpolate a flat segment, reproducing the tie. Edges clamp rather than extrapolate; `n_eff` takes the smaller bracketing block. The level is still worth ~2.7pp and the margin says so; the added decimal separates rows that differ without claiming the third digit. **Costs no skill**, asserted by comparing weighted Brier against the step map on the same fixture. Existing rows keep stepwise values until re-scored; no refit needed, the tables are unchanged. Does not move `config_hash` |
 | 193 | The training window expands; the refit finally learns something | **Decided 2026-09-10.** Amends ADR 179, which was right about the window it tested and wrong about the idea underneath. `split_key` is fixed at event creation, so **the weekly refit trained on identical rows every week** and differed only by seed -- 516,615 events since 2024 never entered training and the reliability tables stayed anchored to 2022-2023. Found because a user asked whether a model can be trained once and never given new information. `roll7` did not settle it: it moved the window forward **and cut it 42%**, then scored a different period, and **no arm held the validation period constant**. Four arms with the missing control (`fixed_v26` = today's training window scored on 2026): `fixed` 25/30 on 2022-23, **`fixed_v26` 14/30 on 2026 from the identical fit** (drift is real and large), **`expand` 25/30 on those same 11,690 rows** (mean err 0.0518 -> 0.0338, step counts *rose* to [1042,863,880] so selection happened rather than falling through to DEFAULT_STEPS). `expand_purge` costs one head and 0.002 -- **no leak**, which the headline needed since a 10-day label crosses the 2025/2026 boundary. **The caveat the aggregate hides:** by family, expanding improves all three (peak 4->6, trough 4->9, terminal 6->10, no inversion unlike `roll7`) but `expand`'s 25/30 is not `fixed`'s 25/30 -- peak, which backs every shipped `p_touch_*`, is 6/10 against 10/10, and this test cannot say whether that residual is 2026 being harder or the model still lagging. Adopted as a **training-time filter on `signal_date`, never a `split_key` rewrite**, so invariant 5 holds and `config_hash` does not move. 10-day embargo applied unconditionally. Side effect worth naming: validate becomes the trailing six months, so the isotonic anchor moves from 0.5482 to 0.6330 -- the ~5pp bias's cause, closed for free. Does not move `config_hash` |
+| 194 | `bull_close_below_lower` is enabled, and the hash moves with it | **Decided 2026-09-10.** Completes ADR 144; moves `config_hash` `0523841076f47293` -> **`f183b0f5209a4677`**. The type had an indicator column, an enum member, a signal rule, a frontend label and a badge branch -- everything except membership in `enabled_signal_types`. **The cost was asymmetric:** the bear side has a live badge *and* a close-confirmed one, so a bear reversal developing after its signal fires is caught next morning; the bull side had only the live badge, which freezes at fire time, so a later bull reversal was caught by nothing. EXPE fired 2026-09-09 at 09:46, below its band and still below its open, closed above the open, and displayed nothing. Accepting the frozen live badge is sound reasoning that **depends on both badges existing**, which made the dormancy a defect rather than a deferral. Measured first: fires **41,997** times against bear's 52,803, and 311 times since July. Twelve guards failed and all were right -- eleven were the `conftest` hash pin, which was designed so a deliberate change is one edit. Two needed judgement: the dormancy class was inverted (keeping the disable path, since DESIGN 3.10 wants ablation reachable from config) and now asserts the hash **moved**; `DORMANT_BY_DESIGN` emptied, which would have made a test pass on an empty loop, so emptiness is asserted explicitly. **Runbook gap found the hard way:** `universe` is config-keyed, so the first rebuild wrote 0 events across 1,463 tickers and exited 0 -- all 66 quarters must be rebuilt first. Ordering is fixed: sync, then `db sync-config`, then restart web, then pull the Pi; reversing the first two blanked the site for four minutes. Moves `config_hash` |
 
 ---
 
@@ -9983,3 +9984,94 @@ The isotonic anchor measured per arm: **0.5482** on 2022-23 against
 fitted to. Recalibrating on a recent period is now the obvious next
 candidate and remains untested. Recalibrating on the *forward log* stays
 forbidden.
+
+---
+
+## 194. `bull_close_below_lower` is enabled, and the hash moves with it
+
+**Status:** accepted, 2026-09-10. Completes ADR 144. Moves `config_hash`
+from `0523841076f47293` to **`f183b0f5209a4677`**.
+
+### What was dormant, and what it cost
+
+ADR 144 defined the long-side mirror of the close-confirmed reversal and
+deliberately left it out of `SignalParams.enabled_signal_types`, so it
+could be reviewed and tested while a backtest ran under the existing hash.
+It had an indicator column (`core/indicators.py`), an enum member
+(`core/types.py`), a signal rule (`core/signals.py`), a frontend label, and
+a badge branch. Everything except the one tuple that makes it fire.
+
+**The cost was asymmetric and nobody had noticed.** The bear side has two
+badges: a live one from the poller, and a close-confirmed one the next
+morning. A bear reversal that develops *after* its signal fires is caught
+by the second. The bull side had only the live badge, which freezes at fire
+time (`poll.py::_already_fired` writes one report per ticker per day), so a
+bull reversal developing later was caught by nothing at all.
+
+EXPE, 2026-09-09, is the worked example: it fired 09:46 at 265.12 against a
+266.95 open, below its lower band but still below its open -- a near miss.
+It closed above the open. Nothing re-evaluated it, no close-confirmed type
+existed to catch it the next morning, and the page showed nothing.
+
+The user accepted the frozen live badge on the reasoning that `live` and
+`reversal` are two different claims. That reasoning is sound **and depends
+on both badges existing**, which is what made the dormancy a defect rather
+than a deferral.
+
+### Measured before committing to a rebuild
+
+`bull_close_below_lower` fires **41,997** times on the daily corpus against
+`bear_close_above_upper`'s 52,803, and **311** times since 2026-07-01 --
+EXPE among them on 2026-09-09. A real signal at comparable frequency, not a
+rarity worth a two-hour rebuild only for symmetry.
+
+`enabled_types` resolves 8 members and the hash lands on
+`f183b0f5209a4677`, both confirmed against a constructed config before any
+file changed.
+
+### The guards fired, and one design decision paid off
+
+Twelve tests failed. Eleven were the `config_hash` pins, and `conftest.py`
+had been built for exactly this:
+
+> The pin now lives here, so a deliberate config change is one edit and an
+> accidental one still fails every guard.
+
+One line. The two that needed judgement:
+
+- **`TestItIsDefinedButDisabled` asserted the opposite of what is now
+  true.** Inverted to `TestItIsEnabled`, keeping the "disabling still
+  suppresses it" half -- dormancy must stay reachable from a config
+  (DESIGN 3.10), and ADR 108's population stays reconstructible only if
+  that path works. It now asserts the hash **moved**, rather than that some
+  value is stable.
+- **`DORMANT_BY_DESIGN` became empty**, which would have made
+  `test_a_dormant_type_cannot_fire` pass on an empty loop. A test that
+  asserts nothing while reading as coverage is worse than a deleted one, so
+  emptiness is asserted explicitly and the loop reactivates the moment any
+  type is made dormant again.
+
+### The rebuild step that was missing from the runbook
+
+**`universe` is keyed on `config_hash`.** A new generation starts with zero
+eligibility rows, so the first rebuild attempt dispatched 1,463 tickers,
+wrote **zero events**, and recorded `status = 'ok'` with exit 0 -- the
+harness declining, correctly, to validate an empty generation. The only
+signal was `tickers=0/1463` in output nobody reads when the exit code is
+green.
+
+It is easy to miss twice, because `universe` is not empty: it holds the
+previous generation's 78,204 rows and simply nothing under the new hash.
+`cscan universe --quarter` must run for all 66 quarters first, ~20 minutes,
+and there is no all-quarters flag. The nine-step runbook in
+`OPERATIONS.md` now carries it.
+
+### Ordering, which is not negotiable
+
+The Pi resolves config from its own checkout, so a Pi pulled before the new
+generation reaches serving writes rows `v_screen_live` cannot see -- a
+blank page with every job reporting success. `cscan sync` ships the data,
+**then** `cscan db sync-config` flips serving, then the web service
+restarts to drop its per-connection hash (ADR 115), and the Pi is pulled
+last. Running `db sync-config` early blanked the site for four minutes on
+this date; see `OPERATIONS.md`.

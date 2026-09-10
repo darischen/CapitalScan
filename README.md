@@ -52,8 +52,18 @@ table; serving does indexed lookups only.
 |---|---|---|---|
 | Ingest & compute | minutes, offline | workstation | bars, indicators, events |
 | Research | hours, offline | workstation | backtests, statistics, models |
-| Serving | < 200 ms | Vercel + Postgres | screener, stats, positions |
-| Interaction | seconds, streaming | Vercel Edge + Anthropic | chat, tool orchestration |
+| Serving | < 200 ms | Raspberry Pi (Postgres + Next.js) | screener, stats, positions |
+| Interaction | seconds, streaming | Edge + Anthropic | chat, tool orchestration |
+
+Three machines, and the split is what makes the rest work. A **workstation**
+does heavy research. A **laptop** runs the scheduled jobs. A **Raspberry Pi**
+holds the serving database, the web app, and the live poller.
+
+**The poller lives on the Pi and writes the serving store, never research**
+(ADR 158). That one decision is why research has no live writer during market
+hours: it can be rebuilt, resynced, or switched off between 06:30 and 13:00
+without touching what the site serves. Research is copied to serving by an
+explicit `sync`; nothing else crosses.
 
 ```
 capitalscan/
@@ -63,7 +73,8 @@ capitalscan/
   handlers/    the query layer the chat and MCP tools share
   mcp/         read-only MCP server
 web/           Next.js screener, ticker pages, research page
-docs/          DECISIONS.md (150 ADRs), DESIGN, BUILD, TESTS, RESULTS, BACKLOG
+docs/          DECISIONS.md (194 ADRs), DESIGN, BUILD, TESTS, RESULTS, BACKLOG,
+               OPERATIONS (what broke and the fix), TIMINGS (measured budgets)
 ```
 
 ## Invariants
@@ -83,6 +94,12 @@ These are enforced by tests, not by convention:
 7. **No broker client, no order placement, no credentials.**
 8. Every response carrying a probability carries `n_eff` and a confidence
    interval.
+9. **No magic numbers outside `core/config.py`** — including a threshold that
+   happens to match a default elsewhere. A literal in an exit path while the
+   same value is sweepable lets entry and exit disagree inside one backtest,
+   and the output looks fine.
+10. **`core/config.py` holds dataclasses only.** Its sole import is
+    `dataclasses`; resolution lives in `jobs/`.
 
 ## Validation
 
@@ -114,11 +131,52 @@ live tables:
 uv run pytest capitalscan/tests/unit capitalscan/tests/property
 ```
 
+## The model, and what it is honest about
+
+Phase 6 added a multi-task distributional model: a shared trunk over six
+softmax heads, scored by summed CRPS, calibrated against observed frequency
+rather than against its own confidence. It does **not** overturn ADR 112 —
+the cell grid still has nothing surviving FDR correction. It answers a
+different question: given this signal, how far does price tend to travel.
+
+Three things it says about itself, all measured:
+
+**Ranking is durable; the level is not.** The isotonic tables are anchored to
+their calibration period's base rate. That rate ran 43.2% on the fitted split
+and swings 36.5–65.0% year to year — a range wider than the model's entire
+Brier skill of 0.079. So "A scores above B" is trustworthy and "A is 48%" is
+worth about ±5 points.
+
+**Split diagnostics by task family before believing them.** A coverage gate
+reporting 26/30 concealed an inversion: the family backing every displayed
+probability had degraded while the one displayed nowhere improved. Aggregates
+over heads that reach different surfaces are not comparable.
+
+**The forward log is never trained on.** `outcomes` records predictions made
+before their results existed. It is the only estimate here that nothing has
+iterated against, and training or recalibrating on it converts it into another
+contaminated split — irreversibly, since no later run can un-teach a row.
+
 ## Status
 
-Phases 1–5 are complete: ingest, detection, the live poller, the backtest and
-statistics stack, and the serving layer. Phase 6 (a quantile model) is gated on
-citing ADR 112's measurement rather than routing around it.
+Phases 1–6 are complete: ingest, detection, the live poller, the backtest and
+statistics stack, the serving layer, and the model.
 
 Open work, with reasons, is in `docs/BACKLOG.md`. Nothing leaves that file by
-being forgotten.
+being forgotten — including the items that turned out to be wrong, which are
+struck through and kept rather than deleted.
+
+## What this repository is actually for
+
+It is a measurement instrument that happens to have a UI, and most of the
+engineering is spent on one problem: **a wrong answer that looks right costs
+more than a crash.** A crash gets fixed in an hour. Nested JSON silently
+stored as strings, a probability label naming the wrong direction, a
+prediction row pointing at an unrelated event, a nightly job reporting
+success having written nothing — each of those shipped clean output and
+survived until someone measured the specific thing.
+
+So the invariants above are tests, the ADRs record what was tried and
+refuted alongside what was adopted, `OPERATIONS.md` keeps the failures with
+their diagnoses, and every published probability drags its sample size and
+interval along with it.
