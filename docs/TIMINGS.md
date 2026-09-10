@@ -507,3 +507,51 @@ Two smaller instruments lied in the same session and both are fixed:
 `dump_exit=$?` captured `tail`'s exit code and reported 0 for a failed
 `pg_dump`, and an earlier `scp` left 582 MB of 3.57 GB on `wivie` and
 reported nothing wrong — caught only by comparing byte counts.
+
+---
+
+## Dropping a superseded config generation, 2026-09-10
+
+| | |
+|---|---|
+| **11,954,433 events across 10 generations** | **12.6 min**, ~19,000 events/s |
+| path rows cascaded | 46,228,766 (72M -> 25.9M) |
+| `universe` | 1,329,446 |
+| `cell_stats` / `benchmarks` / `rho_era` | 3,584 / 11,452 / 32 |
+
+Batched at 200,000 events per transaction, run **concurrently with a torch
+fit** that was reading the surviving generation. Neither job noticed the
+other: the delete touched only non-live rows, and under MVCC readers never
+block writers. The rate held between 17,000 and 21,000 events/s throughout.
+
+**Two indexes are what made this 12 minutes instead of hours**, and both
+were checked before starting rather than discovered afterwards:
+
+- `path_pkey` is `(event_id, day_offset)`, so `event_id` leads and each
+  cascade is an index lookup. Postgres does **not** index the referencing
+  side of a foreign key automatically; without this, every deleted event
+  would sequential-scan 72M path rows.
+- `events` has a composite index leading with `config_hash`, so the batch
+  selector seeks rather than scans.
+
+**Deleting returns no disk.** Immediately afterwards `events` still measured
+18 GB with 7.7M dead tuples and `path` 11 GB with 24.8M. `VACUUM FULL` is
+the step that returns it, needs roughly the table size again in temp space,
+and holds ACCESS EXCLUSIVE — so it cannot overlap the reads that the delete
+itself tolerated fine.
+
+**Budget the whole operation as delete + vacuum, not delete.** The 12.6
+minutes is the cheap half.
+
+**`wivie` is deliberately not cleaned the same way, and the Pi needs no
+cleaning at all.** Serving holds only the live generation by construction
+(5,413,083 events, checked 2026-09-10), so nothing superseded ever reaches
+the Pi. `wivie` does hold all eleven, because its copy predates the delete
+-- but the cutover re-dumps the workstation onto it, and that dump no
+longer contains them. Running the delete there would be twelve minutes
+spent on rows a `pg_restore` is about to replace, which is the same mistake
+the migration-gap entry in `BACKLOG.md` warns about in the schema
+direction.
+
+The delete also makes that dump smaller: the 3.57 GB transferred on
+2026-09-09 carried 22.8M events, and the next one carries 10.8M.
