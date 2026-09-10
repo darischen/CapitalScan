@@ -979,16 +979,49 @@ not by the HTTP status -- the blank page returns 200:
 is synced, never before.** The correct order across a `config_hash` change:
 
 ```
-1. edit core/config.py
-2. ALTER DATABASE ... SET capitalscan.default_config_hash   (research only)
-3. cscan universe --quarter <q>  FOR ALL 66 QUARTERS        (research only)
-4. cscan backtest --workers 8                               (research only)
-5. cscan predict                                            (research only)
-6. cscan sync                    ships the new generation
-7. cscan db sync-config          flips serving, data already there
-8. restart capitalscan-web       drops the connection pool
-9. git pull on the Pi            last, always
+ 1. edit core/config.py
+ 2. ALTER DATABASE ... SET capitalscan.default_config_hash   research only
+ 3. cscan universe --quarter <q>   ALL 66 QUARTERS           research only
+ 4. cscan backtest --phase compute --workers 5 --chunk-size 25
+ 5. cscan backtest --phase finalize
+ 6. cscan backtest --phase harness
+ 7. cscan stats rho   --config-hash <new>                    research only
+ 8. cscan stats cells --config-hash <new> --split-key train
+    cscan stats cells --config-hash <new> --split-key validate
+ 9. cscan stats benchmarks --config-hash <new>               research only
+10. cscan predict                                            research only
+11. cscan sync                    ships the new generation
+12. cscan db sync-config          flips serving, data already there
+13. restart capitalscan-web       drops the connection pool
+14. git pull on the Pi            last, always
 ```
+
+**Steps 3, 7, 8 and 9 all populate config-keyed tables that start EMPTY on
+a new generation**, and every one of them fails quietly rather than
+loudly. Checked on 2026-09-10 after the sweep cleanup:
+
+| table | previous generation | new generation |
+|---|---:|---:|
+| `universe` | 78,204 | 0 |
+| `rho_era` | 4 | 0 |
+| `cell_stats` | 512 | 0 |
+| `benchmarks` | 818 | 0 |
+
+`universe` empty produced a green backtest with zero events. `rho_era`
+empty is worse in kind: `cscan stats cells` computes `n_eff` from the
+stored `rho_empirical`, so a missing row does not stop the run -- it makes
+every cell uninterpretable, and the command's own help says so.
+
+**The general rule: after a `config_hash` change, list every table with a
+`config_hash` column and check which are empty under the new value.**
+
+```sql
+SELECT table_name FROM information_schema.columns
+ WHERE column_name = 'config_hash' AND table_schema = 'public';
+```
+
+Nine tables carry it today. The generation is not built until each has
+either rows or a documented reason to have none.
 
 **Step 3 is the one that gets forgotten, and skipping it fails silently.**
 `universe` is keyed on `config_hash`, so a new generation starts with zero
