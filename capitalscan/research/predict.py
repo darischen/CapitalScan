@@ -213,8 +213,26 @@ def fit_and_calibrate(
     git_sha: str,
     seeds: Sequence[int] = neural.DEFAULT_SEEDS,
     n_buckets: int = calib.DEFAULT_BUCKETS,
+    today: date | None = None,
+    expanding: bool = True,
 ) -> FittedPredictor:
     """Fit on train, calibrate on validate, and return both together.
+
+    **The window expands with each refit (ADR 193).** Until 2026-09-10 this
+    read the fixed `split_key`, so every weekly refit trained on identical
+    rows and differed only by seed -- 516,615 events since 2024 never
+    entered training and the reliability tables stayed anchored to
+    2022-2023. Measured on identical validation rows, the same fit scored
+    25/30 on 2022-23 and **14/30** on 2026; expanding the window returned it
+    to 25/30.
+
+    `expanding=False` restores the fixed splits. It exists for the arm
+    comparison in `scripts/rolling_window_test.py` and for reproducing a
+    pre-2026-09-10 fit, not as an operational setting.
+
+    **`today` is threaded rather than read here.** The window is computed by
+    `core.folds.training_window`, which performs no IO (invariant 1), so a
+    refit is reproducible from its recorded inputs.
 
     Raises:
         ValueError: if a target's label is missing from the frame, or is
@@ -225,8 +243,23 @@ def fit_and_calibrate(
     with engine.connect() as conn:
         calendar = list(conn.execute(text("SELECT d FROM trading_days ORDER BY d")).scalars())
 
-    train_frame, _ = feat.build_training_frame(engine, config_hash, split="train")
-    valid_frame, _ = feat.build_training_frame(engine, config_hash, split="validate")
+    if expanding:
+        # The start is the configured beginning of history, not a literal:
+        # invariant 9, and it keeps the window anchored to the same date
+        # the fixed splits used.
+        from capitalscan.jobs.config import resolve_config
+
+        start = date.fromisoformat(resolve_config().splits.event_start)
+        win = core_folds.training_window(today or date.today(), start)
+        train_frame, _ = feat.build_training_frame(
+            engine, config_hash, window=(win.train_start, win.train_end)
+        )
+        valid_frame, _ = feat.build_training_frame(
+            engine, config_hash, window=(win.validate_start, win.validate_end)
+        )
+    else:
+        train_frame, _ = feat.build_training_frame(engine, config_hash, split="train")
+        valid_frame, _ = feat.build_training_frame(engine, config_hash, split="validate")
 
     ensemble = neural.fit(train_frame, calendar, seeds=seeds)
 

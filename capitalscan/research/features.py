@@ -399,11 +399,32 @@ def training_sql(cols: Sequence[str]) -> str:
     )
 
 
+def windowed_training_sql(cols: Sequence[str]) -> str:
+    """The training query, selecting by date instead of by `split_key`.
+
+    **ADR 193.** The expanding window is a *training-time filter*, never a
+    rewrite of `split_key` -- ADR 019 assigns that at event creation and
+    invariant 5 forbids recomputing it. So the two selections live side by
+    side: statistics keep reading the fixed splits, and only the fit reads
+    dates.
+
+    That is also why adopting the window does not move `config_hash`. The
+    population a statistic is computed over is unchanged; only which rows a
+    fit reads.
+    """
+    return _SQL.format(
+        cols=", ".join(cols),
+        universe_filter=TRADE_ONLY,
+        row_filter="AND e.signal_date >= :start AND e.signal_date <= :end",
+    )
+
+
 def build_training_frame(
     engine: Engine,
     config_hash: str,
     split: str = "train",
     require_labels: bool = True,
+    window: tuple[date, date] | None = None,
 ) -> tuple[pd.DataFrame, FrameReport]:
     """Assemble the model's input for one split.
 
@@ -417,7 +438,7 @@ def build_training_frame(
     training through it means training on a categorical whose NULL level
     pools every unresolved name.
     """
-    if split == "holdout":
+    if window is None and split == "holdout":
         raise ValueError(
             "refusing to build a training frame on the holdout split. It is "
             "evaluated exactly once, at the end, and published whatever it "
@@ -425,16 +446,22 @@ def build_training_frame(
         )
 
     cols = _select_columns()
+    # **`window` replaces the split filter rather than narrowing it**
+    # (ADR 193). Applying both would intersect a date range with a
+    # `split_key` whose bounds are frozen at 2021-12-31, and the expanding
+    # window's whole point is to reach past that -- the intersection would
+    # silently return the old training set and look like it worked.
+    sql = training_sql(cols) if window is None else windowed_training_sql(cols)
+    params: dict[str, object] = {"chash": config_hash, "entry_kind": TRAINING_ENTRY_KIND}
+    if window is None:
+        params["split"] = split
+    else:
+        params["start"], params["end"] = window
     with engine.connect() as conn:
-        frame = pd.read_sql(
-            text(training_sql(cols)),
-            conn,
-            params={
-                "chash": config_hash,
-                "split": split,
-                "entry_kind": TRAINING_ENTRY_KIND,
-            },
-        )
+        # pandas-stubs types `params` values narrowly and a `date` bound is
+        # exactly what the windowed query binds; psycopg handles it fine.
+        # Same stub mismatch `sync.py` carries for its NULL bounds.
+        frame = pd.read_sql(text(sql), conn, params=params)  # type: ignore[arg-type]
 
     trainable, etf, missing = partition_for_training(
         list(zip(frame["ticker"], frame["sector"], strict=True))

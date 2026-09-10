@@ -251,6 +251,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 190 | A probability label names its own direction | **Decided 2026-09-09.** `p_touch_*` is side-adjusted at the source -- `peak_labels.py` builds `path.favorable` as `(high-entry)/entry` for a long and `(entry-low)/entry` for a short -- so on a short it is the probability of a **fall**. The label read `Reaches +3% in 5 days`. Found by the user on VOD (`bear_close_above_upper`, short, 47.8%), read as the model forecasting a 3% *rise* on a confirmed bear reversal; it meant a 3% fall. **Wrong in the worst available direction** for an advisory tool -- a reader either abandons a good short or takes the opposite position. Three layers were already correct and are why it survived: the tooltip ("in the signal's own direction"), the modal group header ("In the signal's direction"), and `p_adverse_*`, which carries a comment explaining it avoids "falls" *because* the quantity is side-adjusted -- the touch labels never got the same treatment, so the accurate wording sat one hover away from a label contradicting it. Fixed with `modelFieldLabel(field, side)`: `Falls 3% in 5 days` on a short, `Rises` on a long, adverse flipped. **"In favour" rejected as primary** -- accurate but still makes the reader translate, and not translating is the failure; kept as the side-less fallback, because a missing direction is recoverable and a wrong one is not. `side` joined from `events` on the natural key, not a `CASE` on `signal_type` (invariant 2). **No number changed** -- display only. Does not move `config_hash` |
 | 191 | A surrogate reference is remapped at the sync boundary | **Decided 2026-09-09.** `events` syncs on a natural tuple, so serving mints `events.id` from its own sequence; `predictions` syncs on `("id",)` and carried `event_id` **verbatim** — a research id interpreted on serving. Measured on 20,200 serving predictions: 7,403 matched no event and **3,035 matched the WRONG one** (PRGO's 2026-08-05 prediction pointed at an SMTC event from 2020-07-13, NRG's at PKX from 2018). Those links resolve and join cleanly. Invisible because `v_screen_live` stopped joining on `event_id` in `d5e91a7c3b48`, so nothing read the broken column — and **a dangling id is findable with an outer join while one that resolves to the wrong row is invisible to every check that asks whether it joins**. The codebase already knew the hazard the other way (`pull_live_records` nulls `signal_reports.event_id`; `_drop_surrogate_id` exists because this collision failed the 2026-09-01 nightly); the push direction was the one place it was not applied. `Remap` rewrites the surrogate at write time from the natural key, bounded by the keys present (5.4M serving events, 41 distinct prediction dates); a miss becomes NULL, because an id from the other store is not a worse answer than NULL but a confidently wrong one. `predictions` still keys on `("id",)` — only the reference moves, not the identity — which is what keeps `outcomes.prediction_id` working (5,986/5,986 verified). Correcting `event_id` makes a real collision with the Pi's `event_id`-keyed writes, resolved in research's favour by `_clear_remap_collisions` after checking the pairs carry identical probabilities. Repaired in one pass rather than left to a full sync: 498 duplicates collapsed, 10,438 ids rewritten, **0 dangling / 0 wrong**, `v_screen_live` unchanged at 163 rows. Does **not** unique the natural key — `next_open` and `touch` are genuinely two events per signal. Does not move `config_hash` |
 | 192 | Calibration interpolates, and the interval interpolates with it | **Decided 2026-09-10.** Amends ADR 174, which argued against this in the module docstring. Measured on serving 2026-09-09: 498 predictions carried **498 distinct raw scores and 9 distinct published values**, one pooled block putting **142 tickers on exactly 0.4780** across raw 0.375-0.495. Found by the user comparing two rows. Inside that block the model's ordering was not coarse but **gone** -- and ranking is the durable output precisely because the level is not (ADR 179: base rate 36.5-65.0% against Brier skill 0.079). ADR 174's objection -- "the published point must lie inside its own published interval" -- is **correct about interpolating the point alone** and it broke exactly as predicted on the first run (raw 0.2726 published 0.3486 against a bucket ceiling of 0.3464). `band()` interpolates `p_hat`, `ci_low` and `ci_high` **together**, so containment is preserved by convexity and asserted across 501 points. Anchors are **per isotonic block, not per bucket** -- per-bucket anchors would place two at the same height and interpolate a flat segment, reproducing the tie. Edges clamp rather than extrapolate; `n_eff` takes the smaller bracketing block. The level is still worth ~2.7pp and the margin says so; the added decimal separates rows that differ without claiming the third digit. **Costs no skill**, asserted by comparing weighted Brier against the step map on the same fixture. Existing rows keep stepwise values until re-scored; no refit needed, the tables are unchanged. Does not move `config_hash` |
+| 193 | The training window expands; the refit finally learns something | **Decided 2026-09-10.** Amends ADR 179, which was right about the window it tested and wrong about the idea underneath. `split_key` is fixed at event creation, so **the weekly refit trained on identical rows every week** and differed only by seed -- 516,615 events since 2024 never entered training and the reliability tables stayed anchored to 2022-2023. Found because a user asked whether a model can be trained once and never given new information. `roll7` did not settle it: it moved the window forward **and cut it 42%**, then scored a different period, and **no arm held the validation period constant**. Four arms with the missing control (`fixed_v26` = today's training window scored on 2026): `fixed` 25/30 on 2022-23, **`fixed_v26` 14/30 on 2026 from the identical fit** (drift is real and large), **`expand` 25/30 on those same 11,690 rows** (mean err 0.0518 -> 0.0338, step counts *rose* to [1042,863,880] so selection happened rather than falling through to DEFAULT_STEPS). `expand_purge` costs one head and 0.002 -- **no leak**, which the headline needed since a 10-day label crosses the 2025/2026 boundary. **The caveat the aggregate hides:** by family, expanding improves all three (peak 4->6, trough 4->9, terminal 6->10, no inversion unlike `roll7`) but `expand`'s 25/30 is not `fixed`'s 25/30 -- peak, which backs every shipped `p_touch_*`, is 6/10 against 10/10, and this test cannot say whether that residual is 2026 being harder or the model still lagging. Adopted as a **training-time filter on `signal_date`, never a `split_key` rewrite**, so invariant 5 holds and `config_hash` does not move. 10-day embargo applied unconditionally. Side effect worth naming: validate becomes the trailing six months, so the isotonic anchor moves from 0.5482 to 0.6330 -- the ~5pp bias's cause, closed for free. Does not move `config_hash` |
 
 ---
 
@@ -9874,3 +9875,111 @@ distinct values.
 Existing rows keep their stepwise values until re-scored. `predict` writes
 the new map on its next run; nothing needs a refit, because the reliability
 tables are unchanged — only how they are read.
+
+---
+
+## 193. The training window expands; the refit finally learns something
+
+**Status:** accepted, 2026-09-10. **Amends ADR 179**, which withdrew the
+rolling window. The withdrawal was right about the window it tested and
+wrong about the idea underneath it.
+
+### What was actually broken
+
+`split_key` is assigned at event creation and never moves (invariant 5), so
+the fixed bounds meant **the weekly refit trained on identical rows every
+week** and differed only by seed:
+
+| split | events | range |
+|---|---:|---|
+| train | 1,815,728 | 2010-01-05 -> **2021-12-31** |
+| validate | 374,869 | 2022-01-03 -> 2023-12-29 |
+| holdout | 516,615 | 2024-01-02 -> 2026-09-09 |
+
+516,615 events since 2024 never entered training. ADR 184 split refit from
+score and was right to; nobody noticed the refit half had become a no-op in
+information terms. Found because a user asked whether a model can be
+trained once and never given new information.
+
+### Why ADR 179's refutation did not settle it
+
+`roll7` changed two things at once:
+
+    fixed   train 2010-2021 -> 12 years, validate 2022-2023
+    roll7   train 2019-2025 ->  7 years, validate 2026
+
+It moved the window forward **and cut it by 42%**, then scored a different
+period. The `peak`/`trough` damage was read as recency. A shorter fit is
+the other explanation, and it had already produced one false result in this
+same test when a five-year window fell through to `DEFAULT_STEPS`.
+
+**And no arm held the validation period constant**, so "2026 is an easier
+year" and "the model improved" were indistinguishable in every comparison
+made.
+
+### The measurement
+
+Four arms, `fixed_v26` being the control that never existed before: today's
+exact training window, scored on 2026. `expand` keeps the 2010 start and
+moves only the end.
+
+| arm | train | validate | heads | mean \|err\| | steps |
+|---|---|---|---:|---:|---|
+| `fixed` | 2010-2021 | 2022-23 | 25/30 | 0.0300 | [578, 702, 694] |
+| `fixed_v26` | 2010-2021 | **2026** | **14/30** | 0.0518 | [578, 702, 694] |
+| `expand` | 2010-**2025** | **2026** | **25/30** | **0.0338** | [1042, 863, 880] |
+| `expand_purge` | same, 10d embargo | 2026 | 24/30 | 0.0358 | |
+
+**Drift is real and large.** `fixed` and `fixed_v26` are the same fit --
+identical step counts -- differing only in what they score. 25/30 on
+2022-23, **14/30 on 2026**. ADR 179's premise was right.
+
+**Expanding recovers most of it.** Same 11,690 validation rows, only the
+training window differs: 14/30 -> 25/30, mean error down 35%. Step counts
+*rose* to [1042, 863, 880], so selection happened on more data rather than
+falling through to the default -- the failure that voided the five-year run.
+
+**The boundary does not leak.** `expand_purge` costs one head and 0.002
+error. Without that arm the headline number would be unsafe, because a
+10-day label window crosses a 2025-12-31 / 2026-01-01 boundary.
+
+### The caveat the aggregate hides, stated because last time it did not get stated
+
+| family | ships as | `fixed` (22-23) | `fixed_v26` (26) | `expand` (26) |
+|---|---|---:|---:|---:|
+| **peak** | `p_touch_2/3/5/10` | 10/10 | 4/10 | **6/10** |
+| **trough** | `p_adverse_3/5` | 9/10 | 4/10 | **9/10** |
+| terminal | nothing | 6/10 | 6/10 | **10/10** |
+
+Expanding improves **all three** families on identical data -- no inversion,
+which is precisely what killed `roll7`. But `expand` reaching 25/30 is not
+the same 25/30 as `fixed`: `fixed` got there with `peak` at 10/10, `expand`
+with `peak` at 6/10, and `peak` backs every shipped `p_touch_*`.
+
+**Peak remains the weakest family and does not return to 10/10.** Whether
+that residual is 2026 being genuinely harder or the model still lagging,
+this test cannot separate, and no arm here is capable of separating it.
+
+### Decision
+
+Adopt the expanding window for the weekly refit: keep the start, move the
+end to `today - 6mo`, validate `today - 6mo` to `today - 5d`, forward log
+untouched.
+
+**Implemented as a training-time filter on `signal_date`, never a rewrite
+of `split_key`.** That keeps invariant 5 and does **not** move
+`config_hash` -- the population a statistic is computed over is unchanged;
+only which rows the fit reads. Editing `SplitParams.train_end` would move
+the hash and is the wrong lever.
+
+The 10-day embargo is applied, on evidence it costs almost nothing and on
+principle that the boundary moves every week.
+
+### What this does not fix
+
+**The ~5pp calibration bias**, though it moves the number that causes it.
+The isotonic anchor measured per arm: **0.5482** on 2022-23 against
+**0.6330** on 2026 -- an 8.5-point shift in the base rate the tables are
+fitted to. Recalibrating on a recent period is now the obvious next
+candidate and remains untested. Recalibrating on the *forward log* stays
+forbidden.
