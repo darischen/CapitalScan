@@ -32,3 +32,59 @@ deleting 10 generation(s), 11,954,433 events (path cascades):
   86e91448a65a  3,490,488/11,954,433  22,493 events/s  eta 6m
   86e91448a65a  3,621,816/11,954,433  21,060 events/s  eta 7m
   a38d3ca6b582  3,821,816/11,954,433  20,194 events/s  eta 7m
+  a38d3ca6b582  4,021,816/11,954,433  19,877 events/s  eta 7m
+  a38d3ca6b582  4,221,816/11,954,433  19,056 events/s  eta 7m
+  a38d3ca6b582  4,421,816/11,954,433  19,133 events/s  eta 7m
+  a38d3ca6b582  4,621,816/11,954,433  19,615 events/s  eta 6m
+  a38d3ca6b582  4,821,816/11,954,433  20,119 events/s  eta 6m
+  a38d3ca6b582  5,007,449/11,954,433  19,234 events/s  eta 6m
+  f7d7bcd52ec4  5,207,449/11,954,433  18,322 events/s  eta 6m
+  f7d7bcd52ec4  5,407,449/11,954,433  18,852 events/s  eta 6m
+  f7d7bcd52ec4  5,607,449/11,954,433  19,385 events/s  eta 5m
+  f7d7bcd52ec4  5,807,449/11,954,433  19,912 events/s  eta 5m
+  f7d7bcd52ec4  6,007,449/11,954,433  20,432 events/s  eta 5m
+  f7d7bcd52ec4  6,207,449/11,954,433  20,933 events/s  eta 5m
+  f7d7bcd52ec4  6,386,593/11,954,433  20,392 events/s  eta 5m
+  d750336f3055  6,586,593/11,954,433  20,225 events/s  eta 4m
+  d750336f3055  6,786,593/11,954,433  20,437 events/s  eta 4m
+  d750336f3055  6,986,593/11,954,433  20,572 events/s  eta 4m
+  d750336f3055  7,186,593/11,954,433  20,501 events/s  eta 4m
+  d750336f3055  7,386,593/11,954,433  20,894 events/s  eta 4m
+  d750336f3055  7,586,593/11,954,433  21,277 events/s  eta 3m
+  d750336f3055  7,765,737/11,954,433  20,766 events/s  eta 3m
+  185bba9a239c  7,965,737/11,954,433  19,838 events/s  eta 3m
+  185bba9a239c  8,165,737/11,954,433  19,652 events/s  eta 3m
+  185bba9a239c  8,365,737/11,954,433  19,933 events/s  eta 3m
+  185bba9a239c  8,565,737/11,954,433  20,254 events/s  eta 3m
+  185bba9a239c  8,765,737/11,954,433  20,593 events/s  eta 3m
+  185bba9a239c  8,965,737/11,954,433  20,927 events/s  eta 2m
+  185bba9a239c  9,032,253/11,954,433  20,337 events/s  eta 2m
+  f66729c7eda2  9,232,253/11,954,433  19,483 events/s  eta 2m
+  f66729c7eda2  9,432,253/11,954,433  19,554 events/s  eta 2m
+  f66729c7eda2  9,632,253/11,954,433  19,382 events/s  eta 2m
+  f66729c7eda2  9,832,253/11,954,433  19,623 events/s  eta 2m
+  f66729c7eda2  10,032,253/11,954,433  19,566 events/s  eta 2m
+  f66729c7eda2  10,142,368/11,954,433  19,141 events/s  eta 2m
+  697f3ae71428  10,342,368/11,954,433  18,682 events/s  eta 1m
+  697f3ae71428  10,542,368/11,954,433  18,631 events/s  eta 1m
+  697f3ae71428  10,742,368/11,954,433  18,465 events/s  eta 1m
+  697f3ae71428  10,769,896/11,954,433  18,016 events/s  eta 1m
+  1835688bf7d7  10,969,896/11,954,433  17,464 events/s  eta 1m
+  1835688bf7d7  11,169,896/11,954,433  17,653 events/s  eta 1m
+  1835688bf7d7  11,369,896/11,954,433  17,795 events/s  eta 1m
+  1835688bf7d7  11,396,885/11,954,433  17,499 events/s  eta 1m
+  bbc99a02ebdc  11,596,885/11,954,433  17,320 events/s  eta 0m
+  bbc99a02ebdc  11,796,885/11,954,433  17,179 events/s  eta 0m
+  bbc99a02ebdc  11,954,433/11,954,433  17,096 events/s  eta 0m
+  cell_stats: 3,584 deleted
+  benchmarks: 11,452 deleted
+  universe: 1,329,446 deleted
+  rho_era: 32 deleted
+
+superseded events remaining: 0
+orphaned path rows: 0  (cascade should make this 0)
+elapsed 12.6m
+
+Disk is NOT yet returned. Run, with nothing else touching these tables:
+  VACUUM (FULL, ANALYZE) events;
+  VACUUM (FULL, ANALYZE) path;

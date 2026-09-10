@@ -2035,6 +2035,28 @@ non-finite quantile points at the inversion, not at the distribution.
 Cheap first cut: pull one such row, print its pmf, and see whether the CDF
 ever crosses the quantile level at all.
 
+## ~~`wivie` is 12 migrations behind~~ — **closed 2026-09-10 by the restore, exactly as this entry predicted**
+
+Both stores now read `a7c2e9f4b105`. The entry's advice was right and is
+worth keeping for the next time: **the schema was not a separate task from
+the data sync, it was the same task.** A `pg_restore` of the workstation
+dump carried both, and `cscan db status` reads head because the dump put it
+there -- no `db migrate` was ever run on `wivie`.
+
+Also done in the same pass: the stale 2026-09-01 database was dropped, the
+current restore promoted into its place under the name `wivie`'s config
+already points at, and `capitalscan.default_config_hash` pinned. That last
+one matters more than it looks -- `cscan sync` reads its generation from
+the **research** database's GUC, so an unpinned `wivie` acting as research
+would have synced the wrong generation and exited 0.
+
+**What remains before `wivie` can serve as research:** `systemctl enable
+--now` on the three timers, which is the cutover itself and is deliberately
+not done.
+
+<details>
+<summary>The original entry, kept because the reasoning generalises</summary>
+
 ## `wivie` is 12 migrations behind, and must NOT be caught up with `db migrate`
 
 Checked 2026-09-08. `wivie`'s local research database sits at
@@ -2066,6 +2088,8 @@ data — which looks exactly like a working research database and is not.
 Restore first, then confirm `cscan db status` reads head because the dump
 put it there. The schema is not a separate task from the data sync; it is
 the same task.
+
+</details>
 
 **Still true and separate:** WAL and autovacuum tuning live on the server,
 not in a migration, so they must be re-applied by hand on `wivie` after any
