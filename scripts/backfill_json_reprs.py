@@ -146,11 +146,26 @@ def _sweep(engine: Any, table: str, pk: str, column: str, *, dry_run: bool) -> S
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target", choices=["research", "serving"], required=True)
+    parser.add_argument("--target", choices=["research", "serving", "url"], required=True)
+    parser.add_argument(
+        "--url",
+        help=(
+            "With `--target url`, the database to repair. Exists for a store "
+            "that is neither of the two the config knows about -- a `wivie` "
+            "stage restored from a dump taken before the fix, say, which "
+            "carries the damage forward into a copy nothing else will ever "
+            "sweep."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    engine = serving_engine() if args.target == "serving" else db_io.get_engine()
+    if args.target == "url":
+        if not args.url:
+            parser.error("--target url requires --url")
+        engine = db_io.get_engine(args.url)
+    else:
+        engine = serving_engine() if args.target == "serving" else db_io.get_engine()
     print(f"{args.target}{' (dry run)' if args.dry_run else ''}")
 
     total_values = 0
