@@ -2,6 +2,46 @@
 
 # HIGHEST PRIORITY
 
+## `predictions` upserts on `event_id`, but the view reads a natural key
+
+The two disagree, and the view was patched rather than the writer.
+
+`jobs/predict.py:213` upserts on `event_id`; `v_screen_live` matches on
+`(config_hash, ticker, as_of, signal_type, entry_kind)`. That tuple is **not
+unique** — `predictions_natural_key` is a plain index — so two rows can share
+it while carrying different `event_id`s, and the plain `LEFT JOIN` emitted
+the event once per match.
+
+Measured on serving 2026-09-09: backfilling the Pi's 472 missing natural keys
+took `v_screen_live` from **163 rows to 264** for that date, 101 signals
+rendered twice. Migration `a7c2e9f4b105` makes the view *choose* one row via a
+`LIMIT 1` lateral, which stops the bleeding and leaves the cause in place.
+
+### Why the writer was not changed instead
+
+The conflict target is deliberate. `predictions.id` is a `bigserial` that
+`outcomes.prediction_id` references, and `db_io.upsert` overwrites every
+non-key column by default — so an upsert on anything but `event_id` tried to
+reassign primary keys the forward log points at, and Postgres refused with
+`ForeignKeyViolation`. The comment at `predict.py:205` records that; `sync.py`
+carries the same fix for the same reason.
+
+Moving to a UNIQUE natural key therefore has to answer what happens to
+`outcomes` rows pointing at a prediction the upsert would now replace. That is
+a real question about the forward log, not a schema tidy-up, and it did not
+belong in the same change as the defect it prevents.
+
+### Why the duplication exists at all
+
+Serving carries a three-year subset (ADR 137), so a research-origin
+prediction's `event_id` points at a row serving does not have: **0 of 498
+resolve**. The Pi reads serving's own `events`, so **all 472** of its
+`event_id`s resolve. One set is joinable only by natural key; the other is the
+only one that knows which event it is about. They are complementary, which is
+why neither can simply be deleted.
+
+---
+
 ## The reversal badge freezes at fire time, not at the close
 
 Found 2026-09-09 while exposing the bull reversal, and it is the reason
