@@ -8210,3 +8210,118 @@ readable through the view's cast     ->  2,415 / 2,415
 **Zero repr strings**, so this stage needed no post-restore repair. The
 previous one is what a faithful restore of damaged data looks like; this one
 is what the same command produces when the source is correct.
+
+---
+
+# 2026-09-10: the refit was learning nothing, and one missing arm proved it
+
+## The question that started it
+
+*"I can't just train a model once and never give it new information."*
+
+Checked rather than answered. `split_key` is assigned at event creation and
+never moves (invariant 5), so the weekly refit had been training on
+identical rows every week:
+
+| split | events | range |
+|---|---:|---|
+| train | 1,815,728 | 2010-01-05 -> **2021-12-31** |
+| validate | 374,869 | 2022-01-03 -> 2023-12-29 |
+| holdout | 516,615 | 2024-01-02 -> 2026-09-09 |
+
+**516,615 events since 2024 never entered training**, and the reliability
+tables were equally frozen on 2022-23. ADR 184 split refit from score and
+was right to; nobody noticed the refit half had become a no-op in
+information terms. It differed only by seed.
+
+## Why the previous test could not settle it
+
+ADR 179 tested a rolling window on 2026-09-08 and refuted it. That result
+was read as "recency hurts". It changed **two things at once**:
+
+    fixed   train 2010-2021 -> 12 years, validate 2022-2023
+    roll7   train 2019-2025 ->  7 years, validate 2026
+
+The window moved forward *and shrank 42%*, then scored a different period.
+A shorter fit is the other available explanation and had already produced
+one false result in this same harness, when a five-year window built zero
+inner folds and fell through to `DEFAULT_STEPS`.
+
+**And no arm held the validation period constant.** Every comparison
+confounded "2026 is an easier year" with "the model improved".
+
+## The measurement
+
+Four arms. `fixed_v26` is the control that never existed: today's exact
+training window, scored on 2026.
+
+| arm | train | validate | heads | mean \|err\| | steps |
+|---|---|---|---:|---:|---|
+| `fixed` | 2010-2021 | 2022-23 | 25/30 | 0.0300 | [578, 702, 694] |
+| `fixed_v26` | 2010-2021 | **2026** | **14/30** | 0.0518 | [578, 702, 694] |
+| `expand` | 2010-**2025** | **2026** | **25/30** | **0.0338** | [1042, 863, 880] |
+| `expand_purge` | + 10d embargo | 2026 | 24/30 | 0.0358 | |
+
+**Drift is real and large.** `fixed` and `fixed_v26` are the same fit --
+identical step counts prove it -- differing only in what they score. 25/30
+becomes 14/30.
+
+**Expanding recovers it**, on the identical 11,690 rows: 14/30 -> 25/30,
+mean error down 35%. Step counts *rose*, so selection happened on more data
+rather than falling through to the default.
+
+**The boundary does not leak.** The embargo costs one head and 0.002.
+Without that arm the headline would be unsafe, since a 10-day label crosses
+the 2025/2026 boundary.
+
+## The caveat the aggregate hides
+
+| family | ships as | `fixed` (22-23) | `fixed_v26` (26) | `expand` (26) |
+|---|---|---:|---:|---:|
+| **peak** | `p_touch_2/3/5/10` | 10/10 | 4/10 | **6/10** |
+| **trough** | `p_adverse_3/5` | 9/10 | 4/10 | **9/10** |
+| terminal | nothing | 6/10 | 6/10 | **10/10** |
+
+Expanding improves all three -- no inversion, which is what killed `roll7`.
+But **`expand`'s 25/30 is not `fixed`'s 25/30**: peak, backing every shipped
+`p_touch_*`, is 6/10 against 10/10. Whether that residual is 2026 being
+genuinely harder or the model still lagging, this design cannot separate,
+and saying so is the point.
+
+## The calibration bias, measured rather than argued
+
+The isotonic anchor -- the validate-period 3%/5d base rate each arm would
+calibrate against:
+
+| period | base rate |
+|---|---:|
+| 2022-23 (shipped) | **0.5482** |
+| 2026 | **0.6330** |
+
+An **8.5-point** shift. That gap is the mechanism behind the ~5pp low bias:
+a published probability inherits the distance between its anchor and the
+period being scored, however well the model ranks.
+
+Adopting the expanding window moves validate to the trailing six months, so
+the anchor follows the market. **The bias closes as a side effect**, without
+the separate recalibration that was the next candidate -- and without
+touching the forward log, which stays forbidden.
+
+## Two silent successes, caught by checking
+
+**A green backtest that did nothing.** After the `config_hash` change the
+rebuild ran nine minutes, dispatched 1,463 tickers, wrote **zero events**,
+and recorded `status = 'ok'` with exit 0. `universe` is config-keyed and the
+new generation had no eligibility rows, so nothing qualified and the harness
+declined to validate an empty generation. The only signal was
+`tickers=0/1463` in output nobody reads when the exit code is green.
+
+**A four-minute blank site.** `cscan db sync-config` writes *both* stores.
+Reading the first half of the function -- which opens with
+`db_io.get_engine()` -- gives exactly the wrong answer. Serving pinned a
+generation with no rows. The command printed
+`serving: serving_config set to f183b0f5209a4677` and that line was read
+past. Recovery needed a web restart as well as the row correction, because
+ADR 115 sets the hash per connection.
+
+Both are in `OPERATIONS.md` with the corrected nine-step runbook.
