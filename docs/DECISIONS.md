@@ -9563,6 +9563,20 @@ the first page that rendered. A column whose common case is an unlabelled
 float is not communicating a near miss; it is noise that the eye has to
 skip to find the two labels that mean something.
 
+### The decisive argument, and it is the user's
+
+*"It wasn't showing up before the fix with the reversal JSON, so I'd rather
+keep it out."* (2026-09-09, confirming after seeing it live.)
+
+This is stronger than the reasoning above and worth stating plainly:
+**nobody has ever had this label.** It was specified on 2026-08-18 and NULL
+from 2026-08-26, so the readers of this tool have never once seen a
+near-miss distance on the page. Removing it takes nothing away from anyone;
+it declines to add something new. That reframes the decision from "is this
+worth removing" — which would have needed evidence about a habit people had
+formed — to "is this worth adding", which needs a positive case that the
+first live look did not produce.
+
 ### What is not lost
 
 **Only the promotion.** `open_gap_atr` is still written to
