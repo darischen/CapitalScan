@@ -30,6 +30,14 @@ Index:
 - [Every timestamp in `runs` is UTC](#every-timestamp-in-runs-is-utc)
 - [`status = 'running'` is not evidence a job is running](#status--running-is-not-evidence-a-job-is-running)
 - [Editing a module while a job runs gives it a split brain](#editing-a-module-while-a-job-runs-gives-it-a-split-brain)
+- [`python3 -m venv` is broken on `wivie`; use its `uv`](#python3--m-venv-is-broken-on-wivie-use-its-uv-2026-09-03)
+- [The fast tier passes locally and fails in CI: CI is Python 3.11](#the-fast-tier-passes-locally-and-fails-in-ci-ci-is-python-311-2026-09-03)
+- [The Pi went down twice on the same chained command](#2026-09-0809--the-pi-went-down-twice-on-the-same-chained-command)
+- ["low memory" that was not memory](#2026-09-09--low-memory-that-was-not-memory)
+- [Writing the config pin before its rows blanked the site twice](#writing-the-config-pin-before-its-rows-blanked-the-site-twice-2026-09-10)
+- [...and then `cscan sync` did the same thing by itself](#and-then-cscan-sync-did-the-same-thing-by-itself-2026-09-10)
+- [An unphased backtest loses everything when it is killed](#an-unphased-backtest-loses-everything-when-it-is-killed-2026-09-10)
+- [Powering the Pi down, cleanly or by pulling the plug](#powering-the-pi-down-cleanly-or-by-pulling-the-plug-2026-09-10)
 
 ---
 
@@ -1175,3 +1183,116 @@ before concluding, because the remedies differ -- commit exhaustion wants
 the pagefile or a streaming read, harness pressure wants fewer workers.
 Dropping 8 workers to 5 is what the second one needs; it would not have
 helped the first.
+
+---
+
+## Powering the Pi down, cleanly or by pulling the plug (2026-09-10)
+
+Written before a deliberate power-loss test, so the numbers are the ones
+measured rather than the ones assumed.
+
+### What a plug-pull actually risks
+
+Checked on the Pi rather than inferred:
+
+```
+fsync              = on         structure survives
+full_page_writes   = on         torn pages recover from WAL
+synchronous_commit = off        the last ~600ms of commits can vanish
+data_checksums     = off        silent page corruption is never flagged
+wal_writer_delay   = 200ms
+```
+
+`fsync=on` with `full_page_writes=on` means Postgres replays WAL and comes
+up clean. **`synchronous_commit=off` is the real exposure and it is
+bounded**: up to roughly 3x `wal_writer_delay` of already-acknowledged
+commits. Outside market hours, with no writer, that window holds nothing.
+
+**The caveat that is not bounded:** root is `/dev/mmcblk0p2`, an SD card.
+SD cards frequently ignore a flush, so `fsync=on` is a promise the
+hardware may not keep, and `data_checksums=off` means a page it damages
+would never announce itself.
+
+### Why that is still acceptable
+
+**Serving is derivable.** Everything on the Pi's database is a copy of
+research except two tables, so a total loss costs a `cscan sync`, not
+data. The exceptions are the poller's own durable rows, which are *born*
+on serving and reach research only through `pull_live_records` inside
+nightly (ADR 158):
+
+- `signal_reports`
+- `poller_sessions`
+
+`events` from the poller are provisional and the nightly sweep removes
+them; `bars_live` and `quotes_live` are per-tick scratch. Neither is worth
+protecting.
+
+### So the one pre-shutdown step is the pull
+
+```
+uv run python -c "from capitalscan.jobs import sync; print(sync.pull_live_records())"
+```
+
+**Check the gap first, because nightly may not have run.** Measured
+2026-09-10 with the workstation's scheduled task disabled, research was a
+full day behind:
+
+| table | serving | research |
+|---|---|---|
+| `signal_reports` | 3,442 to 09-10 | 3,230 to 09-09 |
+| `poller_sessions` | 13 rows to 09-10 | 26 rows to 09-09 |
+
+The pull carries `lookback_days=7`, so a few missed nights self-heal and
+only a gap wider than a week loses anything.
+
+**Do not run it concurrently with a `cscan sync`.** The sync reads
+`research.signal_reports` while the pull writes it, and since ADR 158 the
+two stores mint that table's ids independently.
+
+### What restarts by itself afterwards
+
+Verified live, not read off a unit file:
+
+| unit | enabled | active |
+|---|---|---|
+| `postgresql` | enabled | active |
+| `capitalscan-web` | enabled | active |
+| `capitalscan-poller.timer` | enabled | active |
+| `capitalscan-poller.service` | **disabled** | inactive |
+
+`capitalscan-poller.service` being disabled is correct: the timer starts
+it. Enabling it would start a second wait loop at boot.
+
+### The resume is per job, not per step
+
+Worth stating plainly because it is easy to remember the opposite.
+`scheduled_runs.resume_decision` answers one question -- does this
+period's run still need to happen -- and returns `already_complete` only
+for a `status='ok'` row inside the current period. A power loss leaves
+`status='started'` with no terminal write, which returns `run` with
+`"never finished (crash or kill)"`. **The chain then re-runs from the
+top.** That is safe because it is idempotent, not because it remembers
+where it stopped.
+
+The single genuine step-level checkpoint is `backtest --phase compute`,
+where `_chunk_already_done` keys on `(config_hash, chunk, of)`.
+
+For the Pi the resume lives in the timer, and it already handles this
+exact case:
+
+```
+OnCalendar=*-*-* 00:00:00
+OnBootSec=2min
+Persistent=true
+```
+
+`Persistent=true` only catches up a trigger *missed* while the timer was
+inactive. Once 00:00 has fired, its stamp is written and a same-day
+crash-and-reboot gets no catch-up -- which would silently lose a whole
+session for a power loss between 00:00 and the 06:45 open.
+**`OnBootSec=2min` is what covers that**, re-running the wrapper, which
+re-checks the trading-day guard and then resumes polling, waits for the
+open, or exits cleanly by the time of day. Running twice in a day is safe:
+`poller_sessions` keys on `session_date`, `bars_live` on
+`(ticker, session_date)`, and `_already_fired` blocks duplicate signals.

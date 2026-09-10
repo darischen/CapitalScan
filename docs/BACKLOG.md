@@ -20,11 +20,17 @@ The order is not negotiable:
 ```
 1. config change, then the full rebuild        (research machine)
 2. ALTER DATABASE ... SET default_config_hash  (research)
-3. cscan db sync-config                        (writes serving_config)
-4. cscan sync                                  (ships the new generation)
-5. verify serving_config reads the new hash
+3. cscan sync                                  (ships it, THEN pins it last)
+4. cscan db sync-config                        (exit policy; pin again)
+5. restart capitalscan-web, verify RENDERED rows
 6. only now: git pull on the Pi
 ```
+
+**Steps 3 and 4 were the other way round here until 2026-09-10**, when
+that ordering blanked the live site -- `db sync-config` writes serving's
+`serving_config` too, and so does `cscan sync`, which had it as table 5
+of 15. Writing the pin before the rows arrive is the outage; it is now
+the last table a sync writes. -> `OPERATIONS.md`
 
 **Only steps 4 and 6 are time-constrained, and the distinction is easy to
 get wrong.** The rebuild in step 1 writes *research*, which has no live
@@ -66,6 +72,42 @@ Two things deliberately left as they are:
   produced this in the first place.
 
 ---
+
+## `cscan predict` fits an artifact and never publishes it
+
+Found 2026-09-10 during the bull-reversal cutover, by the Pi being unable
+to score.
+
+`artifact.publish()` is called in exactly one place: the `weekly` chain
+(`cli.py:3467`). A standalone `cscan predict` writes `data/model/predictor.npz`
+locally and stops there, so `model_artifact` on serving keeps naming the
+previous generation. The Pi's `predict --serving --from-artifact` then
+refuses on a config mismatch -- correctly, and confusingly, because the
+refit it is complaining about *did* happen.
+
+ADR 185 put the publish in `weekly` deliberately: the refit belongs to the
+weekly cadence and `nightly` only scores. That reasoning is about *when to
+refit*, not about *who may ship the result*, and a manual `predict` across
+a `config_hash` change is exactly the case it does not cover.
+
+Worked around by hand this time:
+
+```
+uv run python -c "from capitalscan.jobs import artifact as a, sync as s; print(a.publish(s.serving_engine()))"
+```
+
+Options, cheapest first:
+
+1. `cscan predict --publish`, defaulting off. One flag, no behaviour
+   change for the scheduled path.
+2. Publish whenever `predict` refits at all, on the argument that an
+   unpublished artifact has no reader. `model_artifact` conflicts on
+   `config_hash`, so this cannot clobber the generation being served.
+3. Leave it, and put the manual command in the cutover runbook.
+
+(2) is the honest one: the only reason a fit stays local today is that
+nobody wrote the line. The risk it raises is publishing a fit made from a
+half-built generation, which argues for (1).
 
 ## The bull reversal has no close-confirmed half
 
