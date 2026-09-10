@@ -264,9 +264,18 @@ Budgets, so nobody starts one blind. Per-step tables, regimes, and the history o
 ```
 1. edit core/config.py
 2. ALTER DATABASE capitalscan SET capitalscan.default_config_hash = '<new>'
-3. cscan db sync-config      # writes serving_config
-4. cscan sync                # now copies the right generation
+   ... rebuild the generation on research: universe, backtest, stats, predict
+3. cscan sync                # copies the generation, THEN pins it (last table)
+4. cscan db sync-config      # exit policy, and belt-and-braces on the pin
+5. restart capitalscan-web   # ADR 115 pins per connection; the pool must drop
 ```
+
+**Steps 3 and 4 are in this order for a reason and were the other way
+round until 2026-09-10**, when both orderings blanked the live site on the
+same day. Serving's `serving_config.config_hash` is the cutover, not a
+label: the site answers from whatever generation it names, empty or not.
+`serving_config` is now the **last** table `cscan sync` writes, so the old
+generation serves until the new one is fully present. -> `OPERATIONS.md`
 
 Skipping step 2 re-copies the old generation, reports `synced N rows`, and exits 0 -- nothing in the output names the hash. `capscan` IS superuser on research, so `ALTER DATABASE` needs no `sudo -u postgres` here (it does on the Pi).
 
@@ -513,15 +522,25 @@ For every migration:
 | Push `ExitParams` to the serving views | `cscan db sync-config` |
 | Provision the MCP read-only role | `cscan db grant-readonly --password <pw>` |
 
-**`cscan db sync-config` writes BOTH stores, and it is serving-visible.**
-It opens with `db_io.get_engine()` (research), and the serving write is
-further down -- reading the first half gives exactly the wrong answer. On
-2026-09-10 it was run before the new generation was synced, serving pinned
-a `config_hash` with zero rows, and the home page went blank for four
-minutes with every command reporting success. **Run it after `cscan sync`,
-never before**, and restart `capitalscan-web` afterwards: ADR 115 sets the
-hash per connection, so correcting the row alone leaves the pool serving
-the old value. -> `OPERATIONS.md`
+**Serving's `serving_config.config_hash` is the cutover, and TWO commands
+write it.** ADR 115 has `web/lib/db.ts` set the hash per connection from
+that row and every serving view filters on it, so the instant it names a
+generation the site answers from that generation -- rows or no rows. It
+blanked the home page twice on 2026-09-10, four minutes and twenty-six,
+every command reporting success and the page returning 200 both times.
+
+- **`cscan db sync-config` writes BOTH stores.** It opens with
+  `db_io.get_engine()` (research) and the serving write is further down,
+  so reading the first half gives exactly the wrong answer.
+- **`cscan sync` writes it too.** It was table 5 of 15, ahead of `bars`,
+  `indicators`, `runs` and `events` -- so a full sync flipped serving in
+  its first minute and spent hours fetching the rows. It is now **last**,
+  pinned by two tests in `test_sync.py`.
+
+**Run `db sync-config` after `cscan sync`, never before**, and restart
+`capitalscan-web` afterwards -- correcting the row alone leaves the pool
+serving the old value. Verify by counting *rendered rows*, not the HTTP
+status. -> `OPERATIONS.md`
 
 **`cscan db sync-config` is not optional after a threshold change.**
 `v_positions` reads its exit policy from the one-row `serving_config` table

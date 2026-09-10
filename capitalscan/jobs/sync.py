@@ -407,7 +407,10 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
             "SELECT * FROM universe WHERE config_hash = :config_hash",
             ("ticker", "as_of", "config_hash"),
         ),
-        SyncTable("serving_config", "SELECT * FROM serving_config", ("only_row",)),
+        # `serving_config` used to sit here, fifth. It is now **last** --
+        # see the comment above it at the end of this tuple. Moving it is
+        # the fix for a repeat outage, not a tidy-up.
+        #
         # Scoped by trade-*or-watch*-universe membership rather than by
         # ticker list. **Widened 2026-09-03** (user's finding): this used
         # to read `u.in_trade` alone, on the stated theory that "the
@@ -551,6 +554,33 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
         # show the model's claims, never how they turned out.
         SyncTable("outcomes", "SELECT * FROM outcomes", ("prediction_id",)),
         SyncTable("positions", "SELECT * FROM positions", ("id",)),
+        # **Last, and the position is the whole point.**
+        #
+        # This one row is what the site reads a generation *through*: ADR
+        # 115 has `web/lib/db.ts` set `capitalscan.default_config_hash`
+        # per connection from this table, and every serving view filters
+        # on that setting. So the instant this row names a generation,
+        # every page answers from that generation -- whether or not its
+        # rows have arrived.
+        #
+        # It sat fifth in this tuple, ahead of `bars`, `indicators`,
+        # `runs` and `events`. Across a `config_hash` change that made a
+        # full sync blank the live site for its entire duration: measured
+        # 2026-09-10, serving read `f183b0f5209a4677` while `events` still
+        # held only the 5,413,295 rows of the previous generation. Nothing
+        # errored. The home page returned 200 with no rows, twice in one
+        # day, the second time for 26 minutes.
+        #
+        # Ordered last, the old generation stays live until the new one is
+        # completely present, and the pin is the single write that cuts
+        # over. `run_sync` never deletes, so the old rows are still there
+        # to serve throughout -- that is what makes this safe rather than
+        # merely later.
+        #
+        # Nothing upstream depends on it: every `sql` above runs against
+        # **research**, and the `:config_hash` they filter on is the
+        # parameter, not this row.
+        SyncTable("serving_config", "SELECT * FROM serving_config", ("only_row",)),
     )
 
 

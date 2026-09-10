@@ -924,10 +924,27 @@ reads like a version mismatch and is just the engine not being up yet.
 
 ---
 
-## `cscan db sync-config` writes BOTH stores, and it blanked the site (2026-09-10)
+## Writing the config pin before its rows blanked the site twice (2026-09-10)
 
-**Four minutes of an empty home page at 04:15, market closed.** Every
-command in the sequence reported success.
+**Two outages, one property, two different commands.** 04:15 for four
+minutes and 15:57 for twenty-six. Every command in both sequences reported
+success and the page returned HTTP 200 throughout.
+
+The property, stated once: **serving's `serving_config.config_hash` is the
+cutover.** ADR 115 has `web/lib/db.ts` set the hash per connection from
+that row, and every serving view filters on it, so the moment the row
+names a generation the whole site answers from that generation -- rows or
+no rows. Anything that writes it before the data lands is an outage.
+
+Two commands write it, and the second one was found only by causing the
+outage a second time:
+
+| write | when it fires |
+|---|---|
+| `cscan db sync-config` | explicitly, whenever it is run |
+| `cscan sync` | implicitly -- `serving_config` was table 5 of 15 |
+
+The first is below. The second is the section after it.
 
 ### What happened
 
@@ -976,7 +993,75 @@ not by the HTTP status -- the blank page returns 200:
 ### The rule
 
 **`cscan db sync-config` is a serving-visible write. Run it AFTER the data
-is synced, never before.** The correct order across a `config_hash` change:
+is synced, never before.**
+
+---
+
+## ...and then `cscan sync` did the same thing by itself (2026-09-10)
+
+**Twenty-six minutes, 15:57 to 16:23, and the fix for the 04:15 outage was
+already in place.** That is the part worth keeping.
+
+### What happened
+
+The runbook written four hours earlier said "sync, THEN `db sync-config`",
+on the reasoning that `sync` ships data and `db sync-config` flips the
+pin. `cscan sync` flips the pin too: `serving_config` was the **fifth**
+entry in `_tables()`, ahead of `bars`, `indicators`, `runs` and `events`
+at ninth.
+
+So the sync wrote the new hash within its first minute and spent the next
+several hours copying the rows that hash needed. Found at 16:23 by reading
+serving directly:
+
+    serving_config        f183b0f5209a4677     (new generation)
+    events                5,413,295 rows, ALL 0523841076f47293
+
+### Recovery
+
+Identical to the 04:15 one, and it is two steps, not one:
+
+```sql
+UPDATE serving_config SET config_hash = '0523841076f47293';
+```
+```
+sudo systemctl restart capitalscan-web
+```
+
+`http:200 tickers:32`. The row alone does nothing until the pool drops.
+
+### Why the first fix did not cover it
+
+**The mitigation was attached to the command, not to the property.** The
+04:15 writeup says "run `db sync-config` after the data" -- true, and it
+names one of the two writers. Nobody asked what *else* writes that row,
+so the ordering constraint got recorded as a fact about one command
+instead of as a fact about `serving_config`.
+
+The generalisation is cheap to state and was not stated: *if a value is
+the cutover, find every writer of it before trusting an ordering.*
+
+### The structural fix
+
+`serving_config` is now the **last** table in `_tables()`, so the pin is
+the final write of a sync and the old generation serves until the new one
+is completely present. `run_sync` never deletes, which is what makes the
+old rows still there to serve.
+
+Two tests pin it, in `test_sync.py`:
+
+- `test_the_pin_is_written_last_of_all` -- asserts *last*, not "after
+  events", so a table appended below cannot silently reopen the window;
+- `test_the_pin_follows_every_table_the_site_reads_through_it` -- names
+  `universe`, `bars`, `indicators`, `runs`, `events`, `cell_stats` in the
+  failure message, so whoever reorders the tuple learns why.
+
+A comment could not have caught this: no code *reads* `serving_config`
+during a sync, so no reorder produces an error anywhere.
+
+### The order, corrected
+
+The correct order across a `config_hash` change:
 
 ```
  1. edit core/config.py
@@ -990,10 +1075,19 @@ is synced, never before.** The correct order across a `config_hash` change:
     cscan stats cells --config-hash <new> --split-key validate
  9. cscan stats benchmarks --config-hash <new>               research only
 10. cscan predict                                            research only
-11. cscan sync                    ships the new generation
-12. cscan db sync-config          flips serving, data already there
+11. cscan sync                    ships the new generation AND, as its
+                                  last table, flips the pin
+12. cscan db sync-config          exit policy + belt and braces on the pin
 13. restart capitalscan-web       drops the connection pool
 14. git pull on the Pi            last, always
+```
+
+**Verify step 11 by counting rows on serving before trusting step 12**,
+and verify step 13 by counting *rendered* rows rather than by the HTTP
+status -- a blank page returns 200:
+
+```
+curl -s http://localhost:3000/ | grep -o 'class="ticker"' | wc -l
 ```
 
 **Steps 3, 7, 8 and 9 all populate config-keyed tables that start EMPTY on

@@ -254,6 +254,39 @@ def test_serving_config_conflicts_on_its_real_key():
     assert cfg.key == ("only_row",)
 
 
+def test_the_pin_is_written_last_of_all():
+    """**The cutover is this one row, so it must be the last write.**
+
+    ADR 115 has `web/lib/db.ts` set the config hash per connection from
+    `serving_config`, and every serving view filters on it. Writing it
+    before the generation's rows arrive points the whole site at an empty
+    generation -- no error, HTTP 200, no rows.
+
+    It sat fifth, ahead of `bars`, `indicators`, `runs` and `events`. On
+    2026-09-10 that blanked the live site twice in one day; the second
+    time serving read `f183b0f5209a4677` while `events` still held only
+    the previous generation's 5,413,295 rows.
+
+    Asserted as *last*, not merely "after events", because the property is
+    that no table follows it -- a new table appended below would silently
+    reopen the same window.
+    """
+    assert TABLES[-1].name == "serving_config"
+    assert [t.name for t in TABLES].count("serving_config") == 1
+
+
+def test_the_pin_follows_every_table_the_site_reads_through_it():
+    """The same property stated as the failure it prevents, so a reader who
+    reorders the tuple sees *which* tables are the reason."""
+    order = [t.name for t in TABLES]
+    pin = order.index("serving_config")
+    for name in ("universe", "bars", "indicators", "runs", "events", "cell_stats"):
+        assert order.index(name) < pin, (
+            f"{name} syncs after the config pin, so the site would read the new "
+            "generation before that table's rows exist"
+        )
+
+
 def test_the_events_key_is_the_natural_key():
     """`(config_hash, ticker, signal_date, signal_type, entry_kind)` is the
     unique constraint on `events`. A shorter key would silently collapse

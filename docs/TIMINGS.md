@@ -596,7 +596,7 @@ adding cores cannot help, and the NVMe was never the constraint.
 
 ### The serial tail
 
-```python
+```text
 events = pd.concat(frames)
 events = add_cofire_count(events)
 events = events.sort_values([...])
