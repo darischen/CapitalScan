@@ -567,12 +567,47 @@ def test_no_other_field_from_row_t_reaches_detection():
     assert "bear_close_above_upper" in list(fired.iloc[0])
 
 
-def test_the_allowlist_names_exactly_one_field():
-    """A second entry here is a decision, not a refactor: it widens the one
-    documented exception to invariant 3."""
+def test_the_allowlist_names_exactly_the_two_close_confirmed_fields():
+    """**A new entry here is a decision, not a refactor**: it widens the one
+    documented exception to invariant 3.
+
+    Held at one field from ADR 108 until 2026-09-10, when ADR 194 added the
+    long side. That addition is the whole reason ADR 144 had been inert:
+    the rule, the column, the enum member and the `enabled_signal_types`
+    entry all existed, and `bull_close_below_lower` still fired **zero**
+    times across 55,000 rebuilt events, because a field absent from this
+    tuple never reaches the bar and `_close_flag` reads absent as `False`.
+
+    The test is kept as an equality rather than a membership check for the
+    same reason it was written: a third entry should fail here and be
+    argued for, not slip in.
+    """
     from capitalscan.research import candidates as cand
 
-    assert cand.CLOSE_CONFIRMED_FIELDS == ("bear_close_above_upper",)
+    assert cand.CLOSE_CONFIRMED_FIELDS == (
+        "bear_close_above_upper",
+        "bull_close_below_lower",
+    )
+
+
+def test_the_long_side_flag_actually_crosses_from_row_t():
+    """The behavioural half, because the equality above would pass on a
+    tuple that nothing reads.
+
+    Mirrors `test_row_t_is_reachable_only_through_the_allowlist` for the
+    bull side: the flag set on row `t` must arrive at detection.
+    """
+    from capitalscan.research.candidates import _close_confirmed_frame
+
+    idx = [date(2026, 1, 5), date(2026, 1, 6)]
+    ind = pd.DataFrame(
+        {"bull_close_below_lower": [False, True], "bear_close_above_upper": [False, False]},
+        index=pd.Index([pd.Timestamp(d) for d in idx]),
+    )
+    out = _close_confirmed_frame(ind, [pd.Timestamp(d) for d in idx])
+    assert "bull_close_below_lower" in out.columns
+    assert bool(out["bull_close_below_lower"].iloc[1]) is True
+    assert bool(out["bull_close_below_lower"].iloc[0]) is False
 
 
 def test_a_missing_row_t_leaves_the_flag_false():

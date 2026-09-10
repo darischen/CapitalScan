@@ -85,7 +85,24 @@ BULL_CLOSE_FIELD = "bull_close_below_lower"
 # detection, and the two drifting apart on which fields cross from row t is
 # exactly the failure this guards. `jobs/` importing `research/` would also
 # invert the layering CLAUDE.md pins.
-CLOSE_CONFIRMED_FIELDS = (BEAR_CLOSE_FIELD,)
+# **`BULL_CLOSE_FIELD` was missing here until 2026-09-10 and that is what
+# made ADR 144 inert.** The rule existed in `detect`, the column existed in
+# `indicators`, the enum member existed, and enabling the type in
+# `enabled_signal_types` still produced **zero** events -- because this
+# tuple is what lets a field cross from row `t` onto the bar, and a field
+# that never arrives reads as `False` by design (`_close_flag`).
+#
+# Measured: a full rebuild under the new hash wrote 55,000 events with
+# `bear_close_above_upper` firing 832 times and `bull_close_below_lower`
+# firing 0, in a corpus where the indicator column is true 41,997 times.
+# Nothing raised. The type was enabled and structurally incapable of
+# firing.
+#
+# The same argument admits both: a close-confirmed value is only *defined*
+# at the close, only acted on after it, and enters at t+1's open, so
+# reading it at `t` consumes no information that did not exist when the
+# decision was made. That is as true of the long side as the short.
+CLOSE_CONFIRMED_FIELDS = (BEAR_CLOSE_FIELD, BULL_CLOSE_FIELD)
 
 
 def _breach(price: float, level: float, bound: Bound, tol: float = 0.0) -> bool:
