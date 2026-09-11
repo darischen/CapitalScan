@@ -1100,6 +1100,18 @@ status -- a blank page returns 200:
 curl -s http://localhost:3000/ | grep -o 'class="ticker"' | wc -l
 ```
 
+**`--workers 8` on this step is not free while a sync is running.**
+Each replication worker rebuilds its own panels, so 8 of them add several
+GB on top of whatever else is live. Measured 2026-09-10 mid-sync: 31.9 GB
+total, **5.9 GB free**, with `cscan sync` alone holding 5,991 MB RSS.
+Commit had headroom (39.5 of 67.7 GB, pagefile almost untouched), so the
+reaper probably would not have fired -- but three syncs had already been
+killed by it that night, and a sync costs hours where this step costs
+minutes. Dropped to `--workers 2`: ~8 min instead of ~2.5.
+
+**The job that should yield is the cheap one, not the one that is
+closest to finishing.**
+
 **Both splits, and this is not symmetry for its own sake.** Step 9 read
 `cscan stats benchmarks --config-hash <new>` until 2026-09-10, with no
 `--split-key`. It **defaults to `train`**, so the new generation got 409
