@@ -577,3 +577,76 @@ class TestTheNaturalKeyIsWritten:
         )
         for name in ("config_hash", "ticker", "as_of", "signal_type", "entry_kind"):
             assert name in rows[0], f"{name} is part of the view join and is not written"
+
+
+class TestTheNightlyFetchesAPublishedArtifact:
+    """**The missing half of ADR 185.**
+
+    `publish()` writes the model into serving's `model_artifact` so a
+    machine without the file can get it. Until 2026-09-10 the only caller
+    of `fetch()` was `cscan predict --serving`; `nightly` runs against the
+    research engine, never took that branch, and so never fetched.
+
+    It surfaced at the `wivie` cutover: a database dump carries no files,
+    so the new research box reported `skip predict: no artifact` and
+    produced no predictions at all until the file was copied by hand.
+    """
+
+    def test_a_present_artifact_is_left_alone(self, tmp_path, monkeypatch):
+        """Staleness is `artifact.load`'s decision. Re-downloading over a
+        present file would paper over exactly the mismatch it exists to
+        catch -- and the poller asks on a 20-second cadence."""
+        from capitalscan.jobs import artifact
+        from capitalscan.jobs import predict as jp
+
+        local = tmp_path / "predictor.npz"
+        local.write_bytes(b"not empty")
+        monkeypatch.setattr(artifact, "DEFAULT_PATH", local)
+
+        called = []
+        monkeypatch.setattr(artifact, "fetch", lambda *a, **k: called.append(1))
+
+        assert jp._fetch_if_absent("abc123") is False
+        assert called == [], "must not fetch when a local artifact exists"
+
+    def test_an_absent_artifact_is_fetched(self, tmp_path, monkeypatch):
+        from capitalscan.jobs import artifact
+        from capitalscan.jobs import predict as jp
+        from capitalscan.jobs import sync as sync_job
+
+        missing = tmp_path / "predictor.npz"
+        monkeypatch.setattr(artifact, "DEFAULT_PATH", missing)
+        monkeypatch.setattr(sync_job, "serving_engine", lambda: object())
+        monkeypatch.setattr(artifact, "fetch", lambda _e, _h: missing)
+
+        assert jp._fetch_if_absent("abc123") is True
+
+    def test_no_published_row_reports_false_rather_than_raising(self, tmp_path, monkeypatch):
+        """`fetch` returns None on a store that has never had a weekly.
+        That is an ordinary state, and the caller's StaleArtifact carries
+        the right remedy."""
+        from capitalscan.jobs import artifact
+        from capitalscan.jobs import predict as jp
+        from capitalscan.jobs import sync as sync_job
+
+        monkeypatch.setattr(artifact, "DEFAULT_PATH", tmp_path / "predictor.npz")
+        monkeypatch.setattr(sync_job, "serving_engine", lambda: object())
+        monkeypatch.setattr(artifact, "fetch", lambda _e, _h: None)
+
+        assert jp._fetch_if_absent("abc123") is False
+
+    def test_an_unreachable_serving_store_is_not_fatal(self, tmp_path, monkeypatch):
+        """**A research box with no serving configured is normal (ADR 053).**
+        Raising here would turn a non-fatal 'skip predict' into a failed
+        nightly, which is strictly worse than the gap being fixed."""
+        from capitalscan.jobs import artifact
+        from capitalscan.jobs import predict as jp
+        from capitalscan.jobs import sync as sync_job
+
+        monkeypatch.setattr(artifact, "DEFAULT_PATH", tmp_path / "predictor.npz")
+
+        def _boom():
+            raise RuntimeError("DATABASE_URL_SERVING not set")
+
+        monkeypatch.setattr(sync_job, "serving_engine", _boom)
+        assert jp._fetch_if_absent("abc123") is False

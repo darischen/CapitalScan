@@ -73,37 +73,42 @@ Two things deliberately left as they are:
 
 ---
 
-## ...and `nightly` never fetches the published one
+## ~~...and `nightly` never fetches the published one~~ — **fixed 2026-09-10**
 
-**The other half of the same hole, found 2026-09-10 on wivie's first
-nightly.** `artifact.publish()` writes the model into serving's
-`model_artifact` table, and `artifact.fetch()` exists to pull it back --
-ADR 185's whole argument is that the reader should get it "through the
-connection it already holds rather than over ssh from whichever machine
-ran `weekly`, which matters because that machine changes at the `wivie`
-cutover".
+`artifact.publish()` writes the model into serving's `model_artifact` so
+a machine without the file can get it, and `artifact.fetch()` reads it
+back. **The only caller of `fetch` was `cscan predict --serving`**
+(`cli.py`), so the Pi's poller worked and `nightly` -- which runs against
+the *research* engine and never took that branch -- did not.
 
-**Nothing on the nightly path calls `fetch`.** `load()` checks the local
-`data/model/predictor.npz`, finds nothing, and the chain reports:
+Invisible while one machine both fitted and scored. It surfaced at the
+`wivie` cutover: a database dump carries no files, so the new research
+box had no `data/model/predictor.npz`, its first nightly reported
 
     skip predict: no artifact at data/model/predictor.npz
 
-then continues. Non-fatal by design -- "a week-old model is a known
-quantity; no model is not" -- but on a freshly cut-over machine it means
-**no predictions at all** until someone copies a file by hand, which is
-exactly what had to happen. The publish has no reader on this path, so it
-is currently write-only.
+and produced **no predictions at all** -- non-fatally, which is why it
+would have gone unnoticed until someone read the probabilities.
 
-Worth knowing before fixing it: the artifact is **not** rejected for a
-moved `git_sha`. ADR 186 replaced that with a design fingerprint, and the
-workstation's artifact loaded on wivie at a different HEAD
-(`fda17f9` fit, `90e8dc7` running) precisely because only unrelated code
-had moved. So a fetch would usually succeed rather than trip staleness.
+**Fixed** by `jobs/predict.py::_fetch_if_absent`, called on the
+`from_artifact` path. Deliberately narrow and deliberately quiet:
 
-Fix: have `load()` fall back to `fetch()` when the local file is absent
-and a serving engine is configured, or call `fetch` explicitly at the top
-of the nightly's predict step. Keep the staleness guard either way -- the
-point is to find the artifact, not to trust it blindly.
+- **only when the local file is absent.** A present artifact is either
+  current or stale, and staleness is `artifact.load`'s decision -- 
+  re-downloading over it would paper over the mismatch that check exists
+  for, and the poller asks every 20 seconds for a 3.6 MB payload.
+- **never fatal.** A research box with no serving configured is a normal
+  state (ADR 053), so any failure leaves the original `StaleArtifact`,
+  which already names the right remedy.
+
+Four tests in `test_predict_pipeline.py`. `report.artifact_path` now says
+`fetched` rather than `loaded` when it pulled one, so the run record
+shows which happened.
+
+Worth keeping in mind: the artifact is **not** rejected for a moved
+`git_sha`. ADR 186 keys staleness on a design fingerprint, and the
+workstation's artifact loaded on wivie at a different HEAD (`fda17f9`
+fit, `90e8dc7` running) because only unrelated code had moved.
 
 ## `cscan predict` fits an artifact and never publishes it
 

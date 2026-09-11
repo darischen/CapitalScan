@@ -79,6 +79,46 @@ class PredictReport:
         )
 
 
+def _fetch_if_absent(config_hash: str) -> bool:
+    """Pull the published artifact down when there is no local one.
+
+    **The missing half of ADR 185.** `artifact.publish()` puts the model in
+    serving's `model_artifact` so a machine without the file can get it,
+    and `artifact.fetch()` reads it back -- but until 2026-09-10 the only
+    caller was `cscan predict --serving` (`cli.py`). `nightly` runs against
+    the *research* engine, never took that branch, and so never fetched.
+
+    That went unnoticed while one machine both fitted and scored. It
+    surfaced at the `wivie` cutover: a database dump carries no files, so
+    the new research box had no `data/model/predictor.npz` and its first
+    nightly reported
+
+        skip predict: no artifact at data/model/predictor.npz
+
+    and produced **no predictions at all**, non-fatally, until the file was
+    copied across by hand. The publish had no reader on this path.
+
+    **Deliberately narrow.** Only when the local file is absent: a present
+    one is either current or stale, and staleness is `artifact.load`'s
+    decision to make, not something to paper over by re-downloading.
+
+    **Never fatal.** A research box with no serving configured is a normal
+    state (ADR 053), so any failure here leaves the original
+    `StaleArtifact` to be raised by the caller, which already carries the
+    right message and the right remedy.
+
+    Returns True when it actually wrote a file.
+    """
+    if artifact.DEFAULT_PATH.exists():
+        return False
+    try:
+        from capitalscan.jobs import sync as sync_job
+
+        return artifact.fetch(sync_job.serving_engine(), config_hash) is not None
+    except Exception:  # noqa: BLE001 - best effort; the caller raises the real error
+        return False
+
+
 def run_predict(
     engine: Engine | None = None,
     config_hash: str | None = None,
@@ -140,8 +180,11 @@ def run_predict(
         # config or code change that invalidated the artifact. The caller
         # decides: `nightly` refits, a per-fire scorer must fail loudly.
         if from_artifact:
+            fetched = _fetch_if_absent(config_hash)
             predictor = scorer.load_predictor(config_hash, sha)
-            report.artifact_path = f"loaded {artifact.DEFAULT_PATH}"
+            report.artifact_path = (
+                f"fetched {artifact.DEFAULT_PATH}" if fetched else f"loaded {artifact.DEFAULT_PATH}"
+            )
         else:
             predictor = (
                 rp.fit_and_calibrate(engine, config_hash, sha, n_buckets=n_buckets)
