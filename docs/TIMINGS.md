@@ -20,6 +20,13 @@ Index:
 - [`cscan indicators`](#cscan-indicators)
 - [`cscan bars --hourly --backfill`](#cscan-bars---hourly---backfill)
 - [`cscan universe --quarter`](#cscan-universe---quarter)
+- [`cscan predict` (ADR 174)](#cscan-predict-adr-174)
+- [`cscan predict`: fitting against loading (ADR 181)](#cscan-predict-fitting-against-loading-adr-181)
+- [`cscan backtest --phase harness`](#cscan-backtest---phase-harness-2026-09-09)
+- [`cscan sync`, full: five attempts](#cscan-sync-full-2026-09-09-five-attempts-and-2h48m55s)
+- [Dropping a superseded config generation](#dropping-a-superseded-config-generation-2026-09-10)
+- [The backtest was 70% single-threaded](#the-backtest-was-70-single-threaded-and-copy_upsert-fixed-it-2026-09-10)
+- [The `wivie` cutover, end to end](#the-wivie-cutover-end-to-end-2026-09-10)
 
 ---
 
@@ -624,3 +631,60 @@ the job.
 since launch.** Dividing elapsed time by chunks completed includes startup
 and ticker resolution, and it produced a 7.5 min/chunk estimate against an
 actual 2 min early in this same session.
+
+---
+
+## The `wivie` cutover, end to end (2026-09-10)
+
+Moving the rebuilt research generation from the workstation to `wivie`.
+**~24 minutes total**, against a `SETUP.md` note that said to expect
+"hours rather than minutes".
+
+| step | measured | notes |
+|---|---|---|
+| `pg_dump -Fc -Z 6` | **6m24s** | run *inside* the PG16 container; 26 GB -> **2.67 GB** archive |
+| `scp` to `wivie` | **3m58s** | over the workstation's Wi-Fi, concurrent with a live sync to the Pi |
+| `pg_restore -j 2` | **13m26s** | exit 0, **zero error lines**, 21,649,682 events |
+| `ANALYZE VERBOSE` | **7s** | all six large tables |
+
+Measured while `cscan sync` was streaming to the Pi over the same Wi-Fi,
+so these are contended numbers, not best case.
+
+### Why the old estimate was wrong, and why the new ones are shaped oddly
+
+**`SETUP.md` inferred "hours" from wivie's two physical cores and a 33 GB
+database. Neither input held.** Research is **26 GB** after the sweep
+cleanup took `path` from 11 GB to 4.7 GB, and `-j 2` against a 2.67 GB
+archive is not core-bound in the way the guess assumed. The figure had
+never been measured.
+
+**`ANALYZE` does not scale with table size.** Seven seconds across
+34.9M `path` rows and 21.7M `events` rows is not a fluke: it samples
+30,000 rows per table at the default statistics target. Budgeting it like
+`VACUUM FULL` -- which *does* scale -- overestimates it by two orders of
+magnitude. **Never skip it after a restore**, though: a PG16 dump carries
+no statistics and `pg_restore` does not analyze, so the machine comes up
+with none at all. -> `OPERATIONS.md`
+
+**Compress on the side that holds the data, not the side that wants it.**
+With `-Fc`, `pg_dump` compresses *client-side*. Running it on `wivie`
+against the workstation would have pulled the full uncompressed 26 GB
+across Wi-Fi; running it in the container and copying the archive moved
+**2.67 GB**, about a tenth. The version constraint pointed the same way:
+the archive must be written by **pg_dump 16** for `wivie`'s
+**pg_restore 17** to read it, and the reverse does not work (ADR 164).
+
+### A fourth way this table has been wrong
+
+The three failure modes above are about recorded numbers. This one is
+about predicted ones. Three estimates made on 2026-09-10 all ran high:
+
+| predicted | actual | what it was extrapolated from |
+|---|---|---|
+| scp ~35 min | **3m58s** | a throughput sample taken before the transfer ramped |
+| restore "hours" | **13m26s** | a core count |
+| `ANALYZE` 10-20 min | **7s** | a table size |
+
+**Each substituted a proxy for a measurement of the operation itself.**
+The shared lesson from the other three entries applies unchanged: one
+measurement is one regime, and a proxy is not even that.
