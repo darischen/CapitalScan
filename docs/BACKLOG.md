@@ -401,10 +401,17 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    still on disk, built for exactly this and shelved after being judged
    against a different question -- that negative result does not transfer.
 
-   **Check `capitalscan_hist` actually holds 2008 and 2000-02 events before
-   re-running anything.** Falsifier: refit on a window containing those
-   declines and the coverage errors should shrink toward zero with no
-   architecture change. If they do not, the label-shift story is wrong too.
+   **Checked 2026-09-10: it holds 2008, and does NOT hold 2000-2001.**
+   `events` begin **2002-01-02** (6,749,793 rows to 2026-09-03); `bars`
+   reach 1998-09-30 but events do not. So the 2008 decline -- the one this
+   item needs, and the year `ingest_start` excludes -- is available, and
+   the dot-com decline is only partly so. **A 2002-2021 rebuild is
+   therefore possible as specified; a 1999-2021 one is not** without
+   re-running events over the existing bars.
+
+   Falsifier unchanged: refit on a window containing those declines and the
+   coverage errors should shrink toward zero with no architecture change.
+   If they do not, the label-shift story is wrong too.
 
    **Do NOT spend time on these -- all four are measured and refuted:**
    a market-regime feature (error is the same size above and below the
@@ -875,11 +882,38 @@ turned out to be mis-posed (ADR 173). Priorities, in the user's order:
 not ship with it is a directional midpoint -- `terminal_h*_q50` is negative
 out of sample as currently specified.
 
-**`capitalscan_hist` (11 GB) still exists** and holds the extended-history
-store: bars back to 1998-09-30, events 2002-2026, `config_hash
-70b036b3660f21dc`, `crit_mcap` dropped. Rollback is `dropdb
-capitalscan_hist`. Keep it if the history work continues; drop it freely if
-not, since `scratchpad/hist/*.sh` rebuilds it.
+**`capitalscan_hist` (11 GB) still exists — and is now KEEP, not
+"drop freely".** Re-inspected 2026-09-10 during a disk cleanup.
+
+Contents, measured rather than remembered:
+
+| table | size | span |
+|---|---|---|
+| `events` | 5,655 MB | 6,749,793 rows, **2002-01-02 to 2026-09-03** |
+| `indicators` | 2,502 MB | |
+| `bars` | 1,431 MB | 7,230,415 rows, **1998-09-30 to 2026-09-03** |
+| `path` | 1,151 MB | |
+| `universe` | 22 MB | 99 quarters |
+
+`config_hash 70b036b3660f21dc`, `crit_mcap` dropped, alembic
+`e2c7a94b3d15` (production is `a7c2e9f4b105`, so its schema is stale).
+
+**It answers the check item 2b above asks for.** That item says to confirm
+the store holds 2008 and 2000-02 events before re-running anything. It
+**holds 2008 and does not hold 2000-2001**: `bars` reach 1998 but `events`
+begin 2002-01-02. The 2008 decline, which is the one item 2b actually
+needs, is present.
+
+**This line used to say "drop it freely, since `scratchpad/hist/*.sh`
+rebuilds it". That is false and was the reason to check.** `scratchpad/`
+does not exist, was never tracked in git, and those scripts are gone.
+`dropdb capitalscan_hist` is therefore **irreversible** short of
+re-deriving the scripts and re-ingesting 28 years of bars.
+
+Nothing references it -- zero hits in code, zero in `.env.local`, no
+process connects to it -- so "unused" is true and "disposable" is not.
+11 GB against 344 GB free buys an open experiment that is no longer cheap
+to reconstruct.
 
 ### Bugs found in flight and NOT fixed
 
