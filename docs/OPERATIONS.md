@@ -1281,6 +1281,34 @@ only a gap wider than a week loses anything.
 `research.signal_reports` while the pull writes it, and since ADR 158 the
 two stores mint that table's ids independently.
 
+### A restored database has no planner statistics
+
+**`pg_restore` does not `ANALYZE`, and a PG16 dump carries no statistics.**
+So a freshly restored machine comes up with none at all -- 26 GB of tables
+the planner knows nothing about. Nothing errors; the first job is simply
+inexplicably slow, which is the same shape as the stale-statistics
+incident where `indicators` held 4M rows while the planner believed 80k.
+
+Raised 2026-09-10 by the user asking whether the delete-and-vacuum had
+also been run on `wivie`. It had not, and it does not need to be --
+`pg_restore --clean --if-exists` drops each table outright and recreates
+it from the dump, so the space returns without a vacuum and the four
+superseded sweep generations simply never arrive. But the same question
+exposed the statistics gap, which is real.
+
+Run after any restore, as its own step:
+
+```
+psql -c "ANALYZE VERBOSE;"          # ~10-20 min on wivie's two cores
+```
+
+`ANALYZE`, not `VACUUM ANALYZE`: a freshly restored table has no dead
+tuples, so there is nothing to reclaim.
+
+**Do not fix this by editing a cutover script that is already running.**
+Bash reads a script incrementally by byte offset, so an edit mid-run
+shifts what it executes next. Stage a second script instead.
+
 ### What restarts by itself afterwards
 
 Verified live, not read off a unit file:
