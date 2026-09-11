@@ -64,9 +64,11 @@ a rule that was true everywhere in August is now true on one box.
 | role | heavy research | scheduled research | serving |
 | Postgres | **16.14 in Docker**, `capitalscan-postgres` | **17.11 native**, systemd | 17.11 native, systemd |
 | scheduler | Task Scheduler | systemd timers | systemd timers |
-| runs | backtests, sweeps, rebuilds, `nightly` today | `nightly`/`weekly`/`monthly` after cutover | poller, serving DB, web app |
+| runs | backtests, sweeps, rebuilds, ablation arms | **`nightly`/`weekly`/`monthly` — live since 2026-09-10** | poller, serving DB, web app |
 
-All three addresses are DHCP-reserved. **The desktop is not being retired** — it leaves the *scheduled* role at the cutover and stays the heavy-research box, so this is a permanent two-machine arrangement rather than a handoff.
+All three addresses are DHCP-reserved. **The desktop is not being retired** — it left the *scheduled* role at the cutover and stays the heavy-research box, so this is a permanent two-machine arrangement rather than a handoff.
+
+**The cutover completed 2026-09-10 18:09 PT.** `wivie` holds a full copy of the research database (restored in 13m26s, verified row for row) and runs the three timers; the workstation's `CapitalScan nightly` task is `Disabled`. Wherever this file says "after cutover" or "today", read it as done. → `TIMINGS.md` for the measured steps.
 
 **Versions differ deliberately and must not be "fixed"** (ADR 164). One consequence binds: 16.14 restores into 17.11 and the reverse does not, so a dump taken on `wivie` cannot go back onto the container.
 
@@ -376,11 +378,21 @@ recursive process creation, which looks like a hang.
 
 ### Scheduling
 
+**The cutover happened on 2026-09-10 at 18:09 PT.** `wivie` runs the
+schedule now; the workstation is stood down and stays the heavy-research
+box. This table said the opposite until that evening.
+
 | machine | mechanism | state |
 |---|---|---|
-| workstation | Task Scheduler, catch-up enabled | `CapitalScan nightly` registered and `Ready`. `weekly`/`monthly` **not registered** — `install_schedule.ps1` would do it and has never been run here. |
-| `wivie` | systemd timers, `Persistent=true` | All three rendered into `/etc/systemd/system` and `daemon-reload`ed, **timers `disabled`.** `systemctl enable --now` is the cutover step. |
+| workstation | Task Scheduler, catch-up enabled | `CapitalScan nightly` **`Disabled`** at the cutover, deliberately, so two boxes never both run nightly. `weekly`/`monthly` were never registered here. |
+| `wivie` | systemd timers, `Persistent=true` | **All three `enabled` and live** since 2026-09-10 18:09. |
 | Pi | systemd timer | `capitalscan-poller.timer`, live, fires 00:00 PT. |
+
+**`systemctl enable --now` fired the nightly immediately**, and that is
+`Persistent=true` working, not a mistake: 13:15 had already passed
+unserved that day, so enabling the timer made it catch up. Expect a run to
+start the moment you enable, and do not enable during market hours unless
+you want one.
 
 The workstation task runs `scripts/run_nightly.ps1`, now a one-line shim to
 `run_job.ps1`. **First real Task Scheduler firing of the new wrapper was
@@ -438,13 +450,18 @@ Three consequences worth knowing before relying on it:
   the one job that stays there permanently, because it is the fastest box
   and arms are the longest thing the project runs.
 
-  **The live hash is `0523841076f47293` as of 2026-08-29** (arm `t5_atr20`:
-  `target_pct` 0.05, `stop_atr_k` 2.0; commit `42ae20a`, RESULTS
-  2026-08-29). It moved from `a38d3ca6b58295e8`, which the `OPERATIONS.md`
-  and `TIMINGS.md` anecdotes still name and which stays resident as the
-  prior serving generation. Confirm against all three before trusting a
-  manual query: `serving_config`, the research GUC, and
-  `config_hash(resolve_config())`.
+  **The live hash is `f183b0f5209a4677` as of 2026-09-10**, the generation
+  that enabled `bull_close_below_lower` (ADR 194). It moved from
+  `0523841076f47293` (arm `t5_atr20`: `target_pct` 0.05, `stop_atr_k` 2.0;
+  commit `42ae20a`, RESULTS 2026-08-29), which stays resident as the prior
+  serving generation and **owns the `outcomes` forward log** -- which is
+  why the cleanup keeps it rather than dropping everything but current.
+  Older anecdotes in `OPERATIONS.md` and `TIMINGS.md` still name
+  `a38d3ca6b58295e8`, two generations back.
+
+  Confirm against all three before trusting a manual query:
+  `serving_config`, the research GUC, and `config_hash(resolve_config())`.
+  Verified in agreement on all four stores at the 2026-09-10 cutover.
 - **Nightly must still run on the research machine**, because
   `sync.pull_live_records` brings the poller's durable rows back --
   `runs` (scoped `job='poll'`), `signal_reports` and `poller_sessions`.
