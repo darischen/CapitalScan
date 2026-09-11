@@ -1283,6 +1283,56 @@ unknowns: restore on the *known-good* supply first. Going straight to a
 second bank would have left "is the card corrupt?" and "is the bank
 adequate?" entangled.
 
+### Which supplies actually hold a Pi 4B, measured
+
+Four supplies tried on 2026-09-10, all nominally adequate on their
+labels. `vcgencmd get_throttled` is the arbiter: `0x0` is clean, bit 0 is
+undervoltage now, bit 16 undervoltage since boot.
+
+| supply | result |
+|---|---|
+| cheap old power bank | never booted; red PWR LED dark |
+| Romoss Sense 8+ 30,000mAh, **battery only** | booted and ran |
+| Romoss Sense 8+ 30,000mAh, **pass-through** | `throttled=0x50005`, `dmesg: Undervoltage detected!` |
+| **wall power strip USB port** | **`0x0` idle, `0x0` under full load** |
+
+**The pass-through row is the important one.** The bank powers the Pi
+perfectly on battery and fails the moment its own input is connected --
+isolated by the user testing input-out against input-in. That is
+disqualifying for a UPS regardless of capacity, because pass-through
+*is* the feature: mains -> bank -> Pi, charging and supplying at once,
+carrying the load when mains drops. 30,000 mAh would run this board for
+hours; the charge controller is what fails.
+
+**A "5V 3A" label is not the specification.** The Pi 4B's official supply
+is **5.1 V**, and that extra 0.1 V is headroom for cable drop. A bank at
+a nominal 5.0 V starts with none, and a thin USB-C cable can drop
+0.3-0.5 V at 3 A -- landing under the 4.63 V detector. Swapping the cable
+on the Romoss took it from "won't boot" to "boots but undervolts", which
+is the signature of a supply that is marginal rather than wrong.
+
+**How the good supply was verified**, because an idle reading proves
+little -- undervoltage appears under load:
+
+```
+vcgencmd get_throttled          # before
+# then, concurrently:
+#   a 10.8M-row count(*) against serving
+#   40 concurrent HTTP requests across /, /research, /ticker/<sym>, the APIs
+vcgencmd get_throttled          # after
+```
+
+Result: `0x0` throughout, 42.8 -> 50.6 C. It also survived the **boot
+current spike**, which is the largest draw the board ever makes and where
+both banks failed.
+
+**A wall USB port is not a UPS.** It fixes power *quality*, not power
+*loss*. Both banks failed the one property a UPS needs, so the options
+that remain are a Pi UPS HAT with 18650 cells (Geekworm X1200, Waveshare)
+or a conventional AC UPS running the official 5.1 V supply -- and in the
+latter case the network switch needs to be on it too, since a Pi that
+survives an outage on a dead LAN serves nobody.
+
 ### What a plug-pull actually risks
 
 Checked on the Pi rather than inferred:
