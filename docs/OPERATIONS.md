@@ -1281,6 +1281,44 @@ only a gap wider than a week loses anything.
 `research.signal_reports` while the pull writes it, and since ADR 158 the
 two stores mint that table's ids independently.
 
+### A dump taken mid-flight carries stale `running` rows
+
+**`pg_dump` copies `runs` exactly as it stands**, so any job in flight at
+dump time arrives on the new machine as `status='running'` with no
+`finished_at` -- and it will stay that way forever, because the job
+finishes on the *other* box.
+
+Measured at the 2026-09-10 cutover. The dump was taken at 17:12 while a
+full `cscan sync` (started 15:56) was still running and a killed
+`benchmarks` job had never written a terminal status. Both landed on
+`wivie` reading `running`, aged 10,216s and 6,837s:
+
+    sync       | running | 15:56:26
+    benchmarks | running | 16:52:45
+
+Neither was running on `wivie` at all. This is the trap `CLAUDE.md`
+already names -- *"`status = 'running'` is not evidence a job is
+running"* -- reached by a new route: not a crash, but a **correct copy of
+a true-at-the-time state into a machine where it was never true**.
+
+The live-backend check that normally resolves it gives the wrong answer
+here, because there IS a live backend on the new machine (its own first
+nightly) and there was a real process behind those rows -- just elsewhere.
+
+**After any cutover restore, close out every `running` row older than the
+restore itself:**
+
+```sql
+UPDATE runs SET status = 'failed', finished_at = now(),
+       notes = coalesce(notes || ' | ', '') ||
+               'inherited mid-flight from the dump at the cutover'
+ WHERE status = 'running' AND started_at < '<restore timestamp>';
+```
+
+Do it before the first scheduled run, or `resume_decision` reads a
+`started` row it cannot distinguish from a crash. It happens to fail
+toward "run", which is safe -- but it is the right answer by luck.
+
 ### A restored database has no planner statistics
 
 **`pg_restore` does not `ANALYZE`, and a PG16 dump carries no statistics.**
