@@ -260,11 +260,32 @@ and leaves a window where `wivie` holds head's schema over an old
 generation's data, which looks exactly like a working research database
 and is not. The schema is not a separate task from the data.
 
-**Sizing, measured 2026-09-09.** Research is **33 GB** (`events` 17 GB,
-`path` 11 GB, `indicators` 1.9 GB, `bars` 1.8 GB). `wivie` has 394 GB free,
-so space is not the constraint; its **two physical cores** are. Expect the
-restore to take hours rather than minutes, and run it when nothing else
-needs the box.
+**Sizing and duration, now measured end to end (2026-09-10).** The
+2026-09-09 note here said research was 33 GB and to "expect the restore to
+take hours rather than minutes". **Both halves were wrong**, and the
+second was never measured -- it was inferred from the two cores.
+
+| step | measured |
+|---|---|
+| `pg_dump -Fc -Z 6` (in the PG16 container) | **6m24s**, 26 GB -> **2.67 GB** archive |
+| scp to `wivie` over Wi-Fi | **3m58s** |
+| `pg_restore -j 2` | **13m26s**, exit 0, **zero errors** |
+| `ANALYZE VERBOSE` | **7s** |
+| **total** | **~24 min** |
+
+Research is **26 GB**, not 33: the sweep cleanup took `path` from 11 GB to
+4.7 GB. `events` is still 17 GB because it holds two generations.
+
+**`ANALYZE` is seconds, not minutes, and that is not luck.** It samples
+30,000 rows per table at the default statistics target, so it does not
+scale with table size the way `VACUUM FULL` does. Do not budget for it as
+if it did -- but do not skip it either: a PG16 dump carries no statistics
+and `pg_restore` does not analyze, so the machine comes up with none.
+-> `OPERATIONS.md`
+
+The two cores do bound the restore, but `-j 2` and a 2.67 GB archive keep
+it well inside a coffee break. Space was never the constraint: `wivie` has
+383 GB free.
 
 If that holds, the switch is four steps:
 
