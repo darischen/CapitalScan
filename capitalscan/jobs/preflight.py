@@ -139,7 +139,59 @@ def _research_checks() -> list[Check]:
     except Exception as exc:  # noqa: BLE001
         line = str(exc).splitlines()[0][:100]
         out.append(Check("research schema", "warn", f"could not compare: {line}"))
+
+    out.append(_timezone_check())
     return out
+
+
+#: Every store in the project runs UTC, and jobs write naive timestamps that
+#: the server resolves in the *session* timezone. So this is not cosmetic.
+_REQUIRED_TZ = {"UTC", "Etc/UTC"}
+
+
+def _timezone_check() -> Check:
+    """The research database must be UTC.
+
+    **This check exists because `preflight` passed 8/8 on a machine that was
+    about to corrupt every row it wrote.** `wivie`'s native PostgreSQL
+    defaulted to `America/Los_Angeles` at the 2026-09-10 cutover. Jobs write
+    naive timestamps into `timestamptz` columns, so the server resolved them
+    in the session zone: the same trading day landed at `00:00-07` there and
+    `00:00 UTC` on the workstation. The unique key `(ticker, ts, interval)`
+    saw two different instants, so instead of conflicting it **inserted a
+    second row for every day** -- 2,930 bars and 5,662 indicators before the
+    nightly died.
+
+    The failure surfaced four layers away as
+    `ValueError: The truth value of a Series is ambiguous`, because
+    `ind_group.loc[bar_date]` returns a DataFrame once a date is duplicated.
+    Nothing in that message names a timezone.
+
+    `Etc/UTC` and `UTC` are both accepted: the container reports the first
+    and a native install the second, and they are the same zone.
+    """
+    from sqlalchemy import text
+
+    from capitalscan.jobs import db_io
+
+    try:
+        with db_io.get_engine(
+            os.environ["DATABASE_URL_RESEARCH"], use_null_pool=True
+        ).connect() as c:
+            tz = str(c.execute(text("SHOW TimeZone")).scalar_one())
+    except Exception as exc:  # noqa: BLE001 - reported, never raised
+        line = str(exc).splitlines()[0][:80]
+        return Check("research timezone", "warn", f"could not read: {line}")
+
+    if tz in _REQUIRED_TZ:
+        return Check("research timezone", "ok", tz)
+    return Check(
+        "research timezone",
+        "fail",
+        f"{tz}, must be UTC -- daily rows will duplicate per trading day",
+        "ALTER SYSTEM SET timezone='UTC'; ALTER DATABASE <db> SET TimeZone='UTC'; "
+        "SELECT pg_reload_conf();",
+    )
 
 
 def _serving_checks() -> list[Check]:

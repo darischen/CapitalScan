@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from collections.abc import Hashable
 from concurrent.futures import ProcessPoolExecutor
 from datetime import date, timedelta
 from typing import Any, cast
@@ -1115,6 +1116,43 @@ def _build_event_row(
     }
 
 
+def _one_row(frame: pd.DataFrame, key: Hashable, what: str, ticker: str) -> "pd.Series | None":
+    """One row for `key`, or `None` — and a legible error if there are two.
+
+    **`.loc[key]` silently changes type when the index has duplicates**: a
+    Series for one match, a DataFrame for several. Downstream then does
+    `bool(value)` on what it believes is a scalar and pandas raises
+    `ValueError: The truth value of a Series is ambiguous` from inside
+    `generic.py`, four frames from anything nameable. That message appears
+    nowhere near the cause and names neither the ticker nor the date.
+
+    Hit for real on 2026-09-10, the first nightly on `wivie`: its Postgres
+    was `America/Los_Angeles` while every other store is UTC, so naive
+    timestamps resolved 7 hours off and each trading day was inserted
+    twice. `preflight` now refuses that configuration outright, but the
+    duplicate is a data-integrity fault from any cause, so refusing to
+    guess which row is correct belongs here too.
+
+    Raising rather than taking the last row is deliberate: picking one
+    would produce events from an arbitrary half of a corrupted day and look
+    entirely normal.
+    """
+    if key not in frame.index:
+        return None
+    # `cast` only to satisfy pandas-stubs: its `.loc` overloads enumerate
+    # concrete key types and none of them is a bare `Hashable`, though every
+    # caller here passes a `date`. The runtime behaviour is unchanged.
+    row = frame.loc[cast("Any", key)]
+    if isinstance(row, pd.DataFrame):
+        raise ValueError(
+            f"{what} has {len(row)} rows for {ticker} at {key}, expected one. "
+            "A duplicated index here means duplicated source rows -- check that the "
+            "research database is UTC (`cscan preflight`), since a timezone mismatch "
+            "writes each trading day twice under different timestamps."
+        )
+    return cast("pd.Series", row)
+
+
 def run_events(
     tickers: list[str],
     target_start: date,
@@ -1234,7 +1272,7 @@ def run_events(
                 # its allowlist constant rather than restating the field —
                 # the two detection callers drifting apart on which fields
                 # cross from row t is precisely the failure this guards.
-                own_ind = ind_group.loc[bar_date] if bar_date in ind_group.index else None
+                own_ind = _one_row(ind_group, bar_date, "indicators", ticker)
                 for field in CLOSE_CONFIRMED_FIELDS:
                     value = None if own_ind is None else own_ind.get(field)
                     bar[field] = False if value is None or pd.isna(value) else bool(value)
@@ -1244,7 +1282,7 @@ def run_events(
                     if key in seen:
                         continue
                     seen.add(key)
-                    market_row = market.loc[bar_date] if bar_date in market.index else None
+                    market_row = _one_row(market, bar_date, "market", ticker)
                     deduped.append(
                         _build_event_row(
                             hit,

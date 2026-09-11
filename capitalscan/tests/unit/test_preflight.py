@@ -79,3 +79,75 @@ class TestWiredIntoCli:
         result = CliRunner().invoke(app, ["preflight", "--help"])
         assert result.exit_code == 0
         assert "set up to run the research jobs" in result.output
+
+
+class TestTheResearchTimezoneIsUtc:
+    """**This check exists because `preflight` passed 8/8 on a machine that
+    was about to corrupt every row it wrote.**
+
+    `wivie`'s native PostgreSQL defaulted to `America/Los_Angeles` at the
+    2026-09-10 cutover while every other store is UTC. Jobs write naive
+    timestamps into `timestamptz`, so the server resolved them in the
+    session zone and each trading day was inserted twice under different
+    instants -- 2,930 bars and 5,662 indicators before the nightly died
+    with a pandas error four frames from the cause.
+    """
+
+    def _tz(self, monkeypatch, value):
+        """Stand in for the server's `SHOW TimeZone`, without a database."""
+        import os
+
+        from capitalscan.jobs import preflight as mod
+
+        monkeypatch.setitem(os.environ, "DATABASE_URL_RESEARCH", "postgresql://x/y")
+
+        class _Result:
+            def scalar_one(self):
+                if isinstance(value, Exception):
+                    raise value
+                return value
+
+        class _Conn:
+            def execute(self, *_a, **_k):
+                return _Result()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+        class _Engine:
+            def connect(self):
+                return _Conn()
+
+        monkeypatch.setattr(mod.__name__ + ".os", os, raising=False)
+        from capitalscan.jobs import db_io
+
+        monkeypatch.setattr(db_io, "get_engine", lambda *_a, **_k: _Engine())
+        return mod._timezone_check()
+
+    def test_utc_passes(self, monkeypatch):
+        assert self._tz(monkeypatch, "UTC").level == "ok"
+
+    def test_etc_utc_also_passes(self, monkeypatch):
+        """The container reports `Etc/UTC` and a native install `UTC`.
+        They are the same zone, so rejecting one would fail the workstation."""
+        assert self._tz(monkeypatch, "Etc/UTC").level == "ok"
+
+    def test_a_local_zone_is_a_hard_fail(self, monkeypatch):
+        """`warn` would not be enough: the run completes and silently
+        double-writes, which is worse than not running."""
+        check = self._tz(monkeypatch, "America/Los_Angeles")
+        assert check.level == "fail"
+        assert "America/Los_Angeles" in check.detail
+
+    def test_the_fix_names_the_commands(self, monkeypatch):
+        check = self._tz(monkeypatch, "America/New_York")
+        assert "ALTER SYSTEM" in check.fix and "UTC" in check.fix
+
+    def test_an_unreadable_server_warns_rather_than_fails(self, monkeypatch):
+        """A box with no database yet should not be told its timezone is
+        wrong -- `research db` already reports that, and two FAILs for one
+        cause sends the reader to the wrong fix."""
+        assert self._tz(monkeypatch, RuntimeError("connection refused")).level == "warn"

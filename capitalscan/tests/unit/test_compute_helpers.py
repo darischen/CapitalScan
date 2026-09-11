@@ -166,3 +166,59 @@ class TestConfigHash:
         h = config_hash(Config())
         assert len(h) == 16
         int(h, 16)  # raises if not valid hex
+
+
+class TestOneRowRefusesADuplicatedIndex:
+    """`.loc[key]` silently returns a Series for one match and a DataFrame
+    for several, so a duplicated index turns a scalar read into a column
+    read several frames later.
+
+    On 2026-09-10 that surfaced as `ValueError: The truth value of a Series
+    is ambiguous` raised inside pandas' `generic.py`, naming neither the
+    ticker, the date, nor the real cause (a research database running
+    `America/Los_Angeles`, which wrote every trading day twice).
+    """
+
+    def _frame(self, index):
+        import pandas as pd
+
+        return pd.DataFrame({"bear_close_above_upper": [True] * len(index)}, index=index)
+
+    def test_a_unique_key_returns_the_row(self):
+        import pandas as pd
+
+        from capitalscan.jobs import compute
+
+        row = compute._one_row(self._frame(["a", "b"]), "a", "indicators", "AAPL")
+        assert isinstance(row, pd.Series)
+        assert bool(row["bear_close_above_upper"]) is True
+
+    def test_a_missing_key_returns_none(self):
+        from capitalscan.jobs import compute
+
+        assert compute._one_row(self._frame(["a"]), "zzz", "indicators", "AAPL") is None
+
+    def test_a_duplicated_key_raises_instead_of_guessing(self):
+        """**Raising beats taking the last row.** Picking one would emit
+        events from an arbitrary half of a corrupted day and look normal."""
+        import pytest
+
+        from capitalscan.jobs import compute
+
+        with pytest.raises(ValueError, match="expected one"):
+            compute._one_row(self._frame(["a", "a"]), "a", "indicators", "AAPL")
+
+    def test_the_error_names_the_ticker_the_date_and_the_likely_cause(self):
+        """The old failure named none of these, which is why it took four
+        frames of pandas internals to reach the timezone."""
+        import pytest
+
+        from capitalscan.jobs import compute
+
+        with pytest.raises(ValueError) as exc:
+            compute._one_row(self._frame(["2026-09-08"] * 3), "2026-09-08", "indicators", "BA")
+        msg = str(exc.value)
+        assert "BA" in msg
+        assert "2026-09-08" in msg
+        assert "3 rows" in msg
+        assert "UTC" in msg
