@@ -1281,6 +1281,52 @@ only a gap wider than a week loses anything.
 `research.signal_reports` while the pull writes it, and since ADR 158 the
 two stores mint that table's ids independently.
 
+### Changing a database's timezone moves the wall clock of rows already written
+
+**A follow-on from the UTC fix above, and it would have silently skipped
+a day.** `scheduled_runs.record` writes `actual_start` as
+`datetime.now()` -- a *naive* local timestamp -- into a `timestamptz`
+column, and `resume_decision` deliberately compares **naive wall-clock
+digits** on both sides, because the tzinfo is wrong and the digits are
+right.
+
+That holds only while the session zone never changes. Fixing wivie's
+Postgres from `America/Los_Angeles` to `UTC` on 2026-09-10 broke the
+assumption for rows already stored:
+
+    written 19:03:53 local, session America/Los_Angeles
+      -> stored 2026-09-11 02:03:53+00
+      -> read back by resume_decision as wall clock "09-11 02:03"
+
+A run that happened on the evening of the 10th now claims the 11th. Both
+`resume_decision(today)` and `resume_decision(tomorrow)` returned
+`already_complete`, so **the next scheduled nightly would have been
+skipped** -- the exact "skip nightly and research silently stops
+accumulating" failure `CLAUDE.md` warns about, reached without anyone
+skipping anything.
+
+Two faults compounded it. The offending row belonged to the **crashed**
+attempt yet read `ok`, while the run that actually exited 0 still read
+`started`: `complete()` updates the newest row by `actual_start`, and the
+bad timestamp had reordered them.
+
+**After changing a database timezone, re-read `scheduled_runs` and
+correct any row written under the old zone**, then verify with the
+function itself rather than by eye:
+
+```python
+from capitalscan.jobs import db_io, scheduled_runs
+from datetime import datetime, timedelta
+
+e = db_io.get_engine()
+for when in (datetime.now(), datetime.now() + timedelta(days=1)):
+    print(scheduled_runs.resume_decision(e, "nightly", when))
+```
+
+Expected after a good run today: `already_complete` for today, **`run`
+for tomorrow**. Getting `already_complete` for tomorrow means a row is
+dated into the next period.
+
 ### A dump taken mid-flight carries stale `running` rows
 
 **`pg_dump` copies `runs` exactly as it stands**, so any job in flight at

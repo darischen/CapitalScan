@@ -73,6 +73,38 @@ Two things deliberately left as they are:
 
 ---
 
+## ...and `nightly` never fetches the published one
+
+**The other half of the same hole, found 2026-09-10 on wivie's first
+nightly.** `artifact.publish()` writes the model into serving's
+`model_artifact` table, and `artifact.fetch()` exists to pull it back --
+ADR 185's whole argument is that the reader should get it "through the
+connection it already holds rather than over ssh from whichever machine
+ran `weekly`, which matters because that machine changes at the `wivie`
+cutover".
+
+**Nothing on the nightly path calls `fetch`.** `load()` checks the local
+`data/model/predictor.npz`, finds nothing, and the chain reports:
+
+    skip predict: no artifact at data/model/predictor.npz
+
+then continues. Non-fatal by design -- "a week-old model is a known
+quantity; no model is not" -- but on a freshly cut-over machine it means
+**no predictions at all** until someone copies a file by hand, which is
+exactly what had to happen. The publish has no reader on this path, so it
+is currently write-only.
+
+Worth knowing before fixing it: the artifact is **not** rejected for a
+moved `git_sha`. ADR 186 replaced that with a design fingerprint, and the
+workstation's artifact loaded on wivie at a different HEAD
+(`fda17f9` fit, `90e8dc7` running) precisely because only unrelated code
+had moved. So a fetch would usually succeed rather than trip staleness.
+
+Fix: have `load()` fall back to `fetch()` when the local file is absent
+and a serving engine is configured, or call `fetch` explicitly at the top
+of the nightly's predict step. Keep the staleness guard either way -- the
+point is to find the artifact, not to trust it blindly.
+
 ## `cscan predict` fits an artifact and never publishes it
 
 Found 2026-09-10 during the bull-reversal cutover, by the Pi being unable

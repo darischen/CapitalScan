@@ -27,6 +27,7 @@ Index:
 - [Dropping a superseded config generation](#dropping-a-superseded-config-generation-2026-09-10)
 - [The backtest was 70% single-threaded](#the-backtest-was-70-single-threaded-and-copy_upsert-fixed-it-2026-09-10)
 - [The `wivie` cutover, end to end](#the-wivie-cutover-end-to-end-2026-09-10)
+- [`cscan nightly` on `wivie`, the first two runs](#cscan-nightly-on-wivie-the-first-two-runs-2026-09-10)
 
 ---
 
@@ -688,3 +689,60 @@ about predicted ones. Three estimates made on 2026-09-10 all ran high:
 **Each substituted a proxy for a measurement of the operation itself.**
 The shared lesson from the other three entries applies unchanged: one
 measurement is one regime, and a proxy is not even that.
+
+---
+
+## `cscan nightly` on `wivie`, the first two runs (2026-09-10)
+
+The cutover run. **Run 1 failed; run 2 completed in 27m27s.** Both are
+recorded because they are different regimes and quoting either alone
+misleads.
+
+| step | run 1 (cold) | run 2 (warm) | rows (run 2) |
+|---|---:|---:|---:|
+| `tickers` | 1s | 0s | 503 |
+| `bars_daily` | 428s | **254s** | 4,360 |
+| `bars_hourly` | 275s | 276s | 30,431 |
+| `market` | 3s | 0s | 5 |
+| `actions` | 820s | **192s** | 449 |
+| `shares` | 1,591s | **54s** | 237,708 |
+| `earnings` | 30s | 30s | 1,190 |
+| `indicators` | 92s | 87s | 4,231 |
+| `events` | **failed 3s** | **158s** | 2,266 |
+| `path_capture` | — | 112s | 28,938 |
+| `peak_labels` | — | 199s | 986,410 |
+| `predict` | — | failed 23s | 0 |
+| `sync` | — | 260s | 148,647 |
+| **total** | died at 54m | **27m27s** | |
+
+### The cold/warm split is the whole story, and it is not the machine
+
+`wivie` has two physical cores against the workstation's many, so the
+obvious reading of run 1 is "the laptop is slow". **That reading is
+wrong**, and run 2 is the refutation: `shares` fell **1,591s -> 54s** and
+`actions` **820s -> 192s**, 29x and 4.3x, with no code or hardware change
+between them. Only the fetch cache differed -- `data/cache` was 3.5 MB at
+the start of run 1 and is not carried by a database dump, so every
+fetcher was a cold miss.
+
+Steady-state `wivie` is close to the workstation. Quote **run 2**.
+
+This also re-frames the workstation's own figures. `CLAUDE.md` budgets
+`actions` at 4 min and already warns that `shares` at 0.7 min "is a cache
+read, and 10 minutes is its real cost". Run 1's `shares` at 26.5 min is
+the honest **fully cold** number that nothing had measured before.
+
+### `predict` did not run, and the reason is a gap not a slowdown
+
+`skip predict: no artifact at data/model/predictor.npz`. A database dump
+carries no files, so a cut-over machine has no artifact -- and nothing on
+the nightly path calls `artifact.fetch()` to pull the published one out
+of serving's `model_artifact`. Copying the file by hand fixed it; the
+artifact then loaded at a *different* HEAD (`fda17f9` fit, `90e8dc7`
+running) because ADR 186 keys staleness on a design fingerprint rather
+than the sha. → `BACKLOG.md`
+
+### Budget
+
+**~27-30 min warm, ~55 min on a machine with no fetch cache.** The first
+run on any new box pays the cold penalty once.
