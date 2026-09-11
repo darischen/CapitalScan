@@ -231,7 +231,9 @@ Budgets, so nobody starts one blind. Per-step tables, regimes, and the history o
 | `cscan bars --daily --lookback 8000` | ~11 min / 521 tickers |
 | `cscan bars --hourly --backfill`, all tickers | ~4.5-5.5 h, no incremental path |
 | `cscan universe --quarter` x 66 | ~20 min |
-| `cscan predict` (ADR 174/175) | **~11 min** measured at six heads, workstation only — refits three seeds every run |
+| `cscan predict` (ADR 174/175), bare (refit) | **~11 min** measured at six heads — refit only, needs the `neural` extra, stays on whichever box runs `weekly` |
+| `cscan predict --from-artifact` / `--serving` | milliseconds — numpy forward pass, no `neural` extra, runs on the Pi via `wait_and_poll.sh` |
+| `cscan monthly` | none — no-op stub, `retrain/calibrate are Phase 6 scope` (`cli.py`); nothing runs so there is nothing to time |
 
 - **Use `--phase` for anything long.** `compute` is resumable, checkpointed per `--chunk-size` (default 25); `_chunk_already_done` keys on `(config_hash, chunk, of)`, so **keep `--chunk-size` identical across restarts** or every chunk re-runs. Each phase writes its own `runs` row (`backtest_compute` per chunk, `backtest_finalize`, `backtest_harness`); `notes` carries `harness passed` or the failing check.
 - **`compute`'s `cofire_count` is only correct within a chunk** and is excluded from that write. `finalize` is the whole-universe pass that corrects it, and only if `compute` finished for the config.
@@ -246,15 +248,23 @@ Budgets, so nobody starts one blind. Per-step tables, regimes, and the history o
   `from_artifact=True` and takes milliseconds. A `StaleArtifact` is
   reported and skipped in both, never fatal: **a week-old model is a known
   quantity; no model is not.**
-- **`cscan predict` needs the optional `neural` extra.** `uv sync --extra neural --extra dev` — the plain
+- **`cscan predict` needs the optional `neural` extra only for the refit path.** `uv sync --extra neural --extra dev` — the plain
   `--extra neural` **prunes the dev group**, which silently removes pytest's
-  `testcontainers` and breaks the integration tier. It refits rather than
+  `testcontainers` and breaks the integration tier. Bare `cscan predict` refits rather than
   loading a pickle, so a fit can never outlive the feature code that built
   it; the cost is **10m46s at six heads, measured 2026-09-05** (9m41s at four;
   one run per regime — check `runs` before quoting either) and a 2GB
-  wheel, which is why it stays on the workstation until someone
-  benchmarks it on `wivie`. Predictions go stale
-  unless it is run by hand. → `BACKLOG.md`
+  wheel — that cost is real and lands on whichever box runs `weekly`
+  (`wivie`, post-cutover).
+  **`--from-artifact` (and `--serving`, which implies it) load `.npz`+JSON via numpy
+  only** (`jobs/artifact.py`) — no torch, no `neural` extra, milliseconds. This is the
+  live-scoring path and it is already wired up, not run by hand: `weekly` refits and
+  publishes the artifact straight into the serving DB (ADR 185); `nightly` scores
+  with `from_artifact=True`; the Pi's `scripts/pi/wait_and_poll.sh` calls
+  `cscan predict --serving --universe all --since "$(date +%F)"` every 20s during
+  the live session plus a final pass at close. If a day's serving events show up
+  unscored, check whether that pass actually ran (`journalctl -u capitalscan-poller`)
+  before assuming predict needs to be run by hand.
 - **`runs` timed the write phase only before 2026-08-18.** Check `started_at` before quoting an old duration.
 
 ---
