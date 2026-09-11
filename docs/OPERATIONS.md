@@ -1222,6 +1222,67 @@ helped the first.
 Written before a deliberate power-loss test, so the numbers are the ones
 measured rather than the ones assumed.
 
+### The plug-pull test, run for real (2026-09-10)
+
+**Power physically pulled at 20:32, restored immediately. Zero data
+loss.** Everything below the predictions in this section held.
+
+```
+20:33:03.842  database system was not properly shut down; automatic recovery in progress
+20:33:03.858  redo starts at 32/EEF28828
+20:33:03.891  redo done at 32/EEF537A0          <- 33 milliseconds
+20:33:03.977  database system is ready to accept connections
+```
+
+No PANIC, no corruption, no checksum complaint. Every count matched
+exactly: `signal_reports` 3,442, `poller_sessions` 13, `predictions`
+32,886, `serving_config` `f183b0f5209a4677`, alembic `a7c2e9f4b105`,
+**54 rendered tickers before and after**.
+
+All three units autostarted unaided -- `postgresql`, `capitalscan-web`,
+`capitalscan-poller.timer`.
+
+**`systemd-fsck` did report "Dirty bit is set ... some data may be
+corrupt", and it is not what it looks like.** That was
+`/dev/mmcblk0p1`, the **FAT32 boot partition**, which has no journal and
+always reports dirty after an unclean stop. 432 files, repaired in
+milliseconds. Root (`mmcblk0p2`, ext4) was skipped as clean. Do not read
+that line as database corruption.
+
+The `synchronous_commit=off` window cost nothing **because nothing was
+writing**. Outside market hours that is the normal state; the same test
+mid-poll could lose the last ~600ms of commits.
+
+### A cheap power bank is not a UPS, and the Pi tells you in one LED
+
+**The first restore attempt failed for an unrelated reason worth its own
+entry.** After the pull, the Pi was reconnected through "a super cheap
+and old portable power bank" and did not come back for twelve minutes --
+no ICMP, ports 22/3000/5432 all unreachable, and absent from Tailscale
+too, so two independent networks agreed it was gone.
+
+It was not the SD card. **On a Pi 4B the red PWR LED is specifically the
+undervoltage detector**, dark below ~4.63 V. The observed state was *red
+off, green flickering*: the SoC alive and reading the card, browning out
+before the network came up. Straight onto the official 5.1 V / 3 A supply
+it booted normally and reported `throttled=0x0` with zero undervoltage
+lines in `dmesg`.
+
+A Pi 4B needs **5.1 V / 3 A sustained** and is unusually sensitive to
+cable resistance; the boot current spike is the worst moment to be short,
+which is why the failure looks like "won't boot" rather than "runs
+slowly". Verify any supply with:
+
+```
+vcgencmd get_throttled     # 0x0 clean; bit 0 undervolt now, bit 16 since boot
+dmesg | grep -i voltage
+```
+
+**The diagnostic order that worked**, because it separates the two
+unknowns: restore on the *known-good* supply first. Going straight to a
+second bank would have left "is the card corrupt?" and "is the bank
+adequate?" entangled.
+
 ### What a plug-pull actually risks
 
 Checked on the Pi rather than inferred:
