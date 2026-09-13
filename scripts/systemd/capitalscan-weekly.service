@@ -15,7 +15,10 @@ WorkingDirectory={{REPO}}
 ExecStart={{REPO}}/scripts/run_job.sh weekly
 Restart=on-failure
 RestartSec=15min
-RuntimeMaxSec=6h
+# 54h from a Saturday 00:00 start lands at Monday 06:00 -- generous headroom
+# now that the full-universe run has been observed to run well past the
+# previously assumed ~36 min budget (2026-09-12/13 catch-up run).
+RuntimeMaxSec=54h
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=capscan-weekly
