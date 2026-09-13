@@ -23,7 +23,7 @@ ResumeDecision = Literal["run", "already_complete"]
 SCHEDULE: dict[str, tuple[time, str]] = {
     "nightly": (time(16, 30), "daily"),
     "poll": (time(9, 15), "daily"),
-    "weekly": (time(2, 0), "weekly"),  # Sunday
+    "weekly": (time(0, 0), "weekly"),  # Saturday (moved from Sunday 02:00 in 4271dbb)
     "monthly": (time(3, 0), "monthly"),  # 1st of the month
 }
 
@@ -50,9 +50,9 @@ def _scheduled_for(job: str, as_of: datetime) -> datetime:
     if cadence == "daily":
         return candidate if candidate <= as_of else candidate - timedelta(days=1)
     if cadence == "weekly":
-        days_since_sunday = (as_of.weekday() + 1) % 7  # Monday=0 -> Sunday=6
+        days_since_saturday = (as_of.weekday() - 5) % 7  # Monday=0 -> Saturday=5 -> 0
         candidate = datetime.combine(
-            as_of.date() - timedelta(days=days_since_sunday), time_of_day, tzinfo=as_of.tzinfo
+            as_of.date() - timedelta(days=days_since_saturday), time_of_day, tzinfo=as_of.tzinfo
         )
         return candidate if candidate <= as_of else candidate - timedelta(days=7)
     if cadence == "monthly":
@@ -137,11 +137,12 @@ def _period_start(job: str, now: datetime) -> datetime:
     """Start of the window `job` is meant to run once inside, as a *naive*
     wall-clock datetime.
 
-    daily -> midnight today; weekly -> the most recent Sunday 00:00
-    (matching `_scheduled_for`'s weekday arithmetic); monthly -> the 1st at
-    00:00. `now`'s tzinfo is dropped: the only value compared against this
-    is `scheduled_runs.actual_start`, whose stored digits are a Pacific
-    wall clock regardless of what tzinfo they read back with (see
+    daily -> midnight today; weekly -> the most recent Saturday 00:00
+    (matching `_scheduled_for`'s weekday arithmetic and the systemd timer's
+    `OnCalendar=Sat *-*-* 00:00:00`); monthly -> the 1st at 00:00. `now`'s
+    tzinfo is dropped: the only value compared against this is
+    `scheduled_runs.actual_start`, whose stored digits are a Pacific wall
+    clock regardless of what tzinfo they read back with (see
     `resume_decision`).
     """
     _, cadence = SCHEDULE[job]
@@ -149,8 +150,8 @@ def _period_start(job: str, now: datetime) -> datetime:
     if cadence == "daily":
         return midnight
     if cadence == "weekly":
-        days_since_sunday = (now.weekday() + 1) % 7  # Monday=0 -> Sunday=6, so Sunday -> 0
-        return midnight - timedelta(days=days_since_sunday)
+        days_since_saturday = (now.weekday() - 5) % 7  # Monday=0 -> Saturday=5 -> 0
+        return midnight - timedelta(days=days_since_saturday)
     if cadence == "monthly":
         return midnight.replace(day=1)
     raise ValueError(cadence)  # pragma: no cover - SCHEDULE is closed above
@@ -168,7 +169,7 @@ def resume_decision(
 
     - ``("already_complete", detail)`` only when `scheduled_runs` holds a
       `status='ok'` run whose `actual_start` is inside the current period
-      (today for nightly, since Sunday for weekly, since the 1st for
+      (today for nightly, since Saturday for weekly, since the 1st for
       monthly).
     - ``("run", detail)`` for every other state -- `status='failed'`, a
       `status='started'` row with no terminal write (the job crashed or was
@@ -183,7 +184,7 @@ def resume_decision(
     machine whose clock is Pacific (SETUP.md). It lands in a `timestamptz`
     column under a UTC session, so it reads back tz-aware UTC with the
     Pacific wall-clock digits intact: the tzinfo is wrong, the digits are
-    right. Trusting the tzinfo would shift a Sunday-02:00 weekly run onto
+    right. Trusting the tzinfo would shift a Saturday-00:00 weekly run onto
     the wrong side of the period boundary. So `now`'s tzinfo is dropped
     too, and both sides are compared as Pacific wall clocks. Pass a
     Pacific `now` (aware or naive); the machine clock is already Pacific.

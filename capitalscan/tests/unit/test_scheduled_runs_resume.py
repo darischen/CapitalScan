@@ -23,7 +23,7 @@ from capitalscan.jobs import scheduled_runs
 
 LA = ZoneInfo("America/Los_Angeles")
 # A fixed Wednesday afternoon. Nightly period start -> 09-02 00:00,
-# weekly period start -> Sunday 08-30 00:00, monthly -> 09-01 00:00.
+# weekly period start -> Saturday 08-29 00:00, monthly -> 09-01 00:00.
 WED = datetime(2026, 9, 2, 15, 0, tzinfo=LA)
 
 
@@ -101,21 +101,21 @@ def test_nightly_ok_yesterday_means_run() -> None:
     assert "previous period" in detail
 
 
-def test_weekly_ok_since_sunday_is_already_complete() -> None:
-    sunday_run = datetime(2026, 8, 30, 3, 30, tzinfo=LA)  # Sunday 03:30, after the 02:00 slot
-    decision, _ = _decide("weekly", ("ok", sunday_run), now=WED)
+def test_weekly_ok_since_saturday_is_already_complete() -> None:
+    saturday_run = datetime(2026, 8, 29, 0, 30, tzinfo=LA)  # Saturday 00:30, after the 00:00 slot
+    decision, _ = _decide("weekly", ("ok", saturday_run), now=WED)
     assert decision == "already_complete"
 
 
 def test_weekly_ok_last_week_means_run() -> None:
-    prev_sunday = datetime(2026, 8, 23, 3, 30, tzinfo=LA)
-    decision, _ = _decide("weekly", ("ok", prev_sunday), now=WED)
+    prev_saturday = datetime(2026, 8, 22, 0, 30, tzinfo=LA)
+    decision, _ = _decide("weekly", ("ok", prev_saturday), now=WED)
     assert decision == "run"
 
 
 def test_weekly_crashed_this_week_means_run() -> None:
-    sunday_run = datetime(2026, 8, 30, 2, 5, tzinfo=LA)
-    decision, _ = _decide("weekly", ("started", sunday_run), now=WED)
+    saturday_run = datetime(2026, 8, 29, 0, 5, tzinfo=LA)
+    decision, _ = _decide("weekly", ("started", saturday_run), now=WED)
     assert decision == "run"
 
 
@@ -142,21 +142,21 @@ def test_period_start_is_naive_wall_clock() -> None:
     assert scheduled_runs._period_start("nightly", WED).tzinfo is None
 
 
-def test_period_start_weekly_lands_on_the_preceding_sunday() -> None:
-    # Wednesday -> the Sunday three days back.
-    assert scheduled_runs._period_start("weekly", WED) == datetime(2026, 8, 30, 0, 0)
-    # A Sunday afternoon -> that same day's midnight, not seven days back.
-    sunday_pm = datetime(2026, 8, 30, 14, 0, tzinfo=LA)
-    assert scheduled_runs._period_start("weekly", sunday_pm) == datetime(2026, 8, 30, 0, 0)
+def test_period_start_weekly_lands_on_the_preceding_saturday() -> None:
+    # Wednesday -> the Saturday four days back.
+    assert scheduled_runs._period_start("weekly", WED) == datetime(2026, 8, 29, 0, 0)
+    # A Saturday afternoon -> that same day's midnight, not seven days back.
+    saturday_pm = datetime(2026, 8, 29, 14, 0, tzinfo=LA)
+    assert scheduled_runs._period_start("weekly", saturday_pm) == datetime(2026, 8, 29, 0, 0)
 
 
-def test_weekly_sunday_0200_run_counts_this_week() -> None:
-    """The tz-skew bug: a Sunday 02:00 run stored as tz-aware UTC digits,
+def test_weekly_saturday_0000_run_counts_this_week() -> None:
+    """The tz-skew bug: a Saturday 00:00 run stored as tz-aware UTC digits,
     compared naively, must still land inside this week's period. Trusting
     the (wrong) UTC tzinfo would push it before the boundary and re-run a
     completed weekly."""
-    sunday_0200 = datetime(2026, 8, 30, 2, 0, tzinfo=ZoneInfo("UTC"))
-    decision, _ = _decide("weekly", ("ok", sunday_0200), now=WED)
+    saturday_0000 = datetime(2026, 8, 29, 0, 0, tzinfo=ZoneInfo("UTC"))
+    decision, _ = _decide("weekly", ("ok", saturday_0000), now=WED)
     assert decision == "already_complete"
 
 
