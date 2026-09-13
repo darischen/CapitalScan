@@ -1014,6 +1014,7 @@ def backtest(
         help="Also price signals in neither universe, for display only "
         "(they stay out of every statistic and the training frame)",
     ),
+    quiet: bool = typer.Option(False, "--quiet", help="JSON-lines progress instead of a live bar"),
 ) -> None:
     """Run the backtest engine (DESIGN §5): default config in, `events` rows
     out, then the Phase 3 validation harness (DESIGN §5.10) against what
@@ -1129,6 +1130,9 @@ def backtest(
                             engine=engine,
                             max_workers=workers,
                             full_universe=full_universe,
+                            # Always quiet: the outer sweep Progress bar above
+                            # already owns the live display for this loop.
+                            quiet=True,
                         )
                         report.rows_written = bt_report.rows_written
                         if bt_report.failed_tickers:
@@ -1321,6 +1325,7 @@ def backtest(
                     max_workers=workers,
                     full_universe=False,
                     include_out_of_universe=cosmetic,
+                    quiet=quiet,
                 )
                 report.rows_written = bt.rows_written
                 if bt.failed_tickers:
@@ -1374,6 +1379,7 @@ def backtest(
                 max_workers=workers,
                 full_universe=full_universe,
                 include_out_of_universe=cosmetic,
+                quiet=quiet,
             )
             report.rows_written = bt_report.rows_written
             notes: list[str] = []
@@ -3390,6 +3396,9 @@ def weekly(
                 # weekly hands nightly 3.6M extra events to path and
                 # `path_capture` goes from 97s to hours.
                 include_out_of_universe=cosmetic,
+                # Scheduled, no TTY: JSON-lines progress (ADR 052), same as
+                # nightly's hardcoded `quiet=True` on `run_path_capture`.
+                quiet=True,
             )
             report.rows_written = bt_report.rows_written
             if bt_report.failed_tickers:

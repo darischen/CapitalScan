@@ -88,6 +88,7 @@ def _noop_backtest(
     max_workers=1,
     full_universe=True,
     include_out_of_universe=False,
+    quiet=False,
 ):
     """A `run_backtest` that writes nothing, for tests about everything else.
 
@@ -176,6 +177,7 @@ def test_workers_is_passed_through_to_run_backtest(monkeypatch):
         max_workers=1,
         full_universe=True,
         include_out_of_universe=False,
+        quiet=False,
     ):
         captured["max_workers"] = max_workers
         # ADR 178's opt-in. Captured so the default is pinned: the
@@ -232,6 +234,7 @@ def test_explicit_tickers_passes_full_universe_false(monkeypatch):
         max_workers=1,
         full_universe=True,
         include_out_of_universe=False,
+        quiet=False,
     ):
         captured["full_universe"] = full_universe
         return BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
@@ -255,6 +258,7 @@ def test_no_tickers_flag_passes_full_universe_true(monkeypatch):
         max_workers=1,
         full_universe=True,
         include_out_of_universe=False,
+        quiet=False,
     ):
         captured["full_universe"] = full_universe
         return BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
@@ -283,6 +287,7 @@ def test_default_config_passed_to_run_backtest(monkeypatch):
         max_workers=1,
         full_universe=True,
         include_out_of_universe=False,
+        quiet=False,
     ):
         captured["config"] = config
         return BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
@@ -344,6 +349,7 @@ def test_sweep_with_prior_clean_run_does_not_run_a_single_default_backtest(monke
         max_workers=1,
         full_universe=True,
         include_out_of_universe=False,
+        quiet=False,
     ):
         run_backtest_calls.append(config)
         return BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
@@ -395,6 +401,7 @@ def test_sweep_dispatches_all_18_configs_in_deterministic_order(monkeypatch):
         max_workers=1,
         full_universe=True,
         include_out_of_universe=False,
+        quiet=False,
     ):
         calls.append((config, run_id, tuple(tickers), max_workers, full_universe))
         return BacktestReport(
@@ -433,6 +440,7 @@ def test_sweep_failure_at_config_n_does_not_discard_earlier_configs(monkeypatch,
         max_workers=1,
         full_universe=True,
         include_out_of_universe=False,
+        quiet=False,
     ):
         calls.append(config)
         if len(calls) == 5:
@@ -482,6 +490,7 @@ def test_sweep_resume_skips_already_completed_configs(monkeypatch):
         max_workers=1,
         full_universe=True,
         include_out_of_universe=False,
+        quiet=False,
     ):
         calls.append(config_hash(config))
         return BacktestReport(
@@ -642,6 +651,7 @@ def test_partial_failure_reports_failed_tickers_and_exits_nonzero(monkeypatch, c
         max_workers=1,
         full_universe=True,
         include_out_of_universe=False,
+        quiet=False,
     ):
         return BacktestReport(
             run_id=run_id,
@@ -679,6 +689,7 @@ def test_full_success_no_failed_tickers_exits_zero_when_harness_passes(monkeypat
         max_workers=1,
         full_universe=True,
         include_out_of_universe=False,
+        quiet=False,
     ):
         return BacktestReport(run_id=run_id, rows_written=5, tickers=["AAPL"], failed_tickers={})
 
@@ -736,6 +747,7 @@ def test_harness_runs_automatically_and_gates_exit_code(monkeypatch, capsys):
         max_workers=1,
         full_universe=True,
         include_out_of_universe=False,
+        quiet=False,
     ):
         return BacktestReport(run_id=run_id, rows_written=2, tickers=["AAPL"], failed_tickers={})
 
@@ -773,6 +785,7 @@ def test_harness_skipped_when_no_events_written(monkeypatch, capsys):
         max_workers=1,
         full_universe=True,
         include_out_of_universe=False,
+        quiet=False,
     ):
         return BacktestReport(run_id=run_id, rows_written=0, tickers=[], failed_tickers={})
 

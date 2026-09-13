@@ -420,6 +420,7 @@ def test_backtest_command_uses_resolved_config(monkeypatch, tmp_path):
         max_workers=1,
         full_universe=True,
         include_out_of_universe=False,
+        quiet=False,
     ):
         captured["config"] = config
         return backtest_mod.BacktestReport(

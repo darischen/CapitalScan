@@ -46,6 +46,7 @@ from capitalscan.core.config import DEFAULT_SWEEP, Config, ExitParams
 from capitalscan.core.types import Side
 from capitalscan.jobs import db_io
 from capitalscan.jobs.config import config_hash, split_key_for
+from capitalscan.jobs.progress import track
 
 # See module docstring: an alias, not a second dataclass (Ruling C1).
 BacktestConfig = Config
@@ -812,6 +813,7 @@ def run_backtest(
     today: date | None = None,
     full_universe: bool = True,
     include_out_of_universe: bool = False,
+    quiet: bool = False,
 ) -> BacktestReport:
     """DESIGN §5.1/§5.8: config in, `events` rows out. Dispatches one worker
     per ticker (`_backtest_one_ticker`), runs the cross-ticker
@@ -860,6 +862,14 @@ def run_backtest(
     worker resolves the same `config`. Partial failure (some tickers failed,
     at least one succeeded) does not raise: it writes what succeeded and
     records the rest on `BacktestReport.failed_tickers`, per Finding 4.
+
+    `quiet` (ADR 052, matching `path_backfill.run_path_backfill`): this
+    dispatch loop had no progress reporting at all until 2026-09-13, unlike
+    every other per-ticker worker pool in `research/`. A full-universe run
+    is a single `runs` row with nothing written until the whole pool
+    finishes (same shape as `cscan indicators`), so a scheduled caller with
+    no TTY -- `weekly` -- passes `quiet=True` for one JSON line per 100
+    tickers; an interactive `cscan backtest` gets a live bar by default.
     """
     engine = engine or db_io.get_engine()
     sorted_tickers = sorted(set(tickers))
@@ -883,8 +893,9 @@ def run_backtest(
     # report, and the run proceeds to write whatever succeeded.
     frames: list[pd.DataFrame] = []
     failed_tickers: dict[str, str] = {}
+    description = f"[cyan]backtest ({len(sorted_tickers)} tickers)...[/cyan]"
     if max_workers <= 1:
-        for ticker in sorted_tickers:
+        for ticker in track(sorted_tickers, description=description, quiet=quiet, label="ticker"):
             try:
                 frames.append(
                     _backtest_one_ticker(
@@ -912,7 +923,13 @@ def run_backtest(
                 ): ticker
                 for ticker in sorted_tickers
             }
-            for future in as_completed(futures):
+            for future in track(
+                as_completed(futures),
+                description=description,
+                total=len(futures),
+                quiet=quiet,
+                label="ticker",
+            ):
                 ticker = futures[future]
                 try:
                     frames.append(future.result())
