@@ -628,6 +628,77 @@ def _chunk_already_done(engine, config_hash: str, chunk: int, of: int) -> bool:
     return row is not None
 
 
+def _run_backtest_compute_chunked(
+    engine,
+    resolved: list[str],
+    config,
+    chash: str,
+    *,
+    workers: int,
+    cosmetic: bool,
+    chunk_size: int,
+    quiet: bool,
+) -> tuple[int, int, int, dict[str, str]]:
+    """The checkpointed compute pass shared by `cscan backtest --phase
+    compute` and `weekly` (2026-09-13, after `cscan weekly` OOM-killed on
+    `wivie` at 7.47GB RSS on a 7.6GB box: a monolithic `run_backtest` call
+    over the whole universe holds every ticker's frame in memory until one
+    final write, so peak memory grows with the universe, not with
+    `--chunk-size`).
+
+    Splits `resolved` into fixed-size chunks, writes each as its own
+    `backtest_compute` `runs` row via `run_backtest(..., full_universe=False)`,
+    and skips a chunk `_chunk_already_done` reports clean -- the exact same
+    checkpoint shape `--phase compute` already used, now with a second
+    caller. `cofire_count` is not written here (see `finalize_cofire`); the
+    caller runs that afterward.
+
+    Returns `(n_run, n_done, rows_written, failed_tickers)`, the union of
+    every chunk's `BacktestReport.failed_tickers` -- the caller decides how
+    to treat a partial failure, same as the single-call path used to.
+    """
+    from capitalscan.jobs import ingest
+    from capitalscan.research.backtest import run_backtest
+
+    chunks = [resolved[i : i + chunk_size] for i in range(0, len(resolved), chunk_size)]
+    n_done = n_run = 0
+    rows_written = 0
+    failed_tickers: dict[str, str] = {}
+    for i, chunk in enumerate(chunks, start=1):
+        if _chunk_already_done(engine, chash, i, len(chunks)):
+            n_done += 1
+            continue
+        params = {
+            "config_hash": chash,
+            "phase": "compute",
+            "chunk": i,
+            "of": len(chunks),
+            "n_tickers": len(chunk),
+            "workers": workers,
+        }
+        with ingest.run_job(engine, "backtest_compute", params) as report:
+            bt = run_backtest(
+                chunk,
+                config,
+                report.run_id,
+                engine=engine,
+                max_workers=workers,
+                full_universe=False,
+                include_out_of_universe=cosmetic,
+                quiet=quiet,
+            )
+            report.rows_written = bt.rows_written
+            if bt.failed_tickers:
+                report.notes = f"{len(bt.failed_tickers)} ticker(s) failed: " + ", ".join(
+                    sorted(bt.failed_tickers)[:10]
+                )
+        n_run += 1
+        rows_written += bt.rows_written
+        failed_tickers.update(bt.failed_tickers)
+        console.print(f"  chunk {i}/{len(chunks)}: {bt.rows_written} rows ({len(chunk)} tickers)")
+    return n_run, n_done, rows_written, failed_tickers
+
+
 def _sweep_config_already_done(engine, config_hash: str) -> bool:
     """Task 12's per-config checkpoint/resume check for `--sweep`.
 
@@ -1302,40 +1373,16 @@ def backtest(
     # `cofire_count` at whatever it was, which for a new `config_hash` is
     # NULL -- visible, and not a silently wrong number.
     if phase == "compute":
-        chunks = [resolved[i : i + chunk_size] for i in range(0, len(resolved), chunk_size)]
-        n_done = n_run = 0
-        for i, chunk in enumerate(chunks, start=1):
-            if _chunk_already_done(engine, chash, i, len(chunks)):
-                n_done += 1
-                continue
-            params = {
-                "config_hash": chash,
-                "phase": "compute",
-                "chunk": i,
-                "of": len(chunks),
-                "n_tickers": len(chunk),
-                "workers": workers,
-            }
-            with ingest.run_job(engine, "backtest_compute", params) as report:
-                bt = run_backtest(
-                    chunk,
-                    config,
-                    report.run_id,
-                    engine=engine,
-                    max_workers=workers,
-                    full_universe=False,
-                    include_out_of_universe=cosmetic,
-                    quiet=quiet,
-                )
-                report.rows_written = bt.rows_written
-                if bt.failed_tickers:
-                    report.notes = f"{len(bt.failed_tickers)} ticker(s) failed: " + ", ".join(
-                        sorted(bt.failed_tickers)[:10]
-                    )
-            n_run += 1
-            console.print(
-                f"  chunk {i}/{len(chunks)}: {bt.rows_written} rows ({len(chunk)} tickers)"
-            )
+        n_run, n_done, _rows_written, _failed = _run_backtest_compute_chunked(
+            engine,
+            resolved,
+            config,
+            chash,
+            workers=workers,
+            cosmetic=cosmetic,
+            chunk_size=chunk_size,
+            quiet=quiet,
+        )
         console.print(f"[bold]compute complete[/bold]: {n_run} chunk(s) run, {n_done} already done")
         console.print(
             "[yellow]cofire_count is not written by this phase[/yellow] — "
@@ -3314,6 +3361,11 @@ def nightly() -> None:
 @app.command()
 def weekly(
     workers: int = typer.Option(8, help="ProcessPoolExecutor workers for the backtest refresh"),
+    chunk_size: int = typer.Option(
+        25,
+        "--chunk-size",
+        help="Tickers per checkpoint unit — same shape as `cscan backtest --phase compute`",
+    ),
     cosmetic: bool = typer.Option(
         True,
         "--cosmetic/--no-cosmetic",
@@ -3350,12 +3402,29 @@ def weekly(
     and a weekly job that runs for two and a half hours will be turned off.
     Run `cscan backtest` by hand when the engine itself changes; that path
     still runs the harness.
-    """
-    from dataclasses import asdict
 
+    **Chunked compute + finalize, not one monolithic call** (2026-09-13).
+    This used to dispatch the whole universe through a single `run_backtest`
+    call, which OOM-killed on `wivie` (7.47GB RSS on a 7.6GB box, after
+    9h11m): `run_backtest` holds every ticker's frame in memory until one
+    final write, so peak memory scales with the universe, not with any
+    setting. `_run_backtest_compute_chunked` is the same checkpointed path
+    `cscan backtest --phase compute` already used — peak memory is bounded
+    by `--chunk-size` tickers at a time, each chunk lands as its own
+    `backtest_compute` `runs` row, and a crash mid-run only redoes chunks
+    that never reached `status='ok'` rather than the whole universe.
+
+    One consequence: unlike the old single-call path, a weekly run no
+    longer satisfies ADR 059's `--sweep` gate on its own
+    (`_prior_clean_default_run_exists` reads `job='backtest'`, and this path
+    writes `backtest_compute`/`backtest_finalize` instead) — exactly like
+    running `--phase compute` then `--phase finalize` by hand already
+    didn't. `--sweep` still needs a deliberate, harness-validated
+    `cscan backtest` first; nothing about that requirement changed.
+    """
     from capitalscan.jobs import db_io, ingest, scheduled_runs
     from capitalscan.jobs.config import config_hash as compute_config_hash
-    from capitalscan.research.backtest import BacktestRunFailed, run_backtest
+    from capitalscan.research.backtest import finalize_cofire
 
     engine = db_io.get_engine()
     # Same ordering rationale as `nightly`: record the slot before config
@@ -3366,70 +3435,55 @@ def weekly(
     chash = compute_config_hash(config)
     resolved = _resolve_tickers(None)
 
-    run_params = {
-        "config_hash": chash,
-        "config": asdict(config),
-        "full_universe": True,
-        "workers": workers,
-        "n_tickers": len(resolved),
-        "trigger": "weekly",
-        "cosmetic": cosmetic,
-    }
+    # ADR 178, on by default here and nowhere else. Weekly already runs the
+    # whole-universe backtest, so pricing the out-of-universe signals costs
+    # one pass rather than a separate job -- and the ticker page stops
+    # saying "outside universe" for a name that merely missed one criterion.
+    #
+    # Safe only because `path_backfill` is scoped to `(in_trade OR
+    # in_watch)` as of 30915c5. Without that, every weekly hands nightly
+    # 3.6M extra events to path and `path_capture` goes from 97s to hours.
+    n_run, n_done, rows_written, failed_tickers = _run_backtest_compute_chunked(
+        engine,
+        resolved,
+        config,
+        chash,
+        workers=workers,
+        cosmetic=cosmetic,
+        chunk_size=chunk_size,
+        # Scheduled, no TTY: JSON-lines progress (ADR 052), same as
+        # nightly's hardcoded `quiet=True` on `run_path_capture`.
+        quiet=True,
+    )
+    console.print(
+        f"weekly: compute phase config_hash={chash} {n_run} chunk(s) run, "
+        f"{n_done} already done, rows_written={rows_written}"
+    )
 
-    try:
-        with ingest.run_job(engine, "backtest", run_params) as report:
-            bt_report = run_backtest(
-                resolved,
-                config,
-                report.run_id,
-                engine=engine,
-                max_workers=workers,
-                full_universe=True,
-                # ADR 178, on by default here and nowhere else. Weekly
-                # already runs the whole-universe backtest, so pricing the
-                # out-of-universe signals costs one pass rather than a
-                # separate job -- and the ticker page stops saying "outside
-                # universe" for a name that merely missed one criterion.
-                #
-                # Safe only because `path_backfill` is scoped to
-                # `(in_trade OR in_watch)` as of 30915c5. Without that, every
-                # weekly hands nightly 3.6M extra events to path and
-                # `path_capture` goes from 97s to hours.
-                include_out_of_universe=cosmetic,
-                # Scheduled, no TTY: JSON-lines progress (ADR 052), same as
-                # nightly's hardcoded `quiet=True` on `run_path_capture`.
-                quiet=True,
-            )
-            report.rows_written = bt_report.rows_written
-            if bt_report.failed_tickers:
-                failed = sorted(bt_report.failed_tickers)
-                sample = ", ".join(failed[:10])
-                more = "" if len(failed) <= 10 else f", +{len(failed) - 10} more"
-                report.notes = f"{len(failed)}/{len(resolved)} ticker(s) failed: {sample}{more}"
-    except BacktestRunFailed as exc:
-        # Closed as `failed` before the exit, not left `'started'`: a chain
-        # that raised is exactly the case `system-status` exists to surface,
-        # and the old code path left no terminal state at all.
-        scheduled_runs.complete(engine, "weekly", "failed")
+    with ingest.run_job(
+        engine, "backtest_finalize", {"config_hash": chash, "phase": "finalize"}
+    ) as finalize_report:
+        finalize_report.rows_written = finalize_cofire(engine, chash)
+    console.print(f"weekly: finalize — cofire_count written on {finalize_report.rows_written} rows")
+
+    if failed_tickers:
+        # Partial failure is still a failed slot: the chunks that succeeded
+        # wrote what they had, but a reader asking "did the weekly refresh
+        # do its job" should not be told yes.
+        scheduled_runs.complete(engine, "weekly", "failed", run_id=finalize_report.run_id)
+        failed = sorted(failed_tickers)
+        sample = ", ".join(failed[:10])
+        more = "" if len(failed) <= 10 else f", +{len(failed) - 10} more"
         console.print(
-            "[red]error[/red]: weekly backtest refresh failed — every dispatched "
-            f"ticker's worker raised, which points at the config, not the data. {exc}"
+            f"[red]{len(failed_tickers)}/{len(resolved)} ticker(s) failed[/red]: {sample}{more}"
         )
-        raise typer.Exit(code=1) from None
+        raise typer.Exit(code=1)
 
     console.print(
         f"weekly: label refresh complete config_hash={chash} "
-        f"run_id={bt_report.run_id} rows_written={bt_report.rows_written} "
-        f"tickers={len(bt_report.tickers)}/{len(resolved)} "
+        f"tickers={len(resolved)}/{len(resolved)} "
         "(cell_stats is Phase 4 scope, sync is Phase 5 scope)"
     )
-    if bt_report.failed_tickers:
-        # Partial failure is still a failed slot: `run_backtest` wrote what
-        # succeeded, but a reader asking "did the weekly refresh do its job"
-        # should not be told yes.
-        scheduled_runs.complete(engine, "weekly", "failed", run_id=bt_report.run_id)
-        console.print(f"[red]{len(bt_report.failed_tickers)} ticker(s) failed[/red]")
-        raise typer.Exit(code=1)
     # **The refit lives here, and only here** (ADR 184). It runs after the
     # backtest above because that is what closed this week's forward
     # windows and wrote the labels the fit trains on -- refitting first
@@ -3485,7 +3539,7 @@ def weekly(
         console.print(f"[red]refit failed[/red]: {exc}")
         console.print("Last week's artifact keeps serving until the next weekly.")
 
-    scheduled_runs.complete(engine, "weekly", "ok", run_id=bt_report.run_id)
+    scheduled_runs.complete(engine, "weekly", "ok", run_id=finalize_report.run_id)
 
 
 @app.command()

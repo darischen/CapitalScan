@@ -297,7 +297,7 @@ class TestTheRefitLivesInWeeklyNotNightly:
         from capitalscan.jobs import cli
 
         src = inspect.getsource(cli.weekly)
-        assert src.index("run_backtest(") < src.index('"refit": True')
+        assert src.index("_run_backtest_compute_chunked(") < src.index('"refit": True')
 
     def test_a_stale_artifact_does_not_fail_the_night(self) -> None:
         """Everything above it is already committed to research.
