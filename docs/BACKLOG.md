@@ -952,6 +952,16 @@ process connects to it -- so "unused" is true and "disposable" is not.
 11 GB against 344 GB free buys an open experiment that is no longer cheap
 to reconstruct.
 
+**Re-verified 2026-09-13, workstation Docker volume growth (28 GB -> 40
+GB) traced.** Asked because the container volume grew visibly; the growth
+is entirely in the live `capitalscan` database (26 GB: `events` 17 GB,
+`path` 4.7 GB -- ordinary growth from ingestion and backtest writes, this
+week's included) plus ~3.1 GB of `pg_wal`, both expected. `capitalscan_hist`
+itself is unchanged: still 11 GB, still frozen (`max(path.computed_at) =
+2026-09-04`, no write since), still the only source for the 2002-2021
+window item 2b needs. Free space is now 355 GB (was 344 GB). Confirms the
+KEEP decision above still holds -- nothing about today's growth touched it.
+
 ### Bugs found in flight and NOT fixed
 
 - **`fetch_membership_changes()` returns a navigation box, not the changes
