@@ -9,14 +9,17 @@ it rather than leaving the gap to be inferred.
 
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import Engine, text
 
 from capitalscan.jobs import db_io
 
 ResumeDecision = Literal["run", "already_complete"]
+
+_LA = ZoneInfo("America/Los_Angeles")
 
 # DESIGN §4.12 / ADR 080's schedule. Local (ET) time-of-day per job; the
 # nightly/weekly/monthly cadence, not the poller's intraday loop.
@@ -155,6 +158,34 @@ def _period_start(job: str, now: datetime) -> datetime:
     if cadence == "monthly":
         return midnight.replace(day=1)
     raise ValueError(cadence)  # pragma: no cover - SCHEDULE is closed above
+
+
+def weekly_period_start_utc(now: datetime | None = None) -> datetime:
+    """Most recent Saturday 00:00 America/Los_Angeles, as a real tz-aware
+    UTC `datetime` -- for comparing against `runs.started_at`, a genuine
+    `timestamptz` written by `ingest.run_job`.
+
+    **Not `_period_start`.** That function returns a naive value on
+    purpose, because the only thing it is ever compared against is
+    `scheduled_runs.actual_start`'s naive-digits-under-a-UTC-tzinfo quirk
+    (see `resume_decision`'s docstring). `runs.started_at` has no such
+    quirk, so comparing it against `_period_start`'s naive value would
+    silently compare Pacific wall-clock digits to UTC ones -- correct only
+    when the two happen to coincide, which they do not eight months a year.
+
+    Added 2026-09-13 for `_chunk_already_done`'s `since` bound: without it,
+    a compute-phase checkpoint keyed only on `(config_hash, chunk, of)`
+    matched chunks from the unrelated 2026-09-10 manual cutover backtest --
+    same config, same default `--chunk-size`, same partition -- so `weekly`
+    reported "0 chunk(s) run, 59 already done" and would have finalized and
+    refit on three-day-old labels without recomputing anything.
+    """
+    now = now.astimezone(_LA) if now else datetime.now(_LA)
+    days_since_saturday = (now.weekday() - 5) % 7  # Monday=0 -> Saturday=5 -> 0
+    start_local = datetime.combine(
+        now.date() - timedelta(days=days_since_saturday), time(0, 0), tzinfo=_LA
+    )
+    return start_local.astimezone(timezone.utc)
 
 
 def resume_decision(

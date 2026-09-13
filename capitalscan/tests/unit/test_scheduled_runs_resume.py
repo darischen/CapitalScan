@@ -150,6 +150,17 @@ def test_period_start_weekly_lands_on_the_preceding_saturday() -> None:
     assert scheduled_runs._period_start("weekly", saturday_pm) == datetime(2026, 8, 29, 0, 0)
 
 
+def test_weekly_period_start_utc_is_tz_aware_and_matches_period_start() -> None:
+    """`weekly_period_start_utc` exists because `_period_start`'s naive
+    value is only safe to compare against `scheduled_runs.actual_start`'s
+    naive-digits quirk (see its docstring) -- `runs.started_at` is a real
+    `timestamptz` and needs a real tz-aware boundary. Both must still name
+    the same wall-clock Saturday 00:00 Pacific."""
+    got = scheduled_runs.weekly_period_start_utc(WED)
+    assert got.tzinfo is not None
+    assert got.astimezone(LA) == datetime(2026, 8, 29, 0, 0, tzinfo=LA)
+
+
 def test_weekly_saturday_0000_run_counts_this_week() -> None:
     """The tz-skew bug: a Saturday 00:00 run stored as tz-aware UTC digits,
     compared naively, must still land inside this week's period. Trusting

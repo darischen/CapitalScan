@@ -104,6 +104,27 @@ class TestChunkAlreadyDone:
         cli._chunk_already_done(_Engine(conn), "abc123", 1, 2)
         assert "job = 'backtest_compute'" in conn.sql
 
+    def test_since_omitted_by_default_no_time_bound(self):
+        """Ad hoc `cscan backtest --phase compute` must stay unbounded — its
+        own docstring promises a resume "across a day"."""
+        conn = _Conn(row=None)
+        cli._chunk_already_done(_Engine(conn), "abc123", 1, 2)
+        assert "started_at" not in conn.sql
+        assert "since" not in conn.params
+
+    def test_since_passed_adds_a_time_bound(self):
+        """Regression pin for the 2026-09-13 bug: without this bound,
+        `weekly` matched chunks from the unrelated 2026-09-10 manual
+        cutover backtest (same config_hash, same default --chunk-size) and
+        reported every chunk of this week's compute "already done"."""
+        from datetime import datetime, timezone
+
+        conn = _Conn(row=None)
+        floor = datetime(2026, 9, 13, 7, 0, tzinfo=timezone.utc)
+        cli._chunk_already_done(_Engine(conn), "abc123", 1, 2, since=floor)
+        assert "started_at >= :since" in conn.sql
+        assert conn.params["since"] == floor
+
 
 # ---------------------------------------------------------------------------
 # The finalize pass

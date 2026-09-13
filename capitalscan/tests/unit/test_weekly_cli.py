@@ -97,6 +97,24 @@ class TestWeeklyUsesTheChunkedPath:
         _call()
         assert captured["quiet"] is True
 
+    def test_since_is_bounded_to_this_weeks_period(self, monkeypatch):
+        """Regression pin for the 2026-09-13 bug: `weekly` must pass a
+        `since` floor to `_run_backtest_compute_chunked` — the unbounded
+        `--phase compute` default matched chunks from the unrelated
+        2026-09-10 manual cutover backtest and reported this week's compute
+        as already fully done, with nothing actually recomputed.
+        """
+        captured = {}
+
+        def _fake_chunked(engine, resolved, config, chash, **kwargs):
+            captured.update(kwargs)
+            return (1, 0, 0, {})
+
+        monkeypatch.setattr(cli, "_run_backtest_compute_chunked", _fake_chunked)
+        _call()
+        assert captured["since"] is not None
+        assert captured["since"].tzinfo is not None
+
     def test_finalize_runs_after_compute(self, monkeypatch):
         order = []
 

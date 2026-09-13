@@ -595,7 +595,9 @@ def _prior_clean_default_run_exists(engine, config_hash: str) -> bool:
     return row is not None
 
 
-def _chunk_already_done(engine, config_hash: str, chunk: int, of: int) -> bool:
+def _chunk_already_done(
+    engine, config_hash: str, chunk: int, of: int, *, since: datetime | None = None
+) -> bool:
     """Has this compute-phase chunk already landed cleanly?
 
     The same shape as `_sweep_config_already_done` below, at a finer grain:
@@ -613,18 +615,30 @@ def _chunk_already_done(engine, config_hash: str, chunk: int, of: int) -> bool:
     wasted time and never wrong. That asymmetry is why this check is allowed
     to be conservative: a false negative costs minutes, a false positive
     loses a slice of the universe silently.
+
+    **`since` (added 2026-09-13, `weekly` only).** `(config_hash, chunk,
+    of)` alone is unbounded in time: the config hash barely ever changes
+    week to week, so without a floor this matched `backtest_compute` rows
+    from the unrelated 2026-09-10 manual cutover backtest (same config,
+    same default `--chunk-size`, same 59-chunk partition) and `weekly`
+    reported every chunk "already done" without recomputing a single
+    label. Ad hoc `cscan backtest --phase compute` leaves `since` unset —
+    its own docstring promises a resume "across a day", which a floor
+    would break.
     """
     from sqlalchemy import text
 
+    sql = (
+        "SELECT 1 FROM runs WHERE job = 'backtest_compute' AND status = 'ok' "
+        "AND params->>'config_hash' = :chash "
+        "AND params->>'chunk' = :chunk AND params->>'of' = :of"
+    )
+    params: dict[str, object] = {"chash": config_hash, "chunk": str(chunk), "of": str(of)}
+    if since is not None:
+        sql += " AND started_at >= :since"
+        params["since"] = since
     with engine.connect() as conn:
-        row = conn.execute(
-            text(
-                "SELECT 1 FROM runs WHERE job = 'backtest_compute' AND status = 'ok' "
-                "AND params->>'config_hash' = :chash "
-                "AND params->>'chunk' = :chunk AND params->>'of' = :of LIMIT 1"
-            ),
-            {"chash": config_hash, "chunk": str(chunk), "of": str(of)},
-        ).fetchone()
+        row = conn.execute(text(sql + " LIMIT 1"), params).fetchone()
     return row is not None
 
 
@@ -638,6 +652,7 @@ def _run_backtest_compute_chunked(
     cosmetic: bool,
     chunk_size: int,
     quiet: bool,
+    since: datetime | None = None,
 ) -> tuple[int, int, int, dict[str, str]]:
     """The checkpointed compute pass shared by `cscan backtest --phase
     compute` and `weekly` (2026-09-13, after `cscan weekly` OOM-killed on
@@ -653,6 +668,12 @@ def _run_backtest_compute_chunked(
     caller. `cofire_count` is not written here (see `finalize_cofire`); the
     caller runs that afterward.
 
+    `since` is forwarded to `_chunk_already_done` unchanged -- `None` for
+    ad hoc `--phase compute` (unbounded resume, matching its own docstring),
+    `weekly_period_start_utc()` for `weekly` (this week's compute only; see
+    `_chunk_already_done`'s docstring for why an unbounded check silently
+    reused a three-day-old backtest's chunks).
+
     Returns `(n_run, n_done, rows_written, failed_tickers)`, the union of
     every chunk's `BacktestReport.failed_tickers` -- the caller decides how
     to treat a partial failure, same as the single-call path used to.
@@ -665,7 +686,7 @@ def _run_backtest_compute_chunked(
     rows_written = 0
     failed_tickers: dict[str, str] = {}
     for i, chunk in enumerate(chunks, start=1):
-        if _chunk_already_done(engine, chash, i, len(chunks)):
+        if _chunk_already_done(engine, chash, i, len(chunks), since=since):
             n_done += 1
             continue
         params = {
@@ -3454,6 +3475,10 @@ def weekly(
         # Scheduled, no TTY: JSON-lines progress (ADR 052), same as
         # nightly's hardcoded `quiet=True` on `run_path_capture`.
         quiet=True,
+        # This week's compute only -- see `_chunk_already_done`'s docstring
+        # for why an unbounded check silently reused the 2026-09-10 manual
+        # backtest's chunks and would have finalized/refit on stale labels.
+        since=scheduled_runs.weekly_period_start_utc(),
     )
     console.print(
         f"weekly: compute phase config_hash={chash} {n_run} chunk(s) run, "
