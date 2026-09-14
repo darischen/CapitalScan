@@ -187,19 +187,20 @@ class TestCofireIsCrossTicker:
 
 
 class _UpdateConn(_Conn):
-    """Captures the statement `finalize_cofire` executes."""
+    """Captures the statement(s) `finalize_cofire` executes."""
 
-    def __init__(self):
+    def __init__(self, rowcount: int = 1):
         super().__init__(row=None)
         self.statements: list[str] = []
         self.bound: list[dict] = []
+        self._rowcount = rowcount
 
     def execute(self, stmt, params=None):
         self.statements.append(str(stmt))
         self.bound.append(params or {})
 
         class _R:
-            rowcount = 1
+            rowcount = self._rowcount
 
         return _R()
 
@@ -215,40 +216,39 @@ class _TxEngine:
         return self._conn
 
 
-class TestFinalizeUpdatesRatherThanUpserts:
-    """**It must never be able to create an event row.**
+class TestFinalizeIsOneSqlPushdown:
+    """`finalize_cofire` computes `cofire_count` entirely in Postgres
+    (2026-09-14), rather than reading `events` into a pandas frame and
+    running `add_cofire_count`'s groupby in the Python process.
 
-    `db_io.upsert` issues `INSERT ... ON CONFLICT`, and Postgres enforces
-    NOT NULL on the insert before reaching the conflict clause -- so a
-    six-column frame fails on `run_id` even though every row is guaranteed
-    to conflict. Observed on 2026-08-21 against 783,644 real rows.
+    The pandas path is what OOM-killed `cscan weekly` on `wivie`: a 7.6GB
+    box, 7.47GB RSS. Chunking `run_backtest`'s write fixed the first OOM,
+    and this pass became the very next bottleneck on the following run --
+    43 minutes against a ~4-minute budget, swapped the whole way through,
+    to pull the *whole* universe's `events` into one frame for a groupby
+    Postgres can do natively. `count(DISTINCT ticker) ... GROUP BY
+    (signal_date, signal_type)` is the SQL form of `add_cofire_count`'s
+    `groupby(...).transform("nunique")`; it scales with the universe in
+    Postgres's own memory, never this process's RSS.
 
-    Padding the frame with the missing NOT NULL columns would have made it
-    pass and would have been wrong: finalize corrects rows the compute phase
-    wrote, and a key with no row is an upstream bug that should update
-    nothing rather than invent a skeleton.
+    It must still never be able to create an event row -- that constraint
+    carries over from the old `UPDATE ... FROM (VALUES ...)` form: an
+    `UPDATE ... FROM (SELECT ...)` can only touch rows that already exist.
     """
 
-    def _run(self, rows):
-        conn = _UpdateConn()
-        import capitalscan.research.backtest as bt
-
-        original = bt.pd.read_sql
-        bt.pd.read_sql = lambda *a, **k: _events(rows)
-        try:
-            written = bt.finalize_cofire(_TxEngine(conn), "abc123")
-        finally:
-            bt.pd.read_sql = original
+    def _run(self, rowcount=1):
+        conn = _UpdateConn(rowcount=rowcount)
+        written = backtest.finalize_cofire(_TxEngine(conn), "abc123")
         return written, conn
 
     def test_it_issues_an_update_not_an_insert(self):
-        _, conn = self._run([("AAPL", "2026-01-05", "confluence_low", "next_open")])
+        _, conn = self._run()
         sql = " ".join(conn.statements)
         assert "UPDATE events" in sql
         assert "INSERT" not in sql.upper()
 
     def test_it_sets_only_cofire_count(self):
-        _, conn = self._run([("AAPL", "2026-01-05", "confluence_low", "next_open")])
+        _, conn = self._run()
         sql = " ".join(conn.statements)
         assert "SET cofire_count" in sql
         # The other seventy columns belong to the compute phase.
@@ -256,38 +256,54 @@ class TestFinalizeUpdatesRatherThanUpserts:
             assert f"SET {column}" not in sql
             assert f", {column} =" not in sql
 
-    def test_it_matches_on_the_full_natural_key(self):
-        _, conn = self._run([("AAPL", "2026-01-05", "confluence_low", "next_open")])
+    def test_it_counts_distinct_tickers_grouped_by_date_and_signal_type(self):
+        _, conn = self._run()
         sql = " ".join(conn.statements)
-        for column in ("config_hash", "ticker", "signal_date", "signal_type", "entry_kind"):
-            assert f"e.{column} = v.{column}" in sql
+        assert "count(DISTINCT ticker)" in sql
+        assert "GROUP BY signal_date, signal_type" in sql
 
-    def test_the_page_stays_under_the_parameter_ceiling(self):
-        """Postgres accepts at most 65,535 bound parameters per statement.
-
-        Six per row here, so the default page must sit below ~10,900. The
-        obvious 50,000 sends 300,000 and fails with a message naming neither
-        the table nor the page size -- ADR 137's trap, reached again.
+    def test_it_joins_on_date_and_signal_type_not_ticker_or_entry_kind(self):
+        """The join is deliberately narrower than the old per-row
+        `UPDATE ... FROM (VALUES ...)`: `cofire_count` depends only on
+        `(signal_date, signal_type)`, so every ticker and every
+        `entry_kind` sharing that pair gets the same value from one join
+        clause, not one bound row each.
         """
+        _, conn = self._run()
+        sql = " ".join(conn.statements)
+        assert "e.signal_date = sub.signal_date" in sql
+        assert "e.signal_type = sub.signal_type" in sql
+        assert "e.ticker" not in sql
+        assert "e.entry_kind" not in sql
+
+    def test_it_scopes_both_the_update_and_the_subquery_to_config_hash(self):
+        _, conn = self._run()
+        sql = " ".join(conn.statements)
+        assert sql.count("config_hash = :config_hash") == 2
+
+    def test_it_is_a_single_statement_no_per_chunk_loop(self):
+        """The old implementation issued one UPDATE per `chunk_size` rows
+        (default 5,000) -- this issues exactly one, no matter how many
+        events exist."""
+        _, conn = self._run()
+        assert len(conn.statements) == 1
+
+    def test_returns_the_rowcount(self):
+        written, _ = self._run(rowcount=42)
+        assert written == 42
+
+    def test_an_empty_config_updates_nothing_rather_than_raising(self):
+        written, _ = self._run(rowcount=0)
+        assert written == 0
+
+    def test_no_chunk_size_parameter_left_to_go_stale(self):
+        """Removed along with the per-row `UPDATE ... FROM (VALUES ...)`
+        it bounded against Postgres's 65,535-parameter ceiling (ADR 137's
+        trap) -- a single aggregate UPDATE binds one parameter, not one
+        per row."""
         import inspect
 
-        default = inspect.signature(backtest.finalize_cofire).parameters["chunk_size"].default
-        assert default * 6 < 65_535
-
-    def test_an_empty_config_writes_nothing_rather_than_raising(self, monkeypatch):
-        monkeypatch.setattr(backtest.pd, "read_sql", lambda *a, **k: pd.DataFrame())
-        assert backtest.finalize_cofire(_Engine(_Conn()), "nothing-here") == 0
-
-    def test_reads_only_the_columns_the_grouping_needs(self):
-        # `events` is 75 columns wide and this pass needs five. Reading the
-        # rest would move roughly ten times the bytes to compute one integer.
-        assert backtest._COFIRE_COLUMNS == (
-            "config_hash",
-            "ticker",
-            "signal_date",
-            "signal_type",
-            "entry_kind",
-        )
+        assert "chunk_size" not in inspect.signature(backtest.finalize_cofire).parameters
 
 
 class TestPhaseValidation:

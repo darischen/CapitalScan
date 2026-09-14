@@ -1006,30 +1006,7 @@ def run_backtest(
     )
 
 
-# The four columns `add_cofire_count` groups on, plus the key it writes
-# back against. Deliberately not `SELECT *`: `events` is 75 columns wide and
-# the finalize pass needs five of them, so reading the rest would pull ~10x
-# the bytes across the wire to compute one integer.
-_COFIRE_COLUMNS = (
-    "config_hash",
-    "ticker",
-    "signal_date",
-    "signal_type",
-    "entry_kind",
-)
-
-
-def finalize_cofire(
-    engine: Engine,
-    config_hash: str,
-    *,
-    # **Six bound parameters per row against Postgres's 65,535 ceiling.**
-    # 5,000 rows is 30,000 parameters, comfortably inside it. The obvious
-    # 50,000 would send 300,000 and fail with a message naming neither the
-    # table nor the page size -- the same trap ADR 137 hit on `sync`, where
-    # SQLAlchemy's 1,000-row default page overflowed on a 75-column table.
-    chunk_size: int = 5_000,
-) -> int:
+def finalize_cofire(engine: Engine, config_hash: str) -> int:
     """Recompute `cofire_count` across every event of one config, and write it.
 
     **Phase two of a split backtest, and the only step that needs the whole
@@ -1041,12 +1018,27 @@ def finalize_cofire(
     with an undercount -- and this pass fills it in afterwards from what
     actually landed in the database.
 
+    Doing the count *in* Postgres rather than reading `events` into a frame
+    and calling `add_cofire_count` (as this did until 2026-09-14) is the
+    point, not just a speedup. `cscan weekly` OOM-killed on `wivie` at
+    7.47GB RSS on a 7.6GB box the same night; that was `run_backtest`'s
+    unbatched write (fixed by chunking `compute`), but this function pulled
+    the *whole* universe's `events` into a pandas frame for the groupby, and
+    once compute stopped being the bottleneck, this became one: 43 minutes
+    against a ~4-minute budget, swapped the whole way through, on the very
+    next run. `count(DISTINCT ticker) ... GROUP BY` is exactly
+    `add_cofire_count`'s `groupby(...).transform("nunique")`, computed where
+    the row count was never a Python-process memory concern to begin with --
+    and it scales with the universe automatically, so a larger seed (more
+    tickers, per DESIGN's non-S&P-500 expansion) costs Postgres more time,
+    never this process more RAM.
+
     Reading from `events` rather than from a frame the caller kept is the
     point: it is what makes the two phases independent processes, so the
     compute phase can be interrupted, resumed, or run in pieces across a day
     without this pass caring how the rows got there.
 
-    Returns the number of rows written.
+    Returns the number of rows written (`result.rowcount`).
 
     **Correct only when the compute phase has finished for this config.**
     Running it early is not an error and produces no warning -- it computes
@@ -1054,59 +1046,20 @@ def finalize_cofire(
     intended population. The caller owns that judgement, the same way
     `run_backtest`'s `full_universe` parameter makes the caller own it there.
     """
-    with engine.connect() as conn:
-        events = pd.read_sql(
+    with engine.begin() as conn:
+        result = conn.execute(
             text(
-                f"SELECT {', '.join(_COFIRE_COLUMNS)} FROM events WHERE config_hash = :config_hash"
+                "UPDATE events AS e SET cofire_count = sub.cnt FROM ("
+                "  SELECT signal_date, signal_type, count(DISTINCT ticker) AS cnt"
+                "  FROM events WHERE config_hash = :config_hash"
+                "  GROUP BY signal_date, signal_type"
+                ") AS sub "
+                "WHERE e.config_hash = :config_hash "
+                "AND e.signal_date = sub.signal_date AND e.signal_type = sub.signal_type"
             ),
-            conn,
-            params={"config_hash": config_hash},
+            {"config_hash": config_hash},
         )
-    if events.empty:
-        return 0
-
-    events = add_cofire_count(events)
-
-    # **An UPDATE, not an upsert, and that distinction is load-bearing.**
-    #
-    # `db_io.upsert` issues `INSERT ... ON CONFLICT DO UPDATE`, and Postgres
-    # enforces NOT NULL on the INSERT *before* it ever reaches the conflict
-    # clause. This frame carries six columns of a seventy-five column table,
-    # so the insert fails on `run_id` even though every single row is
-    # guaranteed to conflict and update. Observed 2026-08-21:
-    # `NotNullViolation: null value in column "run_id"`.
-    #
-    # Padding the frame with the missing NOT NULL columns would work and
-    # would be wrong: it would let this pass *create* an event row. Finalize
-    # corrects rows the compute phase wrote; a key with no row is a bug
-    # upstream, and the honest response is to update nothing rather than to
-    # invent a skeleton. `UPDATE ... FROM (VALUES ...)` says exactly that.
-    written = 0
-    for start in range(0, len(events), chunk_size):
-        page = events.iloc[start : start + chunk_size]
-        values = ", ".join(f"(:h{i}, :t{i}, :d{i}, :s{i}, :k{i}, :c{i})" for i in range(len(page)))
-        params: dict[str, object] = {}
-        for i, (_, row) in enumerate(page.iterrows()):
-            params[f"h{i}"] = row["config_hash"]
-            params[f"t{i}"] = row["ticker"]
-            params[f"d{i}"] = row["signal_date"]
-            params[f"s{i}"] = row["signal_type"]
-            params[f"k{i}"] = row["entry_kind"]
-            params[f"c{i}"] = int(row["cofire_count"])
-        with engine.begin() as conn:
-            result = conn.execute(
-                text(
-                    "UPDATE events AS e SET cofire_count = v.cofire_count "
-                    f"FROM (VALUES {values}) AS v("
-                    "config_hash, ticker, signal_date, signal_type, entry_kind, cofire_count) "
-                    "WHERE e.config_hash = v.config_hash AND e.ticker = v.ticker "
-                    "AND e.signal_date = v.signal_date::date "
-                    "AND e.signal_type = v.signal_type AND e.entry_kind = v.entry_kind"
-                ),
-                params,
-            )
-            written += result.rowcount or 0
-    return written
+        return result.rowcount or 0
 
 
 def sweep_configs(base: BacktestConfig) -> list[BacktestConfig]:
