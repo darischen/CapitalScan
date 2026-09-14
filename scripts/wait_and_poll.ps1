@@ -193,7 +193,7 @@ while ($true) {
             #
             # One conversion. `fired_at` is a true instant now (ADR 127):
             # `_now_et` returns an aware datetime, and
-            # `scripts/backfill_poller_timestamps.py` corrected the 1,752
+            # `scripts/one_shots/backfill_poller_timestamps.py` corrected the 1,752
             # rows written before the fix.
             #
             # It was a three-step chain -- strip a false UTC label,

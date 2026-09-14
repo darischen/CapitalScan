@@ -40,8 +40,8 @@ outer join; this is invisible to any check that asks "does it join".
 Idempotent: a second run finds no duplicates and rewrites each id to the
 value it already holds.
 
-    uv run python scripts/repair_prediction_event_ids.py --dry-run
-    uv run python scripts/repair_prediction_event_ids.py
+    uv run python scripts/one_shots/repair_prediction_event_ids.py --dry-run
+    uv run python scripts/one_shots/repair_prediction_event_ids.py
 """
 
 from __future__ import annotations

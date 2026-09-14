@@ -30,9 +30,9 @@ silently.
 Idempotent: a value that is already an object or that does not parse into a
 container is left exactly as it is.
 
-    uv run python scripts/backfill_json_reprs.py --target research --dry-run
-    uv run python scripts/backfill_json_reprs.py --target research
-    uv run python scripts/backfill_json_reprs.py --target serving
+    uv run python scripts/one_shots/backfill_json_reprs.py --target research --dry-run
+    uv run python scripts/one_shots/backfill_json_reprs.py --target research
+    uv run python scripts/one_shots/backfill_json_reprs.py --target serving
 """
 
 from __future__ import annotations

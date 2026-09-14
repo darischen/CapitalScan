@@ -21,8 +21,8 @@ shifts only rows at or before it, and it records what it did in
 why the cutoff must be a timestamp you can name — the moment the poller was
 last restarted on the old code.
 
-    uv run python scripts/backfill_poller_timestamps.py --before '2026-08-19 18:00:00+00'
-    uv run python scripts/backfill_poller_timestamps.py --before '...' --apply
+    uv run python scripts/one_shots/backfill_poller_timestamps.py --before '2026-08-19 18:00:00+00'
+    uv run python scripts/one_shots/backfill_poller_timestamps.py --before '...' --apply
 
 Without `--apply` it prints what it would change and touches nothing.
 
@@ -33,7 +33,7 @@ afterwards, for exactly the reason the watermark exists. `signal_reports`
 and `quotes_live` were corrected on 2026-08-19; `poller_sessions` was not,
 because it was not in the list at the time. The remaining run is:
 
-    uv run python scripts/backfill_poller_timestamps.py
+    uv run python scripts/one_shots/backfill_poller_timestamps.py
         --before '2026-08-19 00:00:00+00'
         --tables poller_sessions --apply
 
