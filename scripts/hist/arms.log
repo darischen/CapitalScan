@@ -1,0 +1,55 @@
+store       : capitalscan_hist
+config_hash : 70b036b3660f21dc
+train (all) : FrameReport(rows=375190, dropped_etf=0, dropped_missing_sector=0, dropped_no_label=434715)
+validate    : FrameReport(rows=36021, dropped_etf=0, dropped_missing_sector=0, dropped_no_label=39732)
+
+train events per year:
+signal_date
+2002    10562
+2003    10699
+2004    18918
+2005    17379
+2006    17407
+2007    18986
+2008     9498
+2009     6566
+2010    23136
+2011    20202
+2012    17643
+2013    24756
+2014    25410
+2015    18179
+2016    17562
+2017    26385
+2018    23069
+2019    18723
+2020    19599
+2021    30511
+
+=== A_train2010: train from 2010-01-01, 265,175 events ===
+  steps: [565, 822, 924]
+
+=== B_train2002: train from 2002-01-01, 375,190 events ===
+  steps: [785, 829, 636]
+
+======================================================================
+POOLED on validate 2022-2023 (tolerance +/-0.05)
+======================================================================
+  A_train2010  n_train=265,175  beats_const 19/20  cov_ok 16/20  mean|cov_err| 0.0294  mean_improve +6.74
+  B_train2002  n_train=375,190  beats_const 20/20  cov_ok 19/20  mean|cov_err| 0.0206  mean_improve +6.49
+
+mean |coverage error| by arm and year -- the question this asks:
+year         2022.0  2023.0
+arm                        
+A_train2010  0.0503  0.0181
+B_train2002  0.0385  0.0101
+
+the three heads that failed in production, by year:
+arm              A_train2010        B_train2002       
+year                  2022.0 2023.0      2022.0 2023.0
+head                                                  
+terminal_h10_q25       0.147  0.029       0.116  0.025
+terminal_h10_q50       0.111  0.011       0.096  0.013
+terminal_h5_q25        0.111  0.020       0.083  0.013
+
+=== ARMS DONE ===

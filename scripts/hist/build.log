@@ -1,0 +1,16 @@
+target db : capitalscan_hist
+config    : {"ingest_start":"1999-01-01","event_start":"2000-01-01"}
+resolved  : 66006bab7fb552bc
+=== [11:56:28] START calendar ===
+calendar: wrote 4778 trading_days rows through 2027
+=== [11:56:31] END calendar exit=0 elapsed=3s ===
+=== [11:56:31] START market ===
+market: upserted 7206 market_days rows
+=== [11:56:39] END market exit=0 elapsed=8s ===
+=== [11:56:39] START bars ===
+bars --daily: 7230415 written, 40037 rejected, 105690 flagged
+=== [12:49:19] END bars exit=0 elapsed=3160s ===
+=== [12:49:19] START earnings ===
+error: pass --historical and/or --forward N
+=== [12:49:22] END earnings exit=1 elapsed=3s ===
+!!! earnings FAILED, stopping

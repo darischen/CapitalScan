@@ -962,6 +962,24 @@ itself is unchanged: still 11 GB, still frozen (`max(path.computed_at) =
 window item 2b needs. Free space is now 355 GB (was 344 GB). Confirms the
 KEEP decision above still holds -- nothing about today's growth touched it.
 
+**Correction, 2026-09-14: "those scripts are gone" was false.** They were
+never in the project repo, but they were never deleted either --
+`build_events_chunked.sh` and the rest of the `scratchpad/hist/` toolchain
+(`build_hist.sh`/`2`/`3`, `build_labels.sh`, `chain.sh`,
+`chain_score.sh`/`2`, `score_arms.py`, plus `events_chunks_done.txt`, the
+restart marker, and every build/arms/labels log from the original 2026-09-03
+to 09-04 run) were sitting untouched in a past Claude Code session's own
+temp working directory the whole time -- a location outside the repo that
+nobody thought to check because it isn't part of the project. Found by
+searching for the literal filename after being asked directly whether a
+Claude Code scratchpad could hold it. Copied into the repo at
+`scripts/hist/` (2026-09-14) so this stops being true.
+`capitalscan_hist` is therefore reconstructable without re-ingesting 28
+years of bars from scratch -- the KEEP decision above still holds (it is
+still the only *currently populated* source for the 2002-2021 window, and
+rebuilding costs real time), but "irreversible" no longer describes the
+downside of losing it.
+
 ### Bugs found in flight and NOT fixed
 
 - **`fetch_membership_changes()` returns a navigation box, not the changes

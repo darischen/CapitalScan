@@ -1,0 +1,12 @@
+=== [20:44:45] START earnings (non-fatal) ===
+earnings: upserted 283822 rows for 1210 tickers
+=== [20:53:33] END earnings exit=0 ===
+=== [20:53:33] START indicators ===
+indicators: 7225096 written, 44 tickers skipped (insufficient history)
+=== [21:58:24] END indicators exit=0 elapsed=3891s ===
+=== [21:58:25] START events ===
+note: --lookback 10200 reaches 1998-09-30, before SplitParams.event_start 
+2000-01-01; clamping start to 2000-01-01
+=== [21:58:41] END events exit=127 elapsed=17s ===
+!!! events FAILED, stopping
+exit=127

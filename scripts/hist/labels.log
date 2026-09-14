@@ -1,0 +1,19 @@
+subsample: 400 tickers
+events in subsample: 984355
+start 11:48:07
+=== [11:48:07] START compute ===
+C:\Users\daris\Desktop\School\CapitalScan\capitalscan\jobs\cli.py:1039: UserWarning: run_backtest(full_universe=False): cofire_count computed over this run's 25-ticker suC:\Users\daris\Desktop\School\CapitalScan\capitalscan\jobs\cli.py:1039: UserWarning: run_backtest(full_universe=False): cofire_count computed over this run's 25-ticker subset will NOT overwrite any existing universe-wide value in the database (excluded from this write's update_columns) — it is only correct within this subset. A following whole-universe run is required to correct it.
+  bt = run_backtest(
+  chunk 57/59: 80572 rows (25 tickers)
+C:\Users\daris\Desktop\School\CapitalScan\capitalscan\jobs\cli.py:1039: UserWarning: run_backtest(full_universe=False): cofire_count computed over this run's 25-ticker subset will NOT overwrite any existing universe-wide value in the database (excluded from this write's update_columns) — it is only correct within this subset. A following whole-universe run is required to correct it.
+  bt = run_backtest(
+  chunk 58/59: 65928 rows (25 tickers)
+C:\Users\daris\Desktop\School\CapitalScan\capitalscan\jobs\cli.py:1039: UserWarning: run_backtest(full_universe=False): cofire_count computed over this run's 13-ticker subset will NOT overwrite any existing universe-wide value in the database (excluded from this write's update_columns) — it is only correct within this subset. A following whole-universe run is required to correct it.
+  bt = run_backtest(
+  chunk 59/59: 24604 rows (13 tickers)
+compute complete: 59 chunk(s) run, 0 already done
+cofire_count is not written by this phase — run `cscan backtest --phase 
+finalize` when every chunk is done
+=== [15:25:52] END compute exit=0 elapsed=13101s ===
+C:/Users/daris/AppData/Local/Temp/claude/C--Users-daris-Desktop-School-CapitalScan/714d2e95-11f8-415c-bffd-1c2d54d10501/scratchpad/hist/build_labels.sh: line 61: syntax error near unexpected token `}'
+C:/Users/daris/AppData/Local/Temp/claude/C--Users-daris-Desktop-School-CapitalScan/714d2e95-11f8-415c-bffd-1c2d54d10501/scratchpad/hist/build_labels.sh: line 61: ` 1; }'
