@@ -25,18 +25,17 @@ conclusive.
 from __future__ import annotations
 
 import os
-import sys
 
 import numpy as np
 import pandas as pd
 
-os.environ["DATABASE_URL_RESEARCH"] = (
-    "postgresql://capscan:capscan@localhost:5432/capitalscan_hist"
-)
+os.environ["DATABASE_URL_RESEARCH"] = "postgresql://capscan:capscan@localhost:5432/capitalscan_hist"
 os.environ["CAPSCAN_SPLITS"] = '{"ingest_start":"1999-01-01","event_start":"2002-01-01"}'
 os.environ["CAPSCAN_UNIVERSE"] = (
     '{"required_criteria":["crit_above_sma200","crit_sma200_slope","crit_rel_return"]}'
 )
+
+from sqlalchemy import text  # noqa: E402
 
 from capitalscan.core import distributions as dist  # noqa: E402
 from capitalscan.core import folds as cf  # noqa: E402
@@ -44,7 +43,6 @@ from capitalscan.jobs import db_io  # noqa: E402
 from capitalscan.jobs.config import config_hash, resolve_config  # noqa: E402
 from capitalscan.research import features as feat  # noqa: E402
 from capitalscan.research import neural, promotion, train  # noqa: E402
-from sqlalchemy import text  # noqa: E402
 
 CHASH = config_hash(resolve_config())
 ARMS = {"A_train2010": "2010-01-01", "B_train2002": "2002-01-01"}
@@ -87,9 +85,13 @@ def main() -> None:
             for e in promotion.score_family(tr, va, family, horizon, fan):
                 rows.append(
                     {
-                        "arm": arm, "head": e.head, "tau": e.tau,
-                        "improve": e.improvement * 100, "cov": e.coverage,
-                        "cov_err": e.coverage_error, "cov_ok": e.coverage_ok,
+                        "arm": arm,
+                        "head": e.head,
+                        "tau": e.tau,
+                        "improve": e.improvement * 100,
+                        "cov": e.coverage,
+                        "cov_err": e.coverage_error,
+                        "cov_ok": e.coverage_ok,
                         "n_train": len(tr),
                     }
                 )
@@ -102,8 +104,12 @@ def main() -> None:
                     c = ((y[m] <= q[m]).astype(float) * w_va[m]).sum() / w_va[m].sum()
                     rows.append(
                         {
-                            "arm": arm, "head": train.head_name(family, horizon, tau),
-                            "tau": tau, "year": yy, "cov": c, "cov_err": c - tau,
+                            "arm": arm,
+                            "head": train.head_name(family, horizon, tau),
+                            "tau": tau,
+                            "year": yy,
+                            "cov": c,
+                            "cov_err": c - tau,
                         }
                     )
         pd.DataFrame(rows).to_csv("arms_results.csv", index=False)
@@ -128,12 +134,18 @@ def main() -> None:
     if "year" in d:
         yd = d[d["year"].notna()]
         print("\nmean |coverage error| by arm and year -- the question this asks:")
-        print(yd.assign(ae=yd["cov_err"].abs())
-                .pivot_table(index="arm", columns="year", values="ae").round(4).to_string())
+        print(
+            yd.assign(ae=yd["cov_err"].abs())
+            .pivot_table(index="arm", columns="year", values="ae")
+            .round(4)
+            .to_string()
+        )
         print("\nthe three heads that failed in production, by year:")
         fails = ["terminal_h5_q25", "terminal_h10_q25", "terminal_h10_q50"]
-        print(yd[yd["head"].isin(fails)]
-              .pivot_table(index="head", columns=["arm", "year"], values="cov_err").round(3).to_string())
+        pivoted = yd[yd["head"].isin(fails)].pivot_table(
+            index="head", columns=["arm", "year"], values="cov_err"
+        )
+        print(pivoted.round(3).to_string())
     print("\n=== ARMS DONE ===")
 
 
