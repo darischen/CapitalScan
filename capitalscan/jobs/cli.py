@@ -943,6 +943,34 @@ def _sweep_provisional_poll_rows(engine, chash: str, session_date) -> int:
     return int(result.rowcount or 0)
 
 
+def _tickers_with_open_next_open(engine, chash: str) -> list[str]:
+    """Tickers holding a `next_open` position that entered but has not exited.
+
+    Only `cscan backtest` writes or resolves `next_open` rows (`web/lib/
+    screen.ts`'s comment on the same fact) -- `nightly`'s own `run_events`
+    call only ever writes `touch`. Left alone, a `next_open` position stays
+    showing "open" on the ticker page until the next full `weekly` backtest,
+    up to 7 days after its real exit already happened.
+
+    Scoped to *unresolved* positions specifically, not every `next_open`
+    event -- a resolved one needs nothing further, and re-including it would
+    grow this list with every ticker that has ever fired rather than just
+    the ones actually waiting on an exit.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT DISTINCT ticker FROM events WHERE config_hash = :chash "
+                "AND entry_kind = 'next_open' AND entry_date IS NOT NULL "
+                "AND exit_date IS NULL"
+            ),
+            {"chash": chash},
+        )
+        return [r[0] for r in rows]
+
+
 #: The `events` columns the harness reads, and the only ones it loads.
 #:
 #: **`SELECT *` was pulling 85 columns to satisfy 12.** Measured 2026-09-09
@@ -3184,9 +3212,54 @@ def nightly() -> None:
     # and the session CSV, neither of which this touches.
     from capitalscan.jobs.config import config_hash as _config_hash
 
-    swept = _sweep_provisional_poll_rows(engine, _config_hash(config), end)
+    nightly_chash = _config_hash(config)
+    swept = _sweep_provisional_poll_rows(engine, nightly_chash, end)
     if swept:
         console.print(f"nightly: swept {swept} unreconciled poller row(s) (ADR 150)")
+
+    # **Resolve `next_open` exits daily, on a small scope — not the weekly
+    # full backtest.** Only `cscan backtest` writes or resolves `next_open`
+    # rows; `run_events` above only ever writes `touch`. Without this, a
+    # `next_open` position stays showing "open" on the ticker page until the
+    # next `weekly` firing, up to 7 days after its real exit already
+    # happened (user report, 2026-09-15: VOD's `next_open` row frozen since
+    # the 2026-09-13 weekly run).
+    #
+    # Scoped to tickers with an unresolved `next_open` position right now —
+    # normally a handful, never the ~1,470-ticker universe. `tickers` is not
+    # None here, so `run_backtest`'s own `full_universe` guard is False
+    # (`backtest`'s docstring): this can never overwrite the universe-wide
+    # `cofire_count`, and per ADR 059 a partial run never counts as the
+    # full-universe validation `--sweep` requires. The harness still runs,
+    # scoped to only the rows this run wrote, so cost stays proportional to
+    # the ticker count, not the universe (`backtest`'s own docstring on the
+    # harness being "cheap relative to the backtest itself").
+    #
+    # Reported, not fatal, same as `predict` and `sync` above: everything
+    # else tonight is already committed, and a next-open resolution failure
+    # should not mark a good ingest bad. The next nightly, or `weekly`,
+    # retries it.
+    open_next_open = _tickers_with_open_next_open(engine, nightly_chash)
+    if open_next_open:
+        try:
+            backtest(
+                tickers=",".join(open_next_open),
+                workers=1,
+                sweep=False,
+                config_name=None,
+                phase="all",
+                chunk_size=25,
+                cosmetic=False,
+                quiet=True,
+            )
+            console.print(f"nightly: resolved next_open exits for {len(open_next_open)} ticker(s)")
+        except typer.Exit as exc:
+            console.print(f"[yellow]warn[/yellow] next_open backtest exited: {exc}")
+        except Exception as exc:  # noqa: BLE001 - reported; research is unaffected
+            console.print(f"[yellow]warn[/yellow] next_open backtest failed: {exc}")
+    else:
+        console.print("nightly: no open next_open positions to resolve")
+
     # Task 10.6: must run after run_events — a signal fired tonight needs
     # its events row to exist before it can be selected as an
     # incomplete-window event to capture path rows for.

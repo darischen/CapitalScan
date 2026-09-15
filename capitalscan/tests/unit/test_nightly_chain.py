@@ -81,6 +81,13 @@ def _no_real_nightly_io(monkeypatch):
         lambda **kwargs: ingest.IngestReport(job="tickers", run_id="test-run-id"),
     )
 
+    # The `next_open` resolution step (joined 2026-09-15) queries `events`
+    # directly, a fourth database boundary. Stubbed to report no open
+    # positions so the step's `backtest()` call — itself a huge amount of
+    # real IO — never fires from a unit test; the "no open positions" path
+    # is exactly what an unstubbed fake engine would hit anyway.
+    monkeypatch.setattr(cli, "_tickers_with_open_next_open", lambda *args, **kwargs: [])
+
 
 def _record_call(calls: list, name: str, result=None):
     def _fake(*args, **kwargs):

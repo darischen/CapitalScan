@@ -532,6 +532,10 @@ def test_nightly_command_threads_resolved_config(monkeypatch, tmp_path):
 
     monkeypatch.setattr(predict_mod, "run_predict", lambda *a, **k: predict_mod.PredictReport())
 
+    # `next_open` resolution joined 2026-09-15, a fourth database boundary.
+    # Same reasoning as the sweep and predict stubs above.
+    monkeypatch.setattr(cli, "_tickers_with_open_next_open", lambda *a, **k: [])
+
     cli.nightly()
 
     assert captured["params"].bb_window == 25
