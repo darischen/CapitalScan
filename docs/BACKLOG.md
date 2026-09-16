@@ -2537,3 +2537,50 @@ Three options, none of them free:
 stops spending its whole budget on rows it is structurally unable to
 resolve, which is what caused the 2026-09-15 outage. That fixes the waste,
 not the display question above.
+
+---
+
+## `SCHEDULE["nightly"]` says 16:30, the timer fires 13:15, so every run is filed under yesterday
+
+**Found 2026-09-15** while checking why a `scheduled_runs` row for 2026-09-14
+read `started` when that night's chain had in fact completed cleanly (every
+step `ok`, `tickers` 13:15:47 through `sync` 14:01:48).
+
+It had not failed. `scheduled_runs.SCHEDULE["nightly"]` is `time(16, 30)`,
+while `capitalscan-nightly.timer` fires `13:15` with a `19:00` catch-up. For
+a 13:15 run `_scheduled_for` finds `16:30 > 13:15` and returns **the previous
+day's** slot, so the row labelled 2026-09-14 is the run that started
+2026-09-15 13:15 -- the one killed by the `next_open` incident that day
+(-> `OPERATIONS.md`). The genuinely-9/14 nightly is the row labelled 9/13.
+
+**Two consequences.**
+
+`delay_seconds` is meaningless for the primary fire: it recorded **74,716s**
+(20.7h) for a run that started on time. Any "how late is nightly" question
+asked of this column gets a number that is wrong by a day.
+
+A reader chasing an incident lands on the wrong date, which is exactly what
+happened here -- the 9/14 label sent the investigation a day off before the
+raw digits settled it.
+
+**Do not "fix" this by reading the timestamps as instants.** `record` writes
+`datetime.now()`, a naive Pacific value, into a `timestamptz`; the digits are
+Pacific and the tzinfo is whatever the reading session sets. `resume_decision`
+(ADR 160) depends on that and strips tzinfo from both sides deliberately.
+`OPERATIONS.md` carries the warning already: "If you ever make `record` write
+a correct instant, revisit this."
+
+**The candidate fix is one line** -- `time(16, 30)` -> `time(13, 15)` -- **and
+it is not obviously safe**, which is why it is here and not in a commit.
+Changing the slot boundary changes what "period" means, and the 19:00
+catch-up currently lands in a *different* slot from the 13:15 run precisely
+because the boundary sits at 16:30 between them. Whether `resume_decision`
+still makes 19:00 a no-op after a successful 13:15 -- which the `.timer`
+comment says is its contract -- needs checking before anything moves. The
+pre-cutover Task Scheduler era had its own fire time, so the 16:30 may simply
+be a leftover that nobody re-pointed at the systemd timer.
+
+Cleanup already done: 11 `scheduled_runs` rows orphaned at `started` (back to
+2026-08-01, mostly Task Scheduler-era) are marked `failed`, for the same
+reason `runs` rows are -- a status nothing will ever update traps the next
+reader.
