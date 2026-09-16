@@ -943,30 +943,63 @@ def _sweep_provisional_poll_rows(engine, chash: str, session_date) -> int:
     return int(result.rowcount or 0)
 
 
-def _tickers_with_open_next_open(engine, chash: str) -> list[str]:
-    """Tickers holding a `next_open` position that entered but has not exited.
+#: Safety valve for `_tickers_with_open_next_open`, not a signal/exit
+#: threshold — invariant 9 governs `core/config.py`; this bounds how much
+#: `nightly` orchestration work one step may trigger, the same kind of
+#: concern `--chunk-size` already is for `backtest` itself.
+#:
+#: **40, not 100.** Measured 2026-09-15 (`journalctl -u capitalscan-nightly`):
+#: ~16s/ticker for a per-ticker backtest compute pass (100 tickers in
+#: 26-27 minutes, twice). The recency bound above does not reliably keep
+#: this list small -- the incident batch was only 6-7 days old and still
+#: matched an 8-day cutoff -- so this cap is the guard actually doing the
+#: work. 40 tickers is ~11 minutes, a bounded addition to nightly's normal
+#: budget; 100 was the figure that ran nightly into a 4+ hour timeout twice
+#: in a row.
+_NEXT_OPEN_BACKTEST_TICKER_CAP = 40
+
+
+def _tickers_with_open_next_open(engine, chash: str, max_hold_days: int) -> list[str]:
+    """Tickers holding a recent, still-unresolved `next_open` position.
 
     Only `cscan backtest` writes or resolves `next_open` rows (`web/lib/
     screen.ts`'s comment on the same fact) -- `nightly`'s own `run_events`
-    call only ever writes `touch`. Left alone, a `next_open` position stays
-    showing "open" on the ticker page until the next full `weekly` backtest,
-    up to 7 days after its real exit already happened.
+    call only ever writes `touch`. Left unresolved, a `next_open` position
+    stays showing "open" on the ticker page until the next full `weekly`
+    backtest, up to 7 days after its real exit already happened.
 
-    Scoped to *unresolved* positions specifically, not every `next_open`
-    event -- a resolved one needs nothing further, and re-including it would
-    grow this list with every ticker that has ever fired rather than just
-    the ones actually waiting on an exit.
+    **Bounded to `entry_date` within `max_hold_days + 3` calendar days**
+    (the +3 covers a weekend). The 2026-09-15 incident is why: an earlier,
+    unbounded version of this query returned 655 of ~860 active tickers, all
+    carrying the same stale `entry_date = 2026-09-08` `next_open` position
+    -- a full-universe-sized backlog masquerading as "today's handful of
+    open positions" -- and turned this into a 4+ hour backtest that starved
+    `sync` for two consecutive nightly attempts (~8h total wall clock,
+    `journalctl -u capitalscan-nightly`). A position that old should already
+    have a real exit if one exists; an unresolved one past this window is
+    backlog for `weekly`'s full-universe run to clear, not something nightly
+    should absorb.
+
+    Truncated at `_NEXT_OPEN_BACKTEST_TICKER_CAP` as a second guard -- a
+    date bound derived from data can still surprise once, and a truncated
+    list degrades to "some positions stay stale one more night," not another
+    multi-hour run.
     """
+    from datetime import date, timedelta
+
     from sqlalchemy import text
+
+    cutoff = date.today() - timedelta(days=max_hold_days + 3)
 
     with engine.connect() as conn:
         rows = conn.execute(
             text(
                 "SELECT DISTINCT ticker FROM events WHERE config_hash = :chash "
                 "AND entry_kind = 'next_open' AND entry_date IS NOT NULL "
-                "AND exit_date IS NULL"
+                "AND exit_date IS NULL AND entry_date >= :cutoff "
+                "ORDER BY ticker LIMIT :cap"
             ),
-            {"chash": chash},
+            {"chash": chash, "cutoff": cutoff, "cap": _NEXT_OPEN_BACKTEST_TICKER_CAP},
         )
         return [r[0] for r in rows]
 
@@ -3239,7 +3272,7 @@ def nightly() -> None:
     # else tonight is already committed, and a next-open resolution failure
     # should not mark a good ingest bad. The next nightly, or `weekly`,
     # retries it.
-    open_next_open = _tickers_with_open_next_open(engine, nightly_chash)
+    open_next_open = _tickers_with_open_next_open(engine, nightly_chash, config.exits.max_hold_days)
     if open_next_open:
         try:
             backtest(
