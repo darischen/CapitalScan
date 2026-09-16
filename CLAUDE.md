@@ -226,7 +226,7 @@ Budgets, so nobody starts one blind. Per-step tables, regimes, and the history o
 | job | budget |
 |---|---|
 | `cscan backtest --workers 8`, full universe (~1,470 tickers) | **~2 h** (compute 82 min, finalize 4 min, harness 36 min) |
-| `cscan nightly`, cold | **~30 min** measured 2026-09-04 (29m54s) and 2026-09-07 (31m42s) from `runs`; the older 35-40 min figure was never measured. **Add ~11 min** now that `predict` is in the chain. A bad night is longer: 2026-09-08 took 1h53m when `path_capture` hit the cosmetic scope. |
+| `cscan nightly`, cold | **~30 min** measured 2026-09-04 (29m54s) and 2026-09-07 (31m42s) from `runs`; the older 35-40 min figure was never measured. **Add ~11 min** now that `predict` is in the chain, and **~11 min more** for the `next_open` resolution step (2026-09-15), which is capped at 40 tickers at a measured ~16s each. A bad night is longer: 2026-09-08 took 1h53m when `path_capture` hit the cosmetic scope. **On 2026-09-15 that step was uncapped, selected 675 tickers, and was killed by `RuntimeMaxSec=4h` twice without reaching `sync`** — a step that picks its own work needs its own cap. → `OPERATIONS.md` |
 | `cscan weekly` | ~36 min (runs the backtest, skips the harness) |
 | `cscan bars --daily --lookback 8000` | ~11 min / 521 tickers |
 | `cscan bars --hourly --backfill`, all tickers | ~4.5-5.5 h, no incremental path |

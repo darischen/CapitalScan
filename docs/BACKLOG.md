@@ -2467,3 +2467,40 @@ error appears anywhere, and the first symptom is stale data days later.
 `Get-ScheduledTaskInfo`'s `NextRunTime` still shows a time while disabled,
 so that field does **not** confirm it is armed -- read `State`.
 
+
+---
+
+## 675 tickers' `next_open` positions survived a full-universe `weekly`
+
+**Found 2026-09-15**, while diagnosing the nightly that the new
+`next_open` resolution step ran into a 4h timeout twice -> `OPERATIONS.md`.
+
+On `wivie`'s research store, `events` holds 809 distinct tickers with an
+entered-but-unexited `next_open` position, and **675 of them share
+`signal_date = 2026-09-10`** -- the cutover-day full-universe backtest.
+The 2026-09-13 `weekly` ran its own full-universe backtest between then
+and now, and those rows still carry the 2026-09-10 run's id.
+
+By 2026-09-15 a 2026-09-10 entry has had four trading sessions of forward
+bars, which is inside `max_hold_days = 5` but enough for a stop, a target
+or a band exit to resolve most of them. They resolved to nothing.
+
+**The obvious explanation is ruled out.** `weekly` passes
+`since=scheduled_runs.weekly_period_start_utc()` into
+`_chunk_already_done`, which exists precisely so a prior run's chunk
+checkpoints are not reused -- the comment at `cli.py` names the 2026-09-10
+manual backtest as the case it was written for.
+
+What is not yet known: whether those 675 tickers were in `weekly`'s
+resolved ticker list at all (universe drift between 2026-09-10 and
+2026-09-13 would explain it), or whether they were processed and their old
+`signal_date` rows simply never re-upserted. `runs` has the 2026-09-13
+`backtest_compute` rows to check the first; the second needs a read of
+`research/backtest.py`'s per-ticker event window.
+
+**Why it matters beyond tidiness.** The ticker page reads the `next_open`
+grain (`web/lib/ticker.ts`), so every one of those 675 tickers is showing
+a position as open that is not. And the nightly step now capped at 40
+tickers/night would need ~17 nights to drain this by itself, which is the
+wrong tool for it -- a full-universe `cscan backtest` clears it in one run
+if the cause is drift, and does not if the cause is the upsert window.

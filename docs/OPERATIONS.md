@@ -1550,3 +1550,50 @@ re-checks the trading-day guard and then resumes polling, waits for the
 open, or exits cleanly by the time of day. Running twice in a day is safe:
 `poller_sessions` keys on `session_date`, `bars_live` on
 `(ticker, session_date)`, and `_already_fired` blocks duplicate signals.
+
+---
+
+## A "tiny" nightly backtest that was the whole universe (2026-09-15)
+
+`nightly` gained a step to resolve `next_open` exits daily, because only
+`cscan backtest` writes that grain -- `run_events` writes `touch` -- so a
+`next_open` position showed "open" on the ticker page until the next
+`weekly` firing, up to 7 days after its real exit. The step selected its
+own ticker list: every ticker holding an entered-but-unexited `next_open`
+position.
+
+**That list was 675 tickers of ~860 active, not the handful the design
+assumed.** 675 of them carried the same stale `signal_date = 2026-09-10`
+position -- the cutover-day full-universe run, never resolved since -- so
+"positions open right now" and "a full-universe backlog" are the same
+query, and only the second one is expensive.
+
+Cost: `RuntimeMaxSec=4h` killed the 13:15 run at 17:15, `Restart=on-failure`
+with `RestartSec=15min` started another at 17:30, and that one died at
+21:30. Two 4-hour runs, ~8h wall clock, and **neither reached `sync`** --
+the step sits above `path_capture`, `peak_labels`, `predict` and `sync` in
+the chain, so research held 2026-09-15 bars while serving held nothing for
+the day. The site reads serving, so the symptom was "no OHLCV at all",
+which reads like an ingest failure and was the opposite: ingest was the
+only part that finished.
+
+**A date bound does not fix this; a count cap does.** The backlog was 6-7
+days old, so `entry_date >= CURRENT_DATE - (max_hold_days + 3)` still
+matched all of it. The guard doing the real work is
+`_NEXT_OPEN_BACKTEST_TICKER_CAP = 40` -- ~11 minutes at the ~16s/ticker
+measured here (100 tickers in 26-27 min, twice, `journalctl -u
+capitalscan-nightly`). Truncating degrades to "some positions stay stale
+one more night"; not truncating degrades to no site.
+
+**The nightly chain has no internal step budget.** Every step before this
+one is bounded by the universe size; this one was bounded by a backlog,
+which is unbounded by nature. A step that selects its own work needs a cap
+in the step, because the only thing downstream of it is a 4h kill that
+throws away the whole chain rather than that step.
+
+Open question, and the reason the backlog exists at all: the 2026-09-13
+`weekly` ran a full-universe backtest and left 675 tickers' 2026-09-10
+`next_open` rows untouched. `weekly` passes
+`since=scheduled_runs.weekly_period_start_utc()` to `_chunk_already_done`
+specifically so a stale checkpoint is not reused, so that is not it.
+Not diagnosed. -> `BACKLOG.md`
