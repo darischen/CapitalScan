@@ -2470,7 +2470,7 @@ so that field does **not** confirm it is armed -- read `State`.
 
 ---
 
-## 675 tickers' `next_open` positions survived a full-universe `weekly`
+## ~~675 tickers' `next_open` positions survived a full-universe `weekly`~~ — **answered 2026-09-15: they are out-of-universe rows and no scheduled job may touch them**
 
 **Found 2026-09-15**, while diagnosing the nightly that the new
 `next_open` resolution step ran into a 4h timeout twice -> `OPERATIONS.md`.
@@ -2504,3 +2504,36 @@ a position as open that is not. And the nightly step now capped at 40
 tickers/night would need ~17 nights to drain this by itself, which is the
 wrong tool for it -- a full-universe `cscan backtest` clears it in one run
 if the cause is drift, and does not if the cause is the upsert window.
+
+**Answered, same night.** The rows are out-of-universe:
+`in_trade = false AND in_watch = false` on **680 of the 808** unresolved
+`next_open` rows. `candidates.apply_eligibility` drops those unless a caller
+passes `include_out_of_universe=True`, and its docstring is explicit that
+"`nightly` and `weekly` do not" (ADR 178). Measured on the 2026-09-15 run:
+10,382 in-trade and 5,070 in-watch `next_open` rows written, **zero**
+out-of-universe.
+
+So the 2026-09-13 `weekly` was not buggy -- it was correct, and so is every
+future one. These rows are display-only by construction: every statistical
+query hardcodes `in_trade` and `features.build_training_frame` filters it
+too, so they cannot reach a model or a statistic.
+
+**What remains open is a product question, not a defect.** The ticker page
+reads the `next_open` grain (`web/lib/ticker.ts`), so ~679 tickers show a
+position as open that will never close, because the only thing that could
+close it is a deliberate `cscan backtest --cosmetic` that nothing schedules.
+Three options, none of them free:
+
+1. Schedule a periodic `--cosmetic` resolution pass. Costs a second
+   population to keep current, and ADR 178 made cosmetic opt-in precisely to
+   avoid that becoming ambient.
+2. Stop displaying unresolved out-of-universe positions as open, or label
+   them as unmeasured. Cheapest, and honest -- they are already excluded
+   from every number the site quotes.
+3. Leave it, and accept that out-of-universe tickers show a permanently open
+   position.
+
+`nightly`'s resolution step now filters to `(in_trade OR in_watch)` so it
+stops spending its whole budget on rows it is structurally unable to
+resolve, which is what caused the 2026-09-15 outage. That fixes the waste,
+not the display question above.

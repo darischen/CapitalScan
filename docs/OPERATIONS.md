@@ -1591,9 +1591,36 @@ which is unbounded by nature. A step that selects its own work needs a cap
 in the step, because the only thing downstream of it is a 4h kill that
 throws away the whole chain rather than that step.
 
-Open question, and the reason the backlog exists at all: the 2026-09-13
-`weekly` ran a full-universe backtest and left 675 tickers' 2026-09-10
-`next_open` rows untouched. `weekly` passes
-`since=scheduled_runs.weekly_period_start_utc()` to `_chunk_already_done`
-specifically so a stale checkpoint is not reused, so that is not it.
-Not diagnosed. -> `BACKLOG.md`
+**Root cause, found the same night: the step selected work its own backtest
+could not do.** 680 of the 808 unresolved `next_open` rows are
+out-of-universe (`in_trade = false AND in_watch = false`).
+`candidates.apply_eligibility` drops those unless the caller passes
+`include_out_of_universe=True`, and `nightly` and `weekly` deliberately do
+not (ADR 178). So the backtest this step invokes writes **zero** rows for
+them -- measured on the run: 10,382 in-trade, 5,070 in-watch, none
+out-of-universe. The step spent four hours, twice, on tickers that were
+guaranteed no-ops, and the set could never shrink because nothing in the
+scheduled chain is permitted to shrink it.
+
+The selection now requires `(in_trade OR in_watch)`. Against live data that
+took it from 807 candidates to **one**. The cap and the window bound stay as
+the outer guards; the universe filter is what makes the step small.
+
+**Two smaller traps found while fixing it, both worth knowing:**
+
+`trading_days` is a **calendar, not a log**. It held 74 dates beyond today,
+out to 2026-12-31, so "the last five sessions" taken unbounded selects
+sessions that have not opened and a window bound quietly stops bounding.
+Cut the calendar off at the day being processed.
+
+**Do not reach for the database's own current-date for that cutoff.**
+Research runs `Etc/UTC`, so through a Pacific evening it is already
+tomorrow -- exactly what `test_market_date_is_the_only_today.py` guards, with
+`public.market_date()` as the answer where the day must be resolved in SQL.
+Where the caller already knows the date it is processing, passing it is
+narrower and matches `apply_eligibility`'s own `today` contract (ADR 060).
+
+**What is left is a product question, not a defect** -- ~679 tickers display
+a position that will never close, because only a deliberate
+`cscan backtest --cosmetic` can close it and nothing schedules one.
+-> `BACKLOG.md`

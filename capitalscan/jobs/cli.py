@@ -959,8 +959,9 @@ def _sweep_provisional_poll_rows(engine, chash: str, session_date) -> int:
 _NEXT_OPEN_BACKTEST_TICKER_CAP = 40
 
 
-def _tickers_with_open_next_open(engine, chash: str, max_hold_days: int) -> list[str]:
-    """Tickers holding a recent, still-unresolved `next_open` position.
+def _tickers_with_open_next_open(engine, chash: str, max_hold_days: int, today) -> list[str]:
+    """Tickers holding a recent, still-unresolved, **in-universe** `next_open`
+    position -- the work a non-cosmetic backtest can actually do.
 
     Only `cscan backtest` writes or resolves `next_open` rows (`web/lib/
     screen.ts`'s comment on the same fact) -- `nightly`'s own `run_events`
@@ -968,38 +969,80 @@ def _tickers_with_open_next_open(engine, chash: str, max_hold_days: int) -> list
     stays showing "open" on the ticker page until the next full `weekly`
     backtest, up to 7 days after its real exit already happened.
 
-    **Bounded to `entry_date` within `max_hold_days + 3` calendar days**
-    (the +3 covers a weekend). The 2026-09-15 incident is why: an earlier,
-    unbounded version of this query returned 655 of ~860 active tickers, all
-    carrying the same stale `entry_date = 2026-09-08` `next_open` position
-    -- a full-universe-sized backlog masquerading as "today's handful of
-    open positions" -- and turned this into a 4+ hour backtest that starved
-    `sync` for two consecutive nightly attempts (~8h total wall clock,
-    `journalctl -u capitalscan-nightly`). A position that old should already
-    have a real exit if one exists; an unresolved one past this window is
-    backlog for `weekly`'s full-universe run to clear, not something nightly
-    should absorb.
+    **`(in_trade OR in_watch)` is the load-bearing clause.** Out-of-universe
+    rows exist -- 679 of the ~807 tickers holding an unresolved `next_open`
+    position on 2026-09-15 were in neither universe -- and
+    `candidates.apply_eligibility` drops them unless a caller passes
+    `include_out_of_universe=True`. `nightly` and `weekly` deliberately do
+    not (ADR 178; the reasoning is in that function's docstring), so the
+    backtest invoked here writes **zero** rows for them: measured on the
+    2026-09-15 run, 10,382 in-trade and 5,070 in-watch `next_open` rows
+    written, none out-of-universe. Selecting them spends the whole budget on
+    guaranteed no-ops, and the set never shrinks, because nothing in the
+    scheduled chain is allowed to shrink it. Those rows need a deliberate
+    `--cosmetic` run; they are not nightly's work. -> `BACKLOG.md`
 
-    Truncated at `_NEXT_OPEN_BACKTEST_TICKER_CAP` as a second guard -- a
-    date bound derived from data can still surprise once, and a truncated
-    list degrades to "some positions stay stale one more night," not another
-    multi-hour run.
+    Without this clause the query returned 675+ tickers and turned the step
+    into a 4h backtest that was killed by `RuntimeMaxSec` on two consecutive
+    nightly attempts, neither reaching `sync`. -> `OPERATIONS.md`
+
+    **The window bound reads `trading_days`, not `CURRENT_DATE - n`.**
+    `max_hold_days` counts sessions; five sessions span seven calendar days
+    over a weekend and more over a holiday, so a calendar bound means a
+    different thing depending on the day it runs. This is the same calendar
+    `_is_trading_day` and the Pi's poller guard read, so the three agree by
+    construction. It **fails closed**: an empty `trading_days` makes the
+    comparison NULL and selects nothing, which costs one night of staleness.
+    `_is_trading_day` fails *open* for the opposite reason -- there, failing
+    closed would skip a whole nightly.
+
+    **`today` is a parameter and the calendar is cut off at it**, because
+    `trading_days` is a calendar rather than a log of what has happened: it
+    held 74 dates beyond today on 2026-09-15, out to 2026-12-31. Taking the
+    last N rows unbounded would count sessions that have not opened, and the
+    window bound would quietly stop bounding anything.
+
+    Letting the *database* supply the day would not fix it either: research
+    runs `TimeZone = Etc/UTC`, so for the last hours of a Pacific evening its
+    own day-of-the-clock is already tomorrow -- the hazard
+    `test_market_date_is_the_only_today.py` guards, and `public.market_date()`
+    is the answer for a query that must resolve the day in SQL. This one does
+    not have to: the caller already knows the date it is processing and
+    passes it, which is both narrower and the contract
+    `candidates.apply_eligibility` holds for the same determinism reason
+    (ADR 060).
+
+    **Oldest entry first, not alphabetical.** With more candidates than the
+    cap, `ORDER BY ticker` resolves the same alphabetical prefix every night
+    and a ticker late in the alphabet never gets resolved at all -- it waits
+    for `weekly`, which is the staleness this step exists to remove. `ticker`
+    breaks ties so the capped selection stays deterministic (ADR 060).
+
+    Truncated at `_NEXT_OPEN_BACKTEST_TICKER_CAP` as the outer guard: a bound
+    derived from data can still surprise once, and a truncated list degrades
+    to "some positions stay stale one more night," not another 4h run.
     """
-    from datetime import date, timedelta
-
     from sqlalchemy import text
-
-    cutoff = date.today() - timedelta(days=max_hold_days + 3)
 
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                "SELECT DISTINCT ticker FROM events WHERE config_hash = :chash "
+                "SELECT ticker FROM events WHERE config_hash = :chash "
                 "AND entry_kind = 'next_open' AND entry_date IS NOT NULL "
-                "AND exit_date IS NULL AND entry_date >= :cutoff "
-                "ORDER BY ticker LIMIT :cap"
+                "AND exit_date IS NULL AND (in_trade OR in_watch) "
+                "AND entry_date <= ("
+                "  SELECT min(d) FROM ("
+                "    SELECT d FROM trading_days WHERE d <= :today "
+                "    ORDER BY d DESC LIMIT :sessions"
+                "  ) recent) "
+                "GROUP BY ticker ORDER BY min(entry_date) ASC, ticker LIMIT :cap"
             ),
-            {"chash": chash, "cutoff": cutoff, "cap": _NEXT_OPEN_BACKTEST_TICKER_CAP},
+            {
+                "chash": chash,
+                "today": today,
+                "sessions": max_hold_days + 1,
+                "cap": _NEXT_OPEN_BACKTEST_TICKER_CAP,
+            },
         )
         return [r[0] for r in rows]
 
@@ -3272,7 +3315,9 @@ def nightly() -> None:
     # else tonight is already committed, and a next-open resolution failure
     # should not mark a good ingest bad. The next nightly, or `weekly`,
     # retries it.
-    open_next_open = _tickers_with_open_next_open(engine, nightly_chash, config.exits.max_hold_days)
+    open_next_open = _tickers_with_open_next_open(
+        engine, nightly_chash, config.exits.max_hold_days, end
+    )
     if open_next_open:
         try:
             backtest(
