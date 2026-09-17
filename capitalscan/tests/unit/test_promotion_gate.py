@@ -454,15 +454,18 @@ class TestBreachDepthIsGone:
         src = Path(features.__file__).read_text(encoding="utf-8")
         assert "def _breach_depth" not in src
 
-    def test_the_raw_inputs_never_reach_the_matrix(self) -> None:
-        """`bar_low` and the band columns stay on the frame as meta, because
-        other code may want them. A model handed the raw low is handed the
-        signal day's outcome in a different shape."""
+    def test_the_raw_inputs_are_not_selected_at_all(self) -> None:
+        """The signal day's low and high and the t-1 bands fed only
+        `breach_depth`. Removed from the frame and the SQL on 2026-09-17, so
+        the look-ahead input cannot drift back into the matrix, and the
+        `bars` and `indicators` laterals no longer run on every frame build."""
         from capitalscan.research import features
 
         for col in ("bar_low", "bar_high", "band_lower", "band_upper"):
-            assert col in features.META_COLS
+            assert col not in features.META_COLS
             assert col not in features.FEATURE_COLS
+        assert "FROM bars" not in features._SQL
+        assert "FROM indicators" not in features._SQL
 
     def test_the_entry_kind_is_a_parameter_now(self) -> None:
         """ADR 177. The hardcoded literal is gone, so which fill convention
