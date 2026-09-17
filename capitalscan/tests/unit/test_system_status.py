@@ -231,8 +231,8 @@ class TestScheduleSummary:
 class TestScheduledRunsComplete:
     """`complete` must target the job's newest slot, never a recomputed one.
 
-    The bug this guards: `nightly` fires at 16:30, so a run starting 16:29
-    and finishing 16:31 opens the previous day's slot. Recomputing
+    The bug this guards: `nightly` fires at 13:15, so a run starting 13:14
+    and finishing 13:16 opens the previous day's slot. Recomputing
     `_scheduled_for` at completion time would close a *different* row,
     leaving one permanently 'started' and marking another complete that
     never ran.

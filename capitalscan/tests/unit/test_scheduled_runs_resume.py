@@ -188,3 +188,36 @@ def test_run_when_ok_row_sits_exactly_on_the_period_boundary() -> None:
 def test_unknown_job_raises() -> None:
     with pytest.raises(ValueError, match="unknown job"):
         _decide("hourly", ("ok", WED))
+
+
+# --- the nightly slot matches the systemd timer ------------------------------
+
+
+def test_nightly_slot_is_the_timer_fire_time() -> None:
+    """`capitalscan-nightly.timer` fires 13:15. At 16:30 the on-time run
+    landed in the previous day's slot with a 20.7 h `delay_seconds`
+    (74,716 s, measured 2026-09-15), so every run was filed a day early."""
+    on_time = datetime(2026, 9, 15, 13, 15, 47)
+    assert scheduled_runs._scheduled_for("nightly", on_time) == datetime(2026, 9, 15, 13, 15)
+
+
+def test_nightly_evening_retry_shares_the_13_15_slot() -> None:
+    """The 19:00 catch-up is a retry of the same day's run, so it writes the
+    same `(job, scheduled_for)` key rather than opening a new day."""
+    first = scheduled_runs._scheduled_for("nightly", datetime(2026, 9, 15, 13, 15))
+    retry = scheduled_runs._scheduled_for("nightly", datetime(2026, 9, 15, 19, 0))
+    assert first == retry
+
+
+def test_nightly_boot_catch_up_before_13_15_is_yesterdays_run() -> None:
+    """`Persistent=true` / `OnBootSec` firing at 09:00 is catching up the run
+    missed yesterday afternoon, and is filed there."""
+    got = scheduled_runs._scheduled_for("nightly", datetime(2026, 9, 16, 9, 0))
+    assert got == datetime(2026, 9, 15, 13, 15)
+
+
+def test_ok_13_15_run_makes_the_19_00_fire_a_no_op() -> None:
+    """The `.timer` comment's contract, checked after the slot moved."""
+    row = ("ok", datetime(2026, 9, 15, 13, 15, tzinfo=LA))
+    decision, _ = _decide("nightly", row, now=datetime(2026, 9, 15, 19, 0, tzinfo=LA))
+    assert decision == "already_complete"

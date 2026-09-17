@@ -21,10 +21,18 @@ ResumeDecision = Literal["run", "already_complete"]
 
 _LA = ZoneInfo("America/Los_Angeles")
 
-# DESIGN §4.12 / ADR 080's schedule. Local (ET) time-of-day per job; the
+# DESIGN §4.12 / ADR 080's schedule. Local (Pacific) time-of-day per job; the
 # nightly/weekly/monthly cadence, not the poller's intraday loop.
+#
+# `nightly` is the systemd timer's 13:15 fire. It read 16:30 until 2026-09-17,
+# a leftover from the Task Scheduler era, which filed every 13:15 run under
+# the previous day's slot with a ~20.7 h `delay_seconds`. The 19:00 catch-up
+# now shares the 13:15 slot: a retry overwrites the failed attempt's row
+# (`runs` keeps the per-step history). `resume_decision` keys on
+# `actual_start` against midnight, not on this slot, so the move does not
+# change whether 19:00 runs.
 SCHEDULE: dict[str, tuple[time, str]] = {
-    "nightly": (time(16, 30), "daily"),
+    "nightly": (time(13, 15), "daily"),
     "poll": (time(9, 15), "daily"),
     "weekly": (time(0, 0), "weekly"),  # Saturday (moved from Sunday 02:00 in 4271dbb)
     "monthly": (time(3, 0), "monthly"),  # 1st of the month
@@ -110,7 +118,7 @@ def complete(engine: Engine, job: str, status: str, run_id: str | None = None) -
     **Targets the job's most recent slot, not a recomputed one.** The
     obvious implementation calls `_scheduled_for(job, now())` again and
     updates that key, which is wrong across a slot boundary: `nightly` is
-    scheduled at 16:30, so a run starting 16:29 and finishing 16:31 opens
+    scheduled at 13:15, so a run starting 13:14 and finishing 13:16 opens
     the previous day's slot and would close the current day's, leaving one
     row permanently `'started'` and marking another complete that never
     ran. `max(scheduled_for)` is unambiguous — `record` has just written

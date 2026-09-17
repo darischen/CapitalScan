@@ -2331,7 +2331,7 @@ Postgres tuning for 32 GB shared with other applications: `shared_buffers=1GB`, 
 Windows Task Scheduler with **"Run task as soon as possible after a scheduled start is missed"** enabled, so a job missed while the machine was off fires at next boot regardless of time (ADR 080).
 
 ```
-16:30 ET  nightly   ingest, indicators, events, path capture, outcomes, sync
+13:15 PT  nightly   ingest, indicators, events, path capture, outcomes, sync
 09:15 ET  poller    runs until 16:00
 Sun 02:00 weekly    backtest, cell_stats, sync
 1st 03:00 monthly   retrain, calibrate, promote or hold
