@@ -261,9 +261,7 @@ def load(config_hash: str, git_sha: str, path: Path = DEFAULT_PATH) -> Artifact:
 # --------------------------------------------------------------------------
 
 
-def publish(
-    engine: Any, path: Path = DEFAULT_PATH, expected_config_hash: str | None = None
-) -> int:
+def publish(engine: Any, path: Path = DEFAULT_PATH, expected_config_hash: str | None = None) -> int:
     """Copy the artifact at `path` into `model_artifact` on `engine`.
 
     Reads the metadata back out of the file rather than taking it as
