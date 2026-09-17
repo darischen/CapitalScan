@@ -183,7 +183,27 @@ Options, cheapest first:
 nobody wrote the line. The risk it raises is publishing a fit made from a
 half-built generation, which argues for (1).
 
-## `test_stop_exits_land_at_or_beyond_the_stop_level` failed once and would not reproduce
+## ~~`test_stop_exits_land_at_or_beyond_the_stop_level` failed once and would not reproduce~~ — **found and fixed 2026-09-17: a real counterexample, not a flake**
+
+Neither candidate below was the cause. `_breach` rounds to 4 decimals, so a
+stop fires when the open or low sits within the same 0.0001 bucket above it.
+The fill then lands up to 0.0001 past the stop (gap case) or below the bar's
+low (intraday case). The assertions used 1e-9. Reproduced by hand for a
+long with a 95.0 stop and a bar at 95.00004. Both invariant 4 and invariant 1
+fail on it.
+
+It would not come back because hypothesis rarely generates two floats in one
+0.0001 bucket. Re-run as asked: three `full`-profile runs of the file, seeds
+random, **30,000 cases per invariant, all passed**. The two inputs are now
+explicit `@example`s. They failed before the change and pass after.
+
+**The fix is in the test, not `core/exits.py`.** The invariants now compare
+at DESIGN §3.2's precision, which is the comparison the resolver is
+specified to make. Changing the fill instead would move backtest output for
+a sub-tick difference no quoted price carries. A full-tick violation still
+fails. → `TESTS.md` §3.4.
+
+#### Original entry
 
 2026-09-09, during the four-gate run for ADR 188. It failed in the combined
 `unit + property` run with coverage on, then passed on:

@@ -150,6 +150,8 @@ def test_exit_invariants(entry, bars, ind, atr, cfg):
 
 **MFE is not clamped at zero.** An earlier draft asserted `mae <= 0 <= mfe`. That is wrong and contradicts DESIGN §5.6. A position that gaps down at t+1 and never trades back above entry has a genuinely negative MFE, since `MFE = max_i (high_i - P0)/P0` and every `high_i < P0`. Clamping would make DESIGN §5.6's "`capture_ratio` stored null when MFE <= 0" clause dead code and would overstate every capture ratio. Assert `mae <= mfe`, not `mae <= 0 <= mfe`.
 
+**Price bounds compare at 4 decimals, the resolver's own precision.** `_breach` rounds both sides before comparing (DESIGN §3.2), so an open 0.00004 above a 95.0 stop fires the stop and fills at 95.00004, and an intraday stop fills at 95.0 against a 95.00004 low. At a 1e-9 tolerance both broke invariants the code never claimed. That was the one-off failure of 2026-09-09. It passed three 10,000-case runs on 2026-09-17 because hypothesis rarely puts two floats in one 0.0001 bucket. Both cases now run as explicit `@example`s every time.
+
 Target: 10,000 generated cases in the slow tier, 1,000 in fast (§9).
 
 ### 3.5 Split leakage — structural
