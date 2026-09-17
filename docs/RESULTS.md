@@ -8325,3 +8325,38 @@ past. Recovery needed a web restart as well as the row correction, because
 ADR 115 sets the hash per connection.
 
 Both are in `OPERATIONS.md` with the corrected nine-step runbook.
+
+---
+
+## 2026-09-17 — the forward log re-run, and why its live-generation number does not count
+
+`cscan outcomes` had not run anywhere since 2026-09-08. Run for real on the
+workstation's research copy (a 2026-09-10 snapshot) and, on `wivie`, as the
+same SQL inside a transaction that was rolled back. `wivie` still holds
+5,986 outcome rows afterwards.
+
+| store | generation | cosmetic | n | Brier | base rate | Brier skill | mean p | AUC |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| both | `0523841076f47293` | no | 6,016 | 0.23217 | 0.5411 | +6.50% | 0.520 | |
+| workstation | `f183b0f5209a4677` | no | 1,830 | 0.22544 | 0.5568 | +8.64% | 0.606 | |
+| **`wivie`** | **`f183b0f5209a4677`** | no | **2,032** | 0.22688 | 0.5502 | **+8.33%** | **0.609** | **0.6625** |
+
+Reliability on `wivie`, live generation, deciles of `p_touch_3`:
+
+| decile | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| predicted | 0.470 | 0.472 | 0.487 | 0.529 | 0.573 | 0.595 | 0.641 | 0.679 | 0.769 | 0.877 |
+| realised | 0.348 | 0.431 | 0.453 | 0.443 | 0.429 | 0.527 | 0.552 | 0.660 | 0.798 | 0.862 |
+
+The ranking holds at the top two deciles. Deciles 1 to 7 run 3 to 14 points
+high.
+
+**None of the live-generation rows are clean evidence.** 2,078 of the 2,143
+resolved rows were last written more than 7 days after their signal. The
+2026-09-16 nightly rewrote 1,706 of them with the artifact fitted 2026-09-14,
+whose ADR 193 validate window (2026-03-13 to 2026-09-09) contains those very
+events and their labels. The isotonic tables saw the outcomes they are
+scored against. Recorded as an open decision in `DECISIONS.md`.
+
+**The quantile fan gap is explained by the same query.** All 4,264 fan-less
+rows are one run at `1df5c2f`, before `ab1a77b` added the fan writer.

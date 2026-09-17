@@ -4929,6 +4929,39 @@ that one logs whatever still gets through.
 | Point-in-time market cap | Shares outstanding from filings, or price-times-current-shares approximation | Filings where available, approximation flagged elsewhere |
 | Polling home | Actions cron with internal loop, or persistent Modal function | Actions until the live log matters, then Modal |
 | Non-US mega-caps | Add ASML, SAP, Novo, Toyota, Samsung, LVMH for lower correlation | Add if effective sample falls short after clustering adjustment |
+| **The forward log scores probabilities calibrated on their own outcomes** (found 2026-09-17) | A: freeze a prediction once written (`ON CONFLICT DO NOTHING` on `event_id`); B: end ADR 193's validate window before the first forward-log `as_of`; C: keep rewriting, and snapshot the first-written values into `outcomes` at write time | **Undecided, needs the owner.** A is one line and matches ADR 174's "recorded before the outcome existed". It costs refreshing a row after a refit. See below |
+
+### The forward log is in-sample for calibration — OPEN, 2026-09-17
+
+**Measured on `wivie`, read-only.** `predict` upserts on `event_id` and
+rewrites every column except `id`, including `p_touch_3` and `created_at`.
+`nightly` rescores a 45-day lookback. ADR 193 moved the validate window, which
+fits the isotonic tables, to `today - 6mo` through `today - 5d`. Put together:
+
+| | value |
+|---|---|
+| live artifact `fitted_at` | 2026-09-14 07:35 UTC |
+| its validate window | 2026-03-13 to **2026-09-09** |
+| resolved live-generation predictions | 2,143 |
+| of those, last written more than 7 days after `as_of` | **2,078 (97%)** |
+| rewritten 2026-09-16 with that artifact | 1,706, `as_of` 2026-08-03 to 2026-09-09 |
+
+So a forward-log row for the live generation holds a probability whose
+reliability table was fitted on a validate set that includes that row's own
+event and label. ADR 174 calls the forward log "the one kind of evidence
+nothing can contaminate", and CLAUDE.md forbids recalibrating on it. This
+configuration does that without anyone choosing to.
+
+**The numbers it produces, stated with that caveat.** Rolled back, not
+written: 2,032 live-generation rows would resolve, Brier skill +8.33%, AUC
+0.6625, mean predicted 0.609 against 0.550 realised. That is 5.9 points
+**high**, the opposite sign from the "about 5 points low" on record for
+`0523841076f47293`. Neither reading is clean evidence until this is decided.
+
+**Why this is not fixed in place.** Each option changes a decided behaviour.
+A stops `nightly` refreshing a row after a weekly refit, so each prediction keeps the model it was first scored with. B
+narrows ADR 193's validate window and moves its measured result. C adds a
+column and leaves a rewritten `p_touch_3` on the page. The owner picks.
 
 ### Who serves `/` and `/ticker/[sym]` — RESOLVED by ADR 118, 2026-08-18
 

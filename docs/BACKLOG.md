@@ -2,6 +2,34 @@
 
 # HIGHEST PRIORITY
 
+## The forward log is calibrated on its own outcomes
+
+Found 2026-09-17 while re-running `cscan outcomes`. **Needs an owner
+decision, recorded in `DECISIONS.md` Open items.**
+
+`predict` upserts every column but `id` on `event_id`, so `nightly`'s
+45-day lookback rewrites `p_touch_3` and `created_at` each night. ADR 193's
+validate window ends at `today - 5d`, and the isotonic tables are fitted on
+it. On `wivie` the live artifact (fitted 2026-09-14) calibrated on
+2026-03-13 to 2026-09-09, and the 2026-09-16 nightly rewrote 1,706
+forward-log rows with signal dates inside that window. Of 2,143 resolved
+live-generation rows, **2,078 were last written more than 7 days after
+their signal**.
+
+That is recalibrating on the forward log, which CLAUDE.md forbids, arrived
+at by two decisions that were each reasonable alone.
+
+**Until it is decided, quote no forward-log number for
+`f183b0f5209a4677`.** The rolled-back reading was mean predicted 0.609
+against 0.550 realised, 5.9 points high, and CLAUDE.md's "about 5 points
+low" was measured on the previous generation before ADR 193 existed.
+
+Also open, smaller: `nightly` never runs `outcomes`, so `wivie`'s log has
+sat at 5,986 rows since 2026-09-08. Adding it is cheap, but it is worth
+nothing until the contamination is settled.
+
+---
+
 ## The Pi must be pulled LAST across a `config_hash` change
 
 Written 2026-09-10 while sequencing the bull-reversal rebuild, before it
@@ -110,7 +138,16 @@ Worth keeping in mind: the artifact is **not** rejected for a moved
 workstation's artifact loaded on wivie at a different HEAD (`fda17f9`
 fit, `90e8dc7` running) because only unrelated code had moved.
 
-## `cscan predict` fits an artifact and never publishes it
+## ~~`cscan predict` fits an artifact and never publishes it~~ — **fixed 2026-09-17, option 1**
+
+`cscan predict --publish`, default off. It refuses `--from-artifact` and
+`--serving` (no refit, nothing new to ship), refuses to publish when the save
+failed, and passes `expected_config_hash` so `artifact.publish` raises
+`StaleArtifact` on a file fitted for another generation. A failed publish
+exits 1, unlike `weekly`, because the flag was asked for.
+`test_predict_publish.py`.
+
+#### Original entry
 
 Found 2026-09-10 during the bull-reversal cutover, by the Pi being unable
 to score.
@@ -218,8 +255,18 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
 
 **Next, in cost order:**
 
-1. **~~Check whether two identical fits agree~~ -- mostly answered
-   2026-09-07, downgrade.** The base arm ran twice across the market-state
+1. **~~Check whether two identical fits agree~~ -- CLOSED 2026-09-17.**
+   The straddle check is done against `runs` and git history. The label
+   rewrite that doubled the row count ran 2026-09-06 01:18 PT (489,914 ->
+   979,828). ADR 172 was committed 2026-09-04 22:37 and arms A/B/C/D
+   2026-09-05 02:56, both after the 2026-09-04 13:50 label pass and before
+   the next, so **each comparison ran on a single label state** and neither
+   needs re-fitting. The only pair that straddled a rewrite is the one
+   already identified below. What stays open is seed choice, not labels:
+   the 0.7pp arm margins are reproducible, but a second seed triple has not
+   been run. Original text follows.
+
+   **Mostly answered 2026-09-07, downgrade.** The base arm ran twice across the market-state
    experiments and gave **identical** steps [566, 417, 589] and identical
    25/30 both times. Both were after the label backfill; the differing pair
    ([426,426,467] vs [521,512,469]) straddled it. That points at the labels
@@ -244,8 +291,17 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    step counts and coverage. One fit's cost to know whether any A/B in this
    project means anything.
 
-2. **Re-run `cscan outcomes` and read it. Free, but it has a chain in
-   front of it.** Measured 2026-09-06: the resolver is idempotent and
+2. **~~Re-run `cscan outcomes` and read it~~ -- RUN 2026-09-17, and the
+   reading is not clean.** Research copy on the workstation: 1,894 resolved,
+   n = 7,880. On `wivie`, inside a transaction rolled back so nothing
+   persisted: 2,096 would resolve. Nothing has run `outcomes` there since
+   2026-09-08, and `nightly` does not call it. The live generation reads
+   Brier skill +8.33% and AUC 0.6625, but 97% of its resolved rows were
+   rewritten after their outcome existed by a model calibrated on a window
+   that contains them. → the HIGHEST PRIORITY entry "The forward log is
+   calibrated on its own outcomes". Original text follows.
+
+   **Free, but it has a chain in front of it.** Measured 2026-09-06: the resolver is idempotent and
    correct, and it resolved nothing on its second run because the labels it
    needs were not there. The dependency, which nothing documented:
 
@@ -2148,7 +2204,23 @@ addresses it.
 RESULTS 2026-09-02 has both tables.
 
 
-## Half the predictions ship with no quantile fan, and nobody knows why
+## ~~Half the predictions ship with no quantile fan, and nobody knows why~~ — **explained 2026-09-17: a code version, not the CDF**
+
+Every fan-less row comes from **one run**, `predict_20260906T033154_1c9876a5`
+at `1df5c2f`, all 4,264 of them written 2026-09-06 03:43 UTC. `ab1a77b`
+(2026-09-08 04:14 PT) added the fan writer, and its own message says "all
+4,264 rows carried NULL q05..q95". Every row written since, 28,543 across
+both generations, has a fan, and no row holds a partial fan.
+
+The "in-population 54%" was the share of resolved rows that happened to come
+from that first run. The suspicion about `Ensemble.fan` does not hold either:
+`quantiles_from_pmf` is `np.interp` over a clipped, closed CDF and returns
+finite values for any finite pmf.
+
+**Not backfilled, on purpose.** Filling a fan into a prediction whose
+outcome is already recorded writes forward-log evidence after the fact.
+
+#### Original entry
 
 Found 2026-09-08 while investigating ADR 180. `predictions.q05..q95` come
 from the terminal 5-day head via `FAN_TASK`, and `build_rows` writes `None`
@@ -2321,7 +2393,21 @@ regime feature such as the ADR 176 breadth reading, which is already
 computed and already known to separate. Publishing the trailing realised
 rate beside the model's number so a reader can see the gap themselves.
 
-## `bars` and `indicators` are joined into every feature frame for four dead columns
+## ~~`bars` and `indicators` are joined into every feature frame for four dead columns~~ — **removed 2026-09-17**
+
+Both laterals were `LEFT JOIN LATERAL ... LIMIT 1`, so neither constrained
+row count and the training population did not move. Measured against the
+research copy, with the four columns set aside before hashing:
+
+| frame | rows | content hash, before = after | warm build before | after |
+|---|---:|---|---:|---:|
+| train | 92,060 | `70d80fe44d5cfef6` | 14.0 s | 9.4 s |
+| validate | 19,164 | `9186b83e3aaf4703` | 3.6 s | 1.9 s |
+| serving, any universe | 23,829 | `381a625563fc48b0` | 1.9 s | 1.0 s |
+
+`side` stays in `META_COLS`: `build_rows` writes it onto `predictions`.
+
+#### Original entry
 
 Found 2026-09-08. `META_COLS` carries `bar_low`, `bar_high`, `band_lower`
 and `band_upper`, commented "Raw inputs to `breach_depth`, dropped from the
@@ -2417,7 +2503,20 @@ not the display question above.
 
 ---
 
-## `SCHEDULE["nightly"]` says 16:30, the timer fires 13:15, so every run is filed under yesterday
+## ~~`SCHEDULE["nightly"]` says 16:30, the timer fires 13:15, so every run is filed under yesterday~~ — **fixed 2026-09-17**
+
+Now `time(13, 15)`. The safety question below resolved by reading
+`resume_decision`: it compares `actual_start` with local midnight and never
+reads the slot, so a successful 13:15 still makes 19:00 a no-op.
+`test_ok_13_15_run_makes_the_19_00_fire_a_no_op` pins it.
+
+**One behaviour did change.** The 19:00 retry now shares the 13:15 slot, so a
+retry after a failure overwrites the failed attempt's `scheduled_runs` row.
+`runs` keeps the per-step record of both. A boot catch-up before 13:15 files
+under the previous day, which is the run it is catching up. Rows written
+before this change keep their old labels.
+
+#### Original entry
 
 **Found 2026-09-15** while checking why a `scheduled_runs` row for 2026-09-14
 read `started` when that night's chain had in fact completed cleanly (every
