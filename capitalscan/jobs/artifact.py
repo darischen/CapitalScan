@@ -261,18 +261,30 @@ def load(config_hash: str, git_sha: str, path: Path = DEFAULT_PATH) -> Artifact:
 # --------------------------------------------------------------------------
 
 
-def publish(engine: Any, path: Path = DEFAULT_PATH) -> int:
+def publish(engine: Any, path: Path = DEFAULT_PATH, expected_config_hash: str | None = None) -> int:
     """Copy the artifact at `path` into `model_artifact` on `engine`.
 
     Reads the metadata back out of the file rather than taking it as
     arguments, so the row can never describe bytes other than the ones it
     carries. Returns the payload size.
+
+    `expected_config_hash`, when given, must match the file's own hash or
+    this raises `StaleArtifact` before writing. `cscan predict --publish`
+    passes it: the local file is whatever the last fit wrote, and a fit for
+    an ablation arm would otherwise ship under its own hash to a store that
+    serves a different one, with nothing reporting the mix-up.
     """
     from sqlalchemy import text
 
     raw = path.read_bytes()
     with np.load(path, allow_pickle=False) as payload:
         meta = json.loads(str(payload["meta"]))
+
+    if expected_config_hash is not None and meta["config_hash"] != expected_config_hash:
+        raise StaleArtifact(
+            f"{path} was fitted for config {meta['config_hash']}, "
+            f"not {expected_config_hash}; refusing to publish it"
+        )
 
     with engine.begin() as conn:
         conn.execute(

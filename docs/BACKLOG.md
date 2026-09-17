@@ -2,6 +2,34 @@
 
 # HIGHEST PRIORITY
 
+## The forward log is calibrated on its own outcomes
+
+Found 2026-09-17 while re-running `cscan outcomes`. **Needs an owner
+decision, recorded in `DECISIONS.md` Open items.**
+
+`predict` upserts every column but `id` on `event_id`, so `nightly`'s
+45-day lookback rewrites `p_touch_3` and `created_at` each night. ADR 193's
+validate window ends at `today - 5d`, and the isotonic tables are fitted on
+it. On `wivie` the live artifact (fitted 2026-09-14) calibrated on
+2026-03-13 to 2026-09-09, and the 2026-09-16 nightly rewrote 1,706
+forward-log rows with signal dates inside that window. Of 2,143 resolved
+live-generation rows, **2,078 were last written more than 7 days after
+their signal**.
+
+That is recalibrating on the forward log, which CLAUDE.md forbids, arrived
+at by two decisions that were each reasonable alone.
+
+**Until it is decided, quote no forward-log number for
+`f183b0f5209a4677`.** The rolled-back reading was mean predicted 0.609
+against 0.550 realised, 5.9 points high, and CLAUDE.md's "about 5 points
+low" was measured on the previous generation before ADR 193 existed.
+
+Also open, smaller: `nightly` never runs `outcomes`, so `wivie`'s log has
+sat at 5,986 rows since 2026-09-08. Adding it is cheap, but it is worth
+nothing until the contamination is settled.
+
+---
+
 ## The Pi must be pulled LAST across a `config_hash` change
 
 Written 2026-09-10 while sequencing the bull-reversal rebuild, before it
@@ -110,7 +138,16 @@ Worth keeping in mind: the artifact is **not** rejected for a moved
 workstation's artifact loaded on wivie at a different HEAD (`fda17f9`
 fit, `90e8dc7` running) because only unrelated code had moved.
 
-## `cscan predict` fits an artifact and never publishes it
+## ~~`cscan predict` fits an artifact and never publishes it~~ — **fixed 2026-09-17, option 1**
+
+`cscan predict --publish`, default off. It refuses `--from-artifact` and
+`--serving` (no refit, nothing new to ship), refuses to publish when the save
+failed, and passes `expected_config_hash` so `artifact.publish` raises
+`StaleArtifact` on a file fitted for another generation. A failed publish
+exits 1, unlike `weekly`, because the flag was asked for.
+`test_predict_publish.py`.
+
+#### Original entry
 
 Found 2026-09-10 during the bull-reversal cutover, by the Pi being unable
 to score.
@@ -146,45 +183,27 @@ Options, cheapest first:
 nobody wrote the line. The risk it raises is publishing a fit made from a
 half-built generation, which argues for (1).
 
-## The bull reversal has no close-confirmed half
+## ~~`test_stop_exits_land_at_or_beyond_the_stop_level` failed once and would not reproduce~~ — **found and fixed 2026-09-17: a real counterexample, not a flake**
 
-**Accepted as-is on the live-badge question (user, 2026-09-09):** the badge
-freezing at fire time is fine, because `live reversal` and `reversal` are
-two different claims and a reader seeing "live" knows it is a statement
-about a moment that may have passed.
+Neither candidate below was the cause. `_breach` rounds to 4 decimals, so a
+stop fires when the open or low sits within the same 0.0001 bucket above it.
+The fill then lands up to 0.0001 past the stop (gap case) or below the bar's
+low (intraday case). The assertions used 1e-9. Reproduced by hand for a
+long with a 95.0 stop and a bar at 95.00004. Both invariant 4 and invariant 1
+fail on it.
 
-**That reasoning holds for the bear side and not for the bull side**, which
-is what is still open.
+It would not come back because hypothesis rarely generates two floats in one
+0.0001 bucket. Re-run as asked: three `full`-profile runs of the file, seeds
+random, **30,000 cases per invariant, all passed**. The two inputs are now
+explicit `@example`s. They failed before the change and pass after.
 
-`SignalParams.enabled_signal_types` carries `bear_close_above_upper` and
-**not** `bull_close_below_lower`:
+**The fix is in the test, not `core/exits.py`.** The invariants now compare
+at DESIGN §3.2's precision, which is the comparison the resolver is
+specified to make. Changing the fill instead would move backtest output for
+a sub-tick difference no quoted price carries. A full-tick violation still
+fails. → `TESTS.md` §3.4.
 
-```
-bb_lower_touch, bb_upper_touch, stoch_oversold, stoch_overbought,
-confluence_low, confluence_high, bear_close_above_upper
-```
-
-So a bear reversal that develops after its signal fires is caught the next
-morning by the close-confirmed badge. A bull reversal that develops after
-its signal fires is caught by nothing — the live badge froze at fire time
-and no solid badge will ever appear. EXPE on 2026-09-09 is the worked
-example: it fired 09:46 at 265.12 against a 266.95 open, below its band but
-still below its open, crossed above the open later, and displays nothing.
-
-`bull_close_below_lower` already exists as an indicator
-(`core/indicators.py:208`), an enum value (`core/types.py:40`), a signal
-rule (`core/signals.py:295`) and a frontend label — it is dormant, not
-missing. The badge branch for it is written and tested.
-
-**The cost of enabling it is the part needing a decision.**
-`enabled_signal_types` is a hashed field, so adding to it **moves
-`config_hash`**: a new serving generation, a full backtest rebuild (~2h),
-and `cell_stats` recomputed. That is not a display change, and it is the
-reason this is a decision rather than a one-line edit.
-
----
-
-## `test_stop_exits_land_at_or_beyond_the_stop_level` failed once and would not reproduce
+#### Original entry
 
 2026-09-09, during the four-gate run for ADR 188. It failed in the combined
 `unit + property` run with coverage on, then passed on:
@@ -256,8 +275,18 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
 
 **Next, in cost order:**
 
-1. **~~Check whether two identical fits agree~~ -- mostly answered
-   2026-09-07, downgrade.** The base arm ran twice across the market-state
+1. **~~Check whether two identical fits agree~~ -- CLOSED 2026-09-17.**
+   The straddle check is done against `runs` and git history. The label
+   rewrite that doubled the row count ran 2026-09-06 01:18 PT (489,914 ->
+   979,828). ADR 172 was committed 2026-09-04 22:37 and arms A/B/C/D
+   2026-09-05 02:56, both after the 2026-09-04 13:50 label pass and before
+   the next, so **each comparison ran on a single label state** and neither
+   needs re-fitting. The only pair that straddled a rewrite is the one
+   already identified below. What stays open is seed choice, not labels:
+   the 0.7pp arm margins are reproducible, but a second seed triple has not
+   been run. Original text follows.
+
+   **Mostly answered 2026-09-07, downgrade.** The base arm ran twice across the market-state
    experiments and gave **identical** steps [566, 417, 589] and identical
    25/30 both times. Both were after the label backfill; the differing pair
    ([426,426,467] vs [521,512,469]) straddled it. That points at the labels
@@ -282,8 +311,17 @@ the market-regime hypothesis and located the real cause. See `RESULTS.md`.
    step counts and coverage. One fit's cost to know whether any A/B in this
    project means anything.
 
-2. **Re-run `cscan outcomes` and read it. Free, but it has a chain in
-   front of it.** Measured 2026-09-06: the resolver is idempotent and
+2. **~~Re-run `cscan outcomes` and read it~~ -- RUN 2026-09-17, and the
+   reading is not clean.** Research copy on the workstation: 1,894 resolved,
+   n = 7,880. On `wivie`, inside a transaction rolled back so nothing
+   persisted: 2,096 would resolve. Nothing has run `outcomes` there since
+   2026-09-08, and `nightly` does not call it. The live generation reads
+   Brier skill +8.33% and AUC 0.6625, but 97% of its resolved rows were
+   rewritten after their outcome existed by a model calibrated on a window
+   that contains them. → the HIGHEST PRIORITY entry "The forward log is
+   calibrated on its own outcomes". Original text follows.
+
+   **Free, but it has a chain in front of it.** Measured 2026-09-06: the resolver is idempotent and
    correct, and it resolved nothing on its second run because the labels it
    needs were not there. The dependency, which nothing documented:
 
@@ -2186,7 +2224,23 @@ addresses it.
 RESULTS 2026-09-02 has both tables.
 
 
-## Half the predictions ship with no quantile fan, and nobody knows why
+## ~~Half the predictions ship with no quantile fan, and nobody knows why~~ — **explained 2026-09-17: a code version, not the CDF**
+
+Every fan-less row comes from **one run**, `predict_20260906T033154_1c9876a5`
+at `1df5c2f`, all 4,264 of them written 2026-09-06 03:43 UTC. `ab1a77b`
+(2026-09-08 04:14 PT) added the fan writer, and its own message says "all
+4,264 rows carried NULL q05..q95". Every row written since, 28,543 across
+both generations, has a fan, and no row holds a partial fan.
+
+The "in-population 54%" was the share of resolved rows that happened to come
+from that first run. The suspicion about `Ensemble.fan` does not hold either:
+`quantiles_from_pmf` is `np.interp` over a clipped, closed CDF and returns
+finite values for any finite pmf.
+
+**Not backfilled, on purpose.** Filling a fan into a prediction whose
+outcome is already recorded writes forward-log evidence after the fact.
+
+#### Original entry
 
 Found 2026-09-08 while investigating ADR 180. `predictions.q05..q95` come
 from the terminal 5-day head via `FAN_TASK`, and `build_rows` writes `None`
@@ -2359,7 +2413,21 @@ regime feature such as the ADR 176 breadth reading, which is already
 computed and already known to separate. Publishing the trailing realised
 rate beside the model's number so a reader can see the gap themselves.
 
-## `bars` and `indicators` are joined into every feature frame for four dead columns
+## ~~`bars` and `indicators` are joined into every feature frame for four dead columns~~ — **removed 2026-09-17**
+
+Both laterals were `LEFT JOIN LATERAL ... LIMIT 1`, so neither constrained
+row count and the training population did not move. Measured against the
+research copy, with the four columns set aside before hashing:
+
+| frame | rows | content hash, before = after | warm build before | after |
+|---|---:|---|---:|---:|
+| train | 92,060 | `70d80fe44d5cfef6` | 14.0 s | 9.4 s |
+| validate | 19,164 | `9186b83e3aaf4703` | 3.6 s | 1.9 s |
+| serving, any universe | 23,829 | `381a625563fc48b0` | 1.9 s | 1.0 s |
+
+`side` stays in `META_COLS`: `build_rows` writes it onto `predictions`.
+
+#### Original entry
 
 Found 2026-09-08. `META_COLS` carries `bar_low`, `bar_high`, `band_lower`
 and `band_upper`, commented "Raw inputs to `breach_depth`, dropped from the
@@ -2384,91 +2452,6 @@ kind of change that looks free and occasionally is not, because a join that
 also constrains row count is doing more than it appears to. If it turns out
 these joins are inner joins, dropping them **changes the training
 population**, which is a config-hash question and not a cleanup.
-
-## The backtest harness cannot run at the current event count
-
-Found 2026-09-09 while running the full backtest. **The harness phase is
-the only part that did not complete, and the rebuild is therefore
-unvalidated by it.**
-
-`_load_events_for_config` (`cli.py:809`) does `SELECT * FROM events WHERE
-config_hash = :chash` into a single DataFrame. That table now holds
-**10,824,053 rows** for the live config, roughly double what it held when
-the harness was written, because the cosmetic backfill priced `in_watch`
-and out-of-universe signals.
-
-Measured directly, mid-run:
-
-```
-python PID 30444   commit 70.69 GB   resident  1.77 GB
-python PID 20956   commit 23.30 GB   resident  0.13 GB
-commit limit 114.3 GB, commit free 0.7 GB
-sum of ALL process working sets: 2.9 GB
-```
-
-**It exhausts commit charge, not RAM**, which is why it presents as
-"system is running low on memory" while almost nothing is resident. That
-misleads: three separate attempts were spent lowering `--workers` (8 -> 4
--> 1) and capping WSL, none of which touched the cause. Killing the two
-processes freed 39.7 GB of commit instantly.
-
-`--tickers` does not help. The load runs before any ticker filter and is
-scoped only on `config_hash`, so a hundred-ticker harness still reads all
-10.8M rows.
-
-### The fix, and why it was not done in flight
-
-Select only the columns `run_harness` actually reads instead of `*`. That
-is a narrowing rather than a weakening, but it requires knowing exactly
-which columns each of the five checks touches, and getting that wrong
-silently removes a check rather than failing. The harness is one of the
-five things `CLAUDE.md` names as carrying the correctness load, so it is
-not a change to make at 04:00 against a sleeping owner.
-
-Chunking by ticker is the alternative and is a larger change: the
-no-look-ahead ladder and the signal-path parity check are per ticker
-already, so the events frame could be built and discarded per ticker
-rather than held whole.
-
-**Do not raise the commit limit to work around this.** A 70 GB reservation
-for a frame that needs a fraction of that is the defect; a bigger pagefile
-would hide it and make every future run slower.
-
-### What this means for the 2026-09-09 rebuild
-
-`compute` (59/59 chunks, 2026-09-08) and `finalize` (2026-09-08 15:57,
-32m51s) both completed and are current -- verified by diffing the compute
-path between the chunk sha and HEAD, which found only a formatting reflow.
-The **harness last passed 2026-08-30**, before the event count doubled, so
-the data written since has not been through it.
-
-That is a real gap and should be closed before the wivie cutover, not
-after.
-
-## OPEN NOW: the scheduled nightly is DISABLED and must be re-enabled
-
-Disabled 2026-09-10 12:25 PT so it would not fire at 13:15 into a running
-`config_hash` rebuild. Its chain is
-`events -> path_capture -> peak_labels -> predict -> sync`, and every step
-would have collided: `events` upserting the same natural keys the backtest
-was writing, `path_capture` racing `path backfill`, `predict` on a
-half-built generation, and `sync` shipping that generation to serving --
-`run_sync` reads the research GUC, which already points at the new hash.
-
-**Re-enable after the serving steps finish:**
-
-```powershell
-Enable-ScheduledTask -TaskName "CapitalScan nightly"
-Get-ScheduledTask -TaskName "CapitalScan nightly" | Select-Object State
-```
-
-Verify `State = Ready`. A forgotten disable is silent: no nightly runs, no
-error appears anywhere, and the first symptom is stale data days later.
-`Get-ScheduledTaskInfo`'s `NextRunTime` still shows a time while disabled,
-so that field does **not** confirm it is armed -- read `State`.
-
-
----
 
 ## ~~675 tickers' `next_open` positions survived a full-universe `weekly`~~ — **answered 2026-09-15: they are out-of-universe rows and no scheduled job may touch them**
 
@@ -2540,7 +2523,20 @@ not the display question above.
 
 ---
 
-## `SCHEDULE["nightly"]` says 16:30, the timer fires 13:15, so every run is filed under yesterday
+## ~~`SCHEDULE["nightly"]` says 16:30, the timer fires 13:15, so every run is filed under yesterday~~ — **fixed 2026-09-17**
+
+Now `time(13, 15)`. The safety question below resolved by reading
+`resume_decision`: it compares `actual_start` with local midnight and never
+reads the slot, so a successful 13:15 still makes 19:00 a no-op.
+`test_ok_13_15_run_makes_the_19_00_fire_a_no_op` pins it.
+
+**One behaviour did change.** The 19:00 retry now shares the 13:15 slot, so a
+retry after a failure overwrites the failed attempt's `scheduled_runs` row.
+`runs` keeps the per-step record of both. A boot catch-up before 13:15 files
+under the previous day, which is the run it is catching up. Rows written
+before this change keep their old labels.
+
+#### Original entry
 
 **Found 2026-09-15** while checking why a `scheduled_runs` row for 2026-09-14
 read `started` when that night's chain had in fact completed cleanly (every

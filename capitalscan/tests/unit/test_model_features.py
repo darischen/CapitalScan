@@ -111,20 +111,11 @@ def test_the_default_split_is_train():
 
 
 def _frame(**over) -> pd.DataFrame:
-    # The four breach-depth inputs and `side` are always present on a real
-    # frame -- `build_training_frame` joins them from `bars` and
-    # `indicators` -- so the fixture carries them rather than
-    # `_breach_depth` tolerating their absence. A silently-NaN column would
-    # hide the SQL breaking.
     base = {
         "k_full": [80.0],
         "d_full": [75.0],
         "mcap_usd": [1e9],
         "side": ["long"],
-        "bar_low": [98.0],
-        "bar_high": [105.0],
-        "band_lower": [100.0],
-        "band_upper": [110.0],
     }
     base.update({k: [v] for k, v in over.items()})
     return pd.DataFrame(base)

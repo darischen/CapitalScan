@@ -19,7 +19,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
-from hypothesis import HealthCheck, assume, given, settings
+from hypothesis import HealthCheck, assume, example, given, settings
 from hypothesis import strategies as st
 
 from capitalscan.core.config import ExitParams
@@ -105,6 +105,54 @@ def scenarios(draw):
     return entry, side, bars, ind, atr, cfg
 
 
+def _sub_tick_scenario(open_: float, low: float) -> tuple:
+    """A long with a 95.0 stop and one bar sitting 0.00004 above it.
+
+    `_breach` rounds both sides to 4 decimals (DESIGN §3.2), so 95.00004 and
+    95.0 compare equal and the stop fires. Hypothesis reaches this only when
+    two independent floats land in the same 0.0001 bucket, which is why
+    `test_stop_exits_land_at_or_beyond_the_stop_level` failed once on
+    2026-09-09 and then passed 3,092 times plus three 10,000-case runs on
+    2026-09-17. Pinned here so the case runs every time.
+    """
+    bars = pd.DataFrame(
+        {"open": [open_], "high": [96.0], "low": [low], "close": [95.5]},
+        index=pd.date_range("2026-01-05", periods=1, freq="B"),
+    )
+    ind = pd.DataFrame(
+        {"bb_upper": [999.0], "bb_mid": [999.0], "bb_lower": [1.0], "k_full": [50.0]},
+        index=bars.index,
+    )
+    cfg = ExitParams(
+        max_hold_days=1,
+        target_pct=0.10,
+        stop_mode="fixed",
+        stop_fixed_pct=0.05,
+        exit_on_upper_band=False,
+        exit_on_stoch_80=False,
+        exit_on_mid_band=False,
+    )
+    return 100.0, Side.LONG, bars, ind, 1.0, cfg
+
+
+def _px(value: float) -> float:
+    """A price at the precision the resolver decides on (DESIGN §3.2).
+
+    `_breach` rounds both sides to 4 decimals before comparing, so the
+    resolver cannot tell 95.00004 from 95.0. An invariant checked at 1e-9
+    asserts a distinction the code is specified not to make, and fails on a
+    sub-tick gap that no quoted price can express. Compared at the same
+    precision, any error of a full tick or more still fails.
+    """
+    return round(float(value), 4)
+
+
+#: Gap stop: the open is 0.00004 above the stop, and the fill is the open.
+GAP_SUB_TICK = _sub_tick_scenario(open_=95.00004, low=95.00004)
+#: Intraday stop: the low is 0.00004 above the stop, and the fill is the stop.
+INTRADAY_SUB_TICK = _sub_tick_scenario(open_=95.8, low=95.00004)
+
+
 def _resolve(scenario):
     entry, side, bars, ind, atr, cfg = scenario
     result = resolve_exit(
@@ -125,11 +173,12 @@ def _resolve(scenario):
 
 
 @given(scenarios())
+@example(INTRADAY_SUB_TICK)
 @SETTINGS
 def test_exit_price_lies_within_its_bar(scenario):
     _, _, bars, _, _, r = _resolve(scenario)
     bar = bars.iloc[r.exit_idx]
-    assert float(bar["low"]) - 1e-9 <= r.exit_price <= float(bar["high"]) + 1e-9
+    assert _px(bar["low"]) <= _px(r.exit_price) <= _px(bar["high"])
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +218,8 @@ def test_mfe_is_never_below_the_realized_return(scenario):
 
 
 @given(scenarios())
+@example(GAP_SUB_TICK)
+@example(INTRADAY_SUB_TICK)
 @SETTINGS
 def test_stop_exits_land_at_or_beyond_the_stop_level(scenario):
     entry, side, _, cfg, atr, r = _resolve(scenario)
@@ -176,10 +227,10 @@ def test_stop_exits_land_at_or_beyond_the_stop_level(scenario):
     stop = stop_level(entry, side, atr, cfg)
     assert not np.isnan(stop)
     if side is Side.LONG:
-        assert r.exit_price <= stop + 1e-9
-        assert r.exit_price <= entry * (1 - min_stop_distance(entry, atr, cfg)) + 1e-9
+        assert _px(r.exit_price) <= _px(stop)
+        assert _px(r.exit_price) <= _px(entry * (1 - min_stop_distance(entry, atr, cfg)))
     else:
-        assert r.exit_price >= stop - 1e-9
+        assert _px(r.exit_price) >= _px(stop)
 
 
 # ---------------------------------------------------------------------------

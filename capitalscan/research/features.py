@@ -156,9 +156,8 @@ META_COLS: tuple[str, ...] = (
     "split_key",
     "cluster_id",
     "is_cluster_head",
-    # `side` decides the sign of `breach_depth`: a long breaches downward
-    # through the lower band, a short upward through the upper. Carried, not
-    # a feature -- `signal_type` already encodes direction and a second copy
+    # Written onto each `predictions` row by `build_rows`. Carried, not a
+    # feature -- `signal_type` already encodes direction and a second copy
     # would let the model split on the same fact twice.
     "side",
     # **Carried so a cosmetic row can be told apart at write time (ADR 183).**
@@ -167,11 +166,12 @@ META_COLS: tuple[str, ...] = (
     # nothing. On the serving frame with `include_watch` it varies, and
     # `build_rows` reads it to set `predictions.cosmetic`.
     "in_trade",
-    # Raw inputs to `breach_depth`, dropped from the matrix once derived.
-    "bar_low",
-    "bar_high",
-    "band_lower",
-    "band_upper",
+    # `bar_low`, `bar_high`, `band_lower` and `band_upper` were here as the
+    # inputs to `breach_depth`, and outlived it by nine days. Deleted
+    # 2026-09-17 with the `bars` and `indicators` laterals that fed them.
+    # Both were `LEFT JOIN LATERAL ... LIMIT 1`, so removing them changed no
+    # row count: the train, validate and serving frames hash identically
+    # before and after once the four columns are set aside.
 )
 
 #: **The training universe, and the only one a fit may see.**
@@ -322,33 +322,6 @@ SELECT {cols}
        ORDER BY u.as_of DESC
        LIMIT 1
   ) u ON TRUE
-  -- **The signal day's own bar, for breach depth (ADR 069).**
-  --
-  -- `bb_pctb` already carries close-based depth. This is the other half:
-  -- the signal is a *touch*, the low crosses the band, and the close can be
-  -- back inside by the bell. The two are different quantities and ADR 069
-  -- names the low explicitly.
-  --
-  -- **Causal for a `next_open` entry, which is the only entry kind this
-  -- frame selects.** Day t's low is complete before day t+1's open, so the
-  -- feature is known when the position is taken. It would be look-ahead for
-  -- a `touch` entry, and this frame does not build one.
-  LEFT JOIN LATERAL (
-      SELECT b.low AS bar_low, b.high AS bar_high
-        FROM bars b
-       WHERE b.ticker = e.ticker AND b.ts = e.signal_date AND b."interval" = '1d'
-       LIMIT 1
-  ) bar ON TRUE
-  -- The t-1 band, which is the band `detect` actually compared against
-  -- (invariant 3). Using day t's band would measure the breach against a
-  -- boundary the signal never saw.
-  LEFT JOIN LATERAL (
-      SELECT i.bb_lower AS band_lower, i.bb_upper AS band_upper
-        FROM indicators i
-       WHERE i.ticker = e.ticker AND i."interval" = '1d' AND i.ts < e.signal_date
-       ORDER BY i.ts DESC
-       LIMIT 1
-  ) ind ON TRUE
  WHERE e.config_hash = :chash
    AND e.entry_kind = :entry_kind
    {universe_filter}
@@ -367,17 +340,7 @@ def _select_columns() -> tuple[str, ...]:
     were nearly shipped as all-NULL features.
     """
     names = dict.fromkeys(META_COLS + RAW_FEATURE_COLS + LABEL_COLS + ("mcap_usd",))
-    source = {
-        "sector": "t",
-        "mcap_usd": "u",
-        "bar_low": "bar",
-        "bar_high": "bar",
-        "band_lower": "ind",
-        "band_upper": "ind",
-    }
-    # The bar/band laterals already alias their outputs to the target
-    # names, so a `bar.bar_low AS bar_low` would be `bar.bar_low`, which is
-    # what the lateral emits. Written out rather than special-cased.
+    source = {"sector": "t", "mcap_usd": "u"}
     return tuple(f"{source[n]}.{n} AS {n}" if n in source else f"e.{n}" for n in names)
 
 
@@ -649,8 +612,7 @@ def _coerce_boolean_features(frame: pd.DataFrame) -> pd.DataFrame:
 def _add_derived(frame: pd.DataFrame) -> pd.DataFrame:
     """Never mutate in place (project convention).
 
-    `breach_depth` was derived here until ADR 177 deleted it. What remains is
-    four raw inputs stay meta and never reach the matrix.
+    `breach_depth` was derived here until ADR 177 deleted it.
 
     `k_minus_d` is the stochastic spread, which a tree can only express as a
     difference by splitting twice; giving it directly is the standard
