@@ -305,6 +305,15 @@ def predict(
             "not fitted on them (ADR 183)"
         ),
     ),
+    publish: bool = typer.Option(
+        False,
+        "--publish",
+        help=(
+            "After a refit, copy the artifact to serving's model_artifact so "
+            "the Pi can score with it (ADR 185). Off by default; weekly "
+            "publishes on its own. Refused with --from-artifact or --serving."
+        ),
+    ),
 ) -> None:
     """Write calibrated p_touch predictions for recent events (ADR 174).
 
@@ -340,6 +349,17 @@ def predict(
     if universe not in filters:
         console.print(
             f"[red]unknown --universe {universe!r}[/red]. Valid: {', '.join(sorted(filters))}."
+        )
+        raise typer.Exit(code=2)
+
+    # **`--publish` ships a refit, so it needs one.** Found 2026-09-10: a
+    # manual refit across a `config_hash` change never reached serving, and
+    # the Pi refused to score. With no fit in this run there is nothing new
+    # to ship, and re-publishing a loaded file would hide which run made it.
+    if publish and (from_artifact or serving):
+        console.print(
+            "[red]--publish needs a refit[/red]: it cannot be combined with "
+            "--from-artifact or --serving."
         )
         raise typer.Exit(code=2)
 
@@ -411,6 +431,24 @@ def predict(
     console.print(f"predict: {report.summary()}")
     if report.rows_written == 0:
         console.print("[yellow]warning[/yellow]: no predictions written")
+
+    if publish:
+        # `run_predict` survives a failed save by design, and the default
+        # path would then still hold an older fit. Publishing that is the
+        # exact mix-up this flag exists to remove.
+        if report.artifact_path.startswith("not written"):
+            console.print(f"[red]not published[/red]: artifact {report.artifact_path}")
+            raise typer.Exit(code=1)
+        # Fatal here, unlike `weekly`: the flag was asked for, and exit 0
+        # would leave the Pi refusing with nothing saying why.
+        from capitalscan.jobs import sync as sync_job
+
+        try:
+            size = artifact_mod.publish(sync_job.serving_engine(), expected_config_hash=chash)
+        except Exception as exc:  # noqa: BLE001 - reported and fatal
+            console.print(f"[red]artifact publish failed[/red]: {exc}")
+            raise typer.Exit(code=1) from exc
+        console.print(f"artifact published to serving: {size:,} bytes")
 
 
 @app.command()
