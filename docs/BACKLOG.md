@@ -146,44 +146,6 @@ Options, cheapest first:
 nobody wrote the line. The risk it raises is publishing a fit made from a
 half-built generation, which argues for (1).
 
-## The bull reversal has no close-confirmed half
-
-**Accepted as-is on the live-badge question (user, 2026-09-09):** the badge
-freezing at fire time is fine, because `live reversal` and `reversal` are
-two different claims and a reader seeing "live" knows it is a statement
-about a moment that may have passed.
-
-**That reasoning holds for the bear side and not for the bull side**, which
-is what is still open.
-
-`SignalParams.enabled_signal_types` carries `bear_close_above_upper` and
-**not** `bull_close_below_lower`:
-
-```
-bb_lower_touch, bb_upper_touch, stoch_oversold, stoch_overbought,
-confluence_low, confluence_high, bear_close_above_upper
-```
-
-So a bear reversal that develops after its signal fires is caught the next
-morning by the close-confirmed badge. A bull reversal that develops after
-its signal fires is caught by nothing — the live badge froze at fire time
-and no solid badge will ever appear. EXPE on 2026-09-09 is the worked
-example: it fired 09:46 at 265.12 against a 266.95 open, below its band but
-still below its open, crossed above the open later, and displays nothing.
-
-`bull_close_below_lower` already exists as an indicator
-(`core/indicators.py:208`), an enum value (`core/types.py:40`), a signal
-rule (`core/signals.py:295`) and a frontend label — it is dormant, not
-missing. The badge branch for it is written and tested.
-
-**The cost of enabling it is the part needing a decision.**
-`enabled_signal_types` is a hashed field, so adding to it **moves
-`config_hash`**: a new serving generation, a full backtest rebuild (~2h),
-and `cell_stats` recomputed. That is not a display change, and it is the
-reason this is a decision rather than a one-line edit.
-
----
-
 ## `test_stop_exits_land_at_or_beyond_the_stop_level` failed once and would not reproduce
 
 2026-09-09, during the four-gate run for ADR 188. It failed in the combined
@@ -2384,91 +2346,6 @@ kind of change that looks free and occasionally is not, because a join that
 also constrains row count is doing more than it appears to. If it turns out
 these joins are inner joins, dropping them **changes the training
 population**, which is a config-hash question and not a cleanup.
-
-## The backtest harness cannot run at the current event count
-
-Found 2026-09-09 while running the full backtest. **The harness phase is
-the only part that did not complete, and the rebuild is therefore
-unvalidated by it.**
-
-`_load_events_for_config` (`cli.py:809`) does `SELECT * FROM events WHERE
-config_hash = :chash` into a single DataFrame. That table now holds
-**10,824,053 rows** for the live config, roughly double what it held when
-the harness was written, because the cosmetic backfill priced `in_watch`
-and out-of-universe signals.
-
-Measured directly, mid-run:
-
-```
-python PID 30444   commit 70.69 GB   resident  1.77 GB
-python PID 20956   commit 23.30 GB   resident  0.13 GB
-commit limit 114.3 GB, commit free 0.7 GB
-sum of ALL process working sets: 2.9 GB
-```
-
-**It exhausts commit charge, not RAM**, which is why it presents as
-"system is running low on memory" while almost nothing is resident. That
-misleads: three separate attempts were spent lowering `--workers` (8 -> 4
--> 1) and capping WSL, none of which touched the cause. Killing the two
-processes freed 39.7 GB of commit instantly.
-
-`--tickers` does not help. The load runs before any ticker filter and is
-scoped only on `config_hash`, so a hundred-ticker harness still reads all
-10.8M rows.
-
-### The fix, and why it was not done in flight
-
-Select only the columns `run_harness` actually reads instead of `*`. That
-is a narrowing rather than a weakening, but it requires knowing exactly
-which columns each of the five checks touches, and getting that wrong
-silently removes a check rather than failing. The harness is one of the
-five things `CLAUDE.md` names as carrying the correctness load, so it is
-not a change to make at 04:00 against a sleeping owner.
-
-Chunking by ticker is the alternative and is a larger change: the
-no-look-ahead ladder and the signal-path parity check are per ticker
-already, so the events frame could be built and discarded per ticker
-rather than held whole.
-
-**Do not raise the commit limit to work around this.** A 70 GB reservation
-for a frame that needs a fraction of that is the defect; a bigger pagefile
-would hide it and make every future run slower.
-
-### What this means for the 2026-09-09 rebuild
-
-`compute` (59/59 chunks, 2026-09-08) and `finalize` (2026-09-08 15:57,
-32m51s) both completed and are current -- verified by diffing the compute
-path between the chunk sha and HEAD, which found only a formatting reflow.
-The **harness last passed 2026-08-30**, before the event count doubled, so
-the data written since has not been through it.
-
-That is a real gap and should be closed before the wivie cutover, not
-after.
-
-## OPEN NOW: the scheduled nightly is DISABLED and must be re-enabled
-
-Disabled 2026-09-10 12:25 PT so it would not fire at 13:15 into a running
-`config_hash` rebuild. Its chain is
-`events -> path_capture -> peak_labels -> predict -> sync`, and every step
-would have collided: `events` upserting the same natural keys the backtest
-was writing, `path_capture` racing `path backfill`, `predict` on a
-half-built generation, and `sync` shipping that generation to serving --
-`run_sync` reads the research GUC, which already points at the new hash.
-
-**Re-enable after the serving steps finish:**
-
-```powershell
-Enable-ScheduledTask -TaskName "CapitalScan nightly"
-Get-ScheduledTask -TaskName "CapitalScan nightly" | Select-Object State
-```
-
-Verify `State = Ready`. A forgotten disable is silent: no nightly runs, no
-error appears anywhere, and the first symptom is stale data days later.
-`Get-ScheduledTaskInfo`'s `NextRunTime` still shows a time while disabled,
-so that field does **not** confirm it is armed -- read `State`.
-
-
----
 
 ## ~~675 tickers' `next_open` positions survived a full-universe `weekly`~~ — **answered 2026-09-15: they are out-of-universe rows and no scheduled job may touch them**
 
