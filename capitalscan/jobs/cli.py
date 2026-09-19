@@ -429,7 +429,10 @@ def predict(
         console.print("Run `cscan predict` without --from-artifact to refit.")
         raise typer.Exit(code=1) from exc
     console.print(f"predict: {report.summary()}")
-    if report.rows_written == 0:
+    # Zero new rows with rows kept is a quiet night, not a fault: predictions
+    # are written once (DECISIONS.md, 2026-09-17), so the lookback's earlier
+    # rows are expected to be there already.
+    if report.rows_written == 0 and report.rows_kept == 0:
         console.print("[yellow]warning[/yellow]: no predictions written")
 
     if publish:
@@ -3455,7 +3458,10 @@ def nightly() -> None:
             # `cosmetic = true` and carry their own caveat.
             pred_report = run_predict(engine, chash, from_artifact=True, universe=feat.ANY_UNIVERSE)
             pj.rows_written = pred_report.rows_written
-        console.print(f"predict: rows_written={pred_report.rows_written:,}")
+        console.print(
+            f"predict: rows_written={pred_report.rows_written:,} "
+            f"rows_kept={pred_report.rows_kept:,}"
+        )
     except artifact_mod.StaleArtifact as exc:
         console.print(f"[yellow]skip predict[/yellow]: {exc}")
         console.print("The weekly refit writes a fresh artifact.")

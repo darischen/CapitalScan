@@ -176,6 +176,47 @@ def upsert(
     return total_inserted
 
 
+def insert_new(
+    engine: Engine,
+    table_name: str,
+    data: list[dict] | pd.DataFrame,
+    conflict_cols: list[str],
+) -> int:
+    """`INSERT ... ON CONFLICT (conflict_cols) DO NOTHING`. Returns rows inserted.
+
+    For a table whose rows are records rather than state: the first write is
+    the fact and a later write must not replace it. `predictions` is the one
+    caller. Its rows are the forward log, and a rewrite after the outcome
+    exists turns evidence into a fitted number (DECISIONS.md, 2026-09-17).
+
+    **Counts rows inserted, unlike `upsert`, which counts rows sent.** With
+    most rows already present a sent count would report thousands written
+    on a night that wrote a few dozen, and hide the conflict doing its job.
+
+    **Counted from `RETURNING`, not `rowcount`.** SQLAlchemy runs a
+    multi-row `VALUES` through its insertmanyvalues path, and against the
+    real database `rowcount` came back **-1** for every batch (checked on a
+    scratch table, 2026-09-19). A skipped conflict returns no row, so the
+    returned rows are exactly the inserted ones.
+    """
+    rows = _rows_from(data)
+    if not rows:
+        return 0
+    table = _table(engine, table_name)
+
+    inserted = 0
+    for i in range(0, len(rows), 1000):
+        stmt = (
+            pg_insert(table)
+            .values(rows[i : i + 1000])
+            .on_conflict_do_nothing(index_elements=conflict_cols)
+            .returning(*(table.c[c] for c in conflict_cols))
+        )
+        with engine.begin() as conn:
+            inserted += len(conn.execute(stmt).all())
+    return inserted
+
+
 def copy_upsert(
     engine: Engine,
     table_name: str,

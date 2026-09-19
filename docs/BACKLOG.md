@@ -2,10 +2,14 @@
 
 # HIGHEST PRIORITY
 
-## The forward log is calibrated on its own outcomes
+## ~~The forward log is calibrated on its own outcomes~~ — **decided 2026-09-19: ADR 195, predictions are insert-only**
 
-Found 2026-09-17 while re-running `cscan outcomes`. **Needs an owner
-decision, recorded in `DECISIONS.md` Open items.**
+Built on `main`. **Live only after `wivie` pulls it**, and the clean log for
+`f183b0f5209a4677` starts with the first `nightly` after that pull. Rows
+before it stay contaminated and are not rewritten. Still open below: `nightly`
+does not run `outcomes`.
+
+Found 2026-09-17 while re-running `cscan outcomes`.
 
 `predict` upserts every column but `id` on `event_id`, so `nightly`'s
 45-day lookback rewrites `p_touch_3` and `created_at` each night. ADR 193's
