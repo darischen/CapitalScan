@@ -62,6 +62,9 @@ class PredictReport:
 
     rows_scored: int = 0
     rows_written: int = 0
+    #: Rows already present and left as first written. Not an error: every
+    #: night rescoring the lookback finds the earlier nights' rows here.
+    rows_kept: int = 0
     rows_dropped: int = 0
     tickers: int = 0
     #: Where the fitted model was written, or why it was not. Carried in
@@ -73,7 +76,8 @@ class PredictReport:
 
     def summary(self) -> str:
         return (
-            f"{self.rows_written} predictions for {self.tickers} tickers "
+            f"{self.rows_written} new predictions, {self.rows_kept} kept as first "
+            f"written, for {self.tickers} tickers "
             f"since {self.since} ({self.rows_dropped} dropped), "
             f"model {self.model_version}"
         )
@@ -128,7 +132,7 @@ def run_predict(
     from_artifact: bool = False,
     universe: str = feat.TRADE_ONLY,
 ) -> PredictReport:
-    """Fit, calibrate, and upsert `predictions` for recent events.
+    """Fit, calibrate, and insert `predictions` for recent events, first write wins.
 
     Args:
         since: earliest `signal_date` to score. Defaults to
@@ -244,22 +248,25 @@ def run_predict(
         report.tickers = len({r["ticker"] for r in rows})
 
         if rows:
-            # **`update_columns` excludes `id`, and that is not cosmetic.**
-            # `db_io.upsert` overwrites every non-key column by default,
-            # and `predictions.id` is a `bigserial` -- so a re-run tried to
-            # reassign primary keys that `outcomes.prediction_id`
-            # references, and Postgres refused with a
-            # `ForeignKeyViolation`. The forward log is exactly what makes
-            # a re-run worth doing, so the writer must not fight it.
-            # `sync.py` carries the same fix for the same reason.
-            updatable = [c for c in rows[0] if c not in {"id", "event_id"}]
-            report.rows_written = db_io.upsert(
+            # **First write wins (DECISIONS.md, 2026-09-17, option A).** This
+            # was an upsert, so each `nightly` rewrote the 45-day lookback
+            # with whatever artifact was current. ADR 193's validate window
+            # ends at `today - 5d`, so a weekly refit calibrated on events
+            # whose predictions it then rewrote: 2,078 of 2,143 resolved
+            # live-generation rows on `wivie` were last written after their
+            # outcome existed. A prediction is a record of what was said
+            # before the outcome, so a row keeps the model that first scored
+            # it, even after a refit.
+            #
+            # `--clear` is still the way to rescore a generation on purpose,
+            # and it refuses once `outcomes` references a row.
+            report.rows_written = db_io.insert_new(
                 engine,
                 "predictions",
                 rows,
                 conflict_cols=["event_id"],
-                update_columns=updatable,
             )
+            report.rows_kept = len(rows) - report.rows_written
         run.rows_written = report.rows_written
         run.notes = report.summary()
 

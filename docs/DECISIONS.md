@@ -253,6 +253,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 192 | Calibration interpolates, and the interval interpolates with it | **Decided 2026-09-10.** Amends ADR 174, which argued against this in the module docstring. Measured on serving 2026-09-09: 498 predictions carried **498 distinct raw scores and 9 distinct published values**, one pooled block putting **142 tickers on exactly 0.4780** across raw 0.375-0.495. Found by the user comparing two rows. Inside that block the model's ordering was not coarse but **gone** -- and ranking is the durable output precisely because the level is not (ADR 179: base rate 36.5-65.0% against Brier skill 0.079). ADR 174's objection -- "the published point must lie inside its own published interval" -- is **correct about interpolating the point alone** and it broke exactly as predicted on the first run (raw 0.2726 published 0.3486 against a bucket ceiling of 0.3464). `band()` interpolates `p_hat`, `ci_low` and `ci_high` **together**, so containment is preserved by convexity and asserted across 501 points. Anchors are **per isotonic block, not per bucket** -- per-bucket anchors would place two at the same height and interpolate a flat segment, reproducing the tie. Edges clamp rather than extrapolate; `n_eff` takes the smaller bracketing block. The level is still worth ~2.7pp and the margin says so; the added decimal separates rows that differ without claiming the third digit. **Costs no skill**, asserted by comparing weighted Brier against the step map on the same fixture. Existing rows keep stepwise values until re-scored; no refit needed, the tables are unchanged. Does not move `config_hash` |
 | 193 | The training window expands; the refit finally learns something | **Decided 2026-09-10.** Amends ADR 179, which was right about the window it tested and wrong about the idea underneath. `split_key` is fixed at event creation, so **the weekly refit trained on identical rows every week** and differed only by seed -- 516,615 events since 2024 never entered training and the reliability tables stayed anchored to 2022-2023. Found because a user asked whether a model can be trained once and never given new information. `roll7` did not settle it: it moved the window forward **and cut it 42%**, then scored a different period, and **no arm held the validation period constant**. Four arms with the missing control (`fixed_v26` = today's training window scored on 2026): `fixed` 25/30 on 2022-23, **`fixed_v26` 14/30 on 2026 from the identical fit** (drift is real and large), **`expand` 25/30 on those same 11,690 rows** (mean err 0.0518 -> 0.0338, step counts *rose* to [1042,863,880] so selection happened rather than falling through to DEFAULT_STEPS). `expand_purge` costs one head and 0.002 -- **no leak**, which the headline needed since a 10-day label crosses the 2025/2026 boundary. **The caveat the aggregate hides:** by family, expanding improves all three (peak 4->6, trough 4->9, terminal 6->10, no inversion unlike `roll7`) but `expand`'s 25/30 is not `fixed`'s 25/30 -- peak, which backs every shipped `p_touch_*`, is 6/10 against 10/10, and this test cannot say whether that residual is 2026 being harder or the model still lagging. Adopted as a **training-time filter on `signal_date`, never a `split_key` rewrite**, so invariant 5 holds and `config_hash` does not move. 10-day embargo applied unconditionally. Side effect worth naming: validate becomes the trailing six months, so the isotonic anchor moves from 0.5482 to 0.6330 -- the ~5pp bias's cause, closed for free. Does not move `config_hash` |
 | 194 | `bull_close_below_lower` is enabled, and the hash moves with it | **Decided 2026-09-10.** Completes ADR 144; moves `config_hash` `0523841076f47293` -> **`f183b0f5209a4677`**. The type had an indicator column, an enum member, a signal rule, a frontend label and a badge branch -- everything except membership in `enabled_signal_types`. **The cost was asymmetric:** the bear side has a live badge *and* a close-confirmed one, so a bear reversal developing after its signal fires is caught next morning; the bull side had only the live badge, which freezes at fire time, so a later bull reversal was caught by nothing. EXPE fired 2026-09-09 at 09:46, below its band and still below its open, closed above the open, and displayed nothing. Accepting the frozen live badge is sound reasoning that **depends on both badges existing**, which made the dormancy a defect rather than a deferral. Measured first: fires **41,997** times against bear's 52,803, and 311 times since July. Twelve guards failed and all were right -- eleven were the `conftest` hash pin, which was designed so a deliberate change is one edit. Two needed judgement: the dormancy class was inverted (keeping the disable path, since DESIGN 3.10 wants ablation reachable from config) and now asserts the hash **moved**; `DORMANT_BY_DESIGN` emptied, which would have made a test pass on an empty loop, so emptiness is asserted explicitly. **Runbook gap found the hard way:** `universe` is config-keyed, so the first rebuild wrote 0 events across 1,463 tickers and exited 0 -- all 66 quarters must be rebuilt first. Ordering is fixed: sync, then `db sync-config`, then restart web, then pull the Pi; reversing the first two blanked the site for four minutes. Moves `config_hash` |
+| 195 | A prediction is written once | **Decided 2026-09-19** by the owner, option A of the 2026-09-17 open item. `predictions` becomes insert-only on `event_id` (`db_io.insert_new`, `ON CONFLICT DO NOTHING`). The upsert let `nightly` rewrite its 45-day lookback with an artifact whose ADR 193 validate window contained those events: 2,078 of 2,143 resolved live-generation rows on `wivie` were last written after their outcome existed. A row now keeps the model that first scored it; `created_at` is the first write; rows written before this stay contaminated and are not rewritten. No `config_hash` move |
 
 ---
 
@@ -4929,9 +4930,9 @@ that one logs whatever still gets through.
 | Point-in-time market cap | Shares outstanding from filings, or price-times-current-shares approximation | Filings where available, approximation flagged elsewhere |
 | Polling home | Actions cron with internal loop, or persistent Modal function | Actions until the live log matters, then Modal |
 | Non-US mega-caps | Add ASML, SAP, Novo, Toyota, Samsung, LVMH for lower correlation | Add if effective sample falls short after clustering adjustment |
-| **The forward log scores probabilities calibrated on their own outcomes** (found 2026-09-17) | A: freeze a prediction once written (`ON CONFLICT DO NOTHING` on `event_id`); B: end ADR 193's validate window before the first forward-log `as_of`; C: keep rewriting, and snapshot the first-written values into `outcomes` at write time | **Undecided, needs the owner.** A is one line and matches ADR 174's "recorded before the outcome existed". It costs refreshing a row after a refit. See below |
+| ~~**The forward log scores probabilities calibrated on their own outcomes**~~ | A / B / C | **Resolved: A, ADR 195** |
 
-### The forward log is in-sample for calibration — OPEN, 2026-09-17
+### The forward log is in-sample for calibration — RESOLVED by ADR 195, option A
 
 **Measured on `wivie`, read-only.** `predict` upserts on `event_id` and
 rewrites every column except `id`, including `p_touch_3` and `created_at`.
@@ -10108,3 +10109,44 @@ blank page with every job reporting success. `cscan sync` ships the data,
 restarts to drop its per-connection hash (ADR 115), and the Pi is pulled
 last. Running `db sync-config` early blanked the site for four minutes on
 this date; see `OPERATIONS.md`.
+
+---
+
+## 195. A prediction is written once
+
+**Status:** accepted 2026-09-19, by the owner, choosing option A from the
+open item "The forward log is in-sample for calibration".
+
+### Context
+
+`run_predict` upserted every column but `id` on `event_id`, and `nightly`
+rescored a 45-day lookback with the current artifact. ADR 193 ends the
+validate window, which fits the isotonic tables, at `today - 5d`. Together
+they rewrote forward-log predictions with a model calibrated on those same
+events: 2,078 of 2,143 resolved live-generation rows on `wivie` had been
+written more than 7 days after their signal. ADR 174 calls the forward log
+the one measurement nothing can contaminate, and CLAUDE.md forbids
+recalibrating on it.
+
+### Decision
+
+`predictions` is insert-only on `event_id`: `db_io.insert_new`,
+`ON CONFLICT DO NOTHING`. The first score a signal receives is its record.
+`PredictReport.rows_kept` counts rows left as written, so a quiet night
+reports "0 new, N kept" instead of a warning.
+
+### Consequences
+
+- **A row keeps the model that first scored it**, including after a weekly
+  refit. The page shows that number until the row leaves the lookback.
+- **`created_at` means what it says again.** It was restamped on every
+  rewrite. A clean forward-log query filters on `created_at` falling before
+  the signal's window closed.
+- **Rows written before this ADR stay contaminated.** For `f183b0f5209a4677`
+  the clean log starts at the first `nightly` running this code on `wivie`.
+  Nothing is backfilled or rewritten to fix them, for the same reason.
+- `cscan predict --clear` is still the deliberate way to rescore, and it
+  still refuses once `outcomes` references a row.
+- ADR 193's validate window is unchanged. It may overlap the forward log's
+  dates; with no rewrite, the overlap no longer reaches a recorded
+  prediction.
