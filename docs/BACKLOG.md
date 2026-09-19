@@ -6,8 +6,9 @@
 
 Built on `main`. **Live only after `wivie` pulls it**, and the clean log for
 `f183b0f5209a4677` starts with the first `nightly` after that pull. Rows
-before it stay contaminated and are not rewritten. Still open below: `nightly`
-does not run `outcomes`.
+before it stay contaminated and are not rewritten. `nightly` now runs
+`outcomes` after `predict` (2026-09-19), and `weekly`'s publish passes
+`expected_config_hash`.
 
 Found 2026-09-17 while re-running `cscan outcomes`.
 
@@ -28,9 +29,8 @@ at by two decisions that were each reasonable alone.
 against 0.550 realised, 5.9 points high, and CLAUDE.md's "about 5 points
 low" was measured on the previous generation before ADR 193 existed.
 
-Also open, smaller: `nightly` never runs `outcomes`, so `wivie`'s log has
-sat at 5,986 rows since 2026-09-08. Adding it is cheap, but it is worth
-nothing until the contamination is settled.
+~~Also open, smaller: `nightly` never runs `outcomes`~~ -- added
+2026-09-19, between `predict` and `sync`.
 
 ---
 

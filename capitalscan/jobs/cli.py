@@ -3468,6 +3468,22 @@ def nightly() -> None:
     except ModuleNotFoundError as exc:
         console.print(f"skip predict: {exc}. Install the `neural` extra to enable it.")
 
+    # **Resolve the forward log (DESIGN 7.8), added 2026-09-19.** It ran by
+    # hand only, so `wivie`'s log sat at 5,986 rows from 2026-09-08 while
+    # predictions and labels kept arriving. After `predict`, and before
+    # `sync`, which ships `outcomes` for ADR 182's reliability table.
+    #
+    # Worth recording only since ADR 195: a prediction is no longer
+    # rewritten after its outcome exists. Idempotent and set-based, so a
+    # failure is reported and tomorrow's run picks up what tonight missed.
+    try:
+        from capitalscan.jobs import outcomes as outcomes_job
+
+        oc_report = outcomes_job.run_outcomes(engine)
+        console.print(f"outcomes: {oc_report.summary()}")
+    except Exception as exc:  # noqa: BLE001 - reported; the resolver is idempotent
+        console.print(f"[yellow]warn[/yellow] outcomes skipped: {exc}")
+
     # Closes the slot `record` opened above. Without it the row stays
     # `'started'` forever and `cscan system-status` cannot tell a chain that
     # finished from one that died halfway (ADR 080 lists `status` and
@@ -3747,7 +3763,10 @@ def weekly(
             from capitalscan.jobs import sync as _sync
 
             _serving = _sync.serving_engine()
-            _size = _artifact.publish(_serving)
+            # `expected_config_hash` since 2026-09-19, the same guard as
+            # `predict --publish`: a local file left by an ablation-arm fit
+            # would otherwise ship for a generation it was not fitted on.
+            _size = _artifact.publish(_serving, expected_config_hash=chash)
             console.print(f"artifact published to serving: {_size:,} bytes")
         except RuntimeError as exc:
             console.print(f"skip artifact publish: {exc}")

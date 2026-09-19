@@ -59,6 +59,14 @@ def _no_real_nightly_io(monkeypatch):
         predict_mod, "run_predict", lambda *args, **kwargs: predict_mod.PredictReport()
     )
 
+    # `outcomes` joined the chain 2026-09-19, after `predict`. A fifth
+    # database boundary, stubbed for the same reason.
+    from capitalscan.jobs import outcomes as outcomes_mod
+
+    monkeypatch.setattr(
+        outcomes_mod, "run_outcomes", lambda *args, **kwargs: outcomes_mod.OutcomeReport()
+    )
+
     # `nightly` wraps its path capture in `ingest.run_job` (2026-08-06) so
     # the rows it writes carry a `run_id` — `path.run_id`, ADR 034. The real
     # `run_job` inserts a `runs` row, which is exactly the database access
@@ -374,3 +382,72 @@ class TestBothChainsScoreEveryUniverse:
 
         assert feat.TRADE_ONLY in feat.training_sql(feat._select_columns())
         assert feat.TRADE_OR_WATCH not in feat.training_sql(feat._select_columns())
+
+
+class TestOutcomesRunsNightly:
+    """The forward log resolves every night (2026-09-19).
+
+    `cscan outcomes` was run by hand only, so `wivie`'s log sat at 5,986 rows
+    from 2026-09-08 while predictions and labels kept arriving. It runs after
+    `predict`, so tonight's rows exist, and before `sync`, which ships
+    `outcomes` to serving for ADR 182's reliability table. ADR 195 is what
+    makes the result worth recording: a prediction is no longer rewritten
+    after its outcome exists.
+    """
+
+    def _run(self, monkeypatch, outcomes_fn):  # noqa: ANN001, ANN202
+        from capitalscan.jobs import outcomes as outcomes_mod
+        from capitalscan.jobs import predict as predict_mod
+        from capitalscan.jobs import sync as sync_mod
+
+        calls: list = []
+        for name in [
+            "run_bars_daily",
+            "run_bars_hourly",
+            "run_actions",
+            "run_market",
+            "run_shares",
+            "run_earnings",
+        ]:
+            monkeypatch.setattr(ingest, name, _record_call(calls, name))
+        for name in ["run_indicators", "run_events"]:
+            monkeypatch.setattr(compute, name, _record_call(calls, name))
+        monkeypatch.setattr(cli, "_sweep_provisional_poll_rows", lambda *a, **k: 0)
+        monkeypatch.setattr(
+            predict_mod,
+            "run_predict",
+            _record_call(calls, "run_predict", result=predict_mod.PredictReport()),
+        )
+
+        def _outcomes(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            calls.append({"name": "run_outcomes"})
+            return outcomes_fn()
+
+        monkeypatch.setattr(outcomes_mod, "run_outcomes", _outcomes)
+        monkeypatch.setattr(sync_mod, "pull_live_records", _record_call(calls, "pull", {}))
+
+        def _no_serving(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            calls.append({"name": "sync"})
+            raise RuntimeError("serving not configured (test)")
+
+        monkeypatch.setattr(sync_mod, "run_sync", _no_serving)
+        cli.nightly()
+        return [c["name"] for c in calls]
+
+    def test_nightly_resolves_outcomes_after_predict_and_before_sync(self, monkeypatch) -> None:  # noqa: ANN001
+        from capitalscan.jobs import outcomes as outcomes_mod
+
+        names = self._run(monkeypatch, outcomes_mod.OutcomeReport)
+        assert "run_outcomes" in names, "nightly never resolved the forward log"
+        assert names.index("run_predict") < names.index("run_outcomes")
+        assert names.index("run_outcomes") < names.index("sync")
+
+    def test_a_failed_resolve_does_not_fail_the_night(self, monkeypatch) -> None:  # noqa: ANN001
+        """Everything before it is committed to research, and the resolver is
+        idempotent, so tomorrow's run picks up whatever tonight's missed."""
+
+        def _boom():  # noqa: ANN202
+            raise RuntimeError("outcomes exploded")
+
+        names = self._run(monkeypatch, _boom)
+        assert "sync" in names, "a failed outcomes step stopped the chain"
