@@ -197,3 +197,32 @@ class TestWeeklySuccessMarksScheduledRunsOk:
         )
         _call()
         assert calls == ["ok"]
+
+
+class TestWeeklyPublishChecksTheHash:
+    """`weekly` publishes with the same guard `cscan predict --publish` has
+    (2026-09-19). The local artifact is whatever the last fit on the box
+    wrote; if that was an ablation arm, publishing it names the wrong model
+    for the served generation and the Pi refuses to score, with every job
+    reporting success."""
+
+    def test_publish_passes_this_runs_config_hash(self, monkeypatch):
+        from capitalscan.jobs import artifact as artifact_mod
+        from capitalscan.jobs import sync as sync_mod
+
+        monkeypatch.setattr(cli, "_run_backtest_compute_chunked", lambda *a, **k: (1, 0, 0, {}))
+        monkeypatch.setattr(sync_mod, "serving_engine", lambda: "serving-engine")
+        seen: dict = {}
+
+        def _publish(engine, path=artifact_mod.DEFAULT_PATH, expected_config_hash=None):
+            seen["engine"] = engine
+            seen["expected"] = expected_config_hash
+            return 1
+
+        monkeypatch.setattr(artifact_mod, "publish", _publish)
+        _call()
+
+        from capitalscan.jobs.config import config_hash, resolve_config
+
+        assert seen["engine"] == "serving-engine"
+        assert seen["expected"] == config_hash(resolve_config())
