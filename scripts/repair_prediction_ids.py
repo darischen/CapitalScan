@@ -169,11 +169,24 @@ def plan_reassignment(
 ) -> pd.DataFrame:
     """The serving-born rows to move, each carrying the new id it would get.
 
-    Serving-born: `id < floor` (this repair runs once, before this store has
-    ever minted an id at or above it) **and** the row's natural key resolves
-    to no research row. Both clauses are required -- a below-floor row whose
-    key research also holds is one of the 35,292 rows the two stores already
-    agree on, not one of the 100.
+    Two classes move, and the second was missed until the repair ran for
+    real on 2026-09-20.
+
+    **Serving-born:** `id < floor` and the row's natural key resolves to no
+    research row. That was the original rule, and it moved 100 rows.
+
+    **Reused id:** `id < floor` and research holds a DIFFERENT natural key
+    at that same id. These are the rows that actually block the sync.
+    `_clear_remap_collisions` protects any serving row whose id appears in
+    the incoming set, so serving's ECHO row at 174759 was protected by
+    research's MPC row at 174759, and then raised `predictions_event_id`
+    when research's own ECHO row claimed its `event_id` -- the
+    `UniqueViolation` behind every failed nightly sync since 2026-09-17.
+    The first run reported exactly this as its own postcondition: "ids
+    naming a different signal on each side, after repair: 3".
+
+    A below-floor row whose key AND id research agrees with is one of the
+    35,292 rows the stores already share, and stays put.
 
     New ids start just past the higher of the floor and every id serving
     already holds (not just the ones below the floor), so a row already
@@ -192,11 +205,24 @@ def plan_reassignment(
         how="left",
         indicator=True,
     )
-    orphaned = below.loc[merged["_merge"].to_numpy() == "left_only"].reset_index(drop=True)
-    if orphaned.empty:
-        return orphaned.assign(new_id=pd.Series(dtype="int64"))
+    orphaned = below.loc[merged["_merge"].to_numpy() == "left_only"]
+
+    # The reused-id class: same id on both sides, different natural key.
+    # `mismatched_ids` is the same comparison, and it is this function's
+    # postcondition -- so computing it here is what makes that
+    # postcondition reachable rather than merely asserted.
+    reused = below[below["id"].isin(mismatched_ids(serving_predictions, research_keys))]
+
+    moving = (
+        pd.concat([orphaned, reused])
+        .drop_duplicates(subset=["id"])
+        .sort_values("id")
+        .reset_index(drop=True)
+    )
+    if moving.empty:
+        return moving.assign(new_id=pd.Series(dtype="int64"))
     start = max(floor, int(serving_predictions["id"].max()) + 1)
-    return orphaned.assign(new_id=list(range(start, start + len(orphaned))))
+    return moving.assign(new_id=list(range(start, start + len(moving))))
 
 
 def mismatched_ids(serving_keys: pd.DataFrame, research_keys: pd.DataFrame) -> list[int]:
