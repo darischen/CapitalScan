@@ -157,3 +157,23 @@ class TestServingParamsIsStillNotAFieldOfConfig:
         from capitalscan.jobs.config import config_hash
 
         assert config_hash(Config()) == DEFAULT_CONFIG_HASH
+
+
+class TestPredictionsMaxIdSql:
+    """`predictions_max_id_sql` is the seam `scripts/verify_id_floor.py`
+    executes against its `zz_` scratch tables (Task 5c) instead of
+    hand-copying the comparison. Pinned here so the two branches cannot
+    silently swap or reverse without a unit test failing first."""
+
+    def test_serving_takes_the_greater_of_max_and_floor(self) -> None:
+        sql = sync_job.predictions_max_id_sql("zz_serving", 1_000, serving=True)
+        assert sql == 'SELECT greatest(coalesce(max("id"),0), 1000) FROM "zz_serving"'
+
+    def test_research_excludes_anything_at_or_above_the_floor(self) -> None:
+        sql = sync_job.predictions_max_id_sql("zz_research", 1_000, serving=False)
+        assert sql == 'SELECT coalesce(max("id"),0) FROM "zz_research" WHERE "id" < 1000'
+        # The comparison direction is the one clause keeping research
+        # below the floor -- a reversed `>=` here would silently let
+        # research's own allocation race into serving's range.
+        assert "< 1000" in sql
+        assert ">= 1000" not in sql

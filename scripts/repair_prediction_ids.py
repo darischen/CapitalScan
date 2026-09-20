@@ -45,6 +45,19 @@ together is one command: both tables reach their new, consistent state
 before the constraint is ever checked. `_REASSIGN_SQL` below is that query,
 not two statements run back to back.
 
+**`signal_reports.prediction_id` also references `predictions(id)`**
+(migration `f7d3a02e5c18`, nullable, no `ON UPDATE CASCADE` -- same FK
+shape as `outcomes.prediction_id`). Every value is NULL today (verified
+2026-09-19: `cscan poll` writes it as `None` -- see `jobs/poll.py`), so an
+old id this script reassigns is never actually referenced there, and
+`--apply` would abort cleanly on the same immediate-FK-check reasoning as
+`outcomes` if that ever changed rather than silently corrupting anything.
+`apply_reassignment` still checks it explicitly before writing, rather
+than relying on that accident of current usage: a future write path that
+starts populating the column would otherwise fail with a bare Postgres FK
+error days or weeks later, on a row this script had no way to know about
+when it was written.
+
 **Default is `--dry-run`.** It prints the plan and writes nothing.
 `--apply` performs it, in one transaction on the serving store, then raises
 `predictions_id_seq` past the highest assigned id
@@ -219,12 +232,34 @@ def apply_reassignment(engine: Engine, moves: pd.DataFrame) -> tuple[int, int]:
     that command reports only the top-level `UPDATE predictions`, not the
     nested one. Reading it first, inside the same transaction, is exact:
     nothing else writes `outcomes` for these ids between the two statements.
+
+    **`signal_reports.prediction_id` is checked, not repointed.** It is a
+    second FK onto `predictions(id)` (see the module docstring) that this
+    repair's combined statement does not touch. Every value is NULL today,
+    so the check below is expected to find nothing and `_REASSIGN_SQL`'s
+    `UPDATE predictions` would in fact raise on Postgres's own immediate FK
+    check if it ever did -- the same protection `outcomes` gets for free.
+    The assertion exists so that failure reads as "a referencing row was
+    found, this script does not move it" rather than a bare
+    `ForeignKeyViolation` days after someone starts populating the column.
     """
     if moves.empty:
         return 0, 0
     old_ids = [int(i) for i in moves["id"].tolist()]
     new_ids = [int(i) for i in moves["new_id"].tolist()]
     with engine.begin() as conn:
+        signal_reports_referencing = conn.execute(
+            text("SELECT count(*) FROM signal_reports WHERE prediction_id = ANY(:old_ids)"),
+            {"old_ids": old_ids},
+        ).scalar_one()
+        if signal_reports_referencing:
+            raise RuntimeError(
+                f"{signal_reports_referencing} signal_reports row(s) reference a "
+                "prediction id this repair would reassign; this script does not "
+                "repoint signal_reports.prediction_id, so it refuses to run rather "
+                "than let the FK check fail mid-transaction. Investigate before "
+                "re-running."
+            )
         outcomes_repointed = conn.execute(
             text("SELECT count(*) FROM outcomes WHERE prediction_id = ANY(:old_ids)"),
             {"old_ids": old_ids},
