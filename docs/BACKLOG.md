@@ -38,6 +38,27 @@ URL is actually wanted, and never option 3.
 
 ---
 
+## Two follow-ups from the id-floor work (2026-09-20)
+
+Both parked deliberately during the forward-log-adoption branch; neither
+blocks it.
+
+**1. `_reset_sequences` spells the research floor clause twice.** The DO
+block builds from `_RESEARCH_PREDICTIONS_BRANCH` while `verify_id_floor.py`
+executes `predictions_max_id_sql`. Reversing `WHERE %I < %L` in the first
+would pass every test. That clause is the one thing keeping research ids
+below the floor, so **unify the two spellings before `repair_prediction_ids.py`
+runs against the live stores.**
+
+**2. An adopted prediction whose event research did not yet hold keeps a
+NULL `event_id` forever.** Adoption is insert-only (ADR 195), so a later
+pull will not fill the link in, and the pull's `unmapped` counter describes
+that night's frame rather than the log's state. Correct as designed; if the
+forward log needs those links, it wants a separate backfill that only sets
+`event_id` where it is currently NULL, and never touches anything else.
+
+---
+
 ## ~~The forward log is calibrated on its own outcomes~~ — **decided 2026-09-19: ADR 195, predictions are insert-only**
 
 Built on `main`. **Live only after `wivie` pulls it**, and the clean log for
