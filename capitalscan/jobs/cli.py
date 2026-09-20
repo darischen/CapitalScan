@@ -3410,6 +3410,52 @@ def nightly() -> None:
             backfill_extremum_labels(engine, chash, config.stats.fwd_ret_horizons, family)
             for family in FAMILIES
         )
+    from capitalscan.jobs import sync as sync_job
+
+    # **Pull the poller's durable rows back first (ADR 158), and ahead of
+    # `predict` specifically (forward-log-adoption design, Components §3).**
+    # With the poller writing serving directly, `runs`, `signal_reports`,
+    # `poller_sessions` and now `predictions` are born there. Research is
+    # where analysis happens -- ADR 084 has Phase 6 reading
+    # `poller_sessions.coverage_pct` -- so without this pull it quietly
+    # stops accumulating them, and the gap is invisible until someone
+    # queries data that was never written.
+    #
+    # **Ahead of `predict` is load-bearing, not incidental.** `predict` has
+    # been insert-only since ADR 195: it never rewrites a prediction that
+    # already exists for an event. If the Pi already scored a signal today
+    # and `predict` ran first, research would write its own row for that
+    # event before the pull ever adopted the Pi's, and the insert-only
+    # guard would then keep research's row instead of the one the reader
+    # actually saw intraday -- the forward log stops matching what was
+    # shown. Pulling first means an adopted row is already present when
+    # `predict` reaches that event, so it is skipped and the number a
+    # reader saw is the number research keeps.
+    #
+    # **The pull DOES depend on an earlier nightly step: `run_events`.**
+    # `_pull_predictions`'s remap resolves the adopted rows' `event_id`
+    # against research's `events` table through the natural key
+    # `(config_hash, ticker, signal_date, signal_type, entry_kind)` --
+    # rows `run_events` above writes earlier this same night. The pull is
+    # positioned after it for that reason, not by accident: hoisting this
+    # block above `run_events` would have every adopted row resolve
+    # against last night's events and silently null `event_id` on all of
+    # them. Ahead of `predict` is the constraint that moved it here; behind
+    # `run_events` is the constraint that keeps it here.
+    #
+    # It still runs before the sweep and the outbound sync below, so a
+    # night's records reach research whatever those two do afterwards. A
+    # failure is reported and does not fail the chain: research already
+    # holds everything the rest of nightly computed.
+    try:
+        pulled = sync_job.pull_live_records()
+        if any(pulled.values()):
+            console.print(
+                "nightly: pulled back " + ", ".join(f"{n} {c:,}" for n, c in pulled.items() if c)
+            )
+    except Exception as exc:  # noqa: BLE001 - reported; research is unaffected
+        console.print(f"[yellow]warn[/yellow] live-record pull skipped: {exc}")
+
     # **Inference, after the labels it trains on and before the sync that
     # ships it.** That ordering is the whole point: `peak_labels` above
     # just closed another day of forward windows, so a fit here sees them,
@@ -3502,28 +3548,6 @@ def nightly() -> None:
     # been written to the research store, which is the source of truth; a
     # network problem reaching the cloud copy should not mark a good
     # ingest as failed. It is reported and the next run retries.
-    from capitalscan.jobs import sync as sync_job
-
-    # **Pull the poller's durable rows back first (ADR 158).** With the
-    # poller writing serving directly, `runs`, `signal_reports` and
-    # `poller_sessions` are born there. Research is where analysis happens
-    # -- ADR 084 has Phase 6 reading `poller_sessions.coverage_pct` -- so
-    # without this it quietly stops accumulating them, and the gap is
-    # invisible until someone queries data that was never written.
-    #
-    # Before the sweep and before the outbound sync, so a night's records
-    # reach research whatever those two do afterwards. A failure is
-    # reported and does not fail the chain: research already holds
-    # everything the rest of nightly computed.
-    try:
-        pulled = sync_job.pull_live_records()
-        if any(pulled.values()):
-            console.print(
-                "nightly: pulled back " + ", ".join(f"{n} {c:,}" for n, c in pulled.items() if c)
-            )
-    except Exception as exc:  # noqa: BLE001 - reported; research is unaffected
-        console.print(f"[yellow]warn[/yellow] live-record pull skipped: {exc}")
-
     sync_ok = False
     try:
         # **Incremental here, full in `cscan sync`.** Nightly adds one

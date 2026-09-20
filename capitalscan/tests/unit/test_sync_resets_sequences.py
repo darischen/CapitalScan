@@ -51,7 +51,7 @@ def test_run_sync_resets_sequences():
         "run_sync copies rows with explicit ids, which does not advance "
         "serving's sequences; the poller then inserts and collides"
     )
-    assert "_reset_sequences(target)" in RUN_SYNC_SRC
+    assert "_reset_sequences(target, serving=True)" in RUN_SYNC_SRC
 
 
 def test_the_pull_resets_them_too():
@@ -62,7 +62,7 @@ def test_the_pull_resets_them_too():
     against the drift, which is the right failure and still a failure --
     fixing the cause makes that guard a backstop rather than a gate.
     """
-    assert "_reset_sequences(target)" in PULL_SRC
+    assert "_reset_sequences(target, serving=False)" in PULL_SRC
 
 
 def test_one_implementation():
@@ -79,8 +79,8 @@ def test_the_reset_runs_against_the_target_not_the_source():
     # what makes the direction checkable at all now that the SQL is shared.
     assert "engine.begin()" in SRC
     for caller in (RUN_SYNC_SRC, PULL_SRC):
-        assert "_reset_sequences(target)" in caller
-        assert "_reset_sequences(source)" not in caller, (
+        assert "_reset_sequences(target, serving=" in caller
+        assert "_reset_sequences(source" not in caller, (
             "the sequence reset runs on the source; the ids came from there "
             "and its sequences are already correct"
         )
@@ -95,7 +95,10 @@ def test_it_derives_the_sequence_rather_than_naming_tables():
 def test_it_is_guarded_against_an_empty_table():
     """`setval(seq, 0)` is an error in Postgres -- the minimum is 1 -- so a
     table with no rows must be skipped rather than crash the sync."""
+    # 1600, not 900: the forward-log-adoption paragraph on the per-store
+    # `predictions` split (2026-09-19) sits between this docstring mention
+    # and the code, and widened the gap.
     idx = SRC.index("pg_get_serial_sequence")
-    window = SRC[idx : idx + 900]
+    window = SRC[idx : idx + 1900]
     assert "max(" in window.lower()
     assert "> 0" in window or "coalesce" in window.lower()
