@@ -119,7 +119,9 @@ class TestPullDropsTheCrossStoreEventId:
         211 behind `max(id)`, which is what failed the 2026-08-31 fallback
         poll.
         """
-        assert "_reset_sequences(target)" in inspect.getsource(sync_job.pull_live_records)
+        assert "_reset_sequences(target, serving=False)" in inspect.getsource(
+            sync_job.pull_live_records
+        )
 
     def test_one_reset_implementation(self) -> None:
         """Both directions call the same helper rather than carrying a copy."""

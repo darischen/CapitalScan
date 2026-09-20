@@ -179,14 +179,38 @@ BEGIN
      WHERE c.relkind = 'r'
        AND pg_get_serial_sequence(c.oid::regclass::text, a.attname) IS NOT NULL
   LOOP
-    EXECUTE format('SELECT coalesce(max(%I),0) FROM %s', r.col, r.tbl) INTO n;
+    IF r.tbl::text LIKE '%predictions' THEN
+{predictions_branch}
+    ELSE
+      EXECUTE format('SELECT coalesce(max(%I),0) FROM %s', r.col, r.tbl) INTO n;
+    END IF;
     IF n > 0 THEN PERFORM setval(r.seq, n); END IF;
   END LOOP;
 END $$;
 """
 
+# **Serving mints at or above the floor.** `greatest(n, floor)` takes the
+# larger of the table's own max and the floor, so a below-floor sequence
+# (a fresh serving store, or one repaired after a Pi reflash) is raised to
+# the floor, and a sequence already past it from ordinary serving growth is
+# left where it is -- `greatest` only ever pushes up, never down.
+_SERVING_PREDICTIONS_BRANCH = """\
+      EXECUTE format('SELECT coalesce(max(%I),0) FROM %s', r.col, r.tbl) INTO n;
+      n := greatest(n, {floor});"""
 
-def _reset_sequences(engine: Engine) -> None:
+# **Research stays below the floor.** The max is computed only over ids
+# under it, so an adopted (Pi-born, billion-range) row already sitting in
+# `predictions` cannot push research's own allocation up into serving's
+# range and recreate the collision. A research store holding only adopted
+# rows returns NULL here, coalesced to 0, which the `IF n > 0` guard below
+# already skips -- `setval(seq, 0)` is an error in Postgres.
+_RESEARCH_PREDICTIONS_BRANCH = """\
+      EXECUTE format(
+        'SELECT coalesce(max(%I),0) FROM %s WHERE %I < %L', r.col, r.tbl, r.col, {floor}
+      ) INTO n;"""
+
+
+def _reset_sequences(engine: Engine, *, serving: bool) -> None:
     """Advance every serial sequence past its table's max id.
 
     **An explicit-id INSERT does not advance a sequence**, so any store
@@ -217,9 +241,21 @@ def _reset_sequences(engine: Engine) -> None:
     Belongs in the copy path rather than in a one-off repair: every sync
     copies ids again, so a sequence fixed by hand goes stale on the next
     run.
+
+    **`predictions` is special, per store, since forward-log adoption
+    (2026-09-19).** Serving and research now both mint `predictions.id` from
+    their own sequence -- the same shape of defect that broke `events` under
+    ADR 158, except `predictions` conflicts on `id` itself, so the surrogate
+    cannot be dropped the way `_drop_surrogate_id` drops it for `events`.
+    `serving` says which side of `ServingParams.serving_id_floor` this store
+    must land on; see that field's docstring for the measured collision and
+    why the split lives there rather than in `Config`.
     """
+    floor = ServingParams().serving_id_floor
+    branch = _SERVING_PREDICTIONS_BRANCH if serving else _RESEARCH_PREDICTIONS_BRANCH
+    sql = _RESET_SEQUENCES_SQL.format(predictions_branch=branch.format(floor=floor))
     with engine.begin() as conn:
-        conn.execute(text(_RESET_SEQUENCES_SQL))
+        conn.execute(text(sql))
 
 
 def _apply_remap(frame: pd.DataFrame, target: Engine, spec: Remap) -> pd.DataFrame:
@@ -813,7 +849,7 @@ def pull_live_records(
     # against it, which is the right failure and still a failure -- the
     # operator has to `setval` by hand before polling. Fixing the cause
     # makes that guard a backstop rather than a gate.
-    _reset_sequences(target)
+    _reset_sequences(target, serving=False)
     return pulled
 
 
@@ -1003,7 +1039,7 @@ def run_sync(
         # Sequences, in the direction this function copies. See
         # `_reset_sequences` for why an explicit-id INSERT leaves them
         # behind and what it cost on both stores.
-        _reset_sequences(target)
+        _reset_sequences(target, serving=True)
 
         # Assigned *before* the pin, which can raise. Measured 2026-08-21:
         # a pin failure discarded the count and recorded rows_written = 0
