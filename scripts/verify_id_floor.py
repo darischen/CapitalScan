@@ -39,6 +39,27 @@ few lines of SQL, scoped to the `zz_` tables, and reuses the one function
 that *is* table-name-generic and side-effect-scoped to what it is given:
 `db_io.copy_upsert`.
 
+**What this does and does not cover, stated plainly.** This script proves
+the floor MECHANISM -- that a `setval` past a floor plus an `id >= floor`
+selection plus an id-keyed `copy_upsert` removes the collision, against a
+real server -- not that `jobs/sync.py::_reset_sequences` and
+`_pull_predictions` are themselves wired correctly. Their own SQL is
+reimplemented here rather than called (see above), so a regression
+*inside either function's own SQL* -- a wrong comparison operator, a typo'd
+column name, the floor read from the wrong config field -- would leave
+this script passing while that function was broken. That gap is covered
+elsewhere, not here: `test_sync_id_floor.py` and
+`test_sync_resets_sequences.py` unit-test `_reset_sequences` directly, and
+`test_pull_predictions.py` unit-tests `_pull_predictions` directly (all
+against fakes, so they catch a logic error but not a real-Postgres-only
+failure mode), and the nightly run's own output
+(`pulled["predictions"]`, `pulled["predictions_unmapped"]`, the `runs` row)
+is the real-server evidence that the wired-up path actually ran. A reader
+who reaches for this script after a production failure in either function
+should read those instead -- this script is the different-instrument check
+for the *shape* of the defect, not a rerun of `_reset_sequences` or
+`_pull_predictions` themselves.
+
     uv run python scripts/verify_id_floor.py
 """
 
