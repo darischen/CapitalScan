@@ -3432,12 +3432,21 @@ def nightly() -> None:
     # `predict` reaches that event, so it is skipped and the number a
     # reader saw is the number research keeps.
     #
-    # The pull has no dependency on any earlier nightly step, so moving it
-    # ahead of `predict` is safe. It still runs before the sweep and the
-    # outbound sync below, so a night's records reach research whatever
-    # those two do afterwards. A failure is reported and does not fail the
-    # chain: research already holds everything the rest of nightly
-    # computed.
+    # **The pull DOES depend on an earlier nightly step: `run_events`.**
+    # `_pull_predictions`'s remap resolves the adopted rows' `event_id`
+    # against research's `events` table through the natural key
+    # `(config_hash, ticker, signal_date, signal_type, entry_kind)` --
+    # rows `run_events` above writes earlier this same night. The pull is
+    # positioned after it for that reason, not by accident: hoisting this
+    # block above `run_events` would have every adopted row resolve
+    # against last night's events and silently null `event_id` on all of
+    # them. Ahead of `predict` is the constraint that moved it here; behind
+    # `run_events` is the constraint that keeps it here.
+    #
+    # It still runs before the sweep and the outbound sync below, so a
+    # night's records reach research whatever those two do afterwards. A
+    # failure is reported and does not fail the chain: research already
+    # holds everything the rest of nightly computed.
     try:
         pulled = sync_job.pull_live_records()
         if any(pulled.values()):

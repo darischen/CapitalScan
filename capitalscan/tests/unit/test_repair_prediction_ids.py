@@ -147,11 +147,14 @@ class TestMismatchedIds:
 
 
 class _FakeConnection:
-    """Records every statement it is asked to execute and answers the one
-    `SELECT count(*)` `apply_reassignment` issues before the write."""
+    """Records every statement it is asked to execute and answers the two
+    `SELECT count(*)` checks `apply_reassignment` issues before the write:
+    the `signal_reports` guard (MINOR 6, forward-log-adoption fix-up) runs
+    first, then the pre-existing `outcomes` count."""
 
-    def __init__(self, outcomes_count: int) -> None:
+    def __init__(self, outcomes_count: int, signal_reports_count: int = 0) -> None:
         self.outcomes_count = outcomes_count
+        self.signal_reports_count = signal_reports_count
         self.executed: list[tuple[str, dict[str, Any]]] = []
 
     def execute(self, stmt, params=None):
@@ -165,6 +168,8 @@ class _FakeConnection:
             def scalar_one(self):
                 return self._value
 
+        if "SELECT count(*)" in sql and "signal_reports" in sql:
+            return _Result(self.signal_reports_count)
         if "SELECT count(*)" in sql:
             return _Result(self.outcomes_count)
         return _Result(None)
@@ -177,8 +182,8 @@ class _FakeConnection:
 
 
 class _FakeEngine:
-    def __init__(self, outcomes_count: int = 0) -> None:
-        self.conn = _FakeConnection(outcomes_count)
+    def __init__(self, outcomes_count: int = 0, signal_reports_count: int = 0) -> None:
+        self.conn = _FakeConnection(outcomes_count, signal_reports_count)
         self.committed = False
 
     def begin(self):
@@ -260,15 +265,36 @@ class TestApplyReassignment:
         reidentified, outcomes_repointed = repair.apply_reassignment(engine, moves)
         assert reidentified == 1
         assert outcomes_repointed == 2
-        # First statement reads the count; second is the combined reassignment.
-        assert len(engine.conn.executed) == 2
-        count_sql, count_params = engine.conn.executed[0]
+        # First statement is the signal_reports guard, second reads the
+        # outcomes count, third is the combined reassignment.
+        assert len(engine.conn.executed) == 3
+        guard_sql, guard_params = engine.conn.executed[0]
+        assert "signal_reports" in guard_sql
+        assert guard_params["old_ids"] == [1]
+        count_sql, count_params = engine.conn.executed[1]
         assert "outcomes" in count_sql
         assert count_params["old_ids"] == [1]
-        move_sql, move_params = engine.conn.executed[1]
+        move_sql, move_params = engine.conn.executed[2]
         assert "predictions" in move_sql and "outcomes" in move_sql
         assert move_params["old_ids"] == [1]
         assert move_params["new_ids"] == moves["new_id"].tolist()
+
+    def test_a_referencing_signal_reports_row_aborts_before_any_write(self):
+        """MINOR 6: `signal_reports.prediction_id` is a second FK onto
+        `predictions(id)` this repair does not repoint. Every value is NULL
+        in production today, but the guard must still refuse to run rather
+        than let a real database's FK check fail mid-transaction -- and it
+        must refuse before the combined `UPDATE`, not merely report after."""
+        moves = repair.plan_reassignment(_predictions([_row(1, "AA")]), _predictions([]), FLOOR)
+        engine = _FakeEngine(outcomes_count=0, signal_reports_count=1)
+        try:
+            repair.apply_reassignment(engine, moves)
+        except RuntimeError as exc:
+            assert "signal_reports" in str(exc)
+        else:
+            raise AssertionError("expected a RuntimeError")
+        # Only the guard query ran; the combined UPDATE never fired.
+        assert len(engine.conn.executed) == 1
 
     def test_the_statement_updates_predictions_before_being_checked(self):
         """Guards the FK-ordering reasoning in the module docstring: the
@@ -280,7 +306,7 @@ class TestApplyReassignment:
         moves = repair.plan_reassignment(_predictions([_row(1, "AA")]), _predictions([]), FLOOR)
         engine = _FakeEngine(outcomes_count=0)
         repair.apply_reassignment(engine, moves)
-        assert len(engine.conn.executed) == 2, "expected one read plus one combined write"
+        assert len(engine.conn.executed) == 3, "expected two reads plus one combined write"
 
 
 class TestDryRunIsTheDefaultAndWritesNothing:

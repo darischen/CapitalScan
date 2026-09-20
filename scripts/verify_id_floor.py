@@ -28,16 +28,23 @@ tables on the one local engine exercises the identical SQL path
 (`db_io.copy_upsert`'s `ON CONFLICT (id) DO UPDATE`) without touching the
 real serving store this task must not reach.
 
-**Why the shared logic in `jobs/sync.py` is not called directly.**
-`_reset_sequences` scans the whole database for any table named `%predictions`
-and would reset the *real* `predictions` sequence if run against this
-engine; `_pull_predictions` and `pull_live_records` are hardcoded to the
-table name `predictions` and to `serving_engine()`. Both are the right
-shape to reuse in production and the wrong shape to run against a shared
-research database from a scratch script, so this script reimplements their
-few lines of SQL, scoped to the `zz_` tables, and reuses the one function
-that *is* table-name-generic and side-effect-scoped to what it is given:
-`db_io.copy_upsert`.
+**Why the shared logic in `jobs/sync.py` is not called directly, except
+where it now can be.** `_reset_sequences` scans the whole database for any
+table named `%predictions` and would reset the *real* `predictions`
+sequence if run against this engine; `_pull_predictions` and
+`pull_live_records` are hardcoded to the table name `predictions` and to
+`serving_engine()`. All three are the right shape to reuse in production
+and the wrong shape to run against a shared research database from a
+scratch script, so this script reimplements their few lines of SQL, scoped
+to the `zz_` tables, and reuses the two functions that *are*
+table-name-generic and side-effect-scoped to what they are given:
+`db_io.copy_upsert` for the write, and (Task 5c) `sync_job.
+predictions_max_id_sql` for the sequence comparison itself -- the one
+`_reset_sequences` cannot expose directly because its DO block only knows
+the table name at runtime, from the catalog. `predictions_max_id_sql`
+takes a table name as a Python argument instead, so step 5 below runs the
+REAL research-branch comparison (`WHERE "id" < floor`) rather than a
+hand-copied mirror of it that could silently reverse.
 
 **What this does and does not cover, stated plainly.** This script proves
 the floor MECHANISM -- that a `setval` past a floor plus an `id >= floor`
@@ -73,6 +80,7 @@ from sqlalchemy.exc import IntegrityError
 
 from capitalscan.core.config import ServingParams
 from capitalscan.jobs import db_io
+from capitalscan.jobs.sync import predictions_max_id_sql
 
 RESEARCH_TABLE = "zz_verify_research_predictions"
 SERVING_TABLE = "zz_verify_serving_predictions"
@@ -197,12 +205,16 @@ def main() -> int:
             print(f"    confirmed no partial write: research id=3 is still {after}")
 
         # --- Step 3: the fix. Apply the floor to serving's sequence, so
-        # every id it mints from here on lands at or above it -- mirroring
-        # `_reset_sequences`'s `greatest(max, floor)`, scoped to this one
-        # scratch sequence rather than the whole-database sweep that
-        # function does. ---
+        # every id it mints from here on lands at or above it --
+        # `predictions_max_id_sql(serving=True)` is the REAL comparison
+        # `_reset_sequences`'s serving branch makes (`greatest(max, floor)`),
+        # executed directly rather than hand-copied, scoped to this one
+        # scratch table rather than the whole-database sweep that function
+        # does. ---
+        serving_max_sql = predictions_max_id_sql(SERVING_TABLE, floor, serving=True)
         with engine.begin() as conn:
-            conn.execute(text(f"SELECT setval('{SERVING_TABLE}_id_seq', :floor)"), {"floor": floor})
+            n = conn.execute(text(serving_max_sql)).scalar_one()
+            conn.execute(text(f"SELECT setval('{SERVING_TABLE}_id_seq', :n)"), {"n": n})
             new_id_row = conn.execute(
                 text(
                     f"INSERT INTO {SERVING_TABLE} (event_id, signal_type) "
@@ -248,6 +260,46 @@ def main() -> int:
             print(f"[4] FAIL: adopted row does not match serving's values: {landed}")
         else:
             print("    confirmed: adopted row kept its serving event_id and signal_type")
+
+        # --- Step 5: the REAL research-branch comparison (Task 5c). ---
+        # `RESEARCH_TABLE` now holds both its original below-floor rows
+        # (ids 1-5) and the just-adopted at-or-above-floor row from step 4
+        # -- exactly the shape research's real `predictions` table is in
+        # after a nightly pull. `predictions_max_id_sql(serving=False)` is
+        # the same `WHERE "id" < floor` comparison `_reset_sequences`'s
+        # research branch runs, executed here rather than mirrored by
+        # hand: a reversed comparison (`>=` instead of `<`) would compute
+        # its max FROM the adopted row and push research's own next id up
+        # into serving's range, recreating the exact collision this
+        # script exists to prove is closed.
+        research_max_sql = predictions_max_id_sql(RESEARCH_TABLE, floor, serving=False)
+        with engine.begin() as conn:
+            n = conn.execute(text(research_max_sql)).scalar_one()
+            if n and n > 0:
+                conn.execute(text(f"SELECT setval('{RESEARCH_TABLE}_id_seq', :n)"), {"n": n})
+            new_research_id_row = conn.execute(
+                text(
+                    f"INSERT INTO {RESEARCH_TABLE} (event_id, signal_type) "
+                    "VALUES (401, 'bull_close_below_lower') RETURNING id"
+                )
+            ).one()
+        new_research_id = int(new_research_id_row.id)
+        print(
+            f"[5] real research-branch comparison applied "
+            f"(ignored id={new_id} adopted above the floor); "
+            f"newly minted research row got id={new_research_id}"
+        )
+        if new_research_id >= floor:
+            ok = False
+            print(
+                f"[5] FAIL: research's own allocation reached the floor: "
+                f"{new_research_id} >= {floor} -- the adopted row was not excluded"
+            )
+        else:
+            print(
+                "    confirmed: research's own allocation stayed below the floor "
+                "despite the adopted row already sitting at or above it"
+            )
 
     finally:
         _drop(engine, RESEARCH_TABLE)
