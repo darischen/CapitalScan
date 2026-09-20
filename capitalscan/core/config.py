@@ -487,6 +487,24 @@ class ServingParams:
     all produced locally against full history and shipped as results. A
     reader of the deployed site sees fewer *dates*, never a different
     *answer*.
+
+    **`serving_id_floor` splits the `predictions.id` range between the two
+    stores.** Since the Pi's poller began minting predictions natively
+    (forward-log adoption, 2026-09-19), serving and research each mint
+    `predictions.id` from their own sequence over the same numeric range --
+    the same defect ADR 163 already fixed for `events` by dropping the
+    surrogate id across that boundary, except a prediction's id is the
+    conflict key `pull_live_records` copies *on*, so it cannot be dropped
+    the same way. Measured 2026-09-19: serving's max id was 224,862 and
+    research's was 191,860, with 3 ids shared between rows describing
+    different signals. Serving mints at or above the floor; research stays
+    below it. `jobs/sync.py::_reset_sequences` enforces the split on every
+    sync and pull, so a Pi reflash or a fresh serving store both start on
+    the correct side of it. It is here rather than in `Config` for exactly
+    the `breadth_rank_floor` reason above: it never varies a backtest
+    result, and folding it in would move `config_hash` off
+    `f183b0f5209a4677` to name a deployment constant the backtest never
+    reads.
     """
 
     history_years: int = 30
@@ -498,6 +516,12 @@ class ServingParams:
     # number. Sweepable, and it must be: 0.68 is where the drop sits on one
     # split, not a law (invariant 9).
     breadth_rank_floor: float = 0.68
+
+    # Forward-log adoption, 2026-09-19. Below this, an id was minted by
+    # research; at or above it, by serving. 1e9 is four orders of magnitude
+    # past either store's measured max (224,862 / 191,860), so headroom is
+    # not the risk this guards against -- a collision is.
+    serving_id_floor: int = 1_000_000_000
 
 
 @dataclass(frozen=True)

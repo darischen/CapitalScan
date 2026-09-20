@@ -145,8 +145,32 @@ class Remap:
     #: Target column to read back. Its own surrogate, by definition.
     target_id: str = "id"
     #: The target enforces uniqueness on `column`, so a row already holding
-    #: a remapped value must give way. See `_clear_remap_collisions`.
+    #: a remapped value must give way. `run_sync` (outbound) acts on this
+    #: flag through `_clear_remap_collisions`, which deletes the target's
+    #: colliding row -- safe there because serving is a disposable copy.
+    #: `_pull_predictions` (inbound) does not read this flag; it always
+    #: runs `_null_inbound_remap_collisions`, which nulls the *incoming*
+    #: row's link instead, because inbound the target is research and
+    #: neither row may be deleted or rewritten. See both functions.
     unique_on_target: bool = False
+
+
+# **`predictions.event_id` names a different store's id on each side of the
+# copy, in both directions.** `_tables()` rewrites it outbound (research ->
+# serving, ADR 191, `event_id` "resolves, joins cleanly, and is wrong");
+# `pull_live_records`'s predictions step rewrites it inbound (serving ->
+# research, forward-log adoption, 2026-09-19). One `Remap`, because the
+# natural key it resolves through -- `(config_hash, ticker, as_of,
+# signal_type, entry_kind)` on `predictions`, `(config_hash, ticker,
+# signal_date, signal_type, entry_kind)` on `events` -- does not depend on
+# which store is source and which is target.
+_PREDICTIONS_EVENT_REMAP = Remap(
+    column="event_id",
+    table="events",
+    source_key=("config_hash", "ticker", "as_of", "signal_type", "entry_kind"),
+    target_key=("config_hash", "ticker", "signal_date", "signal_type", "entry_kind"),
+    unique_on_target=True,
+)
 
 
 @dataclass(frozen=True)
@@ -179,14 +203,70 @@ BEGIN
      WHERE c.relkind = 'r'
        AND pg_get_serial_sequence(c.oid::regclass::text, a.attname) IS NOT NULL
   LOOP
-    EXECUTE format('SELECT coalesce(max(%I),0) FROM %s', r.col, r.tbl) INTO n;
+    IF r.tbl::text LIKE '%predictions' THEN
+{predictions_branch}
+    ELSE
+      EXECUTE format('SELECT coalesce(max(%I),0) FROM %s', r.col, r.tbl) INTO n;
+    END IF;
     IF n > 0 THEN PERFORM setval(r.seq, n); END IF;
   END LOOP;
 END $$;
 """
 
+# **Serving mints at or above the floor.** `greatest(n, floor)` takes the
+# larger of the table's own max and the floor, so a below-floor sequence
+# (a fresh serving store, or one repaired after a Pi reflash) is raised to
+# the floor, and a sequence already past it from ordinary serving growth is
+# left where it is -- `greatest` only ever pushes up, never down.
+_SERVING_PREDICTIONS_BRANCH = """\
+      EXECUTE format('SELECT coalesce(max(%I),0) FROM %s', r.col, r.tbl) INTO n;
+      n := greatest(n, {floor});"""
 
-def _reset_sequences(engine: Engine) -> None:
+# **Research stays below the floor.** The max is computed only over ids
+# under it, so an adopted (Pi-born, billion-range) row already sitting in
+# `predictions` cannot push research's own allocation up into serving's
+# range and recreate the collision. A research store holding only adopted
+# rows returns NULL here, coalesced to 0, which the `IF n > 0` guard below
+# already skips -- `setval(seq, 0)` is an error in Postgres.
+_RESEARCH_PREDICTIONS_BRANCH = """\
+      EXECUTE format(
+        'SELECT coalesce(max(%I),0) FROM %s WHERE %I < %L', r.col, r.tbl, r.col, {floor}
+      ) INTO n;"""
+
+
+def predictions_max_id_sql(table: str, floor: int, *, serving: bool) -> str:
+    """The literal SELECT a `predictions`-shaped table's sequence reset
+    computes, for a caller that already knows the table name -- unlike
+    `_reset_sequences`'s DO block, which discovers table and column from
+    the catalog and so needs `EXECUTE format('...', r.col, r.tbl)` instead
+    of a plain string.
+
+    **Why this exists.** `scripts/verify_id_floor.py` proves the floor
+    split against `zz_`-prefixed scratch tables rather than the real
+    `predictions` table (see that script's docstring for why running
+    `_reset_sequences` itself there is the wrong shape -- it would reset
+    the *real* sequence). Before this function existed, the script's
+    research-branch check would have had to hand-copy the `WHERE id <
+    floor` comparison, and a reversed comparison in that copy -- the one
+    clause that keeps research below the floor -- would pass every check
+    in the script while the copy quietly disagreed with production. This
+    function is the single place that comparison is spelled out; the
+    script imports and executes it rather than restating it, and
+    `_SERVING_PREDICTIONS_BRANCH` / `_RESEARCH_PREDICTIONS_BRANCH` above
+    express the identical two comparisons for the catalog-driven DO block.
+
+    Mirrors `_SERVING_PREDICTIONS_BRANCH`'s `n := greatest(n, floor)` on
+    the serving side, and `_RESEARCH_PREDICTIONS_BRANCH`'s `WHERE %I < %L`
+    on the research side -- same arithmetic, spelled out for a table whose
+    name does not need `format(%I, ...)` to interpolate safely because it
+    is a Python-side literal, not catalog-discovered.
+    """
+    if serving:
+        return f'SELECT greatest(coalesce(max("id"),0), {floor}) FROM "{table}"'
+    return f'SELECT coalesce(max("id"),0) FROM "{table}" WHERE "id" < {floor}'
+
+
+def _reset_sequences(engine: Engine, *, serving: bool) -> None:
     """Advance every serial sequence past its table's max id.
 
     **An explicit-id INSERT does not advance a sequence**, so any store
@@ -217,9 +297,21 @@ def _reset_sequences(engine: Engine) -> None:
     Belongs in the copy path rather than in a one-off repair: every sync
     copies ids again, so a sequence fixed by hand goes stale on the next
     run.
+
+    **`predictions` is special, per store, since forward-log adoption
+    (2026-09-19).** Serving and research now both mint `predictions.id` from
+    their own sequence -- the same shape of defect that broke `events` under
+    ADR 158, except `predictions` conflicts on `id` itself, so the surrogate
+    cannot be dropped the way `_drop_surrogate_id` drops it for `events`.
+    `serving` says which side of `ServingParams.serving_id_floor` this store
+    must land on; see that field's docstring for the measured collision and
+    why the split lives there rather than in `Config`.
     """
+    floor = ServingParams().serving_id_floor
+    branch = _SERVING_PREDICTIONS_BRANCH if serving else _RESEARCH_PREDICTIONS_BRANCH
+    sql = _RESET_SEQUENCES_SQL.format(predictions_branch=branch.format(floor=floor))
     with engine.begin() as conn:
-        conn.execute(text(_RESET_SEQUENCES_SQL))
+        conn.execute(text(sql))
 
 
 def _apply_remap(frame: pd.DataFrame, target: Engine, spec: Remap) -> pd.DataFrame:
@@ -332,6 +424,71 @@ def _clear_remap_collisions(
             {"claimed": claimed, "keep": keep_ids or [None]},
         )
         return int(result.rowcount or 0)
+
+
+def _null_inbound_remap_collisions(
+    frame: pd.DataFrame,
+    target: Engine,
+    table: str,
+    key: tuple[str, ...],
+    spec: Remap,
+) -> tuple[pd.DataFrame, int]:
+    """Null `spec.column` on an incoming row whose remapped value already
+    belongs to a DIFFERENT row already on the target.
+
+    **The inbound counterpart of `_clear_remap_collisions`, and it must do
+    the opposite thing.** Outbound (`run_sync`), research is the authority:
+    a colliding serving row is disposable and `_clear_remap_collisions`
+    deletes it. Inbound (`_pull_predictions`), the target IS research —
+    the row already there may be exactly what `outcomes.prediction_id`
+    references, and the incoming row is itself evidence (what the Pi
+    scored live), not a copy. Neither row may be deleted or rewritten.
+
+    So the incoming row's own link is dropped instead: it still adopts,
+    with `event_id = NULL`, the same honest value `_apply_remap` already
+    gives a key that resolves to no research event at all. This is what
+    keeps `predictions_event_id`'s UNIQUE constraint from raising on a
+    write that `copy_upsert`/`insert_new` would otherwise send straight
+    through — reachable whenever research already holds its own row for
+    the remapped event under a different `id`: a prior pull that failed
+    non-fatally followed by that night's `predict`, or `weekly`'s refit,
+    which calls `run_predict` with no pull ahead of it at all.
+
+    **A row re-adopting itself is not a collision.** A repeated pull sends
+    the same `id` again; when that `id` is the one already holding the
+    `event_id` on the target, it is excluded — nulling it would undo a
+    previous, correct adoption.
+    """
+    if frame.empty or spec.column not in frame.columns:
+        return frame, 0
+    claimed = frame[spec.column].dropna().unique().tolist()
+    if not claimed:
+        return frame, 0
+    if len(key) != 1:
+        raise ValueError(f"collision clearing needs a single-column key, got {key!r}")
+
+    with target.connect() as conn:
+        existing = pd.read_sql(
+            text(
+                f'SELECT "{key[0]}" AS __owner_id, "{spec.column}" AS __val '  # noqa: S608
+                f'FROM "{table}" WHERE "{spec.column}" = ANY(:claimed)'
+            ),
+            conn,
+            params={"claimed": claimed},  # type: ignore[arg-type]
+        )
+    if existing.empty:
+        return frame, 0
+
+    owners = existing.groupby("__val")["__owner_id"].agg(set)
+    collides = [
+        (not pd.isna(val)) and bool(owners.get(val, set()) - {own_id})
+        for val, own_id in zip(frame[spec.column], frame[key[0]], strict=True)
+    ]
+    count = int(sum(collides))
+    if count:
+        frame = frame.copy()
+        frame.loc[collides, spec.column] = None
+    return frame, count
 
 
 def _drop_surrogate_id(frame: pd.DataFrame, key: tuple[str, ...]) -> pd.DataFrame:
@@ -521,21 +678,7 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
             "predictions",
             "SELECT * FROM predictions",
             ("id",),
-            remaps=(
-                Remap(
-                    column="event_id",
-                    table="events",
-                    source_key=("config_hash", "ticker", "as_of", "signal_type", "entry_kind"),
-                    target_key=(
-                        "config_hash",
-                        "ticker",
-                        "signal_date",
-                        "signal_type",
-                        "entry_kind",
-                    ),
-                    unique_on_target=True,
-                ),
-            ),
+            remaps=(_PREDICTIONS_EVENT_REMAP,),
         ),
         # **After `predictions`, and that order is load-bearing.**
         # `outcomes.prediction_id` references it, so copying outcomes first
@@ -742,6 +885,88 @@ _LIVE_DURABLE_TABLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 )
 
 
+def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int]:
+    """Adopt serving-born predictions into research (forward-log adoption).
+
+    **Not a fourth `_LIVE_DURABLE_TABLES` entry.** The other three are
+    scoped by date, because a poller session belongs to one day; a
+    serving-born prediction's identity is which side of
+    `ServingParams.serving_id_floor` minted it, so this reads a floor
+    rather than a lookback window. It also needs `_apply_remap`, which the
+    generic loop in `pull_live_records` does not run. Both differences are
+    permanent, not accidents of a first draft, so this stays its own
+    function rather than bending the loop to fit it.
+
+    **Selection is the floor, nothing else.** Serving mints at or above it
+    and research stays below it (`_reset_sequences`), so `id >= floor` is
+    exactly the Pi-born set once the one-time repair (component 4) has run.
+
+    **The remap runs before the write, and a miss is NULL.** `event_id`
+    names a row in *serving's* id space; `events` syncs on a natural tuple
+    so the two stores' ids do not correspond. ADR 191 already established
+    that a kept foreign id is confidently wrong, not a worse-but-honest
+    answer, and `_apply_remap` gives NULL to a key that resolves to no
+    research event -- a provisional poller event the ADR 150 sweep already
+    removed, for instance. That row still adopts: it is a record of what a
+    reader saw, and the forward log leaves it unresolved rather than
+    dropping it.
+
+    **A remapped `event_id` can also collide with a DIFFERENT research
+    row, and that is checked before the write too.**
+    `predictions_event_id` is UNIQUE on both stores, and research can
+    already hold its own row for the remapped event -- a prior pull that
+    failed non-fatally followed by that night's `predict`, or `weekly`'s
+    refit, which calls `run_predict` with no pull ahead of it. Selection
+    here is floor-scoped with no date bound, so an unhandled collision
+    would raise on the very same row every night forever.
+    `_null_inbound_remap_collisions` is `_clear_remap_collisions`'s inbound
+    counterpart: it never deletes or rewrites the research row --
+    `outcomes.prediction_id` may reference it -- it nulls the *incoming*
+    row's `event_id` instead, folding that row into the same honest
+    "unmapped" bucket an unresolved natural key already lands in.
+
+    **Keyed on `id`, never on `event_id`.** A repeated pull must insert
+    nothing. NULLs are distinct in a unique index, so keying on `event_id`
+    would insert a fresh duplicate for every unmapped row on every nightly
+    run -- `id` is the one column serving and research now agree names the
+    same row (that agreement is the whole point of the floor split).
+
+    **Written with `insert_new` (`DO NOTHING`), not `copy_upsert`
+    (`DO UPDATE`).** ADR 195 chose insert-only for `predictions` precisely
+    so a row already resolved by an outcome is never rewritten into a
+    fitted number, and this adoption path is not exempt from that. One
+    consequence: `adopted` on a *second* pull over the same rows is 0, not
+    `len(frame)` -- `insert_new` counts rows actually inserted
+    (`RETURNING`), so a repeat pull reporting zero is the write correctly
+    doing nothing, not a sign the pull found nothing to adopt.
+
+    Returns `(adopted, unmapped)` -- the second lets the caller report how
+    many rows landed with no event to point at (an unresolved natural key,
+    or a collision this cleared), without a second query.
+    """
+    floor = ServingParams().serving_id_floor
+    frame = pd.read_sql(
+        text("SELECT * FROM predictions WHERE id >= :floor"),
+        source,
+        params={"floor": floor},
+    )
+    if frame.empty:
+        return 0, 0
+    frame = _apply_remap(frame, target, _PREDICTIONS_EVENT_REMAP)
+    frame, collided = _null_inbound_remap_collisions(
+        frame, target, "predictions", ("id",), _PREDICTIONS_EVENT_REMAP
+    )
+    if collided:
+        logger.warning(
+            "%d adopted prediction(s) collided on event_id with a different research "
+            "row; event_id left NULL rather than overwriting research's row",
+            collided,
+        )
+    unmapped = int(frame["event_id"].isna().sum())
+    adopted = db_io.insert_new(target, "predictions", frame, ["id"])
+    return adopted, unmapped
+
+
 def pull_live_records(
     source: Engine | None = None,
     target: Engine | None = None,
@@ -758,10 +983,15 @@ def pull_live_records(
     is invisible until someone queries data that was never written, which
     is the worst shape a data defect can take.
 
-    **Only the durable two.** `events` rows from the poller are provisional
-    and the nightly sweep removes them; pulling those back would resurrect
-    exactly what nightly just judged unreliable. `bars_live` and
-    `quotes_live` are per-tick scratch that research has no reader for.
+    **Only the durable two, plus `predictions` (forward-log adoption,
+    2026-09-19).** `events` rows from the poller are provisional and the
+    nightly sweep removes them; pulling those back would resurrect exactly
+    what nightly just judged unreliable. `bars_live` and `quotes_live` are
+    per-tick scratch that research has no reader for. `predictions` is
+    different: the Pi's live `predict --serving` pass scores the number a
+    reader actually saw, and without adopting that row research's forward
+    log scores whatever its own nightly refit says instead -- a different
+    number for the same signal. See `_pull_predictions`.
 
     **Upsert, not replace.** Research may already hold rows for a date --
     from before the poller moved, or from a re-run. An insert would raise on
@@ -770,7 +1000,10 @@ def pull_live_records(
 
     Bounded to `lookback_days` because this runs nightly and the whole
     history is neither needed nor cheap; the overlap absorbs a night that
-    failed. `since` overrides it for a manual catch-up.
+    failed. `since` overrides it for a manual catch-up. **`predictions` is
+    the exception** -- floor-scoped rather than date-scoped, because a
+    serving-born prediction's identity is which id range minted it, not
+    when; see `_pull_predictions`.
     """
     source = source or serving_engine()
     target = target or db_io.get_engine()
@@ -801,19 +1034,47 @@ def pull_live_records(
             frame = frame.assign(event_id=None)
         pulled[name] = db_io.copy_upsert(target, name, frame, list(key)) if not frame.empty else 0
 
-    # **Reset the target's sequences, mirroring `run_sync` (2026-09-01).**
-    # Every row above was copied with its own id, and an explicit-id INSERT
-    # does not advance a sequence -- so research ends a pull holding rows
-    # its sequences have never seen. `run_sync` has done this for serving
-    # since 2026-08-28; the reverse direction was missed, and research's
-    # `signal_reports_id_seq` drifted 211 behind `max(id)` by 2026-09-01.
+    # **`predictions`, floor-scoped rather than date-scoped.** See
+    # `_pull_predictions` for why it is not a fourth `_LIVE_DURABLE_TABLES`
+    # entry. The three tables above keep their existing behaviour and
+    # order; this runs after them and reports under its own key.
     #
-    # That drift is what failed the 2026-08-31 fallback poll
-    # (`signal_reports_pkey`, id 1832). `cscan poll` now refuses to start
-    # against it, which is the right failure and still a failure -- the
-    # operator has to `setval` by hand before polling. Fixing the cause
-    # makes that guard a backstop rather than a gate.
-    _reset_sequences(target)
+    # **Wrapped so a raise here still reaches `_reset_sequences` below,
+    # via `finally`, and is never swallowed.** This step used to run before
+    # the reset with nothing between them, so a raise inside adoption --
+    # the `predictions_event_id` collision this task's other fix removes,
+    # or any future defect in the same spot -- skipped the reset along with
+    # it and reinstated the sequence drift that failed the 2026-08-31 poll
+    # (see the reset's own comment below). `pull_live_records`'s only
+    # caller (`cli.nightly`) already wraps this whole function in a broad
+    # `except Exception` that reports and continues, so letting the
+    # exception propagate past this `finally` does not fail the night --
+    # it is reported exactly as before, just with the reset still applied.
+    try:
+        adopted, unmapped = _pull_predictions(source, target)
+        pulled["predictions"] = adopted
+        if unmapped:
+            logger.warning(
+                "%d adopted predictions could not be matched to a research event "
+                "(event_id left NULL)",
+                unmapped,
+            )
+        pulled["predictions_unmapped"] = unmapped
+    finally:
+        # **Reset the target's sequences, mirroring `run_sync`
+        # (2026-09-01).** Every row above was copied with its own id, and
+        # an explicit-id INSERT does not advance a sequence -- so research
+        # ends a pull holding rows its sequences have never seen. `run_sync`
+        # has done this for serving since 2026-08-28; the reverse direction
+        # was missed, and research's `signal_reports_id_seq` drifted 211
+        # behind `max(id)` by 2026-09-01.
+        #
+        # That drift is what failed the 2026-08-31 fallback poll
+        # (`signal_reports_pkey`, id 1832). `cscan poll` now refuses to
+        # start against it, which is the right failure and still a failure
+        # -- the operator has to `setval` by hand before polling. Fixing
+        # the cause makes that guard a backstop rather than a gate.
+        _reset_sequences(target, serving=False)
     return pulled
 
 
@@ -837,10 +1098,23 @@ def run_sync(
     the cutoff — stays in the serving store until someone prunes it
     deliberately. That is the safe direction: the alternative is a bug in
     the cutoff arithmetic silently emptying the served history.
+
+    **Applies `serving_id_floor` to `target` at both ends, not only the
+    end.** `_reset_sequences(target, serving=True)` used to run once, after
+    the copy. A store reflashed or `pg_restore`d below the floor sits that
+    way until the *next* sync — and between a reflash and that sync the
+    poller runs a whole live session, minting `predictions.id` below the
+    floor the whole time. Those rows are then invisible to the next
+    nightly's floor-scoped `_pull_predictions` (`id >= floor`), silently.
+    Applying the floor here too, before anything else runs, closes that
+    window: `greatest(max(id), floor)` is idempotent, so calling it twice
+    in one run — once here, once at the end — costs nothing when the
+    sequence is already at or above the floor.
     """
     source = source or db_io.get_engine()
     target = target or serving_engine()
     _refuse_self_sync(source, target)
+    _reset_sequences(target, serving=True)
     cutoff = cutoff_date(sp, today)
 
     with run_job(source, "sync", {"cutoff": str(cutoff)}) as report:
@@ -1003,7 +1277,7 @@ def run_sync(
         # Sequences, in the direction this function copies. See
         # `_reset_sequences` for why an explicit-id INSERT leaves them
         # behind and what it cost on both stores.
-        _reset_sequences(target)
+        _reset_sequences(target, serving=True)
 
         # Assigned *before* the pin, which can raise. Measured 2026-08-21:
         # a pin failure discarded the count and recorded rows_written = 0

@@ -395,7 +395,7 @@ class TestOutcomesRunsNightly:
     after its outcome exists.
     """
 
-    def _run(self, monkeypatch, outcomes_fn):  # noqa: ANN001, ANN202
+    def _run(self, monkeypatch, outcomes_fn, pull_fn=None):  # noqa: ANN001, ANN202
         from capitalscan.jobs import outcomes as outcomes_mod
         from capitalscan.jobs import predict as predict_mod
         from capitalscan.jobs import sync as sync_mod
@@ -424,7 +424,16 @@ class TestOutcomesRunsNightly:
             return outcomes_fn()
 
         monkeypatch.setattr(outcomes_mod, "run_outcomes", _outcomes)
-        monkeypatch.setattr(sync_mod, "pull_live_records", _record_call(calls, "pull", {}))
+
+        if pull_fn is None:
+            monkeypatch.setattr(sync_mod, "pull_live_records", _record_call(calls, "pull", {}))
+        else:
+
+            def _pull(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                calls.append({"name": "pull"})
+                return pull_fn()
+
+            monkeypatch.setattr(sync_mod, "pull_live_records", _pull)
 
         def _no_serving(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
             calls.append({"name": "sync"})
@@ -451,3 +460,44 @@ class TestOutcomesRunsNightly:
 
         names = self._run(monkeypatch, _boom)
         assert "sync" in names, "a failed outcomes step stopped the chain"
+
+    def test_nightly_pulls_live_records_before_predict(self, monkeypatch) -> None:  # noqa: ANN001
+        """`predict` has been insert-only since ADR 195: it never rewrites a
+        prediction that already exists for an event. If `predict` ran before
+        the pull, research would write its own row for a signal the Pi
+        already scored, and the insert-only guard would then keep research's
+        row over the one a reader actually saw intraday -- the forward log
+        stops matching what was shown. Pulling first means an adopted row is
+        already present when `predict` reaches that event, so it is skipped.
+        """
+        from capitalscan.jobs import outcomes as outcomes_mod
+
+        names = self._run(monkeypatch, outcomes_mod.OutcomeReport)
+        assert "pull" in names, "nightly never pulled the Pi's live records"
+        assert names.index("pull") < names.index("run_predict"), (
+            "the pull must land before predict, or an adopted row arrives "
+            "too late for predict's insert-only guard to skip it"
+        )
+
+    def test_the_pull_still_precedes_sync(self, monkeypatch) -> None:  # noqa: ANN001
+        """Moving the pull ahead of `predict` must not move it past `sync`:
+        a night's adopted records still need to reach research before the
+        outbound sync ships anything to serving."""
+        from capitalscan.jobs import outcomes as outcomes_mod
+
+        names = self._run(monkeypatch, outcomes_mod.OutcomeReport)
+        assert names.index("pull") < names.index("sync")
+
+    def test_a_failed_pull_does_not_stop_the_chain(self, monkeypatch) -> None:  # noqa: ANN001
+        """Research already holds everything the night computed, so a pull
+        that cannot reach serving is reported, not fatal -- the rest of the
+        chain, including `predict` and `sync`, still runs."""
+        from capitalscan.jobs import outcomes as outcomes_mod
+
+        def _boom():  # noqa: ANN202
+            raise RuntimeError("pull exploded")
+
+        names = self._run(monkeypatch, outcomes_mod.OutcomeReport, pull_fn=_boom)
+        assert "pull" in names
+        assert "run_predict" in names, "a failed pull stopped predict from running"
+        assert "sync" in names, "a failed pull stopped the chain before sync"
