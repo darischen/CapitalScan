@@ -51,6 +51,26 @@ not two statements run back to back.
 (`jobs/sync.py::_reset_sequences`, reused rather than re-implemented) and
 re-checks that no id names two different signals any more.
 
+**The sequence reset is owed even when there is nothing left to reassign.**
+`apply_reassignment` commits its own transaction; `_reset_sequences` used to
+run afterwards only when `moves` was non-empty, which left a gap: if the
+process died *between* those two calls, the reassignment survived (it was
+already committed) but the sequence did not get raised. A rerun after
+exactly that interruption recomputes `moves` as empty -- those rows now
+carry ids at or above the floor, so `plan_reassignment` no longer selects
+them -- so the old code printed "nothing to reassign" and exited 0 without
+ever calling `_reset_sequences`. The Pi's next insert could then collide
+with the very ids this script just assigned. `main()` now calls
+`_reset_sequences` unconditionally on `--apply`, whether or not this run
+found rows to move, so a rerun always closes that gap rather than trusting
+that `moves.empty` means "nothing left to do."
+
+**The dry run also prints `predictions_id_seq`'s current value and what
+`--apply` would set it to** (`predicted_sequence_value`), computed the same
+way `_reset_sequences` computes it -- `greatest(floor, max(id))`, taking the
+reassignment's own new ids into account -- so a human reading the dry run
+can predict that part of `--apply` without running it.
+
     uv run python scripts/repair_prediction_ids.py               # dry run
     uv run python scripts/repair_prediction_ids.py --apply
 """
@@ -99,6 +119,36 @@ def _read_predictions_keys(engine: Engine) -> pd.DataFrame:
     """`id` plus the natural key, for every row. Small: ~35k rows, 6 columns."""
     cols = ", ".join(("id", *NATURAL_KEY))
     return pd.read_sql(text(f"SELECT {cols} FROM predictions"), engine)  # noqa: S608 - fixed names
+
+
+def _read_sequence_value(engine: Engine) -> int:
+    """`predictions_id_seq`'s current value, read directly off the sequence
+    relation. A sequence is itself a one-row object in Postgres, so this
+    needs no `pg_sequences` catalog lookup and no privilege beyond what
+    owning `predictions` already implies."""
+    with engine.connect() as conn:
+        return int(conn.execute(text("SELECT last_value FROM predictions_id_seq")).scalar_one())
+
+
+def predicted_sequence_value(
+    serving_predictions: pd.DataFrame, moves: pd.DataFrame, floor: int
+) -> int:
+    """What `_reset_sequences` will set `predictions_id_seq` to, computed
+    without touching the database -- this is what the dry run prints
+    alongside the current value.
+
+    Mirrors `_reset_sequences`'s own arithmetic for the serving branch,
+    `greatest(max(id), floor)`, except the ids in question do not exist in
+    `serving_predictions` yet: `moves["new_id"]` is what the reassignment
+    would write, so its max has to be folded in by hand rather than read
+    back from a table.
+    """
+    values = [floor]
+    if not serving_predictions.empty:
+        values.append(int(serving_predictions["id"].max()))
+    if not moves.empty:
+        values.append(int(moves["new_id"].max()))
+    return max(values)
 
 
 def plan_reassignment(
@@ -183,7 +233,9 @@ def apply_reassignment(engine: Engine, moves: pd.DataFrame) -> tuple[int, int]:
     return len(moves), int(outcomes_repointed)
 
 
-def _print_plan(moves: pd.DataFrame, pre_mismatches: list[int]) -> None:
+def _print_plan(
+    moves: pd.DataFrame, pre_mismatches: list[int], current_seq: int, predicted_seq: int
+) -> None:
     print(f"serving-born rows to re-identify: {len(moves)}")
     if not moves.empty:
         lo, hi = int(moves["new_id"].min()), int(moves["new_id"].max())
@@ -195,6 +247,7 @@ def _print_plan(moves: pd.DataFrame, pre_mismatches: list[int]) -> None:
     print(f"\nids currently naming a different signal on each side: {len(pre_mismatches)}")
     if pre_mismatches:
         print(f"  {pre_mismatches}")
+    print(f"\npredictions_id_seq: {current_seq:,} now -> {predicted_seq:,} after --apply")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -214,8 +267,10 @@ def main(argv: list[str] | None = None) -> int:
     research_keys = _read_predictions_keys(research)
     moves = plan_reassignment(serving_keys, research_keys, floor)
     pre_mismatches = mismatched_ids(serving_keys, research_keys)
+    current_seq = _read_sequence_value(serving)
+    predicted_seq = predicted_sequence_value(serving_keys, moves, floor)
 
-    _print_plan(moves, pre_mismatches)
+    _print_plan(moves, pre_mismatches, current_seq, predicted_seq)
 
     if not args.apply:
         print("\ndry run, nothing written. Re-run with --apply to perform it.")
@@ -223,9 +278,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if moves.empty:
         print("\nnothing to reassign")
-        return 0
+        reidentified, outcomes_repointed = 0, 0
+    else:
+        reidentified, outcomes_repointed = apply_reassignment(serving, moves)
 
-    reidentified, outcomes_repointed = apply_reassignment(serving, moves)
+    # Owed on every --apply, not only when this run found rows to move --
+    # see the module docstring's "sequence reset is owed even when there is
+    # nothing left to reassign" note. A rerun after an interruption between
+    # `apply_reassignment`'s commit and this call must still repair the
+    # sequence even though `moves` recomputes empty.
     _reset_sequences(serving, serving=True)
 
     post_serving_keys = _read_predictions_keys(serving)

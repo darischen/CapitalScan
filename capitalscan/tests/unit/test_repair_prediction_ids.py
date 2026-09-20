@@ -185,6 +185,66 @@ class _FakeEngine:
         return self.conn
 
 
+class TestPredictedSequenceValue:
+    def test_no_rows_and_no_moves_returns_the_floor(self):
+        assert repair.predicted_sequence_value(_predictions([]), _predictions([]), FLOOR) == FLOOR
+
+    def test_an_existing_max_id_above_the_floor_wins_over_the_floor(self):
+        """Possible if the Pi has already minted above the floor since it
+        was deployed, ahead of this repair running."""
+        serving = _predictions([_row(FLOOR + 9, "ZZ")])
+        moves = repair.plan_reassignment(serving, _predictions([]), FLOOR)
+        assert repair.predicted_sequence_value(serving, moves, FLOOR) == FLOOR + 9
+
+    def test_a_moves_new_id_max_wins_when_higher_than_the_existing_max(self):
+        serving = _predictions([_row(1, "AA"), _row(2, "BB")])
+        moves = repair.plan_reassignment(serving, _predictions([]), FLOOR)
+        predicted = repair.predicted_sequence_value(serving, moves, FLOOR)
+        assert predicted == moves["new_id"].max()
+        assert predicted >= FLOOR
+
+
+class _FakeReadConnection:
+    """Answers `_read_sequence_value`'s single `SELECT last_value` read."""
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+        self.executed: list[str] = []
+
+    def execute(self, stmt, params=None):
+        self.executed.append(str(stmt))
+
+        class _Result:
+            def __init__(self, value):
+                self._value = value
+
+            def scalar_one(self):
+                return self._value
+
+        return _Result(self.value)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeReadEngine:
+    def __init__(self, value: int) -> None:
+        self.conn = _FakeReadConnection(value)
+
+    def connect(self):
+        return self.conn
+
+
+class TestReadSequenceValue:
+    def test_reads_last_value_off_the_sequence(self):
+        engine = _FakeReadEngine(224_862)
+        assert repair._read_sequence_value(engine) == 224_862
+        assert "predictions_id_seq" in engine.conn.executed[0]
+
+
 class TestApplyReassignment:
     def test_an_empty_move_set_writes_nothing(self):
         engine = _FakeEngine()
@@ -229,6 +289,7 @@ class TestDryRunIsTheDefaultAndWritesNothing:
         monkeypatch.setattr(repair, "serving_engine", lambda: object())
         monkeypatch.setattr(repair.db_io, "get_engine", lambda: object())
         monkeypatch.setattr(repair, "_read_predictions_keys", lambda engine: pd.DataFrame())
+        monkeypatch.setattr(repair, "_read_sequence_value", lambda engine: 0)
         monkeypatch.setattr(repair, "plan_reassignment", lambda *a, **k: moves)
         monkeypatch.setattr(repair, "mismatched_ids", lambda *a, **k: [])
 
@@ -245,6 +306,7 @@ class TestDryRunIsTheDefaultAndWritesNothing:
         monkeypatch.setattr(repair, "serving_engine", lambda: object())
         monkeypatch.setattr(repair.db_io, "get_engine", lambda: object())
         monkeypatch.setattr(repair, "_read_predictions_keys", lambda engine: pd.DataFrame())
+        monkeypatch.setattr(repair, "_read_sequence_value", lambda engine: 0)
         monkeypatch.setattr(repair, "plan_reassignment", lambda *a, **k: moves)
         monkeypatch.setattr(repair, "mismatched_ids", lambda *a, **k: [])
 
@@ -265,6 +327,7 @@ class TestDryRunIsTheDefaultAndWritesNothing:
         monkeypatch.setattr(repair, "serving_engine", lambda: object())
         monkeypatch.setattr(repair.db_io, "get_engine", lambda: object())
         monkeypatch.setattr(repair, "_read_predictions_keys", lambda engine: pd.DataFrame())
+        monkeypatch.setattr(repair, "_read_sequence_value", lambda engine: 0)
         monkeypatch.setattr(repair, "plan_reassignment", lambda *a, **k: moves)
         # Pre-repair check clean, post-repair check still finds one -- an
         # impossible state in practice, but it is exactly the branch this
@@ -277,21 +340,64 @@ class TestDryRunIsTheDefaultAndWritesNothing:
         code = repair.main(["--apply"])
         assert code == 1
 
-    def test_nothing_to_reassign_with_apply_is_a_clean_no_op(self, monkeypatch):
+    def test_nothing_to_reassign_with_apply_still_calls_reset_sequences(self, monkeypatch):
+        """Not a no-op: `_reset_sequences` is owed on every `--apply`, not
+        only when this run found rows to move. `apply_reassignment` must
+        stay untouched (there is nothing to write), but the sequence check
+        must still run -- see the next test for why this matters."""
         empty = repair.plan_reassignment(_predictions([]), _predictions([]), FLOOR)
         monkeypatch.setattr(repair, "serving_engine", lambda: object())
         monkeypatch.setattr(repair.db_io, "get_engine", lambda: object())
         monkeypatch.setattr(repair, "_read_predictions_keys", lambda engine: pd.DataFrame())
+        monkeypatch.setattr(repair, "_read_sequence_value", lambda engine: 0)
         monkeypatch.setattr(repair, "plan_reassignment", lambda *a, **k: empty)
         monkeypatch.setattr(repair, "mismatched_ids", lambda *a, **k: [])
 
         calls: list[Any] = []
-        monkeypatch.setattr(repair, "apply_reassignment", lambda *a, **k: calls.append(a) or (0, 0))
+        monkeypatch.setattr(
+            repair, "apply_reassignment", lambda *a, **k: calls.append("apply") or (0, 0)
+        )
         monkeypatch.setattr(repair, "_reset_sequences", lambda *a, **k: calls.append("reset"))
 
         code = repair.main(["--apply"])
         assert code == 0
-        assert calls == [], "nothing to move means nothing to write"
+        assert calls == ["reset"], "nothing to move, but the reset is still owed"
+
+    def test_a_rerun_after_an_interrupted_apply_still_repairs_the_sequence(self, monkeypatch):
+        """Reproduces the reported gap: a prior `--apply` reassigned its
+        rows and committed (durable), then the process died before
+        `_reset_sequences` ran. Rerunning finds those rows already at or
+        above the floor -- `plan_reassignment` (the REAL function, not
+        mocked) correctly recomputes an empty move set for them, since
+        they are no longer serving-born by this run's definition. The old
+        code took that as "nothing to do" and skipped the reset it still
+        owed; the fixed `main()` must call `_reset_sequences` regardless."""
+        already_moved_id = FLOOR + 42
+        serving = _predictions([_row(already_moved_id, "HPE")])
+        research = _predictions([])  # not yet adopted -- pull_live_records hasn't run
+        monkeypatch.setattr(repair, "serving_engine", lambda: "serving-engine")
+        monkeypatch.setattr(repair.db_io, "get_engine", lambda: "research-engine")
+
+        def fake_read_keys(engine):
+            return serving if engine == "serving-engine" else research
+
+        monkeypatch.setattr(repair, "_read_predictions_keys", fake_read_keys)
+        # The sequence is still behind -- exactly the interrupted state.
+        monkeypatch.setattr(repair, "_read_sequence_value", lambda engine: already_moved_id - 1)
+
+        reset_calls: list[Any] = []
+        monkeypatch.setattr(
+            repair, "_reset_sequences", lambda engine, serving=False: reset_calls.append(engine)
+        )
+        apply_calls: list[Any] = []
+        monkeypatch.setattr(
+            repair, "apply_reassignment", lambda *a, **k: apply_calls.append(a) or (0, 0)
+        )
+
+        code = repair.main(["--apply"])
+        assert code == 0
+        assert apply_calls == [], "nothing left for THIS run to reassign"
+        assert reset_calls == ["serving-engine"], "the sequence reset must still run on a rerun"
 
 
 class TestNaturalKeyIsSharedWithSync:
