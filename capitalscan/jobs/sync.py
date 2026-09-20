@@ -61,6 +61,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
+from string import Formatter
 from typing import Any
 
 import pandas as pd
@@ -213,57 +214,60 @@ BEGIN
 END $$;
 """
 
-# **Serving mints at or above the floor.** `greatest(n, floor)` takes the
-# larger of the table's own max and the floor, so a below-floor sequence
-# (a fresh serving store, or one repaired after a Pi reflash) is raised to
-# the floor, and a sequence already past it from ordinary serving growth is
-# left where it is -- `greatest` only ever pushes up, never down.
-_SERVING_PREDICTIONS_BRANCH = """\
-      EXECUTE format('SELECT coalesce(max(%I),0) FROM %s', r.col, r.tbl) INTO n;
-      n := greatest(n, {floor});"""
-
+# **One template per store, rendered two ways.** `_reset_sequences`
+# discovers table and column from the catalog, so it needs
+# `format('...', r.col, r.tbl)`; `predictions_max_id_sql` knows its table by
+# name and interpolates directly. Those were two hand-written copies until
+# 2026-09-20, and the research one is the single clause keeping research's
+# ids below the floor -- reversing it in the catalog branch would have left
+# `scripts/verify_id_floor.py` green, because the script executes the other
+# copy. Both renderings now read the same template.
+#
+# **Serving mints at or above the floor.** `greatest` takes the larger of
+# the table's own max and the floor, so a below-floor sequence (a fresh
+# serving store, or one repaired after a Pi reflash) is raised to it, and a
+# sequence already past it from ordinary growth is left alone.
+#
 # **Research stays below the floor.** The max is computed only over ids
-# under it, so an adopted (Pi-born, billion-range) row already sitting in
-# `predictions` cannot push research's own allocation up into serving's
-# range and recreate the collision. A research store holding only adopted
-# rows returns NULL here, coalesced to 0, which the `IF n > 0` guard below
-# already skips -- `setval(seq, 0)` is an error in Postgres.
-_RESEARCH_PREDICTIONS_BRANCH = """\
-      EXECUTE format(
-        'SELECT coalesce(max(%I),0) FROM %s WHERE %I < %L', r.col, r.tbl, r.col, {floor}
-      ) INTO n;"""
+# under it, so an adopted (Pi-born, billion-range) row cannot push
+# research's own allocation up into serving's range and recreate the
+# collision. A research store holding only adopted rows returns NULL,
+# coalesced to 0, which the DO block's `IF n > 0` guard skips --
+# `setval(seq, 0)` is an error in Postgres.
+_MAX_ID_TEMPLATES: dict[str, str] = {
+    "serving": "SELECT greatest(coalesce(max({col}),0), {floor}) FROM {tbl}",
+    "research": "SELECT coalesce(max({col}),0) FROM {tbl} WHERE {col} < {floor}",
+}
+
+
+def _predictions_branch(*, serving: bool, floor: int) -> str:
+    """The catalog-driven rendering: a `format()` call for the DO block.
+
+    `{col}` becomes `%I`, `{tbl}` `%s` and `{floor}` `%L`, and the argument
+    list is built **in the order the placeholders appear**, because
+    `format()` binds positionally. Deriving the order from the template is
+    the point: an edit that moves a placeholder moves its argument with it,
+    where a hand-written list would silently read the wrong column.
+    """
+    template = _MAX_ID_TEMPLATES["serving" if serving else "research"]
+    fields = [name for _, name, _, _ in Formatter().parse(template) if name]
+    args = {"col": "r.col", "tbl": "r.tbl", "floor": str(floor)}
+    fmt = template.format(col="%I", tbl="%s", floor="%L")
+    return f"      EXECUTE format('{fmt}', {', '.join(args[f] for f in fields)}) INTO n;"
 
 
 def predictions_max_id_sql(table: str, floor: int, *, serving: bool) -> str:
-    """The literal SELECT a `predictions`-shaped table's sequence reset
-    computes, for a caller that already knows the table name -- unlike
-    `_reset_sequences`'s DO block, which discovers table and column from
-    the catalog and so needs `EXECUTE format('...', r.col, r.tbl)` instead
-    of a plain string.
+    """The same comparison, rendered for a caller that knows its table name.
 
-    **Why this exists.** `scripts/verify_id_floor.py` proves the floor
-    split against `zz_`-prefixed scratch tables rather than the real
-    `predictions` table (see that script's docstring for why running
-    `_reset_sequences` itself there is the wrong shape -- it would reset
-    the *real* sequence). Before this function existed, the script's
-    research-branch check would have had to hand-copy the `WHERE id <
-    floor` comparison, and a reversed comparison in that copy -- the one
-    clause that keeps research below the floor -- would pass every check
-    in the script while the copy quietly disagreed with production. This
-    function is the single place that comparison is spelled out; the
-    script imports and executes it rather than restating it, and
-    `_SERVING_PREDICTIONS_BRANCH` / `_RESEARCH_PREDICTIONS_BRANCH` above
-    express the identical two comparisons for the catalog-driven DO block.
-
-    Mirrors `_SERVING_PREDICTIONS_BRANCH`'s `n := greatest(n, floor)` on
-    the serving side, and `_RESEARCH_PREDICTIONS_BRANCH`'s `WHERE %I < %L`
-    on the research side -- same arithmetic, spelled out for a table whose
-    name does not need `format(%I, ...)` to interpolate safely because it
-    is a Python-side literal, not catalog-discovered.
+    `scripts/verify_id_floor.py` proves the floor split against `zz_`
+    scratch tables rather than the real `predictions` table -- running
+    `_reset_sequences` there would reset the *real* sequence. It imports
+    this function and executes it, so the script tests production's
+    comparison instead of a copy of it.
     """
-    if serving:
-        return f'SELECT greatest(coalesce(max("id"),0), {floor}) FROM "{table}"'
-    return f'SELECT coalesce(max("id"),0) FROM "{table}" WHERE "id" < {floor}'
+    return _MAX_ID_TEMPLATES["serving" if serving else "research"].format(
+        col='"id"', tbl=f'"{table}"', floor=floor
+    )
 
 
 def _reset_sequences(engine: Engine, *, serving: bool) -> None:
@@ -308,8 +312,9 @@ def _reset_sequences(engine: Engine, *, serving: bool) -> None:
     why the split lives there rather than in `Config`.
     """
     floor = ServingParams().serving_id_floor
-    branch = _SERVING_PREDICTIONS_BRANCH if serving else _RESEARCH_PREDICTIONS_BRANCH
-    sql = _RESET_SEQUENCES_SQL.format(predictions_branch=branch.format(floor=floor))
+    sql = _RESET_SEQUENCES_SQL.format(
+        predictions_branch=_predictions_branch(serving=serving, floor=floor)
+    )
     with engine.begin() as conn:
         conn.execute(text(sql))
 

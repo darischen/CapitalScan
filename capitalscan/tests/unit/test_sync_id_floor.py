@@ -74,7 +74,7 @@ class TestServingRaisesABelowFloorSequence:
         real max id is only known inside the DO block, per table."""
         sql = _sql(serving=True)
         floor = ServingParams().serving_id_floor
-        assert f"greatest(n, {floor})" in sql
+        assert f"greatest(coalesce(max(%I),0), %L) FROM %s', r.col, {floor}, r.tbl" in sql
 
     def test_it_still_sets_the_max_for_every_other_table(self) -> None:
         """The floor logic is scoped to `predictions`; nothing else changes."""
@@ -129,7 +129,7 @@ class TestTheFloorComesFromServingParams:
 
         sql = _sql(serving=True)
 
-        assert "greatest(n, 42)" in sql
+        assert "greatest(coalesce(max(%I),0), %L) FROM %s', r.col, 42, r.tbl" in sql
         assert "1000000000" not in sql
 
     def test_jobs_sync_carries_no_floor_literal(self) -> None:
