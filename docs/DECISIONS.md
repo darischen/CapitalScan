@@ -254,6 +254,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 193 | The training window expands; the refit finally learns something | **Decided 2026-09-10.** Amends ADR 179, which was right about the window it tested and wrong about the idea underneath. `split_key` is fixed at event creation, so **the weekly refit trained on identical rows every week** and differed only by seed -- 516,615 events since 2024 never entered training and the reliability tables stayed anchored to 2022-2023. Found because a user asked whether a model can be trained once and never given new information. `roll7` did not settle it: it moved the window forward **and cut it 42%**, then scored a different period, and **no arm held the validation period constant**. Four arms with the missing control (`fixed_v26` = today's training window scored on 2026): `fixed` 25/30 on 2022-23, **`fixed_v26` 14/30 on 2026 from the identical fit** (drift is real and large), **`expand` 25/30 on those same 11,690 rows** (mean err 0.0518 -> 0.0338, step counts *rose* to [1042,863,880] so selection happened rather than falling through to DEFAULT_STEPS). `expand_purge` costs one head and 0.002 -- **no leak**, which the headline needed since a 10-day label crosses the 2025/2026 boundary. **The caveat the aggregate hides:** by family, expanding improves all three (peak 4->6, trough 4->9, terminal 6->10, no inversion unlike `roll7`) but `expand`'s 25/30 is not `fixed`'s 25/30 -- peak, which backs every shipped `p_touch_*`, is 6/10 against 10/10, and this test cannot say whether that residual is 2026 being harder or the model still lagging. Adopted as a **training-time filter on `signal_date`, never a `split_key` rewrite**, so invariant 5 holds and `config_hash` does not move. 10-day embargo applied unconditionally. Side effect worth naming: validate becomes the trailing six months, so the isotonic anchor moves from 0.5482 to 0.6330 -- the ~5pp bias's cause, closed for free. Does not move `config_hash` |
 | 194 | `bull_close_below_lower` is enabled, and the hash moves with it | **Decided 2026-09-10.** Completes ADR 144; moves `config_hash` `0523841076f47293` -> **`f183b0f5209a4677`**. The type had an indicator column, an enum member, a signal rule, a frontend label and a badge branch -- everything except membership in `enabled_signal_types`. **The cost was asymmetric:** the bear side has a live badge *and* a close-confirmed one, so a bear reversal developing after its signal fires is caught next morning; the bull side had only the live badge, which freezes at fire time, so a later bull reversal was caught by nothing. EXPE fired 2026-09-09 at 09:46, below its band and still below its open, closed above the open, and displayed nothing. Accepting the frozen live badge is sound reasoning that **depends on both badges existing**, which made the dormancy a defect rather than a deferral. Measured first: fires **41,997** times against bear's 52,803, and 311 times since July. Twelve guards failed and all were right -- eleven were the `conftest` hash pin, which was designed so a deliberate change is one edit. Two needed judgement: the dormancy class was inverted (keeping the disable path, since DESIGN 3.10 wants ablation reachable from config) and now asserts the hash **moved**; `DORMANT_BY_DESIGN` emptied, which would have made a test pass on an empty loop, so emptiness is asserted explicitly. **Runbook gap found the hard way:** `universe` is config-keyed, so the first rebuild wrote 0 events across 1,463 tickers and exited 0 -- all 66 quarters must be rebuilt first. Ordering is fixed: sync, then `db sync-config`, then restart web, then pull the Pi; reversing the first two blanked the site for four minutes. Moves `config_hash` |
 | 195 | A prediction is written once | **Decided 2026-09-19** by the owner, option A of the 2026-09-17 open item. `predictions` becomes insert-only on `event_id` (`db_io.insert_new`, `ON CONFLICT DO NOTHING`). The upsert let `nightly` rewrite its 45-day lookback with an artifact whose ADR 193 validate window contained those events: 2,078 of 2,143 resolved live-generation rows on `wivie` were last written after their outcome existed. A row now keeps the model that first scored it; `created_at` is the first write; rows written before this stay contaminated and are not rewritten. No `config_hash` move |
+| 196 | Serving mints prediction ids above a floor; research adopts below it | **Decided 2026-09-20.** `ServingParams.serving_id_floor = 1_000_000_000`. Both stores minted `predictions.id` from one range, so `cscan sync` failed nightly from 2026-09-17 on serving's unique `event_id`, and 3 ids named a different signal on each side. Serving now mints at or above the floor, research below it, `pull_live_records` adopts serving-born rows insert-only, and the pull runs before `predict` so research keeps the number a reader saw. No `config_hash` move |
 
 ---
 
@@ -10150,3 +10151,60 @@ reports "0 new, N kept" instead of a warning.
 - ADR 193's validate window is unchanged. It may overlap the forward log's
   dates; with no rewrite, the overlap no longer reaches a recorded
   prediction.
+
+---
+
+## 196. Serving mints prediction ids above a floor; research adopts below it
+
+**Status:** accepted 2026-09-20. Follows ADR 195 and repairs ADR 191's
+assumption. No `config_hash` move.
+
+### Context
+
+ADR 191 keys the `predictions` sync on `id`, which is correct only while
+serving receives ids rather than minting them. ADR 158 put the poller on the
+Pi, and `cscan predict --serving` has minted from serving's own sequence ever
+since -- out of the same numeric range research uses.
+
+Measured across both stores on 2026-09-19:
+
+| | value |
+|---|---:|
+| rows sharing an id, same signal | 35,292 |
+| rows sharing an id, **different signal** | **3** |
+| serving-only predictions research never held | **100** |
+
+`cscan sync` failed every night from 2026-09-17 with
+`duplicate key value violates unique constraint "predictions_event_id"`, so
+serving received no research data for four days while the site kept serving
+the Pi's own writes and looked healthy.
+
+### Decision
+
+A floor splits the id space. Serving mints at or above
+`ServingParams.serving_id_floor`; research stays below it. `ServingParams`
+is not part of `Config`, so the hash does not move -- the same reasoning it
+already carries for `history_years`.
+
+`_reset_sequences` enforces the split per store, at the start of a sync as
+well as the end, so a reflashed or restored serving store cannot mint a
+whole poller session below the floor. `pull_live_records` adopts serving-born
+rows with `insert_new` (ADR 195), remapping `event_id` backwards through the
+events natural key and nulling it rather than colliding. The pull runs before
+`predict`, so research keeps what the reader saw.
+
+### What the rollout taught, recorded because the spec had it wrong
+
+**"Serving-born" is two classes, not one.** The repair first moved only rows
+research had never seen, and then failed its own postcondition with the same
+three ids. `_clear_remap_collisions` protects any serving row whose id is in
+the incoming set, so the Pi's ECHO row at 174759 was shielded by research's
+MPC row at the same id and collided when research's own ECHO row claimed its
+`event_id`. Rows whose id research reuses for a different signal must move
+too.
+
+**A duplicated prediction is not a duplicate number.** All 18 cross-store
+pairs disagreed, by up to 12.3 points on `p_touch_3`, because a weekly refit
+had rewritten research's copy. `_clear_remap_collisions` claimed otherwise
+and now says so correctly. The owner chose the newer fit; the pairs cannot
+recur once adoption precedes scoring.
