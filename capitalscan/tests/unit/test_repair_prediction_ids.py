@@ -435,3 +435,54 @@ class TestNaturalKeyIsSharedWithSync:
         from capitalscan.jobs.sync import _PREDICTIONS_EVENT_REMAP
 
         assert repair.NATURAL_KEY == _PREDICTIONS_EVENT_REMAP.source_key
+
+
+class TestIdsReusedForAnotherSignalAlsoMove:
+    """Found 2026-09-20, running the repair for real against the live pair.
+
+    The first rule moved only rows research had never seen, which left the
+    rows that actually block the sync: a serving row whose `id` research
+    reuses for a DIFFERENT signal. `_clear_remap_collisions` protects any
+    target row whose id is in the incoming set, so serving's ECHO row at id
+    174759 was protected by research's MPC row at the same id, and then
+    collided on `event_id` when research's own ECHO row claimed it. That is
+    the `UniqueViolation` that had failed every nightly sync since
+    2026-09-17, and the repair's own postcondition caught it: "ids naming a
+    different signal on each side, after repair: 3".
+    """
+
+    def _pair(self):
+        serving = _predictions(
+            [
+                _row(174759, "ECHO", signal_type="bb_upper_touch"),
+                _row(150000, "AAPL", signal_type="bb_lower_touch"),
+            ]
+        )
+        research = _predictions(
+            [
+                _row(174759, "MPC", signal_type="confluence_high"),
+                _row(165205, "ECHO", signal_type="bb_upper_touch"),
+                _row(150000, "AAPL", signal_type="bb_lower_touch"),
+            ]
+        )
+        return serving, research
+
+    def test_a_reused_id_moves_even_though_research_knows_the_key(self):
+        serving, research = self._pair()
+        moves = repair.plan_reassignment(serving, research, FLOOR)
+        assert moves["id"].tolist() == [174759]
+
+    def test_a_row_both_stores_agree_on_stays_put(self):
+        """The 35,292 agreeing rows are why the rule cannot be "every
+        below-floor serving row"."""
+        serving, research = self._pair()
+        moves = repair.plan_reassignment(serving, research, FLOOR)
+        assert 150000 not in moves["id"].tolist()
+
+    def test_the_postcondition_is_reachable_after_the_move(self):
+        serving, research = self._pair()
+        moves = repair.plan_reassignment(serving, research, FLOOR)
+        moved = serving.copy()
+        for old, new in zip(moves["id"], moves["new_id"], strict=True):
+            moved.loc[moved["id"] == old, "id"] = new
+        assert repair.mismatched_ids(moved, research) == []
