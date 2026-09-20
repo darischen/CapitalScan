@@ -1624,3 +1624,62 @@ narrower and matches `apply_eligibility`'s own `today` contract (ADR 060).
 a position that will never close, because only a deliberate
 `cscan backtest --cosmetic` can close it and nothing schedules one.
 -> `BACKLOG.md`
+
+---
+
+## 2026-09-17 to 2026-09-20 — `cscan sync` failed for four nights on one unique index
+
+**Symptom.** Every nightly from 2026-09-17 ended
+`warn sync failed, research store is unaffected: (psycopg.errors.UniqueViolation)
+duplicate key value violates unique constraint "predictions_event_id"`,
+naming one `event_id`. Exit code 0, chain reported complete, and the site
+kept answering with the Pi's own live writes — so nothing looked wrong from
+outside. Serving last received research data on 2026-09-16.
+
+**Cause.** ADR 191 keys the `predictions` sync on `id`, which holds only
+while serving receives ids rather than minting them. Since ADR 158 the Pi's
+`cscan predict --serving` has minted from serving's own sequence, out of the
+same range research uses. → ADR 196.
+
+**What the repair run taught, which the design had wrong.**
+
+1. `scripts/repair_prediction_ids.py --apply` moved 100 rows and then failed
+   its own postcondition: *ids naming a different signal on each side, after
+   repair: 3*. The rule moved only rows research had never seen, and the
+   blocking rows are the ones research holds under a **different** id.
+   `_clear_remap_collisions` protects any serving row whose id is in the
+   incoming set, so the Pi's ECHO row at 174759 was shielded by research's
+   MPC row at 174759, then collided when research's own ECHO row claimed its
+   `event_id`. **A postcondition that prints and does not raise is worth
+   writing: it caught a defect the whole review chain missed.**
+2. The 18 cross-store pairs do **not** carry identical numbers, though
+   `_clear_remap_collisions`'s docstring claimed they do. Every pair
+   disagreed, up to 12.3 points of `p_touch_3`, because the weekly refit had
+   rewritten research's copy. Owner's call: keep the newer fit.
+
+**Two operator mistakes worth not repeating.**
+
+- `ssh ... 'cscan sync'` under a shell `timeout` kills the **ssh client**,
+  not the remote job. The sync kept running with its stdout orphaned. Check
+  `pgrep -af "cscan sync"` on the box before concluding anything died.
+- Starting a second sync because the first "looked dead" put two writers on
+  serving for about a minute. Both are upserts, so nothing corrupted, but
+  the check costs one command and the mistake does not.
+
+**Order that worked:** back up serving's `predictions` and `outcomes`
+(`pg_dump -t predictions -t outcomes -Fc`, 13 MB), dry-run the repair, read
+it, apply, confirm the postcondition reads 0, then sync.
+
+**Outcome, 2026-09-20.** The full sync ran 03:26 to 06:27 (3h00m) and
+completed `ok` — the first successful sync since 2026-09-16. Serving went
+from 35,407 predictions to 36,318, `outcomes` from 5,986 to 8,293, latest
+event 2026-09-18, `serving_config` unchanged at `f183b0f5209a4677`, and the
+home page renders 60 rows. The three repaired ids are gone from serving by
+design: `_clear_remap_collisions` dropped the older Pi copies in favour of
+research's newer rows, which is what the owner chose once the pairs were
+measured to disagree.
+
+**A watcher that greps for a process name will match its own command.**
+`ssh host 'pgrep -f "cscan sync"'` matches the ssh command string itself, so
+a poll loop reported RUNNING for six hours after the job had finished. Match
+on something narrower, or check `runs.finished_at` instead.

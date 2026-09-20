@@ -396,9 +396,23 @@ def _clear_remap_collisions(
     claim the same `event_id`, and `predictions_event_id` is UNIQUE.
 
     Research is the authority for a row it has scored, so its row wins and
-    the other is deleted. Verified before writing this: the pairs carry
-    identical probabilities, so nothing measured is lost — only the second
-    copy of it.
+    the other is deleted.
+
+    **The "identical probabilities" claim this docstring used to make is
+    false, and was measured false on 2026-09-20.** It said the pairs carry
+    the same numbers, so nothing is lost but a duplicate. Across the 18
+    pairs then live, *every* pair disagreed: the serving copy came from the
+    artifact that was live when the signal fired (`924235e`, `fda17f9`) and
+    research's from the weekly refit that rewrote it (`0e83149`), differing
+    by up to **12.3 points** on `p_touch_3` (CRS 2026-09-14: 0.823 live
+    against 0.700). So this delete does discard the number a reader saw,
+    and replaces it with a later model's.
+
+    Kept deliberately, on the owner's call (2026-09-20): the newer fit is
+    the better estimate, and the pairs only exist for signals scored before
+    `pull_live_records` began adopting the Pi's rows ahead of `predict`.
+    Once adoption runs first, research holds the live row itself and there
+    is no second copy to choose between.
 
     **Scoped to values this chunk actually claims**, and never touching a
     row the incoming set also identifies by `key`. A prediction the Pi
