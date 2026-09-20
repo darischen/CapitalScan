@@ -140,7 +140,7 @@ sudo scripts/systemd/install.sh
 
 Fills `User` and `WorkingDirectory` into the unit templates in
 `scripts/systemd/`, installs them to `/etc/systemd/system`, and enables
-`capitalscan-nightly.timer` (13:15 and a 19:00 retry),
+`capitalscan-nightly.timer` (13:15 and a 19:00 retry, **Sunday through Friday** -- not Saturday, when `weekly` is running),
 `capitalscan-weekly.timer` (Sun 02:00), `capitalscan-monthly.timer`
 (1st, 03:00).
 
@@ -372,7 +372,7 @@ which machine *holds* research and *pushes* to it. `wivie`'s
 
 | job | when (PT) | does | ~time |
 |---|---|---|---|
-| `nightly` | daily 13:15, 19:00 retry | `pull_live_records` from the Pi, ingest chain, indicators, events, `sync` to serving | 35-40 min |
+| `nightly` | 13:15 Sun-Fri, 19:00 retry (no Saturday) | `pull_live_records` from the Pi, ingest chain, indicators, events, `sync` to serving | 35-40 min |
 | `weekly` | Sun 02:00 | `run_backtest` (no harness) | ~36 min |
 | `monthly` | 1st, 03:00 | maintenance | short |
 
