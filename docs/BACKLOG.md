@@ -2,6 +2,42 @@
 
 # HIGHEST PRIORITY
 
+## Reach the whole system from outside the LAN
+
+Asked for 2026-09-19. Everything is on 192.168.1.0/24 today: the site
+(`capitalscan-web` on the Pi:3000), the research database on `wivie`, the
+MCP server on the workstation's loopback, and every `ssh` path this project
+uses. Away from the house there is no view of the site, no way to check a
+nightly, and no way to reach the poller.
+
+**Not started, and it needs a decision before code.** The options differ in
+what they expose and who can reach it:
+
+1. **A mesh VPN (Tailscale / WireGuard).** Every box joins a private
+   network; nothing is published to the internet. The site keeps answering
+   on a private address, `ssh` keeps working, and the MCP server stays on
+   loopback. Weakest blast radius, and the one to beat.
+2. **A reverse proxy with TLS and auth** (Caddy or nginx on the Pi, behind
+   a tunnel such as Cloudflare Tunnel so no port is forwarded). Gives a URL
+   that works on a phone with no client software. It publishes a real
+   surface, so it needs auth in front of it -- the site has none today and
+   is not built to be public.
+3. **Port forwarding on the router.** Cheapest and worst: it exposes the Pi
+   directly, and the serving database and poller sit on the same box.
+
+**Constraints that bind whichever wins.** ADR 027 keeps the MCP server on
+127.0.0.1 and refuses to start without `MCP_BEARER_TOKEN` -- exposing it is
+a separate decision, not a side effect of this one. `web/lib/db.ts` connects
+to a local Postgres with a local password, and `.env.local` on each box
+holds credentials that were written for a LAN. The advisory-only rule
+(invariant 7) does not change, but a public surface raises the cost of every
+other defect on this list.
+
+**Recommendation: option 1**, with option 2 only if a phone-friendly public
+URL is actually wanted, and never option 3.
+
+---
+
 ## ~~The forward log is calibrated on its own outcomes~~ — **decided 2026-09-19: ADR 195, predictions are insert-only**
 
 Built on `main`. **Live only after `wivie` pulls it**, and the clean log for
