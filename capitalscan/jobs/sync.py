@@ -149,6 +149,24 @@ class Remap:
     unique_on_target: bool = False
 
 
+# **`predictions.event_id` names a different store's id on each side of the
+# copy, in both directions.** `_tables()` rewrites it outbound (research ->
+# serving, ADR 191, `event_id` "resolves, joins cleanly, and is wrong");
+# `pull_live_records`'s predictions step rewrites it inbound (serving ->
+# research, forward-log adoption, 2026-09-19). One `Remap`, because the
+# natural key it resolves through -- `(config_hash, ticker, as_of,
+# signal_type, entry_kind)` on `predictions`, `(config_hash, ticker,
+# signal_date, signal_type, entry_kind)` on `events` -- does not depend on
+# which store is source and which is target.
+_PREDICTIONS_EVENT_REMAP = Remap(
+    column="event_id",
+    table="events",
+    source_key=("config_hash", "ticker", "as_of", "signal_type", "entry_kind"),
+    target_key=("config_hash", "ticker", "signal_date", "signal_type", "entry_kind"),
+    unique_on_target=True,
+)
+
+
 @dataclass(frozen=True)
 class SyncTable:
     """One table's subset, as a query and a conflict key.
@@ -557,21 +575,7 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
             "predictions",
             "SELECT * FROM predictions",
             ("id",),
-            remaps=(
-                Remap(
-                    column="event_id",
-                    table="events",
-                    source_key=("config_hash", "ticker", "as_of", "signal_type", "entry_kind"),
-                    target_key=(
-                        "config_hash",
-                        "ticker",
-                        "signal_date",
-                        "signal_type",
-                        "entry_kind",
-                    ),
-                    unique_on_target=True,
-                ),
-            ),
+            remaps=(_PREDICTIONS_EVENT_REMAP,),
         ),
         # **After `predictions`, and that order is load-bearing.**
         # `outcomes.prediction_id` references it, so copying outcomes first
@@ -778,6 +782,55 @@ _LIVE_DURABLE_TABLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 )
 
 
+def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int]:
+    """Adopt serving-born predictions into research (forward-log adoption).
+
+    **Not a fourth `_LIVE_DURABLE_TABLES` entry.** The other three are
+    scoped by date, because a poller session belongs to one day; a
+    serving-born prediction's identity is which side of
+    `ServingParams.serving_id_floor` minted it, so this reads a floor
+    rather than a lookback window. It also needs `_apply_remap`, which the
+    generic loop in `pull_live_records` does not run. Both differences are
+    permanent, not accidents of a first draft, so this stays its own
+    function rather than bending the loop to fit it.
+
+    **Selection is the floor, nothing else.** Serving mints at or above it
+    and research stays below it (`_reset_sequences`), so `id >= floor` is
+    exactly the Pi-born set once the one-time repair (component 4) has run.
+
+    **The remap runs before the write, and a miss is NULL.** `event_id`
+    names a row in *serving's* id space; `events` syncs on a natural tuple
+    so the two stores' ids do not correspond. ADR 191 already established
+    that a kept foreign id is confidently wrong, not a worse-but-honest
+    answer, and `_apply_remap` gives NULL to a key that resolves to no
+    research event -- a provisional poller event the ADR 150 sweep already
+    removed, for instance. That row still adopts: it is a record of what a
+    reader saw, and the forward log leaves it unresolved rather than
+    dropping it.
+
+    **Keyed on `id`, never on `event_id`.** A repeated pull must insert
+    nothing. NULLs are distinct in a unique index, so keying on `event_id`
+    would insert a fresh duplicate for every unmapped row on every nightly
+    run -- `id` is the one column serving and research now agree names the
+    same row (that agreement is the whole point of the floor split).
+
+    Returns `(adopted, unmapped)` -- the second lets the caller report how
+    many rows landed with no event to point at, without a second query.
+    """
+    floor = ServingParams().serving_id_floor
+    frame = pd.read_sql(
+        text("SELECT * FROM predictions WHERE id >= :floor"),
+        source,
+        params={"floor": floor},
+    )
+    if frame.empty:
+        return 0, 0
+    frame = _apply_remap(frame, target, _PREDICTIONS_EVENT_REMAP)
+    unmapped = int(frame["event_id"].isna().sum())
+    adopted = db_io.copy_upsert(target, "predictions", frame, ["id"])
+    return adopted, unmapped
+
+
 def pull_live_records(
     source: Engine | None = None,
     target: Engine | None = None,
@@ -794,10 +847,15 @@ def pull_live_records(
     is invisible until someone queries data that was never written, which
     is the worst shape a data defect can take.
 
-    **Only the durable two.** `events` rows from the poller are provisional
-    and the nightly sweep removes them; pulling those back would resurrect
-    exactly what nightly just judged unreliable. `bars_live` and
-    `quotes_live` are per-tick scratch that research has no reader for.
+    **Only the durable two, plus `predictions` (forward-log adoption,
+    2026-09-19).** `events` rows from the poller are provisional and the
+    nightly sweep removes them; pulling those back would resurrect exactly
+    what nightly just judged unreliable. `bars_live` and `quotes_live` are
+    per-tick scratch that research has no reader for. `predictions` is
+    different: the Pi's live `predict --serving` pass scores the number a
+    reader actually saw, and without adopting that row research's forward
+    log scores whatever its own nightly refit says instead -- a different
+    number for the same signal. See `_pull_predictions`.
 
     **Upsert, not replace.** Research may already hold rows for a date --
     from before the poller moved, or from a re-run. An insert would raise on
@@ -806,7 +864,10 @@ def pull_live_records(
 
     Bounded to `lookback_days` because this runs nightly and the whole
     history is neither needed nor cheap; the overlap absorbs a night that
-    failed. `since` overrides it for a manual catch-up.
+    failed. `since` overrides it for a manual catch-up. **`predictions` is
+    the exception** -- floor-scoped rather than date-scoped, because a
+    serving-born prediction's identity is which id range minted it, not
+    when; see `_pull_predictions`.
     """
     source = source or serving_engine()
     target = target or db_io.get_engine()
@@ -836,6 +897,19 @@ def pull_live_records(
         if name == "signal_reports" and "event_id" in frame.columns:
             frame = frame.assign(event_id=None)
         pulled[name] = db_io.copy_upsert(target, name, frame, list(key)) if not frame.empty else 0
+
+    # **`predictions`, floor-scoped rather than date-scoped.** See
+    # `_pull_predictions` for why it is not a fourth `_LIVE_DURABLE_TABLES`
+    # entry. The three tables above keep their existing behaviour and
+    # order; this runs after them and reports under its own key.
+    adopted, unmapped = _pull_predictions(source, target)
+    pulled["predictions"] = adopted
+    if unmapped:
+        logger.warning(
+            "%d adopted predictions could not be matched to a research event (event_id left NULL)",
+            unmapped,
+        )
+    pulled["predictions_unmapped"] = unmapped
 
     # **Reset the target's sequences, mirroring `run_sync` (2026-09-01).**
     # Every row above was copied with its own id, and an explicit-id INSERT
