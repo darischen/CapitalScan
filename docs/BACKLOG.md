@@ -43,12 +43,13 @@ URL is actually wanted, and never option 3.
 Both parked deliberately during the forward-log-adoption branch; neither
 blocks it.
 
-**1. `_reset_sequences` spells the research floor clause twice.** The DO
-block builds from `_RESEARCH_PREDICTIONS_BRANCH` while `verify_id_floor.py`
-executes `predictions_max_id_sql`. Reversing `WHERE %I < %L` in the first
-would pass every test. That clause is the one thing keeping research ids
-below the floor, so **unify the two spellings before `repair_prediction_ids.py`
-runs against the live stores.**
+**1. ~~`_reset_sequences` spells the research floor clause twice~~ — done
+2026-09-20.** Both renderings now read `_MAX_ID_TEMPLATES`: the catalog
+branch substitutes `%I`/`%s`/`%L` and builds its `format()` arguments from
+the order the placeholders appear, and `predictions_max_id_sql`
+interpolates the same template directly. A perturbation test swaps the
+template and asserts both renderings follow, so a second hand-written copy
+fails the suite.
 
 **2. An adopted prediction whose event research did not yet hold keeps a
 NULL `event_id` forever.** Adoption is insert-only (ADR 195), so a later
