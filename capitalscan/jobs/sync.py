@@ -69,6 +69,7 @@ from psycopg.errors import InsufficientPrivilege
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 
+from capitalscan.core.cells import LONG_SIGNALS, SHORT_SIGNALS
 from capitalscan.core.config import ServingParams
 from capitalscan.jobs import db_io
 from capitalscan.jobs.ingest import run_job
@@ -317,6 +318,55 @@ def _reset_sequences(engine: Engine, *, serving: bool) -> None:
     )
     with engine.begin() as conn:
         conn.execute(text(sql))
+
+
+# `LONG_SIGNALS` and `SHORT_SIGNALS` are `core.cells`' pairing (ADR 102),
+# the one place a `signal_type` is assigned a side. `handlers.enums.
+# side_for_signal_type` reads the same two tuples for the MCP surface, but
+# that function lives behind `handlers/errors.py::InvalidEnum`, a wire-
+# contract exception Session 16 maps to a protocol error -- the right shape
+# for an LLM caller, the wrong one for a sync job to raise and catch. The
+# design doc (2026-09-20) also names `core/cells.py` itself as the source,
+# not the handler wrapper, so this reads the two tuples directly rather
+# than importing `handlers/`, which no other module under `jobs/` does
+# today. `handlers/_db.py` reaches `jobs.db_io` with a deferred, function-
+# local import specifically to keep `handlers/` downstream of `jobs/`
+# (ADR 118's MCP-is-a-caller-of-handlers arrangement); a module-level
+# `jobs -> handlers` import would invert that without tripping a circular-
+# import error, which is worse than one that fails loudly.
+_SIDE_BY_SIGNAL_TYPE: dict[str, str] = {t: "long" for t in LONG_SIGNALS} | {
+    t: "short" for t in SHORT_SIGNALS
+}
+
+
+def slot_side(frame: pd.DataFrame) -> pd.DataFrame:
+    """Attach the slot's `side`, derived from `signal_type`.
+
+    The slot-keyed remap (design doc, 2026-09-20) resolves `event_id`
+    through `(config_hash, ticker, signal_date, side, entry_kind)` rather
+    than through the label a detector happened to emit, because
+    `bb_lower_touch` on the Pi and `bull_close_below_lower` at end of day
+    can fill the same debounce slot (ADR 194) and disagree. `side` is not a
+    column the frame carries on its own; it is a property of `signal_type`
+    and this is the one place it gets computed for that use.
+
+    An unrecognised `signal_type` raises rather than defaulting to a side.
+    `core.cells.LONG_SIGNALS` and `SHORT_SIGNALS` cover every `SignalType`
+    member today (`core/cells.py`'s own comment says so), so a value this
+    rejects is either a typo in the caller's frame or a new member added to
+    one tuple and not the other -- both are bugs worth stopping on, because
+    a silently wrong side would link a long prediction to a short event.
+
+    Returns a new frame; `frame` is never mutated.
+    """
+    unknown = sorted(set(frame["signal_type"]) - set(_SIDE_BY_SIGNAL_TYPE))
+    if unknown:
+        raise ValueError(
+            f"signal_type {unknown!r} has no side in core.cells.LONG_SIGNALS "
+            "/ SHORT_SIGNALS; every SignalType member must resolve to a "
+            "side before it can key a slot"
+        )
+    return frame.assign(side=frame["signal_type"].map(_SIDE_BY_SIGNAL_TYPE))
 
 
 def _apply_remap(frame: pd.DataFrame, target: Engine, spec: Remap) -> pd.DataFrame:
