@@ -66,7 +66,7 @@ a rule that was true everywhere in August is now true on one box.
 | scheduler | Task Scheduler | systemd timers | systemd timers |
 | runs | backtests, sweeps, rebuilds, ablation arms | **`nightly`/`weekly`/`monthly` — live since 2026-09-10** | poller, serving DB, web app |
 
-All three addresses are DHCP-reserved. **The desktop is not being retired** — it left the *scheduled* role at the cutover and stays the heavy-research box, so this is a permanent two-machine arrangement rather than a handoff.
+All three addresses are DHCP-reserved. **The app is also public** at `https://capitalscan.tail397b3b.ts.net`, a Tailscale Funnel on `wivie` (node name `capitalscan`) proxying to the Pi's port 3000, unauthenticated by choice. → `OPERATIONS.md` **The desktop is not being retired** — it left the *scheduled* role at the cutover and stays the heavy-research box, so this is a permanent two-machine arrangement rather than a handoff.
 
 **The cutover completed 2026-09-10 18:09 PT.** `wivie` holds a full copy of the research database (restored in 13m26s, verified row for row) and runs the three timers; the workstation's `CapitalScan nightly` task is `Disabled`. Wherever this file says "after cutover" or "today", read it as done. → `TIMINGS.md` for the measured steps.
 
