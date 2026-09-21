@@ -591,6 +591,15 @@ def _null_duplicate_slot_targets(
     research event "really" belongs to. Both still adopt -- unresolved,
     not dropped.
 
+    **Callers must run `_null_inbound_remap_collisions` first.** If one
+    member of a pair was already adopted on a prior night, it is a
+    legitimate owner of the event on the target, not a peer this function
+    should null alongside its newer sibling -- `_pull_predictions` runs
+    the collision check first for exactly that reason, so by the time
+    this function sees the frame, an already-owned row has already been
+    excluded from the pair (see `_pull_predictions`'s docstring, "This
+    runs AFTER the collision check").
+
     Returns `(frame, duplicate_target)`. Counted separately from
     `no_slot`/`ambiguous` (which describe the slot lookup itself) and from
     `_null_inbound_remap_collisions`'s count (an incoming row colliding
@@ -1166,17 +1175,6 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int, in
     191). Either way `event_id` is NULL and the row still adopts, honestly
     unresolved rather than dropped.
 
-    **The slot is coarser than the natural key it replaced, and that cuts
-    both ways.** The events-side ambiguity above is the well-known one;
-    `_null_duplicate_slot_targets` guards the mirror case, found in review
-    (2026-09-20): two DIFFERENT incoming predictions can resolve to the
-    SAME research event, because `predictions_event_id` is unique per
-    *serving* event and two serving events can share one research slot
-    under different labels -- the same 15-slots-in-research phenomenon,
-    seen from the source side. Both rows are nulled, never one kept, and
-    counted under their own reason (`duplicate_target`), separate from
-    `no_slot`/`ambiguous`.
-
     **A resolved `event_id` can also collide with a DIFFERENT research
     row, and that is checked before the write too.**
     `predictions_event_id` is UNIQUE on both stores, and research can
@@ -1193,16 +1191,40 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int, in
     `.source_key`/`.target_key`, so this is not a reuse of the natural-key
     resolution retired above.
 
+    **The slot is coarser than the natural key it replaced, and that cuts
+    both ways.** The events-side ambiguity above is the well-known one;
+    `_null_duplicate_slot_targets` guards the mirror case, found in review
+    (2026-09-20): two DIFFERENT incoming predictions can resolve to the
+    SAME research event, because `predictions_event_id` is unique per
+    *serving* event and two serving events can share one research slot
+    under different labels -- the same 15-slots-in-research phenomenon,
+    seen from the source side. Both rows are nulled, never one kept, and
+    counted under their own reason (`duplicate_target`), separate from
+    `no_slot`/`ambiguous`.
+
+    **This runs AFTER the collision check, not before -- order found
+    wrong in review, round 2 (2026-09-20).** A row research already
+    adopted on a prior night (`A`, `event_id = E`) is a legitimate,
+    permanent owner of `E`; a later pull that reaches a second serving
+    event in the same slot sends a NEW row `B` that also resolves to `E`.
+    Deduping first would null BOTH `A` and `B` in the frame before the
+    collision check ever saw `A` sitting on the target, so `unmapped`
+    would report 2 when only `B` actually lands NULL -- research's link
+    from `A` to `E` is untouched (`ON CONFLICT (id) DO NOTHING`, and ADR
+    195 forbids rewriting it regardless). Running the collision check
+    first excludes `A` as its own owner (the "re-adopting itself" rule),
+    nulls `B` against `A`, and leaves the dedup step nothing left to do.
+
     **`unmapped` is read from the frame after every nulling step, not
-    summed from the individual reasons.** Four different steps can null
+    summed from the individual reasons.** Three different steps can null
     `event_id` before the write -- the slot lookup itself (`no_slot`,
-    `ambiguous`), the intra-frame duplicate check, and the inbound
-    collision check -- and a caller that wants "how many rows landed with
+    `ambiguous`), the inbound collision check, and the intra-frame
+    duplicate check -- and a caller that wants "how many rows landed with
     no event to point at" needs the true count, not a partial sum that
     silently drops whichever reason it forgot to add in. `no_slot` and
     `ambiguous` are still returned individually because they describe the
     slot lookup specifically and Task 3 reports them under their own
-    names; `duplicate_target` and the inbound collision count are logged
+    names; the inbound collision count and `duplicate_target` are logged
     but not returned, because nothing downstream distinguishes them today.
 
     **Keyed on `id`, never on `event_id`.** A repeated pull must insert
@@ -1231,14 +1253,19 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int, in
     if frame.empty:
         return 0, 0, 0, 0
     frame, no_slot, ambiguous = _apply_slot_remap(frame, target)
-    frame, duplicate_target = _null_duplicate_slot_targets(frame)
-    if duplicate_target:
-        logger.warning(
-            "%d adopted prediction(s) shared a research event_id with another "
-            "adopted prediction in the same pull; event_id left NULL on both "
-            "rather than picking one",
-            duplicate_target,
-        )
+    # **Collision-against-the-target FIRST, intra-frame dedup SECOND --
+    # order found wrong in review (2026-09-20 round 2).** A row already
+    # adopted on a prior night (research's own A, `event_id = E`) is a
+    # legitimate, permanent owner of E; a later pull that reaches a second
+    # serving event in the same slot sends a NEW row B that also resolves
+    # to E. Deduping first would null BOTH A and B in the frame -- A never
+    # gets compared against the target at all, so `unmapped` would count 2
+    # when only B actually lands NULL (A's `id` collides with `ON CONFLICT
+    # (id) DO NOTHING`, so research's own link to E is untouched and
+    # correctly still E). Running the collision check first excludes A as
+    # its own owner (the "re-adopting itself" rule), nulls B against A,
+    # and leaves dedup nothing left to do -- `unmapped` then equals the
+    # one row that is actually NULL.
     frame, collided = _null_inbound_remap_collisions(
         frame, target, "predictions", ("id",), _PREDICTIONS_EVENT_REMAP
     )
@@ -1247,6 +1274,14 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int, in
             "%d adopted prediction(s) collided on event_id with a different research "
             "row; event_id left NULL rather than overwriting research's row",
             collided,
+        )
+    frame, duplicate_target = _null_duplicate_slot_targets(frame)
+    if duplicate_target:
+        logger.warning(
+            "%d adopted prediction(s) shared a research event_id with another "
+            "adopted prediction in the same pull; event_id left NULL on both "
+            "rather than picking one",
+            duplicate_target,
         )
     # The ground truth, not a sum of the individual reasons above -- see
     # the docstring. Computed after every nulling step has run.
