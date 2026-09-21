@@ -622,7 +622,9 @@ downside of losing it.
   `fetch_current_constituents` and the SEC CIK lookup. The user's decision
   (2026-09-04) is to **retire it**: the universe has expanded past the S&P
   500 into NYSE, Nasdaq and ETFs, so an S&P-membership-changes scraper is
-  vestigial. Not done; needs an ADR because ADR 035 leans on it.
+  vestigial. **Decided in ADR 198 (2026-09-21).** Code removal is still to
+  do: `fetch_membership_changes`, `run_membership`, the `membership` CLI
+  command and their tests. `fetch_current_constituents` stays.
 
 - **`cscan events` has no `--workers` and no progress output.** A single
   pass over 2002-2026 ran **4h40m at ~99% of one core and wrote nothing**,

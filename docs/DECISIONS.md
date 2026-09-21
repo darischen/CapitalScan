@@ -256,6 +256,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 195 | A prediction is written once | **Decided 2026-09-19** by the owner, option A of the 2026-09-17 open item. `predictions` becomes insert-only on `event_id` (`db_io.insert_new`, `ON CONFLICT DO NOTHING`). The upsert let `nightly` rewrite its 45-day lookback with an artifact whose ADR 193 validate window contained those events: 2,078 of 2,143 resolved live-generation rows on `wivie` were last written after their outcome existed. A row now keeps the model that first scored it; `created_at` is the first write; rows written before this stay contaminated and are not rewritten. No `config_hash` move |
 | 196 | Serving mints prediction ids above a floor; research adopts below it | **Decided 2026-09-20.** `ServingParams.serving_id_floor = 1_000_000_000`. Both stores minted `predictions.id` from one range, so `cscan sync` failed nightly from 2026-09-17 on serving's unique `event_id`, and 3 ids named a different signal on each side. Serving now mints at or above the floor, research below it, `pull_live_records` adopts serving-born rows insert-only, and the pull runs before `predict` so research keeps the number a reader saw. No `config_hash` move |
 | 197 | Inbound adoption resolves on the debounce slot, not the label | **Decided 2026-09-20.** `_pull_predictions` remapped `event_id` through the natural key `(config_hash, ticker, as_of/signal_date, signal_type, entry_kind)`, which assumes the Pi and the end-of-day pass label a bar the same way. Measured: of 338 poller-written events since 2026-09-08, **0** matched the natural key, 114 shared a ticker-date with a research event under a different label, and every one of the night's 100 adopted rows carried a NULL `event_id`. `_apply_slot_remap` resolves `(config_hash, ticker, signal_date, side, entry_kind)` instead — `debounce_key` plus the fill convention, `side` derived from `signal_type` through `core/cells.py`'s `LONG_SIGNALS`/`SHORT_SIGNALS`. Nothing is relabelled: the adopted row keeps the live `signal_type`; the event it links to keeps the end-of-day one. No `config_hash` move |
+| 198 | The S&P membership-changes scraper is retired; the frozen union stands | **Decided 2026-09-21**, owner's call of 2026-09-04. Wikipedia deleted the "Selected changes to the list" section, so `fetch_membership_changes` returns an 11-row navigation box. Its only job, building `data/universe_union.csv`, finished on 2026-08-01 (759 rows, 248 removal dates, 0 pending review). Retires the scraper, `run_membership` and `cscan membership`; the CSV becomes the permanent record of the 2010-2026 S&P union and the universe grows through the refresh and by hand. Amends how ADR 035 and ADR 055 were produced, not what they hold. Code removal still to do |
 
 ---
 
@@ -10377,3 +10378,73 @@ Unit, against fakes: `test_slot_remap.py`, every rule above. Against real
 Postgres, on `zz_` scratch tables: `scripts/verify_slot_adoption.py` — see
 that script's own docstring for what it proves and why `_apply_slot_remap`
 needed a keyword-only `table` parameter to be reachable from it.
+
+---
+
+## 198. The S&P membership-changes scraper is retired; the frozen union stands
+
+**Status:** accepted 2026-09-21, recording the owner's decision of
+2026-09-04. **Amends ADR 035 and ADR 055** in how the union was produced,
+not in what it contains. The code removal is not yet done.
+
+### Context
+
+`capitalscan/jobs/fetch/wikipedia.py::fetch_membership_changes` scraped the
+"Selected changes to the list" table from the S&P 500 article. Wikipedia
+deleted that section, so `tables[1]` is now a sector navigation box and the
+function returns 11 rows of it. Its only caller is
+`ingest.run_membership` (`cscan membership --backfill`), which raises a
+clear error rather than writing anything. **Nightly is unaffected**:
+`run_tickers_refresh` uses only `fetch_current_constituents` and the SEC
+CIK lookup.
+
+The scraper had one job, and it finished. ADR 055 has `run_membership`
+build `data/universe_union.csv` once, review it by hand, and freeze it.
+That file was last changed on 2026-08-01 and holds **759 rows, 248 of them
+with a removal date, and 0 still flagged for review**. `run_membership`
+already refuses to regenerate a reviewed file without `--force`, because a
+regeneration would reset every review flag.
+
+The premise has also moved on. CLAUDE.md records that the universe is
+*seeded* from S&P 500 membership, not restricted to it: QQQ was added by
+hand and participates fully, and expansion to other US listings and more
+ETFs is planned. A scraper for one index's membership changes no longer
+describes how the universe grows.
+
+### Decision
+
+Retire `fetch_membership_changes`, `run_membership`, and the
+`cscan membership` command.
+
+`data/universe_union.csv` becomes the **permanent record** of the
+2010–2026 S&P 500 union. It has no regeneration path. A correction is a
+hand edit, reviewed as a diff, which is the property ADR 055 wanted from
+the file in the first place.
+
+From here the universe grows in two ways, neither of them this scraper:
+
+- **`run_tickers_refresh`** adds current constituents and keeps every name
+  it has ever seen. A name removed from the index stays in `tickers` with
+  `is_active = false` (the historical union CLAUDE.md describes: 1,561
+  rows, 1,463 active, measured 2026-09-21).
+- **By hand**, for anything outside the index, following QQQ.
+
+### What this does not change, stated because it is easy to confuse
+
+ADR 035's survivorship guarantee holds for every name in the frozen CSV and
+every constituent the refresh has seen since. It **never** extended to
+names that left the index before the scrape could capture them, and this
+ADR does not make that worse. That gap is a separate, already-recorded data
+wall: Lehman, Bear Stearns, Washington Mutual and the other 2008 failures
+are absent, only 18 of 1,561 `tickers` rows carry a `delisted_on`, and
+symbol reuse (`WM` was Washington Mutual, now Waste Management) is a live
+hazard. Closing that needs a survivorship-free data source, not a scraper.
+→ BACKLOG, "Data walls that block the history work".
+
+### Consequences
+
+- The code is dead but present until removed. Until then `cscan membership`
+  keeps raising its existing clear error, so nothing can use it by accident.
+- Removal touches `wikipedia.py`, `ingest.py`, the `membership` CLI
+  command and their tests. `fetch_current_constituents` stays: the nightly
+  refresh depends on it.
