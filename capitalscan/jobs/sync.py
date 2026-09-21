@@ -158,14 +158,23 @@ class Remap:
 
 
 # **`predictions.event_id` names a different store's id on each side of the
-# copy, in both directions.** `_tables()` rewrites it outbound (research ->
-# serving, ADR 191, `event_id` "resolves, joins cleanly, and is wrong");
-# `pull_live_records`'s predictions step rewrites it inbound (serving ->
-# research, forward-log adoption, 2026-09-19). One `Remap`, because the
-# natural key it resolves through -- `(config_hash, ticker, as_of,
-# signal_type, entry_kind)` on `predictions`, `(config_hash, ticker,
-# signal_date, signal_type, entry_kind)` on `events` -- does not depend on
-# which store is source and which is target.
+# copy.** `_tables()` still rewrites it outbound (research -> serving, ADR
+# 191, `event_id` "resolves, joins cleanly, and is wrong") through the
+# natural key below -- `signal_type` IS part of a research-written
+# prediction's identity, because research labels its own events and its own
+# predictions the same way, so no ambiguity is possible there and this
+# `Remap` resolves it correctly and unchanged.
+#
+# **Inbound is different since 2026-09-20 (design doc, slot-keyed
+# adoption).** `pull_live_records`'s predictions step no longer resolves
+# `event_id` through this natural key -- `_apply_slot_remap` does, on
+# `(config_hash, ticker, signal_date, side, entry_kind)`, because the Pi's
+# label and research's end-of-day label can disagree for the same slot
+# (ADR 194) and the natural key below then matches nothing (measured:
+# 0 of 338, 2026-09-20). This `Remap` still makes one inbound appearance,
+# in `_null_inbound_remap_collisions`, which reads only `.column`
+# ("event_id") and never `.source_key`/`.target_key` -- that call is not a
+# second use of natural-key resolution, only a reuse of the column name.
 _PREDICTIONS_EVENT_REMAP = Remap(
     column="event_id",
     table="events",
@@ -426,6 +435,126 @@ def _apply_remap(frame: pd.DataFrame, target: Engine, spec: Remap) -> pd.DataFra
     # `merge` reorders nothing but appends; put the column back where the
     # table expects to find it so `copy_upsert`'s column list is stable.
     return merged[[c for c in frame.columns if c in merged.columns]]
+
+
+# **A sibling of `Remap`/`_apply_remap`, not an extension of them.** `Remap`
+# assumes every `target_key` column is a real column on the target table --
+# `_apply_remap` binds each one straight into the `WHERE ... = ANY(:vN)`
+# clause. `side` is not: it is computed from `signal_type` by `slot_side`,
+# on both sides of the join, and Postgres has no `events.side` column to
+# filter on. So the slot lookup selects on the four columns that DO exist
+# (`config_hash`, `ticker`, `signal_date`, `entry_kind`), derives `side` on
+# the result in pandas, and only then joins -- a shape `_apply_remap` cannot
+# express without either adding a "computed key column" concept it has no
+# other user for, or letting the extra column leak into `Remap.target_key`
+# and silently miscompile into a `WHERE "side" = ANY(...)` that would fail
+# loudly (SQLAlchemy) or, worse, silently (a hand-rolled f-string). Sibling
+# over extension.
+#
+# `predictions` carries the slot's ticker/date/entry_kind under `as_of`;
+# `events` under `signal_date` -- named separately for the same reason
+# `Remap.source_key`/`target_key` are, and paired positionally below.
+_SLOT_SOURCE_KEY: tuple[str, ...] = ("config_hash", "ticker", "as_of", "side", "entry_kind")
+_SLOT_TARGET_KEY: tuple[str, ...] = ("config_hash", "ticker", "signal_date", "side", "entry_kind")
+
+
+def _apply_slot_remap(frame: pd.DataFrame, target: Engine) -> tuple[pd.DataFrame, int, int]:
+    """Resolve `event_id` on the debounce slot, not on the label (design
+    doc, 2026-09-20).
+
+    **Why the label cannot be the key.** `breach_live` (the Pi, intraday)
+    and the end-of-day pass fill the same debounce slot --
+    `(ticker, signal_date, bound)`, `core/signals.py::debounce_key` -- with
+    different labels when the close disagrees with the live read: the Pi
+    has no close to confirm against, so it emits `bb_lower_touch` while the
+    end-of-day pass sees the close still inside the band and writes
+    `bull_close_below_lower` for the same bar (ADR 194). Measured
+    2026-09-20: of 338 poller-written events since 2026-09-08, **zero**
+    matched research's natural key, so every adopted row that night carried
+    a NULL `event_id`. `side` is stable across that disagreement --
+    `bb_lower_touch` and `bull_close_below_lower` are both `LONG_SIGNALS`
+    -- so the slot resolves where the label cannot.
+
+    **Ambiguity is answered with NULL, never a pick.** Measured: 15 of
+    182,921 events since 2026-08-01 share a slot with a second event under
+    a different `signal_type`. ADR 191 already settled this for the
+    outbound remap -- a confidently wrong link is worse than an absent one
+    -- and the same rule applies here: a slot resolving to more than one
+    event gets `event_id = NULL`, same as a slot resolving to none, but the
+    two are counted separately so a caller can tell "research never saw
+    this ticker-date" from "research saw it twice".
+
+    **Nothing is relabelled.** `frame["signal_type"]` is the value the
+    reader saw live and this function never touches it; only `event_id`
+    changes, to the row the *slot* points at.
+
+    Returns `(frame, no_slot, ambiguous)`.
+    """
+    if frame.empty:
+        return frame, 0, 0
+    needed = ("config_hash", "ticker", "as_of", "signal_type", "entry_kind")
+    missing = [c for c in needed if c not in frame.columns]
+    if missing:
+        raise ValueError(f"slot remap needs {missing!r} in the frame; widen the query's SELECT")
+    frame = slot_side(frame)
+
+    keys = frame[list(_SLOT_SOURCE_KEY)].drop_duplicates()
+    # `side` is excluded here -- it is not a database column, so it plays
+    # no part in the SELECT's WHERE; `zip` pairs each source column with
+    # its target name so `keys[src]` reads the frame's own column (`as_of`)
+    # while the clause filters on the target's (`signal_date`).
+    select_pairs = [
+        (s, t) for s, t in zip(_SLOT_SOURCE_KEY, _SLOT_TARGET_KEY, strict=True) if t != "side"
+    ]
+    where = " AND ".join(f'"{t}" = ANY(:v{i})' for i, (_s, t) in enumerate(select_pairs))
+    params = {f"v{i}": keys[s].drop_duplicates().tolist() for i, (s, _t) in enumerate(select_pairs)}
+    events = pd.read_sql(
+        text(
+            "SELECT id, config_hash, ticker, signal_date, signal_type, entry_kind "  # noqa: S608
+            f'FROM "events" WHERE {where}'
+        ),
+        target,
+        params=params,  # type: ignore[arg-type]
+    )
+    if events.empty:
+        return frame.drop(columns=["side"]).assign(event_id=None), len(frame), 0
+
+    events = slot_side(events)
+    lookup = events[[*_SLOT_TARGET_KEY, "id"]]
+
+    # `duplicated(keep=False)` marks BOTH rows of a two-event slot, not
+    # just the second -- the usual `drop_duplicates` "keep one" behaviour
+    # is exactly what ADR 191 forbids here. What survives the `~mask` is
+    # only the slots that resolve to exactly one event.
+    ambiguous_mask = lookup.duplicated(subset=list(_SLOT_TARGET_KEY), keep=False)
+    ambiguous_slots = (
+        lookup.loc[ambiguous_mask, list(_SLOT_TARGET_KEY)]
+        .drop_duplicates()
+        .rename(columns=dict(zip(_SLOT_TARGET_KEY, _SLOT_SOURCE_KEY, strict=True)))
+        .assign(__ambiguous=True)
+    )
+    unique_lookup = (
+        lookup.loc[~ambiguous_mask]
+        .drop_duplicates(subset=list(_SLOT_TARGET_KEY))
+        .rename(
+            columns=dict(zip(_SLOT_TARGET_KEY, _SLOT_SOURCE_KEY, strict=True)) | {"id": "__new_id"}
+        )
+    )
+
+    merged = frame.drop(columns=["event_id"]).merge(
+        unique_lookup, on=list(_SLOT_SOURCE_KEY), how="left"
+    )
+    merged = merged.merge(ambiguous_slots, on=list(_SLOT_SOURCE_KEY), how="left")
+    merged = merged.rename(columns={"__new_id": "event_id"})
+    is_ambiguous = merged["__ambiguous"].fillna(False).astype(bool)
+    ambiguous = int(is_ambiguous.sum())
+    no_slot = int(merged["event_id"].isna().sum()) - ambiguous
+
+    merged = merged.drop(columns=["__ambiguous", "side"])
+    # Same reasoning as `_apply_remap`: put `event_id` back where the frame
+    # expects it and drop the columns this function added.
+    out = merged[[c for c in frame.columns if c in merged.columns]]
+    return out, no_slot, ambiguous
 
 
 def _clear_remap_collisions(
@@ -954,14 +1083,14 @@ _LIVE_DURABLE_TABLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 )
 
 
-def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int]:
+def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int]:
     """Adopt serving-born predictions into research (forward-log adoption).
 
     **Not a fourth `_LIVE_DURABLE_TABLES` entry.** The other three are
     scoped by date, because a poller session belongs to one day; a
     serving-born prediction's identity is which side of
     `ServingParams.serving_id_floor` minted it, so this reads a floor
-    rather than a lookback window. It also needs `_apply_remap`, which the
+    rather than a lookback window. It also needs the slot remap, which the
     generic loop in `pull_live_records` does not run. Both differences are
     permanent, not accidents of a first draft, so this stays its own
     function rather than bending the loop to fit it.
@@ -970,20 +1099,25 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int]:
     and research stays below it (`_reset_sequences`), so `id >= floor` is
     exactly the Pi-born set once the one-time repair (component 4) has run.
 
-    **The remap runs before the write, and a miss is NULL.** `event_id`
-    names a row in *serving's* id space; `events` syncs on a natural tuple
-    so the two stores' ids do not correspond. ADR 191 already established
-    that a kept foreign id is confidently wrong, not a worse-but-honest
-    answer, and `_apply_remap` gives NULL to a key that resolves to no
-    research event -- a provisional poller event the ADR 150 sweep already
-    removed, for instance. That row still adopts: it is a record of what a
-    reader saw, and the forward log leaves it unresolved rather than
-    dropping it.
+    **Resolved on the debounce slot, not the label, since 2026-09-20.**
+    `event_id` names a row in *serving's* id space, and the natural key
+    that used to resolve it -- `(..., signal_type, entry_kind)` -- assumed
+    the Pi and the end-of-day pass label a slot the same way. Measured that
+    day: of 338 poller-written events since 2026-09-08, **zero** matched
+    research's natural key, because `bb_lower_touch` (intraday, no close to
+    confirm against) and `bull_close_below_lower` (end of day, ADR 194) can
+    fill the same slot with different labels. `_apply_slot_remap` resolves
+    `(config_hash, ticker, signal_date, side, entry_kind)` instead, and
+    that function's own docstring carries the rest of the reasoning,
+    including the two ways a miss happens: no event shares the slot
+    (`no_slot`), or more than one does (`ambiguous`, never a pick -- ADR
+    191). Either way `event_id` is NULL and the row still adopts, honestly
+    unresolved rather than dropped.
 
-    **A remapped `event_id` can also collide with a DIFFERENT research
+    **A resolved `event_id` can also collide with a DIFFERENT research
     row, and that is checked before the write too.**
     `predictions_event_id` is UNIQUE on both stores, and research can
-    already hold its own row for the remapped event -- a prior pull that
+    already hold its own row for the resolved event -- a prior pull that
     failed non-fatally followed by that night's `predict`, or `weekly`'s
     refit, which calls `run_predict` with no pull ahead of it. Selection
     here is floor-scoped with no date bound, so an unhandled collision
@@ -991,8 +1125,12 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int]:
     `_null_inbound_remap_collisions` is `_clear_remap_collisions`'s inbound
     counterpart: it never deletes or rewrites the research row --
     `outcomes.prediction_id` may reference it -- it nulls the *incoming*
-    row's `event_id` instead, folding that row into the same honest
-    "unmapped" bucket an unresolved natural key already lands in.
+    row's `event_id` instead. Passing it `_PREDICTIONS_EVENT_REMAP` reuses
+    only that `Remap`'s `.column` ("event_id"); the function never reads
+    `.source_key`/`.target_key`, so this is not a reuse of the natural-key
+    resolution retired above. A collision is logged and left out of both
+    `no_slot` and `ambiguous` -- it is neither; the slot resolved to
+    exactly one event and something else already claimed the link.
 
     **Keyed on `id`, never on `event_id`.** A repeated pull must insert
     nothing. NULLs are distinct in a unique index, so keying on `event_id`
@@ -1009,9 +1147,9 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int]:
     (`RETURNING`), so a repeat pull reporting zero is the write correctly
     doing nothing, not a sign the pull found nothing to adopt.
 
-    Returns `(adopted, unmapped)` -- the second lets the caller report how
-    many rows landed with no event to point at (an unresolved natural key,
-    or a collision this cleared), without a second query.
+    Returns `(adopted, no_slot, ambiguous)` so a caller (`pull_live_records`)
+    can report the two failure modes separately instead of one
+    undifferentiated "unmapped" count.
     """
     floor = ServingParams().serving_id_floor
     frame = pd.read_sql(
@@ -1020,8 +1158,8 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int]:
         params={"floor": floor},
     )
     if frame.empty:
-        return 0, 0
-    frame = _apply_remap(frame, target, _PREDICTIONS_EVENT_REMAP)
+        return 0, 0, 0
+    frame, no_slot, ambiguous = _apply_slot_remap(frame, target)
     frame, collided = _null_inbound_remap_collisions(
         frame, target, "predictions", ("id",), _PREDICTIONS_EVENT_REMAP
     )
@@ -1031,9 +1169,8 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int]:
             "row; event_id left NULL rather than overwriting research's row",
             collided,
         )
-    unmapped = int(frame["event_id"].isna().sum())
     adopted = db_io.insert_new(target, "predictions", frame, ["id"])
-    return adopted, unmapped
+    return adopted, no_slot, ambiguous
 
 
 def pull_live_records(
@@ -1120,13 +1257,21 @@ def pull_live_records(
     # exception propagate past this `finally` does not fail the night --
     # it is reported exactly as before, just with the reset still applied.
     try:
-        adopted, unmapped = _pull_predictions(source, target)
+        # `_apply_slot_remap` (2026-09-20) separates a miss into two
+        # reasons -- no event shares the slot, or more than one does -- and
+        # `_pull_predictions` returns both. Task 3 gives the caller its own
+        # two keys; until then this sums them under the name the rest of
+        # the pull already reports under.
+        adopted, no_slot, ambiguous = _pull_predictions(source, target)
+        unmapped = no_slot + ambiguous
         pulled["predictions"] = adopted
         if unmapped:
             logger.warning(
                 "%d adopted predictions could not be matched to a research event "
-                "(event_id left NULL)",
+                "(%d no matching slot, %d ambiguous slot; event_id left NULL)",
                 unmapped,
+                no_slot,
+                ambiguous,
             )
         pulled["predictions_unmapped"] = unmapped
     finally:
