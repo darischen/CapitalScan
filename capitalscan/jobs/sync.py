@@ -1144,7 +1144,7 @@ _LIVE_DURABLE_TABLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 )
 
 
-def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int, int]:
+def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int, int, int, int]:
     """Adopt serving-born predictions into research (forward-log adoption).
 
     **Not a fourth `_LIVE_DURABLE_TABLES` entry.** The other three are
@@ -1216,16 +1216,21 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int, in
     nulls `B` against `A`, and leaves the dedup step nothing left to do.
 
     **`unmapped` is read from the frame after every nulling step, not
-    summed from the individual reasons.** Three different steps can null
+    summed from the individual reasons.** Four different steps can null
     `event_id` before the write -- the slot lookup itself (`no_slot`,
-    `ambiguous`), the inbound collision check, and the intra-frame
-    duplicate check -- and a caller that wants "how many rows landed with
-    no event to point at" needs the true count, not a partial sum that
-    silently drops whichever reason it forgot to add in. `no_slot` and
-    `ambiguous` are still returned individually because they describe the
-    slot lookup specifically and Task 3 reports them under their own
-    names; the inbound collision count and `duplicate_target` are logged
-    but not returned, because nothing downstream distinguishes them today.
+    `ambiguous`), the inbound collision check (`collision`), and the
+    intra-frame duplicate check (`duplicate_target`) -- and a caller that
+    wants "how many rows landed with no event to point at" needs the true
+    count, not a sum that silently drops whichever reason it forgot to add
+    in. Task 3 (2026-09-20) returns all four reasons, not just the two the
+    slot lookup produces -- the 2026-09-20 nightly run that printed "100
+    adopted, 100 unmapped" told nobody which of the four this was, and
+    `collision`/`duplicate_target` are exactly as diagnosable as `no_slot`/
+    `ambiguous`: a caller deciding whether last night's adoption gap is a
+    slot problem, a re-adoption problem, or a source-side dupe needs all
+    four, not two. The test below asserts the four reasons sum to
+    `unmapped` -- that equality is the check that a fifth, uncounted
+    nulling step was never added silently.
 
     **Keyed on `id`, never on `event_id`.** A repeated pull must insert
     nothing. NULLs are distinct in a unique index, so keying on `event_id`
@@ -1242,7 +1247,8 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int, in
     (`RETURNING`), so a repeat pull reporting zero is the write correctly
     doing nothing, not a sign the pull found nothing to adopt.
 
-    Returns `(adopted, no_slot, ambiguous, unmapped)`.
+    Returns `(adopted, no_slot, ambiguous, collision, duplicate_target,
+    unmapped)`.
     """
     floor = ServingParams().serving_id_floor
     frame = pd.read_sql(
@@ -1251,7 +1257,7 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int, in
         params={"floor": floor},
     )
     if frame.empty:
-        return 0, 0, 0, 0
+        return 0, 0, 0, 0, 0, 0
     frame, no_slot, ambiguous = _apply_slot_remap(frame, target)
     # **Collision-against-the-target FIRST, intra-frame dedup SECOND --
     # order found wrong in review (2026-09-20 round 2).** A row already
@@ -1284,10 +1290,14 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int, in
             duplicate_target,
         )
     # The ground truth, not a sum of the individual reasons above -- see
-    # the docstring. Computed after every nulling step has run.
+    # the docstring. Computed after every nulling step has run. Also
+    # asserted equal to the four reasons summed, in
+    # test_pull_predictions.py -- that equality is what makes `unmapped`
+    # trustworthy as "the true count" rather than a fifth number that
+    # could silently drift from the sum of the other four.
     unmapped = int(frame["event_id"].isna().sum())
     adopted = db_io.insert_new(target, "predictions", frame, ["id"])
-    return adopted, no_slot, ambiguous, unmapped
+    return adopted, no_slot, ambiguous, collided, duplicate_target, unmapped
 
 
 def pull_live_records(
@@ -1381,21 +1391,33 @@ def pull_live_records(
         # target, an inbound collision with a row already on research) and
         # a sum that omitted them would under-report what an operator
         # reading this number actually needs to know: how many rows landed
-        # with no event to point at, full stop. Task 3 gives the caller
-        # its own `no_slot`/`ambiguous` keys; `predictions_unmapped` stays
-        # the ground-truth total.
-        adopted, no_slot, ambiguous, unmapped = _pull_predictions(source, target)
+        # with no event to point at, full stop. Task 3 (2026-09-20) reports
+        # all four reasons under their own keys -- the 2026-09-20 nightly
+        # printed "100 adopted, 100 unmapped" and named none of them.
+        # `predictions_unmapped` stays the one key a caller reads for "how
+        # many are unlinked"; it REPLACES what used to be the only unmapped
+        # key, not a fifth number alongside the same total under a
+        # different name.
+        adopted, no_slot, ambiguous, collision, duplicate_target, unmapped = _pull_predictions(
+            source, target
+        )
         pulled["predictions"] = adopted
         if unmapped:
             logger.warning(
                 "%d adopted predictions could not be matched to a research event "
-                "(%d no matching slot, %d ambiguous slot, %d from another nulling "
-                "reason; event_id left NULL)",
+                "(%d no matching slot, %d ambiguous slot, %d collided with an "
+                "existing research row, %d duplicated another adopted row's target; "
+                "event_id left NULL)",
                 unmapped,
                 no_slot,
                 ambiguous,
-                unmapped - no_slot - ambiguous,
+                collision,
+                duplicate_target,
             )
+        pulled["predictions_unmapped_no_slot"] = no_slot
+        pulled["predictions_unmapped_ambiguous"] = ambiguous
+        pulled["predictions_unmapped_collision"] = collision
+        pulled["predictions_unmapped_duplicate"] = duplicate_target
         pulled["predictions_unmapped"] = unmapped
     finally:
         # **Reset the target's sequences, mirroring `run_sync`
