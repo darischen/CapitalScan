@@ -10236,6 +10236,29 @@ Measured on serving, poller-written events since 2026-09-08:
 | of those, research has any event for that ticker+date | 114 |
 | adopted rows in research carrying a NULL `event_id` | 100 of 100 |
 
+**Provenance.** Measured 2026-09-20, read-only, against `wivie`'s research
+store and the Pi's serving store — not reproduced by this ADR's own script
+(`scripts/verify_slot_adoption.py`), which proves the *mechanism* on `zz_`
+scratch data, never these specific counts, and never connects to either
+live store. Reproduce each number this way:
+
+- **338, by `signal_type`** (`stoch_oversold` 171, `stoch_overbought` 75,
+  `confluence_low` 41, `bb_lower_touch` 29, `confluence_high` 12,
+  `bb_upper_touch` 10): SERVING, `SELECT config_hash, ticker, signal_date,
+  signal_type, entry_kind FROM events WHERE run_id LIKE 'poll%' AND
+  signal_date >= '2026-09-08'`.
+- **0 exact / 114 ticker-date**: those 338 rows left-joined in pandas
+  against RESEARCH `events` over the same date bound — exact match on
+  `(config_hash, ticker, signal_date, signal_type, entry_kind)`,
+  ticker-date match on `(config_hash, ticker, signal_date)`.
+- **100 of 100 NULL**: RESEARCH, `SELECT count(*), count(event_id) FROM
+  predictions WHERE id >= 1000000000` after the 2026-09-20 13:15 `nightly`;
+  corroborated by that run's own log line, "100 adopted predictions could
+  not be matched to a research event (event_id left NULL)".
+- **The worked example, USB 2026-09-18**: serving held `bb_lower_touch` /
+  `touch` under a `poll_` `run_id`; research held only
+  `bull_close_below_lower`, across all four `entry_kind`s.
+
 **Why the labels cannot be made to agree.** DESIGN §4.7 and
 `core/signals.py::debounce_key` define the slot as `(ticker, signal_date,
 bound)` — one event per ticker, per side, per day — and the label attached
@@ -10278,8 +10301,14 @@ first written:
 
 - **Two research events can share one slot.** Measured: 15 of 182,921
   events since 2026-08-01 hold a second event in the same slot under a
-  different `signal_type`, all prior-generation, long side, `touch`. A
-  slot resolving to more than one event adopts with `event_id = NULL` —
+  different `signal_type`, all prior-generation, long side, `touch`.
+  Provenance, same read-only pass as above, against RESEARCH: `SELECT
+  config_hash, ticker, signal_date, side, entry_kind, count(*) FROM events
+  WHERE signal_date >= '2026-08-01' GROUP BY 1,2,3,4,5 HAVING count(*) > 1`
+  (15 rows, all config `0523841076f47293`, long side, `touch`), against
+  `SELECT count(*) FROM events WHERE signal_date >= '2026-08-01'`
+  (182,921). A slot resolving to more than one event adopts with
+  `event_id = NULL` —
   picking one would be a guess, and ADR 191 already established that a
   confidently wrong link is worse than an absent one.
 - **Two incoming predictions can resolve to the same research event.**
@@ -10304,16 +10333,7 @@ which of these happened.
 
 ### Verification
 
-Unit tests (`test_slot_remap.py`, fakes) cover every rule above: label
-mismatch links, no event nulls, two events null, side derivation raises on
-an unrecognised `signal_type`, the adopted row's own label is untouched.
-`scripts/verify_slot_adoption.py` is the different-instrument check
-against real Postgres, on `zz_`-prefixed scratch tables: it seeds an event
-labelled `bull_close_below_lower` and a prediction labelled
-`bb_lower_touch` in the same slot, shows the natural-key resolution
-finding nothing, shows `_apply_slot_remap` linking them without
-relabelling, then adds a second event to the slot and shows the
-prediction staying NULL. `_apply_slot_remap` gained a keyword-only
-`table: str = "events"` parameter for this — mirroring
-`predictions_max_id_sql`'s existing `table` argument — since every real
-caller supplies no third argument and reads `"events"` exactly as before.
+Unit, against fakes: `test_slot_remap.py`, every rule above. Against real
+Postgres, on `zz_` scratch tables: `scripts/verify_slot_adoption.py` — see
+that script's own docstring for what it proves and why `_apply_slot_remap`
+needed a keyword-only `table` parameter to be reachable from it.

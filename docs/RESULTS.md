@@ -8374,6 +8374,25 @@ on serving since 2026-09-08:
 | of those, research has any event for that ticker+date | 114 |
 | adopted rows in research carrying a NULL `event_id` | 100 of 100 |
 
+**Provenance.** Measured 2026-09-20, read-only, against `wivie`'s research
+store and the Pi's serving store — not reproduced by
+`scripts/verify_slot_adoption.py` below, which proves the mechanism on
+`zz_` scratch data and never connects to either live store.
+
+- **338**: SERVING, `SELECT config_hash, ticker, signal_date, signal_type,
+  entry_kind FROM events WHERE run_id LIKE 'poll%' AND signal_date >=
+  '2026-09-08'`. By `signal_type`: `stoch_oversold` 171, `stoch_overbought`
+  75, `confluence_low` 41, `bb_lower_touch` 29, `confluence_high` 12,
+  `bb_upper_touch` 10.
+- **0 exact / 114 ticker-date**: those 338 rows left-joined in pandas
+  against RESEARCH `events` over the same date bound — exact match on
+  `(config_hash, ticker, signal_date, signal_type, entry_kind)`,
+  ticker-date match on `(config_hash, ticker, signal_date)`.
+- **100 of 100 NULL**: RESEARCH, `SELECT count(*), count(event_id) FROM
+  predictions WHERE id >= 1000000000` after the 2026-09-20 13:15 `nightly`;
+  corroborated by that run's own log line, "100 adopted predictions could
+  not be matched to a research event (event_id left NULL)".
+
 Cause: the inbound remap resolved `event_id` through the natural key
 `(config_hash, ticker, as_of, signal_type, entry_kind)`, which assumes the
 Pi and the end-of-day pass label a bar the same way. They cannot:
