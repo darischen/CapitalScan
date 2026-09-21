@@ -38,6 +38,35 @@ URL is actually wanted, and never option 3.
 
 ---
 
+## Deferred from the slot-keyed adoption review (2026-09-20)
+
+Six minors the branch's reviews found and deliberately did not fix. None
+blocks adoption; each says what would make it matter.
+
+1. **Nightly's unlinked counts cover the whole floor-scoped frame**, not the
+   rows written that night, so the 100 legacy adopted rows report
+   `collision` or `no_slot` on every nightly forever. Scope the counts to
+   rows actually inserted, or date-bound the selection, before anyone learns
+   to ignore the line.
+2. **`slot_side` raises on an unknown `signal_type`.** With no date bound on
+   selection, one bad serving row would fail adoption every night, hidden by
+   nightly's broad `except`. Low risk while `core/cells.py` covers every
+   `SignalType`; it bites the day a member is added without a side.
+3. **The test fakes restate the adoption SELECT's columns** in
+   `test_pull_predictions.py` and `test_slot_remap.py`, so a column added to
+   the real query drifts silently. Derive both from one constant.
+4. **`_apply_slot_remap`'s input guard omits `event_id`**, so a frame missing
+   it raises `KeyError` rather than the guard's `ValueError`. Unreachable
+   through `SELECT *`.
+5. **The backfill takes no table lock.** A concurrent nightly can race it
+   into a unique-index violation; the loser rolls back cleanly and a rerun
+   converges. Documented as a run window instead: after a finished nightly,
+   before the Pi's 06:45 session.
+6. **The backfill replays the slot lookup once per unresolved row** to split
+   `no_slot` from `ambiguous`. Fine for ~100 rows once; not for a hot path.
+
+---
+
 ## Two follow-ups from the id-floor work (2026-09-20)
 
 Both parked deliberately during the forward-log-adoption branch; neither
@@ -51,12 +80,44 @@ interpolates the same template directly. A perturbation test swaps the
 template and asserts both renderings follow, so a second hand-written copy
 fails the suite.
 
-**2. An adopted prediction whose event research did not yet hold keeps a
-NULL `event_id` forever.** Adoption is insert-only (ADR 195), so a later
-pull will not fill the link in, and the pull's `unmapped` counter describes
-that night's frame rather than the log's state. Correct as designed; if the
-forward log needs those links, it wants a separate backfill that only sets
-`event_id` where it is currently NULL, and never touches anything else.
+**2. ~~An adopted prediction whose event research did not yet hold keeps a
+NULL `event_id` forever~~ — done 2026-09-20, ADR 197.** Adoption is
+insert-only (ADR 195), so a later pull was never going to fill the link in
+on its own. The actual cause was narrower than "event research did not yet
+hold": measured 2026-09-20, `_pull_predictions` resolved inbound
+`event_id` through predictions' natural key, which includes `signal_type`,
+and the Pi's intraday label never matches research's end-of-day one for the
+same bar (ADR 194) — 0 of 338 poller-written events matched, and all 100
+rows adopted that night carried a NULL `event_id` even though research held
+114 of those ticker-dates. `_apply_slot_remap` (ADR 197) resolves on the
+debounce slot instead, `(config_hash, ticker, signal_date, side,
+entry_kind)`, which is stable across the label disagreement.
+`scripts/backfill_prediction_event_ids.py` is the one-time repair for the
+100 rows already written before the fix landed: it sets `event_id` only
+where it is currently NULL, using the same slot rule, and touches no other
+column. Idempotent, `--dry-run` by default.
+
+**Expect it to link few of the 100, with most reported as `collision`**
+(whole-branch review, 2026-09-20). That night's `predict` ran after the
+pull while the 100 still carried NULL links, so wherever a slot resolves
+research already owns the event through its own row, and the backfill
+leaves the adopted row NULL rather than touch that row (ADR 195). Those
+forward-log entries keep research's number, not the one the reader saw
+live, and nothing recovers the live number. The true split is known only
+from the dry run. From the first nightly after this branch merges, NEW
+signals are adopted before `predict` runs, so research keeps the Pi's
+number: the legacy 100 are the only casualties.
+
+**Run it after a nightly has finished and before the Pi's 06:45 PT session
+starts.** It reads research rows with `event_id IS NULL`, while the pull
+reads every serving row at or above the floor, adopted or not; in any
+other window an old NULL row and a new serving row resolving to one event
+can be linked by one and nulled by the other.
+
+**Deferred from the same review, not done:** `pull_live_records`' per-reason
+counts cover the whole floor-scoped frame, so the 100 legacy rows log as
+unmapped every night; and `slot_side` raises on a `signal_type` with no
+side rather than skipping it.
 
 ---
 

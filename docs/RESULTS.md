@@ -8360,3 +8360,97 @@ scored against. Recorded as an open decision in `DECISIONS.md`.
 
 **The quantile fan gap is explained by the same query.** All 4,264 fan-less
 rows are one run at `1df5c2f`, before `ab1a77b` added the fan writer.
+
+## 2026-09-20 — Inbound adoption resolved nothing, measured and fixed (ADR 197)
+
+The 2026-09-20 nightly adopted 100 of the Pi's predictions and left every
+one with a NULL `event_id`. Measured before the fix, poller-written events
+on serving since 2026-09-08:
+
+| measurement | value |
+|---|---:|
+| poller-written events on serving since 2026-09-08 | 338 |
+| of those, exact natural-key match in research | **0** |
+| of those, research has any event for that ticker+date | 114 |
+| adopted rows in research carrying a NULL `event_id` | 100 of 100 |
+
+**Provenance.** Measured 2026-09-20, read-only, against `wivie`'s research
+store and the Pi's serving store — not reproduced by
+`scripts/verify_slot_adoption.py` below, which proves the mechanism on
+`zz_` scratch data and never connects to either live store.
+
+- **338**: SERVING, `SELECT config_hash, ticker, signal_date, signal_type,
+  entry_kind FROM events WHERE run_id LIKE 'poll%' AND signal_date >=
+  '2026-09-08'`. By `signal_type`: `stoch_oversold` 171, `stoch_overbought`
+  75, `confluence_low` 41, `bb_lower_touch` 29, `confluence_high` 12,
+  `bb_upper_touch` 10.
+- **0 exact / 114 ticker-date**: those 338 rows left-joined in pandas
+  against RESEARCH `events` over the same date bound — exact match on
+  `(config_hash, ticker, signal_date, signal_type, entry_kind)`,
+  ticker-date match on `(config_hash, ticker, signal_date)`.
+- **100 of 100 NULL**: RESEARCH, `SELECT count(*), count(event_id) FROM
+  predictions WHERE id >= 1000000000` after the 2026-09-20 13:15 `nightly`;
+  corroborated by that run's own log line, "100 adopted predictions could
+  not be matched to a research event (event_id left NULL)".
+
+Cause: the inbound remap resolved `event_id` through the natural key
+`(config_hash, ticker, as_of, signal_type, entry_kind)`, which assumes the
+Pi and the end-of-day pass label a bar the same way. They cannot:
+`breach_live` has no session close to confirm against and emits
+`bb_lower_touch`, while the end-of-day pass sees the close still inside the
+band and writes `bull_close_below_lower` for the same bar (ADR 194).
+
+Fixed by resolving on the debounce slot instead of the label
+(`_apply_slot_remap`, ADR 197), verified two ways:
+
+- **Unit, against fakes** (`test_slot_remap.py`): every rule -- label
+  mismatch links, no event nulls, two events null, unrecognised
+  `signal_type` raises, the adopted row's own label is untouched.
+- **Against real Postgres**, `scripts/verify_slot_adoption.py`, on
+  `zz_`-prefixed scratch tables dropped in a `finally`:
+
+```
+[1] seeded 1 research event ('bull_close_below_lower') and 1 live prediction ('bb_lower_touch') in the same slot
+[2] natural-key resolution: 0 of 1 row(s) linked
+[3] slot resolution: event_id=81001, signal_type stayed 'bb_lower_touch', no_slot=0, ambiguous=0
+    added a second slot holding two events; 3 event(s) total
+[4] two-event slot: prediction id=600 event_id=nan, no_slot=0, ambiguous=1; unrelated prediction id=500 still resolves to event_id=81001.0
+dropped zz_verify_slot_events
+PASS: natural-key resolution finds nothing across a label mismatch, _apply_slot_remap links it without relabelling, and a two-event slot stays NULL rather than picking one
+```
+
+The 100 already-adopted NULL rows go to
+`scripts/backfill_prediction_event_ids.py` (`docs/BACKLOG.md`), which is
+expected to link few of them. That night's `predict` ran after the pull
+while the 100 still carried NULL links, so wherever a slot resolves
+research already owns the event through its own row and the backfill
+reports the adopted row as `collision`. Those forward-log entries keep
+research's number, not the one the reader saw, and nothing recovers it. No
+count exists yet: the true split comes from the dry run, run after a
+nightly finishes and before the Pi's 06:45 PT session. From the first
+nightly after the branch merges, new signals are adopted before `predict`
+runs and research keeps the Pi's number.
+
+### Outbound: an adopted row reached the wrong serving event (review, same day)
+
+The whole-branch review traced a second break. Outbound sync resolved an
+adopted prediction through its OWN live label, so it landed on the Pi's
+provisional poller event, which the serving sweep deletes the same night;
+serving's end-of-day copy was left with no probability. Fixed by
+resolving through the research event the row links to
+(`_PREDICTIONS_OUTBOUND_REMAP`, ADR 197 amendment), pinned by
+`test_adoption_composition.py` (pull, predict, sync, sweep crossed in one
+test, with a control reproducing the loss under the old remap). The real
+SELECT and the backfill's `UPDATE ... unnest(CAST(:ids AS bigint[]))`,
+neither run against a real server before, ran against `zz_` scratch tables
+on the workstation's local Postgres, 2026-09-20:
+
+```
+[5] outbound: adopted 500 -> np.float64(95001.0) (own-label remap: np.int64(95002)), research-written 501 -> np.float64(95003.0) (own-label: np.int64(95003)), unlinked 502 -> np.float64(nan)
+    helper columns dropped; written columns match zz_verify_slot_predictions
+[6] backfill UPDATE: rowcount=1, 502 -> 81001, 501 -> 1
+```
+
+95001 is the end-of-day copy E' and 95002 the poller event P. The
+backfill's `rowcount` of 1 for two planned rows is the `event_id IS NULL`
+guard refusing to overwrite 501, reported correctly by Postgres.

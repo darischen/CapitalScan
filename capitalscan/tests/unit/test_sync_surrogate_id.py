@@ -89,7 +89,10 @@ class TestDropSurrogateId:
 
 class TestWiredIntoBothPushPaths:
     def test_run_sync_uses_it(self) -> None:
-        assert "_drop_surrogate_id" in inspect.getsource(sync_job.run_sync)
+        """Through `_prepare_chunk`, the per-chunk body split out of
+        `run_sync` in the 2026-09-20 whole-branch review."""
+        assert "_prepare_chunk" in inspect.getsource(sync_job.run_sync)
+        assert "_drop_surrogate_id" in inspect.getsource(sync_job._prepare_chunk)
 
     def test_run_live_sync_uses_it(self) -> None:
         """The research poller's per-tick push writes serving too, and can

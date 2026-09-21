@@ -27,7 +27,7 @@ that row is left alone; only sub-floor, no-research-counterpart rows move.
 
 **Identifying a serving-born row.** Below the floor *and* its natural key
 -- `(config_hash, ticker, as_of, signal_type, entry_kind)`, the same tuple
-`jobs/sync.py::_PREDICTIONS_EVENT_REMAP` already resolves `event_id`
+`jobs/sync.py::_PREDICTIONS_EVENT_REMAP` resolved `event_id` outbound
 through -- matches no research row. A row that IS in both stores under that
 key, even at a colliding id, is not touched by this script; the collision
 in that case is the 35,292 identical rows agreeing on the number, and remap

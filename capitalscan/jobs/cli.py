@@ -3433,10 +3433,13 @@ def nightly() -> None:
     # reader saw is the number research keeps.
     #
     # **The pull DOES depend on an earlier nightly step: `run_events`.**
-    # `_pull_predictions`'s remap resolves the adopted rows' `event_id`
-    # against research's `events` table through the natural key
-    # `(config_hash, ticker, signal_date, signal_type, entry_kind)` --
-    # rows `run_events` above writes earlier this same night. The pull is
+    # `_pull_predictions` resolves the adopted rows' `event_id` against
+    # research's `events` table on the debounce slot, `(config_hash,
+    # ticker, signal_date, side, entry_kind)` (`_apply_slot_remap`). The
+    # label is deliberately NOT in that key: the Pi's live label and the
+    # end-of-day label disagree for the same slot (0 of 338 matched on
+    # 2026-09-20). It resolves against rows `run_events` above writes
+    # earlier this same night. The pull is
     # positioned after it for that reason, not by accident: hoisting this
     # block above `run_events` would have every adopted row resolve
     # against last night's events and silently null `event_id` on all of
@@ -3573,6 +3576,15 @@ def nightly() -> None:
     # deletes -- so without this the serving store keeps every row the sweep
     # rejected, accumulating a few a day, forever, and diverging from the
     # source of truth in exactly the rows research judged unreliable.
+    #
+    # **The sync must have moved every prediction off the rows deleted
+    # here.** An adopted prediction keeps the Pi's live label, so the sync
+    # resolves it through the research event it links to, not through its
+    # own label (`sync._PREDICTIONS_OUTBOUND_REMAP`). Resolved on its own
+    # label it landed on the poller event this sweep deletes, and the
+    # end-of-day event rendered with no probability (whole-branch review,
+    # 2026-09-20). `test_adoption_composition.py` crosses pull, predict,
+    # sync and this sweep to pin it.
     #
     # **After the sync, and only if it succeeded (2026-08-26).** This ran
     # *before* `run_sync` until then, on the reasoning that "the
