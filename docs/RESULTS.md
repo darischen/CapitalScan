@@ -8419,5 +8419,38 @@ dropped zz_verify_slot_events
 PASS: natural-key resolution finds nothing across a label mismatch, _apply_slot_remap links it without relabelling, and a two-event slot stays NULL rather than picking one
 ```
 
-The 100 already-adopted NULL rows are repaired separately, once, by
-`scripts/backfill_prediction_event_ids.py` (`docs/BACKLOG.md`).
+The 100 already-adopted NULL rows go to
+`scripts/backfill_prediction_event_ids.py` (`docs/BACKLOG.md`), which is
+expected to link few of them. That night's `predict` ran after the pull
+while the 100 still carried NULL links, so wherever a slot resolves
+research already owns the event through its own row and the backfill
+reports the adopted row as `collision`. Those forward-log entries keep
+research's number, not the one the reader saw, and nothing recovers it. No
+count exists yet: the true split comes from the dry run, run after a
+nightly finishes and before the Pi's 06:45 PT session. From the first
+nightly after the branch merges, new signals are adopted before `predict`
+runs and research keeps the Pi's number.
+
+### Outbound: an adopted row reached the wrong serving event (review, same day)
+
+The whole-branch review traced a second break. Outbound sync resolved an
+adopted prediction through its OWN live label, so it landed on the Pi's
+provisional poller event, which the serving sweep deletes the same night;
+serving's end-of-day copy was left with no probability. Fixed by
+resolving through the research event the row links to
+(`_PREDICTIONS_OUTBOUND_REMAP`, ADR 197 amendment), pinned by
+`test_adoption_composition.py` (pull, predict, sync, sweep crossed in one
+test, with a control reproducing the loss under the old remap). The real
+SELECT and the backfill's `UPDATE ... unnest(CAST(:ids AS bigint[]))`,
+neither run against a real server before, ran against `zz_` scratch tables
+on the workstation's local Postgres, 2026-09-20:
+
+```
+[5] outbound: adopted 500 -> np.float64(95001.0) (own-label remap: np.int64(95002)), research-written 501 -> np.float64(95003.0) (own-label: np.int64(95003)), unlinked 502 -> np.float64(nan)
+    helper columns dropped; written columns match zz_verify_slot_predictions
+[6] backfill UPDATE: rowcount=1, 502 -> 81001, 501 -> 1
+```
+
+95001 is the end-of-day copy E' and 95002 the poller event P. The
+backfill's `rowcount` of 1 for two planned rows is the `event_id IS NULL`
+guard refusing to overwrite 501, reported correctly by Postgres.

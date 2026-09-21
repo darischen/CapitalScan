@@ -158,12 +158,14 @@ class Remap:
 
 
 # **`predictions.event_id` names a different store's id on each side of the
-# copy.** `_tables()` still rewrites it outbound (research -> serving, ADR
-# 191, `event_id` "resolves, joins cleanly, and is wrong") through the
-# natural key below -- `signal_type` IS part of a research-written
-# prediction's identity, because research labels its own events and its own
-# predictions the same way, so no ambiguity is possible there and this
-# `Remap` resolves it correctly and unchanged.
+# copy.** This `Remap` is the prediction's OWN natural key. It no longer
+# resolves anything in either direction: outbound uses
+# `_PREDICTIONS_OUTBOUND_REMAP` below (the key of the research event the
+# row links to, since the 2026-09-20 whole-branch review), and inbound uses
+# `_apply_slot_remap`. It stays because two readers want its fields, not its
+# resolution: `_null_inbound_remap_collisions` reads `.column`, and
+# `scripts/repair_prediction_ids.py` pins its `NATURAL_KEY` to
+# `.source_key`.
 #
 # **Inbound is different since 2026-09-20 (design doc, slot-keyed
 # adoption).** `pull_live_records`'s predictions step no longer resolves
@@ -184,6 +186,44 @@ _PREDICTIONS_EVENT_REMAP = Remap(
 )
 
 
+# **Outbound resolves through the research EVENT, not the prediction's own
+# label (whole-branch review, 2026-09-20, CRITICAL 1).** `_PREDICTIONS_EVENT_
+# REMAP` above keys on the prediction's own `signal_type`, which is only safe
+# while a prediction and its event carry the same label. Slot-keyed adoption
+# breaks that on purpose: an adopted row keeps the Pi's live label
+# (`bb_lower_touch`) and links to research's end-of-day event
+# (`bull_close_below_lower`, ADR 194). Resolved on its own label, that row
+# found the Pi's provisional poller event on serving, and nightly's serving
+# sweep then deleted that event, so the end-of-day copy rendered with no
+# probability. `predict` had skipped it as already scored (ADR 195), so no
+# research row existed to ship in its place.
+#
+# So the predictions SELECT carries the natural key of the event each row
+# links to on research, under these helper names, and this `Remap` maps that
+# key onto serving's `events`. For the ~36,000 research-written rows the
+# event's key IS the prediction's own key (same config, date, label, grain),
+# so the result is unchanged; only a row whose label differs from its event
+# resolves differently, and it resolves to the event research actually
+# linked. A NULL research `event_id` gives NULL helpers and resolves to NULL.
+#
+# The helpers exist only to be read by this remap. `SyncTable.helper_columns`
+# drops them before the write, so serving's `predictions` never sees them.
+_PREDICTIONS_EVENT_KEY_HELPERS: tuple[str, ...] = (
+    "src_event_config_hash",
+    "src_event_ticker",
+    "src_event_signal_date",
+    "src_event_signal_type",
+    "src_event_entry_kind",
+)
+_PREDICTIONS_OUTBOUND_REMAP = Remap(
+    column="event_id",
+    table="events",
+    source_key=_PREDICTIONS_EVENT_KEY_HELPERS,
+    target_key=("config_hash", "ticker", "signal_date", "signal_type", "entry_kind"),
+    unique_on_target=True,
+)
+
+
 @dataclass(frozen=True)
 class SyncTable:
     """One table's subset, as a query and a conflict key.
@@ -199,6 +239,10 @@ class SyncTable:
     key: tuple[str, ...]
     #: Surrogate references to rewrite before writing. See `Remap`.
     remaps: tuple[Remap, ...] = ()
+    #: Columns the SELECT carries only so a remap can read them. Dropped by
+    #: `_prepare_chunk` after the remaps run and before the write, so they
+    #: never reach the target table.
+    helper_columns: tuple[str, ...] = ()
 
 
 _RESET_SEQUENCES_SQL = """
@@ -401,9 +445,15 @@ def _apply_remap(frame: pd.DataFrame, target: Engine, spec: Remap) -> pd.DataFra
             "widen the table's SELECT to carry the natural key"
         )
 
-    keys = frame[list(spec.source_key)].drop_duplicates()
+    # **A NULL key part resolves to NULL, and never reaches the query.** The
+    # outbound predictions key is read through a LEFT JOIN, so a row with no
+    # research event carries NULL in every key column. Binding those into
+    # `ANY(:vN)` would match nothing anyway; dropping them here keeps the
+    # bound arrays free of NULL/NaT, and the left merge below leaves such a
+    # row's `event_id` NULL because the lookup never holds a NULL key.
+    keys = frame[list(spec.source_key)].dropna().drop_duplicates()
     if keys.empty:
-        return frame
+        return frame.assign(**{spec.column: None})
 
     # One bounded SELECT per key column, ANDed. Every key column here is
     # low-cardinality over the rows being written (41 dates, ~700 tickers,
@@ -944,11 +994,25 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
         # `("id",)`, which is what lets `outcomes` below key on
         # `prediction_id` — only the reference is remapped, not the
         # identity.
+        #
+        # **Resolved through the research event, not the row's own label**
+        # (`_PREDICTIONS_OUTBOUND_REMAP`). The LEFT JOIN carries the natural
+        # key of the event each prediction links to on research; the remap
+        # maps that key onto serving's `events`, and `helper_columns` drops
+        # it before the write. Joined on `events.id`, the primary key, so it
+        # adds no rows.
         SyncTable(
             "predictions",
-            "SELECT * FROM predictions",
+            "SELECT p.*, "
+            "e.config_hash AS src_event_config_hash, "
+            "e.ticker AS src_event_ticker, "
+            "e.signal_date AS src_event_signal_date, "
+            "e.signal_type AS src_event_signal_type, "
+            "e.entry_kind AS src_event_entry_kind "
+            "FROM predictions p LEFT JOIN events e ON e.id = p.event_id",
             ("id",),
-            remaps=(_PREDICTIONS_EVENT_REMAP,),
+            remaps=(_PREDICTIONS_OUTBOUND_REMAP,),
+            helper_columns=_PREDICTIONS_EVENT_KEY_HELPERS,
         ),
         # **After `predictions`, and that order is load-bearing.**
         # `outcomes.prediction_id` references it, so copying outcomes first
@@ -1448,6 +1512,38 @@ def pull_live_records(
     return pulled
 
 
+def _prepare_chunk(chunk: pd.DataFrame, target: Engine, table: SyncTable) -> pd.DataFrame:
+    """Turn one chunk read from research into the frame `copy_upsert` writes.
+
+    Split out of `run_sync` so the outbound step can be driven on its own:
+    `test_adoption_composition.py` runs pull, predict, this, and the serving
+    sweep in sequence. No test crossed those four steps before the
+    whole-branch review of 2026-09-20 found the break between them.
+
+    **Remap before the write, per chunk.** The lookup is bounded by the keys
+    in this chunk, so it stays small regardless of how large the table is.
+    Helper columns are dropped after every remap has read them and before
+    anything is written.
+    """
+    for spec in table.remaps:
+        chunk = _apply_remap(chunk, target, spec)
+        if spec.unique_on_target:
+            dropped = _clear_remap_collisions(chunk, target, table.name, table.key, spec)
+            if dropped:
+                logger.info(
+                    "sync %s: cleared %d row(s) colliding on %s",
+                    table.name,
+                    dropped,
+                    spec.column,
+                )
+    if table.helper_columns:
+        # `errors="ignore"` only matters for a column-less empty frame: a
+        # non-empty chunk missing a helper has already raised inside
+        # `_apply_remap`, which demands every `source_key` column.
+        chunk = chunk.drop(columns=list(table.helper_columns), errors="ignore")
+    return _drop_surrogate_id(chunk, table.key)
+
+
 def run_sync(
     source: Engine | None = None,
     target: Engine | None = None,
@@ -1620,26 +1716,10 @@ def run_sync(
                 # re-run converges. Bounded memory is worth that.
                 copied = 0
                 for chunk in chunks:
-                    # **Remap before the write, per chunk.** The lookup is
-                    # bounded by the keys in this chunk, so it stays small
-                    # regardless of how large the table is.
-                    for spec in table.remaps:
-                        chunk = _apply_remap(chunk, target, spec)
-                        if spec.unique_on_target:
-                            dropped = _clear_remap_collisions(
-                                chunk, target, table.name, table.key, spec
-                            )
-                            if dropped:
-                                logger.info(
-                                    "sync %s: cleared %d row(s) colliding on %s",
-                                    table.name,
-                                    dropped,
-                                    spec.column,
-                                )
                     copied += db_io.copy_upsert(
                         target,
                         table.name,
-                        _drop_surrogate_id(chunk, table.key),
+                        _prepare_chunk(chunk, target, table),
                         list(table.key),
                     )
                 rows[table.name] = copied

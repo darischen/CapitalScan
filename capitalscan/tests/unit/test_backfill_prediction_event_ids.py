@@ -310,6 +310,39 @@ class TestTheGeneratedUpdateNamesExactlyOneColumn:
         assert sent_sql.strip() == backfill._BACKFILL_SQL.strip()
 
 
+class TestTheTableSeamIsAdditiveOnly:
+    """`apply_updates(..., table=)` exists so `scripts/verify_slot_adoption.py`
+    can run the real UPDATE against a `zz_` scratch table (whole-branch
+    review MINOR 7). The production default must stay `predictions`.
+    """
+
+    def test_the_production_statement_updates_predictions(self):
+        assert backfill._BACKFILL_SQL.strip().startswith("UPDATE predictions p")
+
+    def test_the_default_sends_the_production_statement(self):
+        engine = _FakeEngine(_predictions([]), _events([]))
+        updates = pd.DataFrame({"id": [FLOOR], "event_id": [42]})
+        backfill.apply_updates(cast(Engine, engine), updates)
+        sent_sql, params = engine.executed[0]
+        assert sent_sql.strip() == backfill._BACKFILL_SQL.strip()
+        assert params == {"ids": [FLOOR], "event_ids": [42]}
+
+    def test_a_scratch_table_changes_only_the_table_name(self):
+        engine = _FakeEngine(_predictions([]), _events([]))
+        updates = pd.DataFrame({"id": [FLOOR], "event_id": [42]})
+        backfill.apply_updates(cast(Engine, engine), updates, table="zz_scratch")
+        sent_sql, _ = engine.executed[0]
+        assert sent_sql.strip() == backfill._BACKFILL_SQL.strip().replace(
+            "UPDATE predictions p", "UPDATE zz_scratch p"
+        )
+
+    def test_the_table_cannot_be_passed_positionally(self):
+        engine = _FakeEngine(_predictions([]), _events([]))
+        updates = pd.DataFrame({"id": [FLOOR], "event_id": [42]})
+        with pytest.raises(TypeError):
+            backfill.apply_updates(cast(Engine, engine), updates, "zz_scratch")
+
+
 class TestReportedReasonsSumToUnresolved:
     def test_planned_plus_unresolved_equals_total(self, patched_read_sql):
         rows = _predictions(
