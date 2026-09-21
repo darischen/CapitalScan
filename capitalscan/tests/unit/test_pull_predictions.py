@@ -503,6 +503,89 @@ class TestTwoIncomingRowsResolvingToOneEventAreBothNulled:
         assert pd.isna(written.loc[FLOOR + 1, "event_id"]), "B has nothing left to claim"
 
 
+class TestAllFourReasonsInOnePull:
+    """Fix, review round 2 (2026-09-20). Every other test in this file
+    drives at most one or two of the four nulling reasons at a time, and
+    the `_pull()` helper's sum-invariant assertion (`no_slot + ambiguous +
+    collision + duplicate_target == unmapped`) runs against those narrow
+    scenarios only -- `TestItIsWiredIntoThePull`'s wiring test is the one
+    place all four are non-zero together, and it monkeypatches
+    `_pull_predictions` itself, so the equality there checks the wiring,
+    never the arithmetic. A sum built with `max()` instead of `+`, or one
+    that silently dropped a reason whenever another dominated, would pass
+    every existing test in this file and still be wrong.
+
+    This test drives the real `_pull_predictions` -- nothing in the
+    resolution or nulling path is mocked, only the two engines -- with a
+    single pull that produces all five outcomes (one clean link plus one
+    row apiece for `no_slot`, `ambiguous`, `collision`, and two rows for
+    `duplicate_target`) in the same frame, and checks each reason
+    individually, not just their sum."""
+
+    def test_one_pull_all_five_outcomes_at_once(self, patched_read_sql, insert_new_calls):
+        date = "2026-09-09"
+        source = _predictions(
+            [
+                # Clean: resolves to exactly one event, no collision.
+                (FLOOR, 0, CHASH, "AA", date, "bear_close_above_upper", "touch"),
+                # no_slot: research holds no event for this slot at all.
+                (FLOOR + 1, 0, CHASH, "BB", date, "bb_lower_touch", "touch"),
+                # ambiguous: research holds two events sharing this slot
+                # (`bb_lower_touch` and `confluence_low` are both
+                # LONG_SIGNALS, same side -- the 15-slots-in-research
+                # phenomenon from `test_slot_remap.py`).
+                (FLOOR + 2, 0, CHASH, "CC", date, "bb_lower_touch", "touch"),
+                # collision: the slot resolves cleanly to event 4, but
+                # research already holds event_id=4 under a DIFFERENT id
+                # (999, from a prior pull or a `weekly` refit).
+                (FLOOR + 3, 0, CHASH, "DD", date, "bear_close_above_upper", "touch"),
+                # duplicate_target: two incoming rows, different labels,
+                # same side -- both resolve to the SAME research event (5).
+                (FLOOR + 4, 0, CHASH, "EE", date, "bb_lower_touch", "touch"),
+                (FLOOR + 5, 0, CHASH, "EE", date, "confluence_low", "touch"),
+            ]
+        )
+        target_events = _events(
+            [
+                (1, CHASH, "AA", date, "bear_close_above_upper", "touch"),
+                (2, CHASH, "CC", date, "bb_lower_touch", "touch"),
+                (3, CHASH, "CC", date, "confluence_low", "touch"),
+                (4, CHASH, "DD", date, "bear_close_above_upper", "touch"),
+                (5, CHASH, "EE", date, "bb_lower_touch", "touch"),
+            ]
+        )
+        target_predictions = pd.DataFrame([{"id": 999, "event_id": 4}])
+
+        source_engine = cast(Engine, _FakeSourceEngine(source))
+        target_engine = cast(Engine, _FakeTargetEngine(target_events, target_predictions))
+        adopted, no_slot, ambiguous, collision, duplicate_target, unmapped = (
+            sync_job._pull_predictions(source_engine, target_engine)
+        )
+
+        assert adopted == 6, "every row still adopts -- unmapped rows are evidence, not discarded"
+        assert no_slot == 1, "BB's slot"
+        assert ambiguous == 1, "CC's slot, two events"
+        assert collision == 1, "DD's event already owned by id=999"
+        assert duplicate_target == 2, "both EE rows share event 5, neither is picked"
+        assert no_slot + ambiguous + collision + duplicate_target == unmapped, (
+            "the four individually-counted reasons must sum to the ground-truth total"
+        )
+        assert unmapped == 5
+
+        written = insert_new_calls[0]["frame"].set_index("id")
+        assert written.loc[FLOOR, "event_id"] == 1, "the clean row resolves normally"
+        assert pd.isna(written.loc[FLOOR + 1, "event_id"]), "no_slot: nothing to point at"
+        assert pd.isna(written.loc[FLOOR + 2, "event_id"]), "ambiguous: never a pick"
+        assert pd.isna(written.loc[FLOOR + 3, "event_id"]), "collision: must not overwrite id=999"
+        assert pd.isna(written.loc[FLOOR + 4, "event_id"]), "duplicate_target: neither row wins"
+        assert pd.isna(written.loc[FLOOR + 5, "event_id"]), "duplicate_target: neither row wins"
+        # `unmapped` must equal the rows actually written with a NULL
+        # event_id, not merely agree with the sum of the four reasons by
+        # coincidence.
+        actually_null = int(written["event_id"].isna().sum())
+        assert actually_null == unmapped == 5
+
+
 class TestTheWriteIsKeyedOnId:
     def test_insert_new_conflicts_on_id_alone(self, patched_read_sql, insert_new_calls):
         """Keying on `event_id` would be wrong: NULLs are distinct in a
