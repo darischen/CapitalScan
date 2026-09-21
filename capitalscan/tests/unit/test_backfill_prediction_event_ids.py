@@ -131,6 +131,15 @@ def patched_read_sql(monkeypatch):
                 ["__owner_id", "__val"]
             ].reset_index(drop=True)
 
+        if "ids" in params:
+            # `event_labels`'s own lookup -- events by id, for the printed
+            # plan's side-by-side labels.
+            frame = con.events
+            matched = frame[frame["id"].isin(params["ids"])]
+            return matched.rename(columns={"id": "event_id", "signal_type": "event_signal_type"})[
+                ["event_id", "event_signal_type"]
+            ].reset_index(drop=True)
+
         frame = con.events
         for i, col in enumerate(_SLOT_SELECT_COLS):
             frame = frame[frame[col].isin(params[f"v{i}"])]
@@ -315,3 +324,162 @@ class TestReportedReasonsSumToUnresolved:
         unresolved = sum(reasons.values())
         assert planned + unresolved == total
         assert reasons["no_slot"] == 1
+
+
+class TestPerRowReasonAttribution:
+    """Review (round 2), IMPORTANT 2: an unlinked row must carry its OWN
+    reason, not just contribute to an aggregate count."""
+
+    def test_no_slot_and_ambiguous_are_distinguished_per_row(self, patched_read_sql):
+        rows = _predictions(
+            [
+                (FLOOR, None, CHASH, "AA", "2026-09-19", "bb_upper_touch", "touch"),
+                (FLOOR + 1, None, CHASH, "ZZ", "2026-09-19", "bb_lower_touch", "touch"),
+            ]
+        )
+        # AA's slot matches nothing; ZZ's slot matches two events under
+        # different labels (ADR 194).
+        events = _events(
+            [
+                (10, CHASH, "ZZ", "2026-09-19", "bb_lower_touch", "touch"),
+                (11, CHASH, "ZZ", "2026-09-19", "bull_close_below_lower", "touch"),
+            ]
+        )
+        engine = _FakeEngine(rows, events)
+        frame = backfill.read_unresolved(cast(Engine, engine), FLOOR)
+        frame, reasons, row_reasons = backfill._resolve_with_row_reasons(
+            frame, cast(Engine, engine)
+        )
+        assert row_reasons[FLOOR] == "no_slot"
+        assert row_reasons[FLOOR + 1] == "ambiguous"
+        assert reasons["no_slot"] == 1
+        assert reasons["ambiguous"] == 1
+
+    def test_collision_and_duplicate_target_are_attributed_per_row(self, patched_read_sql):
+        rows = _predictions(
+            [
+                (FLOOR, 42, CHASH, "AA", "2026-09-01", "bb_upper_touch", "touch"),
+                (FLOOR + 1, None, CHASH, "KO", "2026-09-19", "bear_close_above_upper", "touch"),
+                (FLOOR + 2, None, CHASH, "ZZ", "2026-09-19", "bb_lower_touch", "touch"),
+                (FLOOR + 3, None, CHASH, "ZZ", "2026-09-19", "bull_close_below_lower", "touch"),
+            ]
+        )
+        events = _events(
+            [
+                (42, CHASH, "KO", "2026-09-19", "bear_close_above_upper", "touch"),
+                (9, CHASH, "ZZ", "2026-09-19", "bb_lower_touch", "touch"),
+            ]
+        )
+        engine = _FakeEngine(rows, events)
+        frame = backfill.read_unresolved(cast(Engine, engine), FLOOR)
+        frame, reasons, row_reasons = backfill._resolve_with_row_reasons(
+            frame, cast(Engine, engine)
+        )
+        assert row_reasons[FLOOR + 1] == "collision"
+        assert row_reasons[FLOOR + 2] == "duplicate_target"
+        assert row_reasons[FLOOR + 3] == "duplicate_target"
+
+
+class TestUnlinkedRowsReportsReason:
+    def test_each_unlinked_row_carries_ticker_asof_signal_type_and_reason(self, patched_read_sql):
+        rows = _predictions([(FLOOR, None, CHASH, "ZZ", "2026-09-19", "bb_lower_touch", "touch")])
+        engine = _FakeEngine(rows, _events([]))
+        frame = backfill.read_unresolved(cast(Engine, engine), FLOOR)
+        frame, _reasons, row_reasons = backfill._resolve_with_row_reasons(
+            frame, cast(Engine, engine)
+        )
+        unlinked = backfill.unlinked_rows(frame, row_reasons)
+        assert len(unlinked) == 1
+        row = unlinked.iloc[0]
+        assert row["id"] == FLOOR
+        assert row["ticker"] == "ZZ"
+        assert row["as_of"] == "2026-09-19"
+        assert row["signal_type"] == "bb_lower_touch"
+        assert row["reason"] == "no_slot"
+
+
+class TestEventLabels:
+    def test_the_events_own_signal_type_is_returned_alongside_the_prediction_labeled_set(
+        self, patched_read_sql
+    ):
+        events = _events([(42, CHASH, "KO", "2026-09-19", "bear_close_above_upper", "touch")])
+        engine = _FakeEngine(_predictions([]), events)
+        labels = backfill.event_labels(cast(Engine, engine), [42])
+        assert list(labels["event_id"]) == [42]
+        assert list(labels["event_signal_type"]) == ["bear_close_above_upper"]
+
+    def test_an_empty_id_list_needs_no_query(self, patched_read_sql):
+        engine = _FakeEngine(_predictions([]), _events([]))
+        labels = backfill.event_labels(cast(Engine, engine), [])
+        assert labels.empty
+
+
+class TestTheAccountingCheckAbortsBeforeAnyWrite:
+    """Review (round 2), IMPORTANT 1: a failed reason-accounting check must
+    fire before `apply_updates`, not only inside the final report after
+    the write already committed."""
+
+    def test_a_mismatch_raises_and_nothing_is_written(self, patched_read_sql, monkeypatch):
+        rows = _predictions(
+            [(FLOOR, None, CHASH, "KO", "2026-09-19", "bear_close_above_upper", "touch")]
+        )
+        events = _events([(42, CHASH, "KO", "2026-09-19", "bear_close_above_upper", "touch")])
+        engine = _FakeEngine(rows, events)
+
+        # Force the accounting to disagree, the way an uncounted fifth
+        # nulling step would: the real `_resolve_with_row_reasons` cannot
+        # produce this on its own, so the test breaks the seam directly.
+        real_resolve = backfill._resolve_with_row_reasons
+
+        def lying_resolve(frame, target):
+            resolved_frame, reasons, row_reasons = real_resolve(frame, target)
+            reasons = dict(reasons)
+            reasons["no_slot"] += 1  # inflate the unresolved count by one
+            return resolved_frame, reasons, row_reasons
+
+        monkeypatch.setattr(backfill, "_resolve_with_row_reasons", lying_resolve)
+        monkeypatch.setattr(backfill.db_io, "get_engine", lambda: engine)
+
+        with pytest.raises(RuntimeError, match="a nulling step is uncounted"):
+            backfill.main(["--apply"])
+
+        assert engine.executed == [], "the write must never run once the check fails"
+        assert pd.isna(engine.predictions.loc[0, "event_id"]), "nothing may be written on failure"
+
+
+class TestDryRunIsTheDefault:
+    """MINOR, review round 2: nothing previously drove `main()` itself, so
+    flipping the `--apply` default in `argparse` would have passed every
+    other test in this file."""
+
+    def test_main_with_no_args_performs_no_writes(self, patched_read_sql, monkeypatch, capsys):
+        rows = _predictions(
+            [(FLOOR, None, CHASH, "KO", "2026-09-19", "bear_close_above_upper", "touch")]
+        )
+        events = _events([(42, CHASH, "KO", "2026-09-19", "bear_close_above_upper", "touch")])
+        engine = _FakeEngine(rows, events)
+        monkeypatch.setattr(backfill.db_io, "get_engine", lambda: engine)
+
+        exit_code = backfill.main([])
+
+        assert exit_code == 0
+        assert engine.executed == [], "the default invocation must never call execute()"
+        assert pd.isna(engine.predictions.loc[0, "event_id"]), "a dry run must not write"
+        out = capsys.readouterr().out
+        assert "dry run, nothing written" in out
+        # The audit trail (IMPORTANT 2) must appear even without --apply.
+        assert "-> event 42 bear_close_above_upper" in out
+
+    def test_main_with_apply_writes(self, patched_read_sql, monkeypatch):
+        rows = _predictions(
+            [(FLOOR, None, CHASH, "KO", "2026-09-19", "bear_close_above_upper", "touch")]
+        )
+        events = _events([(42, CHASH, "KO", "2026-09-19", "bear_close_above_upper", "touch")])
+        engine = _FakeEngine(rows, events)
+        monkeypatch.setattr(backfill.db_io, "get_engine", lambda: engine)
+
+        exit_code = backfill.main(["--apply"])
+
+        assert exit_code == 0
+        assert len(engine.executed) == 1
+        assert int(engine.predictions.loc[0, "event_id"]) == 42
