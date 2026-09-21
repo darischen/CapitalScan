@@ -10288,9 +10288,8 @@ where the natural key cannot.
 Nothing is relabelled. The adopted row keeps the live `signal_type` the
 reader saw; the research event it links to keeps its own end-of-day label.
 The disagreement becomes joinable data rather than a silent mismatch.
-Outbound sync is untouched — research-written predictions carry the
-end-of-day label, which matches their own events, so `_apply_remap` and
-ADR 191's natural key still apply there unchanged.
+~~Outbound sync is untouched~~ — withdrawn the same day; see "Amended
+2026-09-20: outbound resolves through the research event" below.
 
 ### What review found: the slot is coarser than the key it replaced
 
@@ -10330,6 +10329,47 @@ between two incoming rows resolving to the same event within one pull.
 `pull_live_records` reports all four separately rather than one combined
 "unmapped" count, because "100 adopted, 100 unmapped" said nothing about
 which of these happened.
+
+### Amended 2026-09-20: outbound resolves through the research event
+
+The whole-branch review found that "outbound sync is untouched" took
+probabilities off the live site. An adopted row A keeps the Pi's label
+(`bb_lower_touch`) and links to research event E
+(`bull_close_below_lower`). `predict` then skips E (ADR 195), so research
+writes no row of its own for it. Outbound, `_apply_remap` re-resolved A
+through A's OWN natural key, live label included, and found P, the Pi's
+provisional poller event on serving, not E', serving's copy of E. The
+serving sweep then deleted P, and E' rendered with no probability. With 0
+of 338 poller events matching research's label, that is the normal case.
+
+**Decision.** Outbound, a prediction resolves through the natural key of
+the research event its `event_id` names. The predictions `SyncTable`
+left-joins research `events` on `e.id = p.event_id` and carries that
+event's `(config_hash, ticker, signal_date, signal_type, entry_kind)` under
+`src_event_*` helper names; `_PREDICTIONS_OUTBOUND_REMAP` maps them onto
+serving's `events`, and `SyncTable.helper_columns` drops them before the
+write. A NULL research `event_id` resolves to NULL. For a research-written
+row the event's key equals the row's own key, so its result is unchanged.
+Pinned by `test_adoption_composition.py`, which crosses pull, predict,
+outbound sync and sweep, and on real Postgres by
+`scripts/verify_slot_adoption.py` step 5.
+
+**The legacy 100 are the only casualties, and the backfill will not save
+most of them.** On 2026-09-20 `predict` ran after the pull while those 100
+rows still carried NULL links, so wherever a slot resolves research already
+owns E through its own row R. `scripts/backfill_prediction_event_ids.py`
+leaves such a row NULL and reports it as `collision`, and it is expected to
+link few of the 100. Those forward-log entries keep research's number, not
+the one the reader saw live, and nothing recovers it: ADR 195 forbids
+rewriting R. The true split is known only from the backfill's dry run.
+From the first nightly after this branch merges, NEW signals are adopted
+before `predict` runs, so research keeps the Pi's number.
+
+**Run order for the backfill.** After a nightly has finished and before the
+Pi's 06:45 PT session starts. The backfill reads research rows with
+`event_id IS NULL`; the pull reads every serving row at or above the floor,
+adopted or not. Run in the other window, an old NULL row and a new serving
+row resolving to one event can be linked by one and nulled by the other.
 
 ### Verification
 

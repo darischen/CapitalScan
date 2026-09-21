@@ -19,6 +19,20 @@ same ids adopts nothing and touches nothing. Those rows are permanently
 stuck with the `event_id` the old key gave them -- NULL -- unless something
 else fills it in. This script is that something, run once.
 
+**Expect it to link few of the 100, and to report most as `collision`
+(whole-branch review, 2026-09-20).** That night's `predict` ran after the
+pull, while these rows still carried NULL links, so wherever a slot
+resolves research ALREADY owns the event through its own row R.
+`_null_inbound_remap_collisions` then leaves the adopted row NULL rather
+than touch R. For those signals the forward log keeps research's number,
+not the one the reader saw live, and nothing recovers the live number: R
+may already back an `outcomes` row, and ADR 195 forbids rewriting it. The
+true split between linked, `collision` and the other three reasons is
+known only from the dry run; nothing before it measured one. From the
+first nightly after this branch merges, NEW signals are adopted before
+`predict` runs, so research keeps the Pi's number. These 100 legacy rows
+are the only casualties.
+
 **What it does.** Reads every research `predictions` row that is
 adopted (`id >= ServingParams.serving_id_floor`, the same test
 `_pull_predictions` uses to mean "serving minted this id") and still
@@ -88,6 +102,16 @@ after nightly finishes repairs whatever this script's own run did not
 reach, so no data is lost or corrupted; it is simply wasted work and a
 stack trace worth not triggering on purpose.
 
+**Run it after a nightly has FINISHED and before the Pi's 06:45 PT session
+starts.** Not only "not during nightly": the two readers select different
+sets. This script reads research rows with `event_id IS NULL`; the nightly
+pull reads every serving row at or above the floor, including rows not
+adopted yet. An old NULL row here and a new serving row the next pull
+adopts can resolve to one event, and whichever writes second is nulled as
+a `collision`. In the window between a finished nightly and the next live
+session, serving holds no row the last pull has not already adopted, so
+the two sets cannot meet.
+
 **Reports the same four reasons `pull_live_records` reports**, spelled the
 same way (`no_slot`, `ambiguous`, `collision`, `duplicate_target`) --
 Task 3 named exactly this drift risk: a caller reading last night's log
@@ -147,14 +171,23 @@ logger = logging.getLogger(__name__)
 # The `event_id IS NULL` guard is load-aware, not decorative: it is the
 # only thing standing between this script and overwriting a link some
 # other writer set between the SELECT above and this UPDATE.
-_BACKFILL_SQL = """
-UPDATE predictions p
+#
+# **A template, so `scripts/verify_slot_adoption.py` can run the real
+# statement against a `zz_` scratch table** (whole-branch review MINOR 7:
+# `unnest` over a `bigint[]` cast had never run against real Postgres, the
+# same gap that hid `insert_new`'s `rowcount` of -1). Only the table name
+# is substituted, from a fixed identifier, never from a value.
+# `_BACKFILL_SQL` is the production statement and what `apply_updates`
+# sends by default.
+_BACKFILL_SQL_TEMPLATE = """
+UPDATE {table} p
    SET event_id = m.event_id
   FROM unnest(
       CAST(:ids AS bigint[]), CAST(:event_ids AS bigint[])
   ) AS m(id, event_id)
  WHERE p.id = m.id AND p.event_id IS NULL
 """
+_BACKFILL_SQL = _BACKFILL_SQL_TEMPLATE.format(table="predictions")
 
 #: The reason names, in the order `pull_live_records` reports them. Kept as
 #: a tuple (not re-typed at each call site) so the report and the tests
@@ -317,7 +350,7 @@ def event_labels(engine: Engine, event_ids: list[int]) -> pd.DataFrame:
     )
 
 
-def apply_updates(engine: Engine, updates: pd.DataFrame) -> int:
+def apply_updates(engine: Engine, updates: pd.DataFrame, *, table: str = "predictions") -> int:
     """Write `updates` with `_BACKFILL_SQL`, in one transaction. Returns the
     number of rows Postgres actually updated -- which can be less than
     `len(updates)` if the `event_id IS NULL` guard caught a row linked by
@@ -325,13 +358,18 @@ def apply_updates(engine: Engine, updates: pd.DataFrame) -> int:
     statement inside one `engine.begin()`: this either commits every row
     it touches or none of them (see the module docstring's "no partial
     --apply" note) -- there is no in-between state.
+
+    `table` defaults to `"predictions"` and `main` never passes it. It is
+    keyword-only and exists for `scripts/verify_slot_adoption.py`, the same
+    seam `_apply_slot_remap`'s `table=` is.
     """
     if updates.empty:
         return 0
+    sql = _BACKFILL_SQL_TEMPLATE.format(table=table)
     ids = [int(v) for v in updates["id"].tolist()]
     event_ids = [int(v) for v in updates["event_id"].tolist()]
     with engine.begin() as conn:
-        result = conn.execute(text(_BACKFILL_SQL), {"ids": ids, "event_ids": event_ids})
+        result = conn.execute(text(sql), {"ids": ids, "event_ids": event_ids})
         return int(result.rowcount or 0)
 
 

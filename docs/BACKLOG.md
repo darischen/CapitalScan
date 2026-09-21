@@ -68,6 +68,28 @@ entry_kind)`, which is stable across the label disagreement.
 where it is currently NULL, using the same slot rule, and touches no other
 column. Idempotent, `--dry-run` by default.
 
+**Expect it to link few of the 100, with most reported as `collision`**
+(whole-branch review, 2026-09-20). That night's `predict` ran after the
+pull while the 100 still carried NULL links, so wherever a slot resolves
+research already owns the event through its own row, and the backfill
+leaves the adopted row NULL rather than touch that row (ADR 195). Those
+forward-log entries keep research's number, not the one the reader saw
+live, and nothing recovers the live number. The true split is known only
+from the dry run. From the first nightly after this branch merges, NEW
+signals are adopted before `predict` runs, so research keeps the Pi's
+number: the legacy 100 are the only casualties.
+
+**Run it after a nightly has finished and before the Pi's 06:45 PT session
+starts.** It reads research rows with `event_id IS NULL`, while the pull
+reads every serving row at or above the floor, adopted or not; in any
+other window an old NULL row and a new serving row resolving to one event
+can be linked by one and nulled by the other.
+
+**Deferred from the same review, not done:** `pull_live_records`' per-reason
+counts cover the whole floor-scoped frame, so the 100 legacy rows log as
+unmapped every night; and `slot_side` raises on a `signal_type` with no
+side rather than skipping it.
+
 ---
 
 ## ~~The forward log is calibrated on its own outcomes~~ — **decided 2026-09-19: ADR 195, predictions are insert-only**
