@@ -746,3 +746,25 @@ than the sha. → `BACKLOG.md`
 
 **~27-30 min warm, ~55 min on a machine with no fetch cache.** The first
 run on any new box pays the cold penalty once.
+
+## `cscan sync` — the predictions read now joins `events` (2026-09-20)
+
+Slot-keyed adoption (ADR 197) resolves each prediction's serving `event_id`
+through the research event it links to, so the predictions `SyncTable`
+left-joins `events` on `e.id = p.event_id`. `events` is millions of rows, and
+a full sync was killed once by the Windows low-memory reaper for reading
+`events` whole, so the plan was measured before the first full sync.
+
+`EXPLAIN (ANALYZE, BUFFERS)` against `wivie`'s research store, read-only,
+with `cursor_tuple_fraction = 0.1` to match the named cursor `run_sync`
+streams through:
+
+| | value |
+|---|---|
+| plan | Nested Loop Left Join, Index Scan on `events_pkey` |
+| rows | 36,303 predictions, 36,303 index probes |
+| buffers | 125,506 hit, 31,639 read |
+| execution | **186 ms** |
+
+No sequential scan of `events`, and the result streams in chunks as before,
+so the join adds neither client memory nor meaningful time.
