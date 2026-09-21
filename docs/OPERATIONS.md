@@ -1683,3 +1683,41 @@ measured to disagree.
 `ssh host 'pgrep -f "cscan sync"'` matches the ssh command string itself, so
 a poll loop reported RUNNING for six hours after the job had finished. Match
 on something narrower, or check `runs.finished_at` instead.
+
+---
+
+## Remote access — Tailscale Funnel on `wivie` (live 2026-09-20)
+
+**URL:** `https://capitalscan.tail397b3b.ts.net`, reachable from any browser
+with no Tailscale client and no login.
+
+**Shape:** browser → Tailscale's public ingress → `wivie` → LAN →
+`192.168.1.30:3000` (`capitalscan-web` on the Pi). The Pi runs no Tailscale
+and has no open port; `wivie` is already the subnet router advertising
+`192.168.1.0/24`, so it reaches the Pi directly. Set with:
+
+```
+sudo tailscale funnel --bg --https=443 http://192.168.1.30:3000
+tailscale funnel status          # must show exactly one proxy target
+tailscale funnel --https=443 off # turns it off
+```
+
+The node was renamed `wivie` → `capitalscan` so the hostname reads as the
+app; the tailnet segment `tail397b3b` is Tailscale's and cannot be a custom
+domain (Funnel serves only `*.ts.net`). A custom domain would need a proxy
+in front — a Vercel route on `darischen.com` is the cheap one.
+
+**Unauthenticated, by the owner's choice.** The hostname is in public
+Certificate Transparency logs, so treat it as discoverable, not secret.
+Only the web app is exposed: `wivie`'s research Postgres and the Pi's
+serving Postgres are not reachable through it, **as long as `funnel
+status` maps the one target above** — re-check after any change.
+
+**`wivie` is now load-bearing for remote access.** If it sleeps or reboots,
+the site is unreachable from outside while still fine on the LAN.
+
+**Measured latency (2026-09-20):** ~3.8 s for the home page rendered on the
+Pi itself, ~4.1-4.7 s through the Funnel, so the tunnel adds about half a
+second; the rest is the Pi's own render. The first request after enabling
+took 35 s, which was the one-time certificate issuance, not a recurring cold
+start.
