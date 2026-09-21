@@ -432,6 +432,38 @@ class TestTwoIncomingRowsResolvingToOneEventAreBothNulled:
         written = insert_new_calls[0]["frame"].set_index("id")
         assert written.loc[FLOOR + 2, "event_id"] == 2, "the clean row resolves normally"
 
+    def test_one_row_already_adopted_last_night_keeps_its_link(
+        self, patched_read_sql, insert_new_calls
+    ):
+        """Order, found wrong in round 1 of the fix (review round 2,
+        2026-09-20). Row A (id=FLOOR) was adopted on a PRIOR pull and
+        research already holds it with `event_id=1` -- a legitimate,
+        permanent owner. This pull re-sends A (a repeated pull, same id)
+        alongside a NEW row B that resolves to the same slot, so the
+        incoming frame holds two rows both claiming `event_id=1`.
+
+        Deduping before the collision check would null BOTH in the frame,
+        so the collision check would have nothing left to compare A
+        against and `unmapped` would wrongly count 2. Running the
+        collision check first excludes A as its own owner, nulls B
+        against A, and leaves the dedup step nothing to do: A must keep
+        `event_id=1`, only B lands NULL, and `unmapped` must be 1."""
+        source = _predictions(
+            [
+                (FLOOR, 100, CHASH, "AA", "2026-09-09", "bb_lower_touch", "touch"),
+                (FLOOR + 1, 200, CHASH, "AA", "2026-09-09", "confluence_low", "touch"),
+            ]
+        )
+        target_events = _events([(1, CHASH, "AA", "2026-09-09", "bb_lower_touch", "touch")])
+        target_predictions = pd.DataFrame([{"id": FLOOR, "event_id": 1}])
+        adopted, no_slot, ambiguous, unmapped = _pull(source, target_events, target_predictions)
+        assert adopted == 2
+        assert (no_slot, ambiguous) == (0, 0)
+        assert unmapped == 1, "only B is actually NULL -- A's prior link is untouched"
+        written = insert_new_calls[0]["frame"].set_index("id")
+        assert written.loc[FLOOR, "event_id"] == 1, "A's own link must survive re-adoption"
+        assert pd.isna(written.loc[FLOOR + 1, "event_id"]), "B has nothing left to claim"
+
 
 class TestTheWriteIsKeyedOnId:
     def test_insert_new_conflicts_on_id_alone(self, patched_read_sql, insert_new_calls):
