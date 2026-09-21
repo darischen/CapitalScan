@@ -255,6 +255,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 194 | `bull_close_below_lower` is enabled, and the hash moves with it | **Decided 2026-09-10.** Completes ADR 144; moves `config_hash` `0523841076f47293` -> **`f183b0f5209a4677`**. The type had an indicator column, an enum member, a signal rule, a frontend label and a badge branch -- everything except membership in `enabled_signal_types`. **The cost was asymmetric:** the bear side has a live badge *and* a close-confirmed one, so a bear reversal developing after its signal fires is caught next morning; the bull side had only the live badge, which freezes at fire time, so a later bull reversal was caught by nothing. EXPE fired 2026-09-09 at 09:46, below its band and still below its open, closed above the open, and displayed nothing. Accepting the frozen live badge is sound reasoning that **depends on both badges existing**, which made the dormancy a defect rather than a deferral. Measured first: fires **41,997** times against bear's 52,803, and 311 times since July. Twelve guards failed and all were right -- eleven were the `conftest` hash pin, which was designed so a deliberate change is one edit. Two needed judgement: the dormancy class was inverted (keeping the disable path, since DESIGN 3.10 wants ablation reachable from config) and now asserts the hash **moved**; `DORMANT_BY_DESIGN` emptied, which would have made a test pass on an empty loop, so emptiness is asserted explicitly. **Runbook gap found the hard way:** `universe` is config-keyed, so the first rebuild wrote 0 events across 1,463 tickers and exited 0 -- all 66 quarters must be rebuilt first. Ordering is fixed: sync, then `db sync-config`, then restart web, then pull the Pi; reversing the first two blanked the site for four minutes. Moves `config_hash` |
 | 195 | A prediction is written once | **Decided 2026-09-19** by the owner, option A of the 2026-09-17 open item. `predictions` becomes insert-only on `event_id` (`db_io.insert_new`, `ON CONFLICT DO NOTHING`). The upsert let `nightly` rewrite its 45-day lookback with an artifact whose ADR 193 validate window contained those events: 2,078 of 2,143 resolved live-generation rows on `wivie` were last written after their outcome existed. A row now keeps the model that first scored it; `created_at` is the first write; rows written before this stay contaminated and are not rewritten. No `config_hash` move |
 | 196 | Serving mints prediction ids above a floor; research adopts below it | **Decided 2026-09-20.** `ServingParams.serving_id_floor = 1_000_000_000`. Both stores minted `predictions.id` from one range, so `cscan sync` failed nightly from 2026-09-17 on serving's unique `event_id`, and 3 ids named a different signal on each side. Serving now mints at or above the floor, research below it, `pull_live_records` adopts serving-born rows insert-only, and the pull runs before `predict` so research keeps the number a reader saw. No `config_hash` move |
+| 197 | Inbound adoption resolves on the debounce slot, not the label | **Decided 2026-09-20.** `_pull_predictions` remapped `event_id` through the natural key `(config_hash, ticker, as_of/signal_date, signal_type, entry_kind)`, which assumes the Pi and the end-of-day pass label a bar the same way. Measured: of 338 poller-written events since 2026-09-08, **0** matched the natural key, 114 shared a ticker-date with a research event under a different label, and every one of the night's 100 adopted rows carried a NULL `event_id`. `_apply_slot_remap` resolves `(config_hash, ticker, signal_date, side, entry_kind)` instead — `debounce_key` plus the fill convention, `side` derived from `signal_type` through `core/cells.py`'s `LONG_SIGNALS`/`SHORT_SIGNALS`. Nothing is relabelled: the adopted row keeps the live `signal_type`; the event it links to keeps the end-of-day one. No `config_hash` move |
 
 ---
 
@@ -10208,3 +10209,111 @@ pairs disagreed, by up to 12.3 points on `p_touch_3`, because a weekly refit
 had rewritten research's copy. `_clear_remap_collisions` claimed otherwise
 and now says so correctly. The owner chose the newer fit; the pairs cannot
 recur once adoption precedes scoring.
+
+---
+
+## 197. Inbound adoption resolves on the debounce slot, not the label
+
+**Status:** accepted 2026-09-20. Follows ADR 196, which built adoption and
+keyed it on the wrong thing. No `config_hash` move.
+
+### Context
+
+The 2026-09-20 nightly adopted 100 of the Pi's predictions and left every
+one with a NULL `event_id`. `_pull_predictions` remapped `event_id` through
+predictions' natural key, `(config_hash, ticker, as_of, signal_type,
+entry_kind)`, against research's `events` on `(config_hash, ticker,
+signal_date, signal_type, entry_kind)` — the same key ADR 191 built for the
+outbound sync, reused inbound on the assumption that a signal's label is
+part of its identity on both sides.
+
+Measured on serving, poller-written events since 2026-09-08:
+
+| measurement (2026-09-20) | value |
+|---|---:|
+| poller-written events on serving since 2026-09-08 | 338 |
+| of those, exact natural-key match in research | **0** |
+| of those, research has any event for that ticker+date | 114 |
+| adopted rows in research carrying a NULL `event_id` | 100 of 100 |
+
+**Why the labels cannot be made to agree.** DESIGN §4.7 and
+`core/signals.py::debounce_key` define the slot as `(ticker, signal_date,
+bound)` — one event per ticker, per side, per day — and the label attached
+to it is whichever hit filled it first. The two detectors cannot fill it
+the same way: `breach_live`, the Pi's intraday path, has no session close
+to confirm against, so it emits `bb_lower_touch` on a live read; the
+end-of-day pass sees the close still inside the band and writes
+`bull_close_below_lower` for the same bar (ADR 194, enabled 2026-09-10,
+which is why this surfaced only now). There is no fix that makes
+`breach_live` emit the close-confirmed label, because the information the
+close-confirmed label depends on — the session close — does not exist yet
+when the live path fires. The two labels are both correct descriptions of
+what each path could see at the moment it wrote, and will keep disagreeing
+for as long as one path runs intraday and the other runs end of day.
+
+### Decision
+
+Adopt on the debounce slot, not on the label. `_apply_slot_remap`
+(`jobs/sync.py`) resolves `(config_hash, ticker, signal_date, side,
+entry_kind)` — `debounce_key` plus the fill convention — where `side` is
+derived from `signal_type` through `core/cells.py`'s `LONG_SIGNALS` /
+`SHORT_SIGNALS`, the existing single source `side_for_signal_type` already
+reads. `side` is stable across the label disagreement: `bb_lower_touch`
+and `bull_close_below_lower` are both `LONG_SIGNALS`, so the slot resolves
+where the natural key cannot.
+
+Nothing is relabelled. The adopted row keeps the live `signal_type` the
+reader saw; the research event it links to keeps its own end-of-day label.
+The disagreement becomes joinable data rather than a silent mismatch.
+Outbound sync is untouched — research-written predictions carry the
+end-of-day label, which matches their own events, so `_apply_remap` and
+ADR 191's natural key still apply there unchanged.
+
+### What review found: the slot is coarser than the key it replaced
+
+A natural key of five columns including `signal_type` cannot collide within
+one ticker-day-side; a slot key of four columns without it can, on both
+sides of the join. Two consequences, neither present in the design as
+first written:
+
+- **Two research events can share one slot.** Measured: 15 of 182,921
+  events since 2026-08-01 hold a second event in the same slot under a
+  different `signal_type`, all prior-generation, long side, `touch`. A
+  slot resolving to more than one event adopts with `event_id = NULL` —
+  picking one would be a guess, and ADR 191 already established that a
+  confidently wrong link is worse than an absent one.
+- **Two incoming predictions can resolve to the same research event.**
+  `predictions.event_id` is unique per *serving* event, not per slot, so
+  the Pi can legitimately hold two predictions — one per serving event —
+  that both resolve to the one research event research recorded for that
+  slot. `predictions.event_id` is also unique on research, so writing both
+  unguarded would raise on the same pair every night. `_null_duplicate_
+  slot_targets` nulls both rather than picking one, run after the
+  existing collision check (`_null_inbound_remap_collisions`) so an
+  already-adopted owner from a prior night is not nulled alongside a new
+  sibling.
+
+Because of this, an unlinked row now has **four** distinct reasons, not
+the two ("no slot" / "ambiguous slot") the design first named: no research
+event for the slot, more than one research event for the slot, a
+collision with a row already adopted on the target, and a collision
+between two incoming rows resolving to the same event within one pull.
+`pull_live_records` reports all four separately rather than one combined
+"unmapped" count, because "100 adopted, 100 unmapped" said nothing about
+which of these happened.
+
+### Verification
+
+Unit tests (`test_slot_remap.py`, fakes) cover every rule above: label
+mismatch links, no event nulls, two events null, side derivation raises on
+an unrecognised `signal_type`, the adopted row's own label is untouched.
+`scripts/verify_slot_adoption.py` is the different-instrument check
+against real Postgres, on `zz_`-prefixed scratch tables: it seeds an event
+labelled `bull_close_below_lower` and a prediction labelled
+`bb_lower_touch` in the same slot, shows the natural-key resolution
+finding nothing, shows `_apply_slot_remap` linking them without
+relabelling, then adds a second event to the slot and shows the
+prediction staying NULL. `_apply_slot_remap` gained a keyword-only
+`table: str = "events"` parameter for this — mirroring
+`predictions_max_id_sql`'s existing `table` argument — since every real
+caller supplies no third argument and reads `"events"` exactly as before.

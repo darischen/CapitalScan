@@ -458,9 +458,20 @@ _SLOT_SOURCE_KEY: tuple[str, ...] = ("config_hash", "ticker", "as_of", "side", "
 _SLOT_TARGET_KEY: tuple[str, ...] = ("config_hash", "ticker", "signal_date", "side", "entry_kind")
 
 
-def _apply_slot_remap(frame: pd.DataFrame, target: Engine) -> tuple[pd.DataFrame, int, int]:
+def _apply_slot_remap(
+    frame: pd.DataFrame, target: Engine, *, table: str = "events"
+) -> tuple[pd.DataFrame, int, int]:
     """Resolve `event_id` on the debounce slot, not on the label (design
     doc, 2026-09-20).
+
+    `table` names the events-shaped table the slot is resolved against and
+    defaults to `"events"`, so every real caller (`_pull_predictions`,
+    `scripts/backfill_prediction_event_ids.py`) is unaffected -- both call
+    this positionally with two arguments and never see the parameter.
+    It exists for the same reason `predictions_max_id_sql` takes a `table`
+    argument: `scripts/verify_slot_adoption.py` points this function at a
+    `zz_`-prefixed scratch table so it executes production's own SQL
+    instead of a hand-copied mirror of it.
 
     **Why the label cannot be the key.** `breach_live` (the Pi, intraday)
     and the end-of-day pass fill the same debounce slot --
@@ -511,7 +522,7 @@ def _apply_slot_remap(frame: pd.DataFrame, target: Engine) -> tuple[pd.DataFrame
     events = pd.read_sql(
         text(
             "SELECT id, config_hash, ticker, signal_date, signal_type, entry_kind "  # noqa: S608
-            f'FROM "events" WHERE {where}'
+            f'FROM "{table}" WHERE {where}'
         ),
         target,
         params=params,  # type: ignore[arg-type]
