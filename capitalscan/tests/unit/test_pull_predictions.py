@@ -175,10 +175,18 @@ def _pull(
     source_predictions: pd.DataFrame,
     target_events: pd.DataFrame,
     target_predictions: pd.DataFrame | None = None,
-) -> tuple[int, int, int, int]:
+) -> tuple[int, int, int, int, int, int]:
     source = cast(Engine, _FakeSourceEngine(source_predictions))
     target = cast(Engine, _FakeTargetEngine(target_events, target_predictions))
-    return sync_job._pull_predictions(source, target)
+    result = sync_job._pull_predictions(source, target)
+    # Task 3: the four reasons must always sum to the ground-truth total --
+    # a fifth, uncounted nulling step would silently break this equality.
+    adopted, no_slot, ambiguous, collision, duplicate_target, unmapped = result
+    assert no_slot + ambiguous + collision + duplicate_target == unmapped, (
+        f"the four reasons ({no_slot=}, {ambiguous=}, {collision=}, "
+        f"{duplicate_target=}) must sum to {unmapped=}"
+    )
+    return result
 
 
 class TestSelectionIsFloorScoped:
@@ -203,15 +211,24 @@ class TestSelectionIsFloorScoped:
                 (2, CHASH, "BB", "2026-09-19", "bb_lower_touch", "touch"),
             ]
         )
-        adopted, no_slot, ambiguous, unmapped = _pull(rows, events)
+        adopted, no_slot, ambiguous, collision, duplicate_target, unmapped = _pull(rows, events)
         assert adopted == 2
-        assert (no_slot, ambiguous, unmapped) == (0, 0, 0)
+        assert (no_slot, ambiguous, collision, duplicate_target, unmapped) == (0, 0, 0, 0, 0)
         assert len(insert_new_calls[0]["frame"]) == 2
 
     def test_an_empty_selection_writes_nothing(self, patched_read_sql, insert_new_calls):
         below = _predictions([(FLOOR - 5, 1, CHASH, "AA", "2026-09-18", "bb_upper_touch", "touch")])
-        adopted, no_slot, ambiguous, unmapped = _pull(below, _events([]))
-        assert (adopted, no_slot, ambiguous, unmapped) == (0, 0, 0, 0)
+        adopted, no_slot, ambiguous, collision, duplicate_target, unmapped = _pull(
+            below, _events([])
+        )
+        assert (adopted, no_slot, ambiguous, collision, duplicate_target, unmapped) == (
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
         assert insert_new_calls == [], "an empty frame must not reach insert_new"
 
     def test_the_select_clause_itself_is_floor_scoped(self, patched_read_sql):
@@ -275,9 +292,11 @@ class TestAnUnmatchedKeyIsNullNotTheSourceId:
         still adopts, but `event_id` is honest about having nothing to
         point at, and it counts as `no_slot`, not `ambiguous`."""
         source = _predictions([(FLOOR, 555, CHASH, "ZZ", "2026-09-19", "bb_lower_touch", "touch")])
-        adopted, no_slot, ambiguous, unmapped = _pull(source, _events([]))
+        adopted, no_slot, ambiguous, collision, duplicate_target, unmapped = _pull(
+            source, _events([])
+        )
         assert adopted == 1
-        assert (no_slot, ambiguous, unmapped) == (1, 0, 1)
+        assert (no_slot, ambiguous, collision, duplicate_target, unmapped) == (1, 0, 0, 0, 1)
         written = insert_new_calls[0]["frame"]
         assert pd.isna(written.loc[0, "event_id"])
         assert written.loc[0, "event_id"] != 555, "the source id must not survive a miss"
@@ -290,9 +309,11 @@ class TestAnUnmatchedKeyIsNullNotTheSourceId:
             ]
         )
         target_events = _events([(1, CHASH, "AA", "2026-09-19", "bb_upper_touch", "touch")])
-        adopted, no_slot, ambiguous, unmapped = _pull(source, target_events)
+        adopted, no_slot, ambiguous, collision, duplicate_target, unmapped = _pull(
+            source, target_events
+        )
         assert adopted == 2
-        assert (no_slot, ambiguous, unmapped) == (1, 0, 1)
+        assert (no_slot, ambiguous, collision, duplicate_target, unmapped) == (1, 0, 0, 0, 1)
 
 
 class TestACollisionWithADifferentResearchRowIsNulledNotRaised:
@@ -325,11 +346,14 @@ class TestACollisionWithADifferentResearchRowIsNulledNotRaised:
         # that night's `predict`, or a `weekly` refit with no pull ahead
         # of it, produces.
         target_predictions = pd.DataFrame([{"id": 999, "event_id": 42}])
-        adopted, no_slot, ambiguous, unmapped = _pull(source, target_events, target_predictions)
+        adopted, no_slot, ambiguous, collision, duplicate_target, unmapped = _pull(
+            source, target_events, target_predictions
+        )
         assert adopted == 1, "the row still adopts -- it is evidence, not discarded"
         assert (no_slot, ambiguous) == (0, 0), (
             "the slot resolved cleanly; the collision is separate"
         )
+        assert (collision, duplicate_target) == (1, 0), "counted under its own reason"
         assert unmapped == 1, "the ground-truth count still catches the nulled row"
         written = insert_new_calls[0]["frame"]
         assert pd.isna(written.loc[0, "event_id"]), "must not overwrite research's own row"
@@ -347,8 +371,10 @@ class TestACollisionWithADifferentResearchRowIsNulledNotRaised:
         # The row research already holds under event_id=42 is THIS SAME
         # adopted row (id=FLOOR), from a previous pull.
         target_predictions = pd.DataFrame([{"id": FLOOR, "event_id": 42}])
-        adopted, no_slot, ambiguous, unmapped = _pull(source, target_events, target_predictions)
-        assert (no_slot, ambiguous, unmapped) == (0, 0, 0)
+        adopted, no_slot, ambiguous, collision, duplicate_target, unmapped = _pull(
+            source, target_events, target_predictions
+        )
+        assert (no_slot, ambiguous, collision, duplicate_target, unmapped) == (0, 0, 0, 0, 0)
         written = insert_new_calls[0]["frame"]
         assert written.loc[0, "event_id"] == 42, "adopting itself again must not null the link"
 
@@ -401,9 +427,12 @@ class TestTwoIncomingRowsResolvingToOneEventAreBothNulled:
         )
         # Research holds exactly one event for that slot.
         target_events = _events([(1, CHASH, "AA", "2026-09-09", "bb_lower_touch", "touch")])
-        adopted, no_slot, ambiguous, unmapped = _pull(source, target_events)
+        adopted, no_slot, ambiguous, collision, duplicate_target, unmapped = _pull(
+            source, target_events
+        )
         assert adopted == 2, "both rows still adopt -- they are evidence, not discarded"
         assert (no_slot, ambiguous) == (0, 0), "the slot itself resolved to exactly one event"
+        assert (collision, duplicate_target) == (0, 2), "counted as the duplicate-target reason"
         assert unmapped == 2, "both rows, not one, must be counted"
         written = insert_new_calls[0]["frame"].set_index("id")
         assert pd.isna(written.loc[FLOOR, "event_id"])
@@ -426,8 +455,11 @@ class TestTwoIncomingRowsResolvingToOneEventAreBothNulled:
                 (2, CHASH, "BB", "2026-09-09", "bb_upper_touch", "touch"),
             ]
         )
-        adopted, no_slot, ambiguous, unmapped = _pull(source, target_events)
+        adopted, no_slot, ambiguous, collision, duplicate_target, unmapped = _pull(
+            source, target_events
+        )
         assert adopted == 3
+        assert (collision, duplicate_target) == (0, 2)
         assert unmapped == 2, "only the colliding pair is nulled"
         written = insert_new_calls[0]["frame"].set_index("id")
         assert written.loc[FLOOR + 2, "event_id"] == 2, "the clean row resolves normally"
@@ -456,9 +488,15 @@ class TestTwoIncomingRowsResolvingToOneEventAreBothNulled:
         )
         target_events = _events([(1, CHASH, "AA", "2026-09-09", "bb_lower_touch", "touch")])
         target_predictions = pd.DataFrame([{"id": FLOOR, "event_id": 1}])
-        adopted, no_slot, ambiguous, unmapped = _pull(source, target_events, target_predictions)
+        adopted, no_slot, ambiguous, collision, duplicate_target, unmapped = _pull(
+            source, target_events, target_predictions
+        )
         assert adopted == 2
         assert (no_slot, ambiguous) == (0, 0)
+        # B is nulled by the collision check (it collides with A, the
+        # legitimate prior owner) -- the dedup step then has nothing left
+        # to do, which is exactly the ordering this test's docstring pins.
+        assert (collision, duplicate_target) == (1, 0)
         assert unmapped == 1, "only B is actually NULL -- A's prior link is untouched"
         written = insert_new_calls[0]["frame"].set_index("id")
         assert written.loc[FLOOR, "event_id"] == 1, "A's own link must survive re-adoption"
@@ -542,9 +580,11 @@ class TestAnAdoptedRowSurvivesAFollowingRunPredict:
         target_events = _events(
             [(42, CHASH, "KO", "2026-09-19", "bear_close_above_upper", "touch")]
         )
-        adopted, _no_slot, _ambiguous, _unmapped = sync_job._pull_predictions(
-            cast(Engine, _FakeSourceEngine(source)),
-            cast(Engine, _FakeTargetEngine(target_events)),
+        adopted, _no_slot, _ambiguous, _collision, _duplicate_target, _unmapped = (
+            sync_job._pull_predictions(
+                cast(Engine, _FakeSourceEngine(source)),
+                cast(Engine, _FakeTargetEngine(target_events)),
+            )
         )
         assert adopted == 1
         assert len(store.rows) == 1
@@ -570,12 +610,16 @@ class TestItIsWiredIntoThePull:
     def test_pull_live_records_reports_predictions_and_unmapped(self, monkeypatch):
         """`pull_live_records` itself, with everything below it faked, so
         this pins the wiring rather than re-testing `_pull_predictions`.
-        `predictions_unmapped` is the fourth value `_pull_predictions`
-        returns directly (the ground truth), not a sum computed here --
-        the fake below returns `unmapped=2` while `no_slot + ambiguous`
-        is only 1, so a wiring bug that summed instead of passing through
-        would be caught."""
-        monkeypatch.setattr(sync_job, "_pull_predictions", lambda source, target: (3, 1, 0, 2))
+
+        Task 3: `pull_live_records` must surface all four reasons under
+        their own keys, plus the ground-truth total -- not a fifth key
+        alongside a stale `predictions_unmapped` name. The fake below gives
+        each of the four reasons a DISTINCT value (1, 0, 2, 1, summing to
+        4) so a wiring bug that mixed up which reason goes under which key,
+        or summed instead of passing values through, is caught."""
+        monkeypatch.setattr(
+            sync_job, "_pull_predictions", lambda source, target: (3, 1, 0, 2, 1, 4)
+        )
         monkeypatch.setattr(
             sync_job.pd,
             "read_sql",
@@ -588,7 +632,40 @@ class TestItIsWiredIntoThePull:
             source=cast(Engine, object()), target=cast(Engine, object())
         )
         assert out["predictions"] == 3
-        assert out["predictions_unmapped"] == 2
+        assert out["predictions_unmapped_no_slot"] == 1
+        assert out["predictions_unmapped_ambiguous"] == 0
+        assert out["predictions_unmapped_collision"] == 2
+        assert out["predictions_unmapped_duplicate"] == 1
+        assert out["predictions_unmapped"] == 4
+        # The brief's replace-not-add constraint: exactly one key reports
+        # the total, named `predictions_unmapped`, not a second one under
+        # a different spelling.
+        unmapped_total_keys = [k for k in out if k == "predictions_unmapped"]
+        assert unmapped_total_keys == ["predictions_unmapped"]
+
+    def test_a_pull_with_everything_resolving_reports_zeros(self, monkeypatch):
+        """Brief's third test: nothing unmapped means every one of the
+        four reason keys, and the total, come back zero -- not omitted."""
+        monkeypatch.setattr(
+            sync_job, "_pull_predictions", lambda source, target: (5, 0, 0, 0, 0, 0)
+        )
+        monkeypatch.setattr(
+            sync_job.pd,
+            "read_sql",
+            lambda *a, **k: pd.DataFrame(),
+        )
+        monkeypatch.setattr(sync_job.db_io, "copy_upsert", lambda *a, **k: 0)
+        monkeypatch.setattr(sync_job, "_reset_sequences", lambda *a, **k: None)
+
+        out = sync_job.pull_live_records(
+            source=cast(Engine, object()), target=cast(Engine, object())
+        )
+        assert out["predictions"] == 5
+        assert out["predictions_unmapped_no_slot"] == 0
+        assert out["predictions_unmapped_ambiguous"] == 0
+        assert out["predictions_unmapped_collision"] == 0
+        assert out["predictions_unmapped_duplicate"] == 0
+        assert out["predictions_unmapped"] == 0
 
     def test_the_existing_three_tables_are_unaffected(self):
         """The brief's constraint: their behaviour and order are unchanged.
