@@ -38,6 +38,35 @@ URL is actually wanted, and never option 3.
 
 ---
 
+## Deferred from the slot-keyed adoption review (2026-09-20)
+
+Six minors the branch's reviews found and deliberately did not fix. None
+blocks adoption; each says what would make it matter.
+
+1. **Nightly's unlinked counts cover the whole floor-scoped frame**, not the
+   rows written that night, so the 100 legacy adopted rows report
+   `collision` or `no_slot` on every nightly forever. Scope the counts to
+   rows actually inserted, or date-bound the selection, before anyone learns
+   to ignore the line.
+2. **`slot_side` raises on an unknown `signal_type`.** With no date bound on
+   selection, one bad serving row would fail adoption every night, hidden by
+   nightly's broad `except`. Low risk while `core/cells.py` covers every
+   `SignalType`; it bites the day a member is added without a side.
+3. **The test fakes restate the adoption SELECT's columns** in
+   `test_pull_predictions.py` and `test_slot_remap.py`, so a column added to
+   the real query drifts silently. Derive both from one constant.
+4. **`_apply_slot_remap`'s input guard omits `event_id`**, so a frame missing
+   it raises `KeyError` rather than the guard's `ValueError`. Unreachable
+   through `SELECT *`.
+5. **The backfill takes no table lock.** A concurrent nightly can race it
+   into a unique-index violation; the loser rolls back cleanly and a rerun
+   converges. Documented as a run window instead: after a finished nightly,
+   before the Pi's 06:45 session.
+6. **The backfill replays the slot lookup once per unresolved row** to split
+   `no_slot` from `ambiguous`. Fine for ~100 rows once; not for a hot path.
+
+---
+
 ## Two follow-ups from the id-floor work (2026-09-20)
 
 Both parked deliberately during the forward-log-adoption branch; neither
