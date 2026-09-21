@@ -557,6 +557,58 @@ def _apply_slot_remap(frame: pd.DataFrame, target: Engine) -> tuple[pd.DataFrame
     return out, no_slot, ambiguous
 
 
+def _null_duplicate_slot_targets(
+    frame: pd.DataFrame, column: str = "event_id"
+) -> tuple[pd.DataFrame, int]:
+    """Null `column` on every row of THIS frame whose value is claimed by
+    more than one row in it. Found in review, 2026-09-20 -- not caught by
+    anything upstream.
+
+    **The slot is coarser than the natural key it replaced, on the SOURCE
+    side too.** `_apply_slot_remap` already forbids one prediction from
+    picking among several matching *events*. What it does not forbid --
+    because it resolves one row at a time -- is two DIFFERENT predictions
+    resolving to the SAME event. That happens whenever two serving events
+    sit in one debounce slot under different labels, the same phenomenon
+    measured as 15 slots in research (design doc, "Ambiguity"): each
+    serving event has its own prediction, because
+    `predictions_event_id` is unique per *serving* event, not per slot, so
+    the Pi can legitimately hold two predictions that both resolve to the
+    one research event research recorded for that slot.
+
+    **Why this is not survivable at the write.** `predictions_event_id` is
+    also unique on research. `insert_new`'s `ON CONFLICT (id) DO NOTHING`
+    covers `id`, not `event_id`, so two rows carrying the same `event_id`
+    make the INSERT itself raise -- and because `_pull_predictions`'s
+    selection is floor-scoped with no date bound (by design, so a
+    once-off adoption is never missed), an unguarded pair would raise on
+    the same two rows every night forever, exactly the failure shape this
+    module's own docstrings warn about elsewhere.
+
+    **Never pick one of the pair to keep.** Same ADR 191 rule
+    `_apply_slot_remap` applies on the events side: nulling both rows is
+    the only answer that is not a guess about which prediction the
+    research event "really" belongs to. Both still adopt -- unresolved,
+    not dropped.
+
+    Returns `(frame, duplicate_target)`. Counted separately from
+    `no_slot`/`ambiguous` (which describe the slot lookup itself) and from
+    `_null_inbound_remap_collisions`'s count (an incoming row colliding
+    with a row already on the target) -- this is a third, distinct reason
+    a row ends up unresolved: two incoming rows colliding with EACH OTHER.
+    """
+    if frame.empty or column not in frame.columns:
+        return frame, 0
+    counts = frame[column].value_counts(dropna=True)
+    duplicated_values = set(counts[counts > 1].index)
+    if not duplicated_values:
+        return frame, 0
+    mask = frame[column].isin(duplicated_values)
+    frame = frame.copy()
+    frame.loc[mask, column] = None
+    return frame, int(mask.sum())
+
+
 def _clear_remap_collisions(
     frame: pd.DataFrame,
     target: Engine,
@@ -1083,7 +1135,7 @@ _LIVE_DURABLE_TABLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 )
 
 
-def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int]:
+def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int, int]:
     """Adopt serving-born predictions into research (forward-log adoption).
 
     **Not a fourth `_LIVE_DURABLE_TABLES` entry.** The other three are
@@ -1114,6 +1166,17 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int]:
     191). Either way `event_id` is NULL and the row still adopts, honestly
     unresolved rather than dropped.
 
+    **The slot is coarser than the natural key it replaced, and that cuts
+    both ways.** The events-side ambiguity above is the well-known one;
+    `_null_duplicate_slot_targets` guards the mirror case, found in review
+    (2026-09-20): two DIFFERENT incoming predictions can resolve to the
+    SAME research event, because `predictions_event_id` is unique per
+    *serving* event and two serving events can share one research slot
+    under different labels -- the same 15-slots-in-research phenomenon,
+    seen from the source side. Both rows are nulled, never one kept, and
+    counted under their own reason (`duplicate_target`), separate from
+    `no_slot`/`ambiguous`.
+
     **A resolved `event_id` can also collide with a DIFFERENT research
     row, and that is checked before the write too.**
     `predictions_event_id` is UNIQUE on both stores, and research can
@@ -1128,9 +1191,19 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int]:
     row's `event_id` instead. Passing it `_PREDICTIONS_EVENT_REMAP` reuses
     only that `Remap`'s `.column` ("event_id"); the function never reads
     `.source_key`/`.target_key`, so this is not a reuse of the natural-key
-    resolution retired above. A collision is logged and left out of both
-    `no_slot` and `ambiguous` -- it is neither; the slot resolved to
-    exactly one event and something else already claimed the link.
+    resolution retired above.
+
+    **`unmapped` is read from the frame after every nulling step, not
+    summed from the individual reasons.** Four different steps can null
+    `event_id` before the write -- the slot lookup itself (`no_slot`,
+    `ambiguous`), the intra-frame duplicate check, and the inbound
+    collision check -- and a caller that wants "how many rows landed with
+    no event to point at" needs the true count, not a partial sum that
+    silently drops whichever reason it forgot to add in. `no_slot` and
+    `ambiguous` are still returned individually because they describe the
+    slot lookup specifically and Task 3 reports them under their own
+    names; `duplicate_target` and the inbound collision count are logged
+    but not returned, because nothing downstream distinguishes them today.
 
     **Keyed on `id`, never on `event_id`.** A repeated pull must insert
     nothing. NULLs are distinct in a unique index, so keying on `event_id`
@@ -1147,9 +1220,7 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int]:
     (`RETURNING`), so a repeat pull reporting zero is the write correctly
     doing nothing, not a sign the pull found nothing to adopt.
 
-    Returns `(adopted, no_slot, ambiguous)` so a caller (`pull_live_records`)
-    can report the two failure modes separately instead of one
-    undifferentiated "unmapped" count.
+    Returns `(adopted, no_slot, ambiguous, unmapped)`.
     """
     floor = ServingParams().serving_id_floor
     frame = pd.read_sql(
@@ -1158,8 +1229,16 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int]:
         params={"floor": floor},
     )
     if frame.empty:
-        return 0, 0, 0
+        return 0, 0, 0, 0
     frame, no_slot, ambiguous = _apply_slot_remap(frame, target)
+    frame, duplicate_target = _null_duplicate_slot_targets(frame)
+    if duplicate_target:
+        logger.warning(
+            "%d adopted prediction(s) shared a research event_id with another "
+            "adopted prediction in the same pull; event_id left NULL on both "
+            "rather than picking one",
+            duplicate_target,
+        )
     frame, collided = _null_inbound_remap_collisions(
         frame, target, "predictions", ("id",), _PREDICTIONS_EVENT_REMAP
     )
@@ -1169,8 +1248,11 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int]:
             "row; event_id left NULL rather than overwriting research's row",
             collided,
         )
+    # The ground truth, not a sum of the individual reasons above -- see
+    # the docstring. Computed after every nulling step has run.
+    unmapped = int(frame["event_id"].isna().sum())
     adopted = db_io.insert_new(target, "predictions", frame, ["id"])
-    return adopted, no_slot, ambiguous
+    return adopted, no_slot, ambiguous, unmapped
 
 
 def pull_live_records(
@@ -1257,21 +1339,27 @@ def pull_live_records(
     # exception propagate past this `finally` does not fail the night --
     # it is reported exactly as before, just with the reset still applied.
     try:
-        # `_apply_slot_remap` (2026-09-20) separates a miss into two
-        # reasons -- no event shares the slot, or more than one does -- and
-        # `_pull_predictions` returns both. Task 3 gives the caller its own
-        # two keys; until then this sums them under the name the rest of
-        # the pull already reports under.
-        adopted, no_slot, ambiguous = _pull_predictions(source, target)
-        unmapped = no_slot + ambiguous
+        # `_pull_predictions` returns `unmapped` as the ground truth --
+        # every row whose `event_id` is NULL after every nulling step,
+        # not a sum of `no_slot` and `ambiguous` alone. Two more nulling
+        # reasons exist below the slot lookup (an intra-frame duplicate
+        # target, an inbound collision with a row already on research) and
+        # a sum that omitted them would under-report what an operator
+        # reading this number actually needs to know: how many rows landed
+        # with no event to point at, full stop. Task 3 gives the caller
+        # its own `no_slot`/`ambiguous` keys; `predictions_unmapped` stays
+        # the ground-truth total.
+        adopted, no_slot, ambiguous, unmapped = _pull_predictions(source, target)
         pulled["predictions"] = adopted
         if unmapped:
             logger.warning(
                 "%d adopted predictions could not be matched to a research event "
-                "(%d no matching slot, %d ambiguous slot; event_id left NULL)",
+                "(%d no matching slot, %d ambiguous slot, %d from another nulling "
+                "reason; event_id left NULL)",
                 unmapped,
                 no_slot,
                 ambiguous,
+                unmapped - no_slot - ambiguous,
             )
         pulled["predictions_unmapped"] = unmapped
     finally:
