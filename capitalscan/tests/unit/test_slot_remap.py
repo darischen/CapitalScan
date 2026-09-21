@@ -188,6 +188,42 @@ class TestSideDerivationRaisesRatherThanDefaulting:
             slot_remap(predictions, _FakeEngine(_events([])))
 
 
+class TestTheTableParameterIsAdditiveOnly:
+    """`table` (task 5, real-Postgres verification) defaults to `"events"`
+    so every real caller -- `_pull_predictions` and
+    `scripts/backfill_prediction_event_ids.py`, both of which call this
+    positionally with two arguments -- emits byte-for-byte the same SQL as
+    before. `scripts/verify_slot_adoption.py` is the only caller that
+    passes a non-default value, pointed at a `zz_` scratch table."""
+
+    def test_the_default_call_selects_from_events(self, monkeypatch) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_read_sql(sql, con, params=None):
+            captured["text"] = str(sql)
+            return _events([])
+
+        monkeypatch.setattr("capitalscan.jobs.sync.pd.read_sql", fake_read_sql)
+        predictions = _predictions([(10, 0, "h1", "AA", "2026-09-09", "bb_lower_touch", "touch")])
+        slot_remap(predictions, _FakeEngine(_events([])))
+        assert 'FROM "events"' in captured["text"]
+
+    def test_a_non_default_table_is_used_in_place_of_events(self, monkeypatch) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_read_sql(sql, con, params=None):
+            captured["text"] = str(sql)
+            return _events([])
+
+        monkeypatch.setattr("capitalscan.jobs.sync.pd.read_sql", fake_read_sql)
+        predictions = _predictions([(10, 0, "h1", "AA", "2026-09-09", "bb_lower_touch", "touch")])
+        _apply_slot_remap(
+            predictions, cast(Engine, _FakeEngine(_events([]))), table="zz_verify_events"
+        )
+        assert 'FROM "zz_verify_events"' in captured["text"]
+        assert 'FROM "events"' not in captured["text"]
+
+
 class TestItRefusesWhatItCannotDo:
     def test_a_frame_missing_the_natural_key_raises(self) -> None:
         frame = pd.DataFrame({"id": [1], "event_id": [2], "signal_type": ["bb_lower_touch"]})

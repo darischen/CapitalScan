@@ -51,12 +51,22 @@ interpolates the same template directly. A perturbation test swaps the
 template and asserts both renderings follow, so a second hand-written copy
 fails the suite.
 
-**2. An adopted prediction whose event research did not yet hold keeps a
-NULL `event_id` forever.** Adoption is insert-only (ADR 195), so a later
-pull will not fill the link in, and the pull's `unmapped` counter describes
-that night's frame rather than the log's state. Correct as designed; if the
-forward log needs those links, it wants a separate backfill that only sets
-`event_id` where it is currently NULL, and never touches anything else.
+**2. ~~An adopted prediction whose event research did not yet hold keeps a
+NULL `event_id` forever~~ — done 2026-09-20, ADR 197.** Adoption is
+insert-only (ADR 195), so a later pull was never going to fill the link in
+on its own. The actual cause was narrower than "event research did not yet
+hold": measured 2026-09-20, `_pull_predictions` resolved inbound
+`event_id` through predictions' natural key, which includes `signal_type`,
+and the Pi's intraday label never matches research's end-of-day one for the
+same bar (ADR 194) — 0 of 338 poller-written events matched, and all 100
+rows adopted that night carried a NULL `event_id` even though research held
+114 of those ticker-dates. `_apply_slot_remap` (ADR 197) resolves on the
+debounce slot instead, `(config_hash, ticker, signal_date, side,
+entry_kind)`, which is stable across the label disagreement.
+`scripts/backfill_prediction_event_ids.py` is the one-time repair for the
+100 rows already written before the fix landed: it sets `event_id` only
+where it is currently NULL, using the same slot rule, and touches no other
+column. Idempotent, `--dry-run` by default.
 
 ---
 

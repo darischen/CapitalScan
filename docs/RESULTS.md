@@ -8360,3 +8360,45 @@ scored against. Recorded as an open decision in `DECISIONS.md`.
 
 **The quantile fan gap is explained by the same query.** All 4,264 fan-less
 rows are one run at `1df5c2f`, before `ab1a77b` added the fan writer.
+
+## 2026-09-20 — Inbound adoption resolved nothing, measured and fixed (ADR 197)
+
+The 2026-09-20 nightly adopted 100 of the Pi's predictions and left every
+one with a NULL `event_id`. Measured before the fix, poller-written events
+on serving since 2026-09-08:
+
+| measurement | value |
+|---|---:|
+| poller-written events on serving since 2026-09-08 | 338 |
+| of those, exact natural-key match in research | **0** |
+| of those, research has any event for that ticker+date | 114 |
+| adopted rows in research carrying a NULL `event_id` | 100 of 100 |
+
+Cause: the inbound remap resolved `event_id` through the natural key
+`(config_hash, ticker, as_of, signal_type, entry_kind)`, which assumes the
+Pi and the end-of-day pass label a bar the same way. They cannot:
+`breach_live` has no session close to confirm against and emits
+`bb_lower_touch`, while the end-of-day pass sees the close still inside the
+band and writes `bull_close_below_lower` for the same bar (ADR 194).
+
+Fixed by resolving on the debounce slot instead of the label
+(`_apply_slot_remap`, ADR 197), verified two ways:
+
+- **Unit, against fakes** (`test_slot_remap.py`): every rule -- label
+  mismatch links, no event nulls, two events null, unrecognised
+  `signal_type` raises, the adopted row's own label is untouched.
+- **Against real Postgres**, `scripts/verify_slot_adoption.py`, on
+  `zz_`-prefixed scratch tables dropped in a `finally`:
+
+```
+[1] seeded 1 research event ('bull_close_below_lower') and 1 live prediction ('bb_lower_touch') in the same slot
+[2] natural-key resolution: 0 of 1 row(s) linked
+[3] slot resolution: event_id=81001, signal_type stayed 'bb_lower_touch', no_slot=0, ambiguous=0
+    added a second slot holding two events; 3 event(s) total
+[4] two-event slot: prediction id=600 event_id=nan, no_slot=0, ambiguous=1; unrelated prediction id=500 still resolves to event_id=81001.0
+dropped zz_verify_slot_events
+PASS: natural-key resolution finds nothing across a label mismatch, _apply_slot_remap links it without relabelling, and a two-event slot stays NULL rather than picking one
+```
+
+The 100 already-adopted NULL rows are repaired separately, once, by
+`scripts/backfill_prediction_event_ids.py` (`docs/BACKLOG.md`).
