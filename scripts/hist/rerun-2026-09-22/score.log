@@ -1,0 +1,67 @@
+store       : capitalscan_hist
+config_hash : e53e0ebd9a4e5be6
+train (all) : FrameReport(rows=124180, dropped_etf=7910, dropped_missing_sector=0, dropped_no_label=685816, dropped_untrained_type=0)
+validate    : FrameReport(rows=12408, dropped_etf=930, dropped_missing_sector=0, dropped_no_label=63345, dropped_untrained_type=0)
+
+train events per year:
+signal_date
+2002     3356
+2003     3581
+2004     6030
+2005     5598
+2006     5706
+2007     5965
+2008     3322
+2009     1966
+2010     7253
+2011     6812
+2012     5530
+2013     8041
+2014     7834
+2015     5984
+2016     5481
+2017     8937
+2018     8116
+2019     6012
+2020     7812
+2021    10844
+
+=== A_train2010: train from 2010-01-01, 88,656 events ===
+  steps: [590, 485, 520]
+
+=== B_train2002: train from 2002-01-01, 124,180 events ===
+  steps: [750, 824, 933]
+
+========================================================================
+POOLED on validate 2022-2023, by family (tolerance +/-0.05)
+========================================================================
+  A_train2010  peak      n_train=   88,656  cov_ok 10/10  mean|cov_err| 0.0123  mean_improve +13.65
+  A_train2010  terminal  n_train=   88,656  cov_ok 6/10  mean|cov_err| 0.0407  mean_improve +4.98
+  A_train2010  trough    n_train=   88,656  cov_ok 10/10  mean|cov_err| 0.0228  mean_improve +6.04
+  B_train2002  peak      n_train=  124,180  cov_ok 10/10  mean|cov_err| 0.0122  mean_improve +12.69
+  B_train2002  terminal  n_train=  124,180  cov_ok 7/10  mean|cov_err| 0.0321  mean_improve +5.35
+  B_train2002  trough    n_train=  124,180  cov_ok 10/10  mean|cov_err| 0.0146  mean_improve +6.89
+
+mean |coverage error| by family, year and regime  (THE question: 2022 / above)
+year                  2022.0                  2023.0                
+regime                 above     all   below   above     all   below
+family   arm                                                        
+peak     A_train2010  0.0397  0.0160  0.0093  0.0156  0.0183  0.0456
+         B_train2002  0.0359  0.0155  0.0098  0.0227  0.0253  0.0507
+terminal A_train2010  0.1651  0.0766  0.0482  0.0224  0.0186  0.0665
+         B_train2002  0.1531  0.0564  0.0260  0.0234  0.0205  0.0784
+trough   A_train2010  0.0909  0.0343  0.0162  0.0169  0.0143  0.0147
+         B_train2002  0.0828  0.0230  0.0105  0.0118  0.0090  0.0194
+
+validate events per cell:
+year    regime
+2022.0  above     1342.0
+        all       5411.0
+        below     4069.0
+2023.0  above     6356.0
+        all       6997.0
+        below      641.0
+
+results: C:\Users\daris\AppData\Local\Temp\claude\C--Users-daris-Desktop-School-CapitalScan\f5066a12-21e6-4b9e-9842-0b314b0419bd\scratchpad\hist-rerun\arms_results_v2.csv
+
+=== ARMS DONE ===

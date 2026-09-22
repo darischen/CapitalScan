@@ -1,0 +1,25 @@
+=== [Mon 18:56:32] START universe ===
+=== [Mon 19:24:30] END universe exit=0 elapsed=27m ===
+  universe 2026Q1 ok: universe: evaluated 1419 tickers as of 2026Q1
+  universe 2026Q2 ok: universe: evaluated 1419 tickers as of 2026Q2
+=== [19:24:30] universe done, 0 failure(s) ===
+=== UNIVERSE STAGE DONE ===
+=== [Mon 19:24:30] START events ===
+=== [Tue 02:49:25] END events exit=0 elapsed=444m ===
+correct only if the compute phase finished for this config; an early run counts
+honestly over fewer rows
+=== [02:49:25] END finalize exit=0 ===
+=== EVENTS CHUNKED DONE ===
+=== [Tue 02:49:25] START labels ===
+=== [Tue 03:40:52] END labels exit=0 elapsed=51m ===
+labels present now:
+fwd_ret_5d: 4097628 / 4701181
+peak_ret_5d: 933763 / 4701181
+=== LABELS DONE ===
+=== [Tue 03:40:52] START score ===
+=== [Tue 03:40:54] END score exit=1 elapsed=0m ===
+   AND e.split_key = %(split)s
+]
+[parameters: {'chash': 'e53e0ebd9a4e5be6', 'entry_kind': 'touch', 'split': 'train'}]
+(Background on this error at: https://sqlalche.me/e/20/f405)
+!!! score FAILED, chain stopped

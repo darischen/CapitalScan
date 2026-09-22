@@ -1,0 +1,46 @@
+subsample: 400 tickers
+events in subsample: 2803346
+start 02:49:46
+=== [02:49:46] START compute ===
+  chunk 14/16: 78960 rows (25 tickers)
+C:\Users\daris\Desktop\School\CapitalScan\capitalscan\jobs\cli.py:742: UserWarning: run_backtest(full_universe=False): cofire_count computed over this run's 25-ticker subset will NOT overwrite any existing universe-wide value in the database (excluded from this write's update_columns) — it is only correct within this subset. A following whole-universe run is required to correct it.
+  bt = run_backtest(
+backtest (25 tickers)... ----------------------- 25/25 0:01:27 0:00:00 0 errors
+  chunk 15/16: 66724 rows (25 tickers)
+C:\Users\daris\Desktop\School\CapitalScan\capitalscan\jobs\cli.py:742: UserWarning: run_backtest(full_universe=False): cofire_count computed over this run's 25-ticker subset will NOT overwrite any existing universe-wide value in the database (excluded from this write's update_columns) — it is only correct within this subset. A following whole-universe run is required to correct it.
+  bt = run_backtest(
+backtest (25 tickers)... ----------------------- 25/25 0:01:27 0:00:00 0 errors
+  chunk 16/16: 72172 rows (25 tickers)
+compute complete: 16 chunk(s) run, 0 already done
+cofire_count is not written by this phase — run `cscan backtest --phase 
+finalize` when every chunk is done
+=== [03:19:30] END compute exit=0 elapsed=1784s ===
+=== [03:19:30] START finalize ===
+finalize: cofire_count written on 4471347 rows for e53e0ebd9a4e5be6
+correct only if the compute phase finished for this config; an early run counts
+honestly over fewer rows
+=== [03:23:07] END finalize exit=0 elapsed=217s ===
+=== [03:23:07] START pathbackfill ===
+path backfill -------------------------------- 361/361 0:15:58 0:00:00 0 errors
+path backfill: events_processed=449282 skipped_unfilled=0 
+skipped_no_signal_bar=0 rows_written=4935948
+=== [03:39:29] END pathbackfill exit=0 elapsed=982s ===
+=== [03:39:29] START peaklabels ===
+    )
+    UPDATE events e SET
+        trough_ret_1d = CASE WHEN agg.n1 = 1 THEN agg.pk1 ELSE NULL END,
+        trough_ret_2d = CASE WHEN agg.n2 = 2 THEN agg.pk2 ELSE NULL END,
+        trough_ret_3d = CASE WHEN agg.n3 = 3 THEN agg.pk3 ELSE NULL END,
+        trough_ret_5d = CASE WHEN agg.n5 = 5 THEN agg.pk5 ELSE NULL END,
+        trough_ret_10d = CASE WHEN agg.n10 = 10 THEN agg.pk10 ELSE NULL END
+    FROM agg
+    WHERE e.id = agg.event_id
+    ]
+[parameters: {'config_hash': 'e53e0ebd9a4e5be6'}]
+(Background on this error at: https://sqlalche.me/e/20/f405)
+=== [03:40:31] END peaklabels exit=1 elapsed=62s ===
+!!! peaklabels FAILED
+labels present now:
+fwd_ret_5d: 4097628 / 4701181
+peak_ret_5d: 933763 / 4701181
+=== LABELS DONE ===
