@@ -8454,3 +8454,70 @@ on the workstation's local Postgres, 2026-09-20:
 95001 is the end-of-day copy E' and 95002 the poller event P. The
 backfill's `rowcount` of 1 for two planned rows is the `event_id IS NULL`
 guard refusing to overwrite 501, reported correctly by Postgres.
+
+---
+
+## 2026-09-22 — more history helps the downside and does not fix the transition
+
+**Question.** Would training on 2002–2009 as well — which includes 2008 —
+fix the model's worst failure: calibration at the *start* of a decline,
+while the index is still above its 200-day average? This is the free proxy
+for "is clean pre-2010 data worth buying?" (BACKLOG, data walls).
+
+**Method.** Two fits in `capitalscan_hist`, identical except where training
+begins. Same config (`e53e0ebd9a4e5be6`, today's, with `crit_mcap` dropped
+because share counts start 2008-12-31), same six-head model and seeds
+(ADR 173), same fixed validate split 2022-01-03 to 2023-12-29, same
+400-ticker label sample. The store's events were rebuilt under today's
+config first: its previous events were keyed to a superseded hash.
+Scripts, logs and the per-head CSV: `scripts/hist/rerun-2026-09-22/`.
+
+| | train rows | fit steps |
+|---|---:|---|
+| A, train from 2010 | 88,656 | [590, 485, 520] |
+| B, train from 2002 | 124,180 | [750, 824, 933] |
+
+**The target cell: 2022 with SPX above its 200-day SMA** (1,342 validate
+events). Mean |coverage error|:
+
+| family | shown as | A (2010) | B (2002) | change |
+|---|---|---:|---:|---:|
+| `peak` | `p_touch_*`, the headline | 0.0397 | 0.0359 | −10% |
+| `trough` | `p_adverse_*` | 0.0909 | 0.0828 | −9% |
+| `terminal` | nothing | 0.1651 | 0.1531 | −7% |
+
+A 7–10% improvement that leaves `trough` far outside the ±0.05 tolerance.
+**The transition is not fixed by more history.**
+
+**Pooled over 2022–2023, a trade-off rather than a win:**
+
+| family | A cov_ok | A mean\|err\| | B cov_ok | B mean\|err\| | skill A → B |
+|---|---:|---:|---:|---:|---|
+| `peak` | 10/10 | 0.0123 | 10/10 | 0.0122 | +13.65 → +12.69 |
+| `trough` | 10/10 | 0.0228 | 10/10 | **0.0146** | +6.04 → +6.89 |
+| `terminal` | 6/10 | 0.0407 | 7/10 | 0.0321 | +4.98 → +5.35 |
+
+By year, the cost shows: `peak` error in 2023 rises from 0.0183 to
+**0.0253 (+38%)**, most of it in the bull regime (above: 0.0156 → 0.0227),
+while `trough` 2023 improves (0.0143 → 0.0090).
+
+**Reading.** The 2000s teach the model about losses. That sharpens the
+downside family everywhere and bear years in particular, and it costs the
+headline upside family calibration in a bull market. It does not teach the
+model to recognise a decline beginning, which agrees with the 2026-09-07
+finding that the model fails during the transition, not during the bear
+market itself. The 2026-09-04 run, on the old model and terminal family
+only, pointed the same way (2022 error −23%); this run shows the gain was
+never where the target is.
+
+**Decision (owner, 2026-09-22): no purchase.** Clean pre-2010 data would be
+bought to sharpen `p_adverse_*`, not to fix the transition. The next lever
+for the transition is regime-aware, such as the untested per-regime
+calibration layer (BACKLOG, Session 26 item 3c).
+
+**Caveats.** One seed triple, so no variance estimate, and the 2022-above
+cell is 1,342 events. A 400-ticker label sample. Survivorship-biased added
+years (Lehman, Bear Stearns and the other failures absent), which
+understates what history could do — though not plausibly by enough to turn
+a 9% change into a fix. A fixed validate window, while production has used
+ADR 193's expanding window since 2026-09-10.

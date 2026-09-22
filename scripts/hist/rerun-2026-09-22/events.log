@@ -1,0 +1,35 @@
+tickers with bars: 1463
+chunk size 60 -> 25 chunks
+start 19:24:32
+  [1/25] ok in 1207s | events total now 6913034
+  [2/25] ok in 995s | events total now 7049608
+  [3/25] ok in 1081s | events total now 7196094
+  [4/25] ok in 1064s | events total now 7340335
+  [5/25] ok in 1099s | events total now 7493878
+  [6/25] ok in 1026s | events total now 7637517
+  [7/25] ok in 1106s | events total now 7787414
+  [8/25] ok in 1128s | events total now 7943769
+  [9/25] ok in 1045s | events total now 8088135
+  [10/25] ok in 1071s | events total now 8236289
+  [11/25] ok in 1090s | events total now 8388960
+  [12/25] ok in 1056s | events total now 8536265
+  [13/25] ok in 937s | events total now 8669224
+  [14/25] ok in 1089s | events total now 8819092
+  [15/25] ok in 1122s | events total now 8972075
+  [16/25] ok in 1113s | events total now 9125994
+  [17/25] ok in 1003s | events total now 9266166
+  [18/25] ok in 1082s | events total now 9408192
+  [19/25] ok in 1095s | events total now 9555245
+  [20/25] ok in 1041s | events total now 9694944
+  [21/25] ok in 1128s | events total now 9847535
+  [22/25] ok in 1180s | events total now 10004948
+  [23/25] ok in 1206s | events total now 10158943
+  [24/25] ok in 1247s | events total now 10321841
+  [25/25] ok in 331s | events total now 10368072
+=== [02:46:54] all chunks attempted, events=10368072 ===
+=== [02:46:55] START finalize (cofire_count) ===
+finalize: cofire_count written on 3618279 rows for e53e0ebd9a4e5be6
+correct only if the compute phase finished for this config; an early run counts
+honestly over fewer rows
+=== [02:49:25] END finalize exit=0 ===
+=== EVENTS CHUNKED DONE ===

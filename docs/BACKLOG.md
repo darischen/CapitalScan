@@ -720,6 +720,16 @@ downside of losing it.
   The user's decision 2026-09-04 is **free sources only for now**, so this
   stays closed.
 
+- **Tested 2026-09-22 with the free proxy, and it does not justify buying.**
+  Re-running the 2010-vs-2002 training-window test on `capitalscan_hist`
+  under today's model: adding 2002–2009 cuts the 2022 start-of-decline
+  cell's error by only 7–10% per family, leaving `trough` at 0.083 against
+  a ±0.05 tolerance. It clearly helps the downside family overall (`trough`
+  0.0228 → 0.0146) and **hurts the headline `peak` family in the 2023 bull
+  market** (0.0183 → 0.0253). Clean data would sharpen `p_adverse_*`; it
+  would not fix the transition. → RESULTS 2026-09-22. The lever for the
+  transition is regime-aware, not more years.
+
 ### Deferred by the 2026-09-04 pivot
 
 **Both entries here shipped and are deleted.** The dispersion model
