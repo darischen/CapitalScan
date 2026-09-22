@@ -16,6 +16,54 @@ deleting the entry loses nothing.
 
 # HIGHEST PRIORITY
 
+## `cscan events` is one core of per-bar pandas overhead — the next thing to fix
+
+Owner's call, 2026-09-22: top priority once the current work lands.
+
+**Measured 2026-09-21/22** while rebuilding `capitalscan_hist`'s events under
+today's config: 25 chunks of 60 tickers over 2002–2026, **~1,000–1,180 s
+per chunk**, about 7½ hours in total. The earlier single-process pass took
+4h40m. Nightly pays the same per-bar cost on a smaller daily batch.
+
+**Where the time goes**, established by measurement, not reasoning:
+
+- The worker Python process sat at **105% of one core**; Postgres showed
+  **no active query in 60 samples over 5 minutes**. It is CPU-bound in
+  Python, not waiting on the database.
+- `py-spy dump` on the worker, sampled repeatedly:
+  - `core/universe.py:517` **`in_trade` calls `sort_values` on every bar**,
+    from `jobs/compute.py:1267`. A full-history pass sorts millions of
+    times to answer a question that is constant within a quarter.
+  - `core/signals.py:186` / `:375` **`detect` reads each bar field through
+    `Series.__getitem__`**, and `run_events` pulls rows with `iloc`
+    (`_ixs` → `fast_xs`, which builds a mixed-dtype row object per call).
+  - Output rows are assembled through pandas index `insert`, one at a time.
+
+**The fix, cheapest first:**
+
+1. **Resolve `in_trade` once per ticker**, as a sorted date → flag lookup,
+   instead of sorting inside the per-bar call. Likely the largest single win.
+2. **Iterate plain tuples or NumPy arrays**, not pandas row objects, in the
+   `run_events` loop and at `detect`'s boundary. `detect`'s signature probe
+   (the look-ahead guarantee, TESTS §3) must not widen: it may still read
+   only `low`, `high`, `ts`, `ticker` from the bar and one indicator row.
+3. **Add `--workers`**, parallel across tickers — the long-standing gap below.
+   Spawn-safe on the workstation, per CLAUDE.md's platform rules.
+4. **Progress output**, so a long pass is not indistinguishable from a hang.
+
+Measure the chunk time before and after each step rather than assuming;
+the determinism test (identical config → identical output) must hold
+through all four.
+
+**A wrong lead, recorded so nobody repeats it.** One snapshot showed
+Postgres running `UPDATE events ... WHERE e.run_id = $1` and neither store
+indexes `events.run_id`, so an index was added to the throwaway
+`capitalscan_hist` (`zz_events_run_id`, built in 18 s). **It changed
+nothing**: the next chunks took 1,128 s and 1,180 s. The per-chunk fill-in
+UPDATE is not the bottleneck. A `run_id` index on production is therefore
+not worth a migration on this evidence.
+
+
 ## The Pi must be pulled LAST across a `config_hash` change
 
 Written 2026-09-10 while sequencing the bull-reversal rebuild, before it
