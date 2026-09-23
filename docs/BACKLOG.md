@@ -276,11 +276,20 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    ratio is what matters, reweighting moves coverage; if absolute count is
    what matters, it will not and 2b is required.
 
-   **2b. Rebuild on 2002-2021 -- now the justified test.** 2a refuted the
-   ratio explanation, which leaves count: 57,085 -> 126,252 decline events
-   is information reweighting cannot fabricate.
-   `capitalscan_hist` (11 GB) is on disk and was shelved after being judged
-   against a different question, so that negative result does not transfer.
+   **2b. ~~Rebuild on 2002-2021~~ -- RUN 2026-09-22, AND THE FALSIFIER
+   FAILS. Count is refuted too.** Roughly doubling the decline examples
+   (57,085 -> 126,252) moved the 2022 start-of-decline cell by 7-10% per
+   family and left `trough` at 0.083 against a +/-0.05 tolerance. A second
+   run then matched BOTH arms to production's window (train to 2026-03,
+   validate 2026-03..2026-09) and the remaining gap collapsed to ~0.002 per
+   family, inside seed noise, with skill slightly LOWER for the deeper arm.
+   So yesterday's gain was training staleness, not depth. -> RESULTS
+   2026-09-22, `scripts/hist/rerun-2026-09-22/`.
+
+   **By this item's own falsifier, that ends the label-shift line**: 2a
+   refuted ratio, 2b refutes count, and the text below says if neither moves
+   coverage the cause is still unfound. The remaining untested idea is
+   regime-aware calibration (item 3c), not more data.
 
    **Falsifier for both:** coverage errors should shrink toward zero with
    no architecture change. If neither moves them, label shift is wrong too

@@ -8521,3 +8521,45 @@ years (Lehman, Bear Stearns and the other failures absent), which
 understates what history could do — though not plausibly by enough to turn
 a 9% change into a fix. A fixed validate window, while production has used
 ADR 193's expanding window since 2026-09-10.
+
+---
+
+## 2026-09-22 (second run) — the gain was recency, not depth
+
+**Why this run exists.** The arms earlier today both stopped training at
+2021, so "deeper history helps" was confounded with "trained closer to the
+validation window". ADR 193 already measured recency as the larger effect
+(the same fit: 25/30 on 2022-23, 14/30 on 2026, back to 25/30 when the
+window was extended). This run gives both arms production's window shape
+and varies only the start year.
+
+    A   train 2010-01-01 .. 2026-03-13     (production's shape)
+    B   train 2002-01-01 .. 2026-03-13     (same, plus the 2000s)
+    both  validate 2026-03-13 .. 2026-09-03, 4,082 labelled events
+
+| family | shown as | A (2010) | B (2002) | gap | skill A -> B |
+|---|---|---:|---:|---:|---|
+| `peak` | `p_touch_*` | 0.0427, 6/10 | 0.0404, 6/10 | 0.002 | +20.29 -> +19.73 |
+| `trough` | `p_adverse_*` | 0.0153, 10/10 | 0.0137, 10/10 | 0.002 | +7.54 -> +7.18 |
+| `terminal` | nothing | 0.0197, 10/10 | 0.0156, 10/10 | 0.004 | +10.54 -> +10.48 |
+
+**Reading.** Every gap is ~0.002 on 4,082 events with no variance estimate,
+and the deeper arm's skill is marginally *lower*. Adding 2002-2009 on top of
+a recent window buys nothing measurable. The morning run's larger gaps came
+from the stale 2021 cutoff, not from the extra years.
+
+Both arms fail the same 4 of 10 `peak` heads on 2026, which agrees with
+ADR 193: `peak` is the weak family on recent data, and it backs every
+probability the site displays.
+
+**Consequences.**
+
+1. **BACKLOG item 2b is answered and its falsifier fails.** 2a refuted the
+   ratio explanation, this refutes count. By that item's own terms the
+   label-shift story is wrong and the transition failure has no standing
+   cause.
+2. **The data-purchase case is weaker than this morning suggested.** Even
+   the `trough` improvement was mostly the stale comparison. Clean pre-2010
+   data buys less than the 0.0228 -> 0.0146 figure implied.
+3. **Recency is the lever that works**, and production already pulls it
+   through ADR 193's expanding window.
