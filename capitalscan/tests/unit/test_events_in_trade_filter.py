@@ -181,14 +181,36 @@ def test_scan_filters_in_trade() -> None:
 
 
 def test_run_events_records_membership_rather_than_skipping() -> None:
-    """The other half: detection must no longer `continue` on the check."""
+    """The other half: detection must no longer `continue` on the check.
+
+    The detection loop moved into `_events_for_ticker` on 2026-09-22 (the
+    `--workers` split), and membership is now resolved once per ticker
+    through `core_universe.membership_for` instead of once per bar. The
+    property ADR 122 needs is unchanged and is what this asserts: the bar's
+    membership is READ, carried into the written row, and never used to skip
+    detection.
+    """
     text = (ROOT / "jobs" / "compute.py").read_text(encoding="utf-8")
-    body = text[text.index("def run_events(") : text.index("def scan(")]
-    assert "bar_in_trade = core_universe.in_trade(" in body
-    assert "if not core_universe.in_trade(" not in body, (
-        "run_events skips out-of-trade bars again; ADR 122 makes it record "
-        "membership so the ticker page can show a train-universe name."
+    body = text[text.index("def _events_for_ticker(") : text.index("def run_events(")]
+
+    assert "bar_in_trade = membership.in_trade_at(" in body
+    assert "bar_in_watch = membership.in_watch_at(" in body
+    assert "core_universe.membership_for(" in text, (
+        "membership must still come from core.universe: one implementation of "
+        "which population a ticker was in on a date (ADR 129)."
     )
+    assert "in_trade=bar_in_trade" in body and "in_watch=bar_in_watch" in body, (
+        "the membership read must reach the written row; recording it is the whole of ADR 122."
+    )
+    for skip in (
+        "if not core_universe.in_trade(",
+        "if not bar_in_trade",
+        "if not membership.in_trade_at(",
+    ):
+        assert skip not in body, (
+            "run_events skips out-of-trade bars again; ADR 122 makes it record "
+            "membership so the ticker page can show a train-universe name."
+        )
 
 
 # ---------------------------------------------------------------------------

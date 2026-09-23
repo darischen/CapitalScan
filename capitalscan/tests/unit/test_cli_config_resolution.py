@@ -286,8 +286,11 @@ def test_events_command_threads_resolved_params(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_CONFIG_FILE", _toml(tmp_path, "[signals]\nstoch_oversold = 25.0\n"))
     captured = {}
 
-    def _fake_run_events(tickers, target_start, target_end, engine=None, sp=None, config=None):
+    def _fake_run_events(
+        tickers, target_start, target_end, engine=None, sp=None, config=None, max_workers=1
+    ):
         captured["config"] = config
+        captured["max_workers"] = max_workers
         return SimpleNamespace(rows_written=0, rows_flagged=0)
 
     monkeypatch.setattr("capitalscan.jobs.compute.run_events", _fake_run_events)
@@ -296,6 +299,9 @@ def test_events_command_threads_resolved_params(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert captured["config"].signals.stoch_oversold == 25.0
+    # `--workers` defaults to serial: the nightly's five-day window is not
+    # worth process startup (`test_events_workers.py`).
+    assert captured["max_workers"] == 1
 
 
 # ---------------------------------------------------------------------------
