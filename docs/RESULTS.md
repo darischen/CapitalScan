@@ -8563,3 +8563,79 @@ probability the site displays.
    data buys less than the 0.0228 -> 0.0146 figure implied.
 3. **Recency is the lever that works**, and production already pulls it
    through ADR 193's expanding window.
+
+---
+
+## 2026-09-22 — a regime-split reliability table is worse than the pooled one
+
+**Null result, and the direction is the useful part.** BACKLOG item 3c
+proposed fitting ADR 174's reliability table separately above and below the
+index's 200-day SMA. It is worse in both time directions, on every
+aggregate. → ADR 199.
+
+**Why it looked promising.** Held at a fixed year, 2022's coverage error
+separates by a factor of three: mean absolute error **0.0778** with SPX
+above its 200-day SMA against **0.0236** below it. The model fails during
+the transition, not during the bear market. A calibration layer would
+sidestep the model entirely, and it refits on every `weekly` anyway, so the
+proposal was cheap to test and cheap to reverse.
+
+**Design.** One model fit, two calibration schemes, so the raw
+probabilities are identical between arms and a difference cannot be a
+different model — the flaw that made the 2026-09-06 reweighting experiment
+unable to answer its own question. Store `capitalscan_hist`, config
+`e53e0ebd9a4e5be6`, trained 2010-01-01..2021-12-31 (88,656 rows, six heads,
+seeds 590/600/517). Both evaluation windows are unseen by that fit, so both
+directions were run rather than picking one:
+
+| window | span | events | above | below |
+|---|---|---:|---:|---:|
+| W1 | 2022-01-01..2023-12-31 | 12,408 | 7,698 | 4,710 |
+| W2 | 2024-01-01..2026-09-03 | 26,897 | 25,326 | 1,571 |
+
+Metrics Kish-weighted over `cluster_id`: signed `bias` (weighted mean
+published `p_hat` minus weighted mean outcome), `ECE` over ten equal-mass
+bins, and Brier to catch a split that improves calibration by destroying
+resolution.
+
+**Result.**
+
+| calibrate → evaluate | arm | mean \|bias\| | ECE | Brier |
+|---|---|---:|---:|---:|
+| W1 → W2 | POOLED | **0.0150** | **0.0198** | 0.1892 |
+| W1 → W2 | SPLIT | 0.0185 | 0.0218 | 0.1896 |
+| W2 → W1 | POOLED | **0.0157** | **0.0245** | 0.1864 |
+| W2 → W1 | SPLIT | 0.0237 | 0.0292 | 0.1869 |
+
+SPLIT wins **10 of 36** field × cell × direction combinations. Brier is
+flat to four places in every row, so this is added noise rather than a
+calibration-for-resolution trade.
+
+**The cause is sample, and it is `core/calibration.py`'s own argument.**
+Equal-mass buckets under Kish weights need rows. The sharpest case: the
+below-the-line table fitted on W2 has `n_eff` **1,090** against the pooled
+**18,353**, and applying it to W1's below-the-line rows moves bias from
+0.0143 to **0.0431**. Nothing changed but the split.
+
+The single apparent gain is above-the-line fitted on W2 (bias 0.0165 →
+0.0154, ECE 0.0225 → 0.0215). The other direction reverses it (0.0140 →
+0.0179), which is what noise looks like.
+
+**Scope, because these numbers invite a wider reading than they earn.**
+Reliability tables cover the six binary published fields only — `p_touch_*`
+and `p_adverse_*` — and those already pass coverage 10/10 by family. Item
+3c's four failing heads are `terminal` heads backing `q05..q95`, which no
+reliability table touches. **This refutes the fix 3c proposed and does not
+explain the transition.** A regime-aware *quantile* adjustment is a
+different, untested thing, and ADR 172 already has that fan negative out of
+sample.
+
+**What generalises.** Any partition of the calibration sample — sector,
+drawdown bucket, signal type — must show its gain net of the `n_eff` it
+costs, measured in both time directions. That is now the standing bar.
+
+`capitalscan_hist` is survivorship-biased and drops `crit_mcap`, so POOLED
+against SPLIT on identical rows is the only comparison here that carries;
+neither arm's absolute level transfers to production.
+
+Script, log and per-cell CSV: `scripts/hist/regime-calibration-2026-09-22/`.
