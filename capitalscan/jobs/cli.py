@@ -530,6 +530,15 @@ def universe(
 def events(
     lookback: int = typer.Option(5, help="Days to look back"),
     tickers: Optional[str] = typer.Option(None, help="Comma-separated ticker list"),
+    workers: int = typer.Option(
+        1,
+        "--workers",
+        help=(
+            "Tickers detected in parallel, spawn-mode processes. Defaults to 1, "
+            "which is the nightly's shape: a five-day window over a few hundred "
+            "tickers is not worth the process startup. Use it for a rebuild."
+        ),
+    ),
 ) -> None:
     """Detect signal events."""
     from capitalscan.jobs import compute
@@ -559,7 +568,7 @@ def events(
             f"clamping start to {event_start.isoformat()}"
         )
         start = event_start
-    report = compute.run_events(resolved, start, end, config=config)
+    report = compute.run_events(resolved, start, end, config=config, max_workers=workers)
     console.print(
         f"events: {report.rows_written} written, "
         f"{report.rows_flagged} bars skipped (null indicator)"

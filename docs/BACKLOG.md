@@ -16,54 +16,6 @@ deleting the entry loses nothing.
 
 # HIGHEST PRIORITY
 
-## `cscan events` is one core of per-bar pandas overhead — the next thing to fix
-
-Owner's call, 2026-09-22: top priority once the current work lands.
-
-**Measured 2026-09-21/22** while rebuilding `capitalscan_hist`'s events under
-today's config: 25 chunks of 60 tickers over 2002–2026, **~1,000–1,180 s
-per chunk**, about 7½ hours in total. The earlier single-process pass took
-4h40m. Nightly pays the same per-bar cost on a smaller daily batch.
-
-**Where the time goes**, established by measurement, not reasoning:
-
-- The worker Python process sat at **105% of one core**; Postgres showed
-  **no active query in 60 samples over 5 minutes**. It is CPU-bound in
-  Python, not waiting on the database.
-- `py-spy dump` on the worker, sampled repeatedly:
-  - `core/universe.py:517` **`in_trade` calls `sort_values` on every bar**,
-    from `jobs/compute.py:1267`. A full-history pass sorts millions of
-    times to answer a question that is constant within a quarter.
-  - `core/signals.py:186` / `:375` **`detect` reads each bar field through
-    `Series.__getitem__`**, and `run_events` pulls rows with `iloc`
-    (`_ixs` → `fast_xs`, which builds a mixed-dtype row object per call).
-  - Output rows are assembled through pandas index `insert`, one at a time.
-
-**The fix, cheapest first:**
-
-1. **Resolve `in_trade` once per ticker**, as a sorted date → flag lookup,
-   instead of sorting inside the per-bar call. Likely the largest single win.
-2. **Iterate plain tuples or NumPy arrays**, not pandas row objects, in the
-   `run_events` loop and at `detect`'s boundary. `detect`'s signature probe
-   (the look-ahead guarantee, TESTS §3) must not widen: it may still read
-   only `low`, `high`, `ts`, `ticker` from the bar and one indicator row.
-3. **Add `--workers`**, parallel across tickers — the long-standing gap below.
-   Spawn-safe on the workstation, per CLAUDE.md's platform rules.
-4. **Progress output**, so a long pass is not indistinguishable from a hang.
-
-Measure the chunk time before and after each step rather than assuming;
-the determinism test (identical config → identical output) must hold
-through all four.
-
-**A wrong lead, recorded so nobody repeats it.** One snapshot showed
-Postgres running `UPDATE events ... WHERE e.run_id = $1` and neither store
-indexes `events.run_id`, so an index was added to the throwaway
-`capitalscan_hist` (`zz_events_run_id`, built in 18 s). **It changed
-nothing**: the next chunks took 1,128 s and 1,180 s. The per-chunk fill-in
-UPDATE is not the bottleneck. A `run_id` index on production is therefore
-not worth a migration on this evidence.
-
-
 ## The Pi must be pulled LAST across a `config_hash` change
 
 Written 2026-09-10 while sequencing the bull-reversal rebuild, before it
@@ -683,17 +635,6 @@ downside of losing it.
   do: `fetch_membership_changes`, `run_membership`, the `membership` CLI
   command and their tests. `fetch_current_constituents` stays.
 
-- **`cscan events` has no `--workers` and no progress output.** A single
-  pass over 2002-2026 ran **4h40m at ~99% of one core and wrote nothing**,
-  because it accumulates and upserts once. There is no way to distinguish
-  20% done from 80%, and a failure at hour nine loses everything. The
-  workaround that worked is ticker chunking
-  (`scratchpad/hist/build_events_chunked.sh`, 25 chunks of 60, each writing
-  on completion, with a done-file for restarts). **Chunk by ticker, never by
-  date**: `cofire_count` is the one cross-ticker feature and
-  `cscan backtest --phase finalize` computes it separately, which cli.py
-  says "cannot live inside a resumable per-chunk loop".
-
 - **CLAUDE.md says `cscan indicators` "writes nothing until it finishes".**
   Measured 2026-09-04: it writes incrementally (270k -> 614k -> 7.2M rows
   observed mid-run). The warning is stale and misleads anyone diagnosing a
@@ -1068,6 +1009,62 @@ in the measured population, where clusters cap at 6. It was computed on a
 population mixing entry kinds. Re-run through `research/returns.py`.
 
 ## Closed, refuted or answered — do not reopen
+
+## DONE 2026-09-22: `cscan events` is 8.6x faster serial, 16.6x with `--workers`
+
+Was the top item. Kept as the record of what the time actually was, because
+the first lead was wrong and the second was not where anyone expected.
+
+**Measured on `capitalscan_hist`, 20 tickers over 2002–2026**, the same
+52,683 rows and the same fingerprint `bafaf852fc869334` every run:
+
+| | seconds | vs original |
+|---|---:|---:|
+| original | 337.9 | — |
+| serial, after | 39.4 | **8.6x** |
+| `--workers 8` | 20.3 | **16.6x** |
+
+A 5-ticker run confirms the same output against the original code
+(`e6c4958fb12ee9bf`, 19,850 rows) on both paths.
+
+**Where the time went**, from `py-spy` on the worker rather than reasoning.
+The worker sat at 105% of one core with **no active Postgres query in 60
+samples over 5 minutes**: CPU-bound in Python, not waiting on the database.
+
+1. **Membership resolved per bar.** `in_trade` and `in_watch` each masked
+   and sorted the whole `universe` frame, and `run_events` called both for
+   every bar — 106,275 rows scanned twice per bar.
+   `core.universe.membership_for` resolves one ticker's timeline once and
+   answers by bisect; `in_trade`/`in_watch` delegate to it, so there is
+   still one implementation and ADR 129's fail-closed contract is unchanged.
+2. **Close-confirmed flags assigned inside the loop.** `bar[field] = ...`
+   on a *new* label takes pandas' missing-key insert path: **17.0 s of a
+   48.6 s two-ticker profile across 24,832 calls**. Now one vectorised pass
+   per ticker, same source rows (ADR 108).
+3. **The prior indicator row found by scanning every indicator date per
+   bar.** The dates are sorted, so it is a bisect.
+4. **`--workers`**, spawn-mode processes across tickers. Tickers are
+   independent — the debounce key is `(ticker, signal_date, bound)` — so
+   nothing crosses between them. Workers open their own connections and read
+   their own slices; **the parent's reads moved inside the serial branch**,
+   which is most of what held 8 workers to 1.3x. Rows are sorted before the
+   write so parallel and serial send the same rows in the same order
+   (ADR 060). **Default stays 1**: the nightly's five-day window is not
+   worth process startup.
+5. **Progress output** via the house `track`, so a long pass is no longer
+   indistinguishable from a hang.
+
+`detect`'s signature probe was not widened — it still reads only `low`,
+`high`, `ts`, `ticker` from the bar and one indicator row (TESTS §3).
+
+**A wrong lead, recorded so nobody repeats it.** One snapshot showed
+Postgres running `UPDATE events ... WHERE e.run_id = $1` and neither store
+indexes `events.run_id`, so an index was added to the throwaway
+`capitalscan_hist` (`zz_events_run_id`, built in 18 s). **It changed
+nothing**: the next chunks took 1,128 s and 1,180 s. The per-chunk fill-in
+UPDATE is not the bottleneck. A `run_id` index on production is therefore
+not worth a migration on this evidence.
+
 
 Removed from this file on 2026-09-21 because each is built, refuted, or
 answered. The full entries are in git history (`git log -p -- docs/BACKLOG.md`);

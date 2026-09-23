@@ -27,8 +27,9 @@ from __future__ import annotations
 
 import hashlib
 import math
+from bisect import bisect_left
 from collections.abc import Hashable
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date, timedelta
 from typing import Any, cast
 
@@ -52,6 +53,7 @@ from capitalscan.core.types import Bound, EntryKind
 from capitalscan.jobs import db_io
 from capitalscan.jobs.config import config_hash, split_key_for
 from capitalscan.jobs.ingest import IngestReport, run_job
+from capitalscan.jobs.progress import track
 
 # Rows written without a resolved `Config`. Matches what migration
 # d4a17c93f60b backfilled onto every pre-existing row: nothing recorded
@@ -166,6 +168,11 @@ def _merge_days_to_earnings(engine: Engine, indicators: pd.DataFrame) -> pd.Data
         out.append(group)
     return pd.concat(out, ignore_index=True)
 
+
+#: Rows above which `run_events` writes through `COPY` rather than a
+#: multi-VALUES insert. Measured 2026-09-22: the insert path costs about
+#: 0.5 ms a row and the staging table pays for itself well before this.
+_COPY_WRITE_THRESHOLD = 5_000
 
 #: Tickers computed and written as one unit. Bounds peak memory and makes
 #: progress visible; see `run_indicators` for why both matter.
@@ -1153,6 +1160,134 @@ def _one_row(frame: pd.DataFrame, key: Hashable, what: str, ticker: str) -> "pd.
     return cast("pd.Series", row)
 
 
+def _events_for_ticker(
+    ticker: str,
+    bar_group: pd.DataFrame,
+    ind_group: pd.DataFrame,
+    market: pd.DataFrame,
+    membership: core_universe.TickerMembership,
+    sp: SignalParams,
+    chash: str,
+    run_id: str,
+    splits: SplitParams,
+) -> tuple[list[dict], int]:
+    """Every event one ticker fires, and how many bars were skipped for a
+    null indicator. No IO: the caller supplies the frames.
+
+    **Extracted 2026-09-22 so the serial path and the worker path cannot
+    drift.** `--workers` runs this inside a spawn-mode process that read its
+    own slices; `--workers 1` calls it inline. One loop, one set of rules.
+    """
+    rows: list[dict] = []
+    seen: set[tuple] = set()
+    skipped_null = 0
+
+    ind_group = ind_group.set_index(ind_group["ts"].dt.date)
+    # `detect()` reads the bar's date from `bar.name` when set
+    # (core.signals._bar_date), falling back to the `ts` column only when
+    # `bar.name is None`. Without this, `bar.name` is the DataFrame's integer
+    # position and `detect()` would silently misread every signal_date as the
+    # epoch.
+    bar_group = bar_group.set_index(bar_group["ts"].dt.date, drop=False)
+
+    # **Close-confirmed flags attached in one vectorised pass** (2026-09-22).
+    # This was `bar[field] = ...` inside the loop, and assigning a NEW label to
+    # a Series takes pandas' missing-key insert path: 17.0 s of a 48.6 s
+    # two-ticker profile across 24,832 calls. Same values, same source rows --
+    # bar t's own indicator row (ADR 108), absent or NaN reading False.
+    for field in CLOSE_CONFIRMED_FIELDS:
+        if field in ind_group.columns:
+            aligned = ind_group[field].reindex(bar_group.index)
+            bar_group[field] = aligned.notna() & aligned.astype("boolean").fillna(False)
+        else:
+            bar_group[field] = False
+
+    # **Prior indicator rows resolved by position, not by scan** (2026-09-22).
+    # `ind_group.index[ind_group.index < bar_date]` walked every indicator date
+    # for every bar, then `.loc` built a Series from the label. The dates are
+    # sorted, so the previous one is a bisect away.
+    ind_dates = list(ind_group.index)
+    ind_rows = [ind_group.iloc[i] for i in range(len(ind_group))]
+
+    for _, bar in bar_group.iterrows():
+        bar_date = bar["ts"].date()
+        prior_pos = bisect_left(ind_dates, bar_date) - 1
+        if prior_pos < 0:
+            continue
+        prior_ind = ind_rows[prior_pos]
+
+        # Step 2: skip if any required field is null (DESIGN 4.7).
+        if any(pd.isna(prior_ind.get(f)) for f in ("bb_lower", "bb_upper", "k_full")):
+            skipped_null += 1
+            continue
+
+        # Step 3 (ADR 122): **record** trade-universe membership, do not filter
+        # on it. This was a `continue`, and it meant a train-universe name had
+        # bars, indicators, real band touches and no events at all -- SMCI: 192
+        # band touches since 2024, zero events, never once in the trade
+        # universe across 66 snapshots. A signal that fired is a fact about the
+        # ticker; whether you would have traded it is a different fact, and
+        # storing the second lets each consumer decide.
+        # `test_events_in_trade_filter.py` fails if a production read of
+        # `events` stops carrying the predicate.
+        bar_in_trade = membership.in_trade_at(bar_date)
+        bar_in_watch = membership.in_watch_at(bar_date)
+
+        for hit in core_signals.detect(bar, prior_ind, sp):
+            key = debounce_key(hit)
+            if key in seen:
+                continue
+            seen.add(key)
+            market_row = _one_row(market, bar_date, "market", ticker)
+            rows.append(
+                _build_event_row(
+                    hit,
+                    bar,
+                    prior_ind,
+                    market_row,
+                    chash,
+                    run_id,
+                    splits,
+                    in_trade=bar_in_trade,
+                    in_watch=bar_in_watch,
+                )
+            )
+    return rows, skipped_null
+
+
+def _events_one_ticker(
+    ticker: str,
+    target_start: date,
+    target_end: date,
+    chash: str,
+    run_id: str,
+    sp: SignalParams,
+    splits: SplitParams,
+    database_url: str | None,
+) -> tuple[list[dict], int]:
+    """Runs in a worker process under `ProcessPoolExecutor(spawn)`.
+
+    Opens its own connection and reads its own slices, the same shape as
+    `_compute_one_ticker` above: connections are not picklable, and pushing
+    one ticker's frames through a pickle costs more than re-reading them.
+    """
+    engine = db_io.get_engine(database_url, use_null_pool=True)
+    ind_start = target_start - timedelta(days=10)
+    bars = _read_bars_range(engine, [ticker], target_start, target_end)
+    indicators = _read_indicators_range(engine, [ticker], ind_start, target_end)
+    market = _read_market_days(engine, target_start, target_end).set_index("ts")
+    flags = _read_universe_flags(engine, [ticker], chash)
+    membership = core_universe.membership_for(flags, ticker)
+
+    ind_group = indicators.loc[indicators["ticker"] == ticker].sort_values("ts")
+    if ind_group.empty:
+        return [], 0
+    bar_group = bars.loc[bars["ticker"] == ticker].sort_values("ts")
+    return _events_for_ticker(
+        ticker, bar_group, ind_group, market, membership, sp, chash, run_id, splits
+    )
+
+
 def run_events(
     tickers: list[str],
     target_start: date,
@@ -1160,6 +1295,8 @@ def run_events(
     engine: Engine | None = None,
     sp: SignalParams | None = None,
     config: Config | None = None,
+    max_workers: int = 1,
+    quiet: bool = False,
 ) -> IngestReport:
     """`events` job (DESIGN §4.7). See module docstring for v1 scope.
 
@@ -1208,94 +1345,81 @@ def run_events(
         # Extra lookback so the earliest bar in range still has a t-1
         # indicator row inside the frame.
         ind_start = target_start - timedelta(days=10)
-        bars = _read_bars_range(engine, tickers, target_start, target_end)
-        indicators = _read_indicators_range(engine, tickers, ind_start, target_end)
-        market = _read_market_days(engine, target_start, target_end).set_index("ts")
-        universe_flags = _read_universe_flags(engine, tickers, chash)
+        parallel = max_workers > 1 and len(tickers) > 1
 
         # Debounce on `debounce_key(hit)` — the explicit (ticker, signal_date,
         # bound) tuple, never on the `SignalHit` dataclass itself (DESIGN
         # §4.7): a NaN field hashes stably but compares unequal, so a set
         # keyed on the dataclass would silently keep duplicates.
-        seen: set[tuple] = set()
         deduped: list[dict] = []
         skipped_null = 0
-        for ticker in tickers:
-            ind_group = indicators.loc[indicators["ticker"] == ticker].sort_values("ts")
-            if ind_group.empty:
-                continue
-            ind_group = ind_group.set_index(ind_group["ts"].dt.date)
-            bar_group = bars.loc[bars["ticker"] == ticker].sort_values("ts")
-            # `detect()` reads the bar's date from `bar.name` when set
-            # (core.signals._bar_date), falling back to the `ts` column only
-            # when `bar.name is None`. Without this, `bar.name` is the
-            # DataFrame's integer position and `detect()` would silently
-            # misread every signal_date as the epoch.
-            bar_group = bar_group.set_index(bar_group["ts"].dt.date, drop=False)
 
-            for _, bar in bar_group.iterrows():
-                bar_date = bar["ts"].date()
-                prior_dates = ind_group.index[ind_group.index < bar_date]
-                if len(prior_dates) == 0:
+        # **`--workers` (2026-09-22).** Tickers are independent: the debounce
+        # key is `(ticker, signal_date, bound)`, so nothing crosses between
+        # them and a per-ticker `seen` set is the same set. Workers re-read
+        # their own slices rather than receiving pickled frames, matching
+        # `run_indicators`. Spawn-safe per CLAUDE.md's platform rule.
+        #
+        # Rows are sorted before the write so a parallel run and a serial run
+        # send the same rows in the same order (ADR 060 determinism).
+        if parallel:
+            url = engine.url.render_as_string(hide_password=False)
+            done = 0
+            with ProcessPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(
+                        _events_one_ticker,
+                        ticker,
+                        target_start,
+                        target_end,
+                        chash,
+                        report.run_id,
+                        sp,
+                        resolved_config.splits,
+                        url,
+                    ): ticker
+                    for ticker in tickers
+                }
+                for future in track(
+                    as_completed(futures),
+                    description="events",
+                    total=len(futures),
+                    quiet=quiet,
+                    label="ticker",
+                ):
+                    rows, skipped = future.result()
+                    deduped.extend(rows)
+                    skipped_null += skipped
+                    done += 1
+            deduped.sort(key=lambda r: (r["ticker"], r["signal_date"], r["signal_type"]))
+        else:
+            # Read here rather than before the branch: the workers read their
+            # own slices, so reading the whole window in the parent as well
+            # would pay for it twice. Measured 2026-09-22, that double read
+            # is most of what held 8 workers to 1.3x on a 20-ticker run.
+            bars = _read_bars_range(engine, tickers, target_start, target_end)
+            indicators = _read_indicators_range(engine, tickers, ind_start, target_end)
+            market = _read_market_days(engine, target_start, target_end).set_index("ts")
+            universe_flags = _read_universe_flags(engine, tickers, chash)
+            for ticker in track(tickers, description="events", quiet=quiet, label="ticker"):
+                ind_group = indicators.loc[indicators["ticker"] == ticker].sort_values("ts")
+                if ind_group.empty:
                     continue
-                prior_ind = ind_group.loc[prior_dates.max()]
-
-                # Step 2: skip if any required field is null (DESIGN §4.7).
-                if any(pd.isna(prior_ind.get(f)) for f in ("bb_lower", "bb_upper", "k_full")):
-                    skipped_null += 1
-                    continue
-                # Step 3 (ADR 122): **record** trade-universe membership,
-                # do not filter on it.
-                #
-                # This was a `continue`, and it meant a train-universe name
-                # had bars, indicators, real band touches, and no events at
-                # all — SMCI: 192 band touches since 2024, zero events,
-                # never once in the trade universe across 66 snapshots. The
-                # ticker page could not show it, and the absence read as a
-                # broken job rather than as a policy.
-                #
-                # A signal that fired is a fact about the ticker. Whether
-                # you would have traded it is a different fact, and storing
-                # the second lets each consumer decide, rather than one
-                # decision being frozen into what the table contains.
-                #
-                # **Every consumer that must not widen now says so.**
-                # `scan()` most of all: its docstring named this skip as the
-                # reason it accepted a `universe` argument without filtering
-                # on it. `test_events_in_trade_filter.py` fails if a
-                # production read of `events` stops carrying the predicate.
-                bar_in_trade = core_universe.in_trade(universe_flags, ticker, bar_date)
-                bar_in_watch = core_universe.in_watch(universe_flags, ticker, bar_date)
-
-                # ADR 108: attach bar t's close-confirmed flags. Mirrors
-                # `research.candidates.scan_candidates` exactly, and shares
-                # its allowlist constant rather than restating the field —
-                # the two detection callers drifting apart on which fields
-                # cross from row t is precisely the failure this guards.
-                own_ind = _one_row(ind_group, bar_date, "indicators", ticker)
-                for field in CLOSE_CONFIRMED_FIELDS:
-                    value = None if own_ind is None else own_ind.get(field)
-                    bar[field] = False if value is None or pd.isna(value) else bool(value)
-
-                for hit in core_signals.detect(bar, prior_ind, sp):
-                    key = debounce_key(hit)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    market_row = _one_row(market, bar_date, "market", ticker)
-                    deduped.append(
-                        _build_event_row(
-                            hit,
-                            bar,
-                            prior_ind,
-                            market_row,
-                            chash,
-                            report.run_id,
-                            resolved_config.splits,
-                            in_trade=bar_in_trade,
-                            in_watch=bar_in_watch,
-                        )
-                    )
+                membership = core_universe.membership_for(universe_flags, ticker)
+                bar_group = bars.loc[bars["ticker"] == ticker].sort_values("ts")
+                rows, skipped = _events_for_ticker(
+                    ticker,
+                    bar_group,
+                    ind_group,
+                    market,
+                    membership,
+                    sp,
+                    chash,
+                    report.run_id,
+                    resolved_config.splits,
+                )
+                deduped.extend(rows)
+                skipped_null += skipped
 
         # **`run_events` does not tag clusters (ADR 151).** Ruling C5 assigns
         # the four cluster columns to the backtest exclusively, and this job
@@ -1317,13 +1441,26 @@ def run_events(
         # `is_cluster_head`; `cell_stats` does filter it, and reads only
         # priced backtest rows, which the backtest still tags.
         if deduped:
-            report.rows_written = db_io.upsert(
-                engine,
-                "events",
-                deduped,
-                ["config_hash", "ticker", "signal_date", "signal_type", "entry_kind"],
-                update_columns=_RUN_EVENTS_UPDATE_COLUMNS,
-            )
+            key = ["config_hash", "ticker", "signal_date", "signal_type", "entry_kind"]
+            # **`COPY` once the batch is big** (2026-09-22). `upsert` binds
+            # every row as parameters and SQLAlchemy compiles a multi-VALUES
+            # insert: 9.8 s of a 48.6 s two-ticker profile, and it grows with
+            # the batch. `copy_upsert` is the same contract through a staging
+            # table, already carrying `sync`'s bulk traffic. Small batches --
+            # the nightly's five-day window -- keep the simpler path, where
+            # staging would cost more than it saves.
+            if len(deduped) >= _COPY_WRITE_THRESHOLD:
+                report.rows_written = db_io.copy_upsert(
+                    engine,
+                    "events",
+                    pd.DataFrame(deduped),
+                    key,
+                    update_columns=_RUN_EVENTS_UPDATE_COLUMNS,
+                )
+            else:
+                report.rows_written = db_io.upsert(
+                    engine, "events", deduped, key, update_columns=_RUN_EVENTS_UPDATE_COLUMNS
+                )
         # See `db_io.fill_event_sector_and_mcap`: a post-pass, so neither
         # writer needs the lookup in its per-ticker path.
         db_io.fill_event_sector_and_mcap(engine, report.run_id)

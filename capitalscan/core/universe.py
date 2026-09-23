@@ -18,9 +18,12 @@ never sees a clock; the caller supplies the as-of row.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date
 from statistics import median
+from typing import Any
 
 import pandas as pd
 
@@ -509,12 +512,87 @@ def in_trade(universe_flags: pd.DataFrame, ticker: str, signal_date: date) -> bo
     function reads no database, file, or clock itself, same as the rest of
     this module.
     """
-    rows = universe_flags.loc[
-        (universe_flags["ticker"] == ticker) & (universe_flags["as_of"] <= signal_date)
-    ]
+    return membership_for(universe_flags, ticker).in_trade_at(signal_date)
+
+
+@dataclass(frozen=True)
+class TickerMembership:
+    """One ticker's universe timeline, resolved once.
+
+    **Why this exists.** `in_trade` and `in_watch` each masked the whole
+    `universe` frame and sorted it, and `run_events` called both for every
+    bar. Measured 2026-09-22 against `capitalscan_hist`: 106,275 universe
+    rows scanned twice per bar, which is most of why `cscan events` ran for
+    hours on one core with Postgres idle.
+
+    The answer only changes when a quarter's evaluation supersedes the last
+    one, so it is a step function over dates. Built once per ticker, read
+    per bar by `bisect`, and it carries the same fail-closed contract as the
+    functions above: a date before the first evaluation, or a ticker never
+    evaluated, is not a member (ADR 129).
+
+    Holds plain tuples rather than a frame so a caller cannot mutate the
+    timeline it was handed (project convention: never mutate in place).
+    """
+
+    as_of: tuple[date, ...]
+    trade: tuple[bool, ...]
+    watch: tuple[bool, ...]
+
+    def _index(self, signal_date: date) -> int:
+        """The last evaluation on or before `signal_date`, or -1 for none.
+
+        `bisect_right` over a sorted, duplicate-tolerant list lands just past
+        the final row sharing a date, which is the row a stable
+        `sort_values().iloc[-1]` would have taken — the two agree on ties by
+        construction rather than by luck.
+        """
+        return bisect_right(self.as_of, signal_date) - 1
+
+    def in_trade_at(self, signal_date: date) -> bool:
+        i = self._index(signal_date)
+        return bool(self.trade[i]) if i >= 0 else False
+
+    def in_watch_at(self, signal_date: date) -> bool:
+        i = self._index(signal_date)
+        return bool(self.watch[i]) if i >= 0 else False
+
+
+def membership_for(universe_flags: pd.DataFrame, ticker: str) -> TickerMembership:
+    """`ticker`'s membership timeline, for callers that ask per bar.
+
+    One pass over the frame. `in_trade` and `in_watch` above delegate here,
+    so there is a single implementation of "which population was this ticker
+    in on this date" — the property ADR 129's consolidation bought and that
+    a second fast path would have thrown away.
+    """
+    rows = universe_flags.loc[universe_flags["ticker"] == ticker]
     if rows.empty:
-        return False
-    return bool(rows.sort_values("as_of").iloc[-1]["in_trade"])
+        return TickerMembership((), (), ())
+    rows = rows.sort_values("as_of", kind="stable")
+    as_of = tuple(_as_date(v) for v in rows["as_of"])
+
+    def flags(column: str) -> tuple[bool, ...]:
+        """`in_watch` is absent on frames written before ADR 149's migration
+        and on callers that only ever asked about the trade universe. Absent
+        reads False, the same answer `bool(None)` gave before this existed --
+        a quarter never evaluated for watch membership is not watched."""
+        if column not in rows.columns:
+            return (False,) * len(as_of)
+        return tuple(bool(v) if v is not None and v == v else False for v in rows[column])
+
+    return TickerMembership(as_of, flags("in_trade"), flags("in_watch"))
+
+
+def _as_date(value: Any) -> date:
+    """`as_of` arrives as a `date` from psycopg and a `Timestamp` from pandas.
+
+    Normalised on the way in so comparisons never mix the two, which is the
+    shape of the timezone defect ADR 127 and `_one_row`'s docstring record.
+    """
+    if isinstance(value, date) and not isinstance(value, pd.Timestamp):
+        return value
+    return pd.Timestamp(value).date()
 
 
 def in_watch(universe_flags: pd.DataFrame, ticker: str, signal_date: date) -> bool:
@@ -535,16 +613,7 @@ def in_watch(universe_flags: pd.DataFrame, ticker: str, signal_date: date) -> bo
     migration, and `bool(None)` is False -- which is the correct reading:
     a quarter that was never evaluated for watch membership is not watched.
     """
-    rows = universe_flags.loc[
-        (universe_flags["ticker"] == ticker) & (universe_flags["as_of"] <= signal_date)
-    ]
-    if rows.empty:
-        return False
-    latest = rows.sort_values("as_of").iloc[-1]
-    if "in_watch" not in latest.index:
-        return False
-    value = latest["in_watch"]
-    return bool(value) if value is not None and value == value else False
+    return membership_for(universe_flags, ticker).in_watch_at(signal_date)
 
 
 def is_tradeable_instrument(
