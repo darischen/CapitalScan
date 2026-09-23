@@ -1721,3 +1721,48 @@ Pi itself, ~4.1-4.7 s through the Funnel, so the tunnel adds about half a
 second; the rest is the Pi's own render. The first request after enabling
 took 35 s, which was the one-time certificate issuance, not a recurring cold
 start.
+
+---
+
+## The `web` CI job fails on a transient Google Fonts fetch (2026-09-23)
+
+**Seen on PR #83, a docs-only branch that changed no file under `web/`.**
+The `web` job failed in 28 s; a re-run of the same commit passed in 47 s
+with nothing changed.
+
+```
+app/layout.tsx
+An error occurred in `next/font`.
+TypeError: Cannot read properties of null (reading '1')
+    at .../@next/font/dist/google/loader.js:122:78
+> Build failed because of webpack errors
+```
+
+`next/font` fetches the font CSS from Google at **build** time and parses
+it. When that fetch returns something unexpected, the regex match is
+`null` and the loader dereferences it, so a network fault surfaces as a
+`TypeError` inside webpack rather than as a fetch error. Nothing in the
+message says "network".
+
+**Why this needs writing down rather than shrugging at.** `CLAUDE.md` has
+a whole section teaching that a failing `next build` in CI is a real
+bundler fault -- the 2026-09-08 incident where a value import dragged the
+`pg` tree into the browser bundle, which `tsc --noEmit` could not see.
+That lesson is correct and it points the wrong way here. The two are told
+apart by one question:
+
+**Did the branch touch anything under `web/`?** If not, it is not your
+bundle. Re-run the job before reading a single line of import graph:
+
+```
+gh run rerun <run-id> --failed
+```
+
+If a re-run fails the same way twice on a branch that touched no web
+file, then it is not transient and the font dependency itself is worth
+looking at.
+
+**The Vercel preview check is separate and does not re-run with it.**
+`gh run rerun` covers the GitHub Actions jobs only, so the Vercel row can
+stay red against a deployment that failed for the same reason. On a
+docs-only branch that is cosmetic; the Pi serves the site, not Vercel.

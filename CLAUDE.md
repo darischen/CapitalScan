@@ -213,6 +213,8 @@ Run the build, **wait for it to exit**, confirm `.next/BUILD_ID` exists,
 and only then restart. Recovery is the same as any broken build:
 `rm -rf .next`, rebuild, restart.
 
+**A red `web` job on a branch that touched no `web/` file is probably not your bundle.** `next/font` fetches from Google at build time and a bad fetch surfaces as `TypeError: Cannot read properties of null` inside webpack, which reads exactly like the 2026-09-08 bundler fault above. Re-run it (`gh run rerun <run-id> --failed`) before reading any import graph; seen 2026-09-23, failed in 28 s and passed on re-run with nothing changed. -> `OPERATIONS.md`
+
 **`npm run build` invalidates a running `next start`.** The server holds its chunk hashes in memory; a build rewrites `.next/` and every asset 404s, rendering as unstyled text that looks like broken CSS. Restart the server after any build; never point `next dev` at a `.next/` a production server is serving. → `OPERATIONS.md`
 
 ---
