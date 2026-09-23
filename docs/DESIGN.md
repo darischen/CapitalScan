@@ -2624,6 +2624,22 @@ The default is also confluence-only, one click from every signal.
   `len(signal_types_all)`, so confluence is 3 and everything else is 1.
   ADR 102 removed it as a grid dimension for the same reason. This line
   predates that finding.
+- **The close-confirmed reversals are badged, never listed** (2026-08-19 for
+  the bear side, both sides from 2026-09-23). `bear_close_above_upper` and
+  `bull_close_below_lower` are filtered out of the signal-type list and
+  render as `↓ reversal` / `↑ reversal`. ADR 111 makes a signal actionable
+  only with a confirming reversal, so it is the one label that changes what
+  a reader does rather than describing what fired; in a list of four it read
+  like the least important of them. **The types stay in the backend
+  unchanged** — both are enabled in `enabled_signal_types` (ADR 194), both
+  reach `events` and `signal_types_all`, and `SIGNAL_LABELS` keeps a word
+  for each because the research tables render a signal type as a cell of its
+  own. What changed is display only. The exclusion set lives in one place,
+  `web/lib/format.ts::REVERSAL_TYPES`, because it was previously written out
+  per surface and the bull side was missed at every one of them: on
+  2026-09-22 LUV's bear close showed as a badge while EOG's bull close
+  showed as the words "bull close", and the screener showed the bull side
+  both ways at once.
 - Row click expands inline (signal_types_all, crossover flags, days-to-earnings, VIX, cofire count) before navigating.
 - **Default: all signal types shown,** with a toggle and count badge for filtering down.
 

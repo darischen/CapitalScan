@@ -254,13 +254,42 @@ export const SIGNAL_LABELS: Record<string, string> = {
   stoch_overbought: "overbought",
   confluence_low: "confluence low",
   confluence_high: "confluence high",
+  // **Neither close type renders in a signal-type LIST any more** (owner's
+  // call, 2026-09-23). Both are pulled out and shown as the `reversal`
+  // badge instead -- see `REVERSAL_TYPES` below. These two entries stay
+  // because `SIGNAL_LABELS` also backs the research tables
+  // (`Research.tsx`), where a signal type is a cell of its own and the
+  // badge treatment does not apply, and because the fallback for an
+  // unmapped type is the raw enum value: "bull_close_below_lower" in a
+  // 12px cell is how a label gap shows up.
   bear_close_above_upper: "bear close",
-  // ADR 144's mirror. Dormant in `enabled_signal_types`, so it cannot reach
-  // a row today -- present because the fallback for an unmapped type is the
-  // raw enum value, and "bull_close_below_lower" in a 12px cell is how a
-  // label gap shows up on the day the type is switched on.
+  // ADR 144's mirror, dormant until ADR 194 enabled it on 2026-09-10. This
+  // comment said "it cannot reach a row today" until 2026-09-23, three
+  // sessions after EOG fired it.
   bull_close_below_lower: "bull close",
 };
+
+/**
+ * The close-confirmed reversals, which are **badged rather than listed**.
+ *
+ * ADR 111 makes a signal actionable only with a confirming reversal, so
+ * this is the one label that changes what a reader does rather than
+ * describing what fired -- and in a list of four it read like the least
+ * important of them. Pulled out on 2026-08-19 (owner's request).
+ *
+ * **One list, read by every surface that renders a type list.** The bear
+ * side was excluded in two places and the bull side in neither, because
+ * every display path between ADR 144 and ADR 194 was written against rows
+ * where only the bear side could fire. The result reached a reader: on
+ * 2026-09-22 LUV's bear close showed as a badge and EOG's bull close
+ * showed as the words "bull close", so the same fact wore two different
+ * shapes -- and on the screener the bull side wore both at once, badge and
+ * text. A shared constant is what stops that recurring.
+ */
+export const REVERSAL_TYPES: readonly string[] = [
+  "bear_close_above_upper",
+  "bull_close_below_lower",
+];
 
 /** The em-dash placeholder. One spelling, so a missing value never renders
  * as a blank cell that reads like a zero. */
