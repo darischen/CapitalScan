@@ -768,3 +768,55 @@ streams through:
 
 No sequential scan of `events`, and the result streams in chunks as before,
 so the join adds neither client memory nor meaningful time.
+
+## `cscan events`, 8.6x serial and 16.6x parallel (2026-09-22)
+
+Measured on `capitalscan_hist` with `scripts/hist/rerun-2026-09-22/events_bench.py`, which
+times the command **and** fingerprints what it wrote: every column a change
+could plausibly alter except provenance (`run_id`, `git_sha`,
+`created_at`). A speedup that moves one number fails there instead of
+passing on wall clock alone.
+
+**20 tickers, 2002–2026, 52,683 rows, sha `bafaf852fc869334` every run:**
+
+| | seconds | vs original |
+|---|---:|---:|
+| original | 337.9 | — |
+| serial | 39.4 | **8.6x** |
+| `--workers 8` | 20.3 | **16.6x** |
+
+**5 tickers, 19,850 rows, sha `e6c4958fb12ee9bf` every run:**
+
+| | seconds |
+|---|---:|
+| original | 120.9 |
+| serial | 15.9 |
+| `--workers 4` | 13.3 |
+
+**Parallelism does nothing at five tickers** (13.3 s against 15.9 s): spawn
+startup and each worker's own reads are most of the run at that size. The
+gain appears at twenty. This is why `--workers` defaults to 1 — the
+nightly's five-day window over a few hundred tickers is the small case, not
+the large one.
+
+**The three serial wins, from `py-spy`, in order of size.** The worker sat
+at 105% of one core with no active Postgres query in 60 samples over five
+minutes, so this was never an IO problem:
+
+1. `in_trade`/`in_watch` masked and sorted the whole `universe` frame per
+   bar — 106,275 rows scanned twice for every bar. Now one bisect index per
+   ticker (`core.universe.membership_for`).
+2. `bar[field] = ...` on a new label took pandas' missing-key insert path:
+   **17.0 s of a 48.6 s two-ticker profile across 24,832 calls.** Now one
+   vectorised pass per ticker.
+3. The prior indicator row was found by scanning every indicator date per
+   bar. The dates are sorted, so it is a bisect.
+
+**The parallel path needed the parent's reads moved.** Workers read their
+own slices; leaving the parent's full-window reads in place paid for the
+window twice and held 8 workers to **1.3x**. They now live inside the
+serial branch.
+
+A wrong lead, so nobody re-runs it: an `events.run_id` index built on the
+hist store (18 s) changed nothing — the chunks after it took 1,128 s and
+1,180 s.
