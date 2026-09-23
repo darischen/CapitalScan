@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { NONE, SIGNAL_LABELS, fmt, signedPct, usd } from "@/lib/format";
+import { NONE, REVERSAL_TYPES, SIGNAL_LABELS, fmt, signedPct, usd } from "@/lib/format";
 import { EVENT_PAGE, type TickerEvent } from "@/lib/ticker";
 
 /**
@@ -75,6 +75,27 @@ function Outcome({ e }: { e: TickerEvent }) {
 }
 
 
+
+/**
+ * What differs between the two close-confirmed reversals, in one place.
+ *
+ * The screener holds the same pairing in its own `REVERSAL_SIDES`, which
+ * also carries the near-miss wording this table has no use for. Two
+ * shapes for two surfaces; the set of types they agree on is
+ * `REVERSAL_TYPES`, which is shared.
+ */
+const REVERSAL_SIDES = [
+  {
+    type: "bear_close_above_upper",
+    arrow: "↓",
+    title: "closed above the band and below its open",
+  },
+  {
+    type: "bull_close_below_lower",
+    arrow: "↑",
+    title: "closed below the band and above its open",
+  },
+] as const;
 
 export default function EventRows({
   sym,
@@ -191,7 +212,7 @@ export default function EventRows({
               </td>
               <td className="sig" data-label="Signal">
                 {typeList(e)
-                  .filter((t) => t !== "bear_close_above_upper")
+                  .filter((t) => !REVERSAL_TYPES.includes(t))
                   .map((t, i) => (
                     <span key={t}>
                       {i > 0 && <span className="sep-dot"> · </span>}
@@ -204,12 +225,19 @@ export default function EventRows({
                 {/* ADR 111's confirming reversal, badged rather than left
                     as a word in the list — same treatment as the screener,
                     because it is the one label that changes what a reader
-                    does rather than describing what fired. */}
-                {e.signalTypesAll.includes("bear_close_above_upper") && (
-                  <span className="reversal" title="closed above the band and below its open">
-                    ↓ reversal
+                    does rather than describing what fired.
+
+                    **Both sides, from one table** (2026-09-23). This branch
+                    named the bear type alone, so a bull close got no badge
+                    here and its raw label in the list instead. The arrow
+                    points the way the close went: down through its own open
+                    after closing above the band, up through it after
+                    closing below. */}
+                {REVERSAL_SIDES.filter((r) => e.signalTypesAll.includes(r.type)).map((r) => (
+                  <span key={r.type} className="reversal" title={r.title}>
+                    {r.arrow} reversal
                   </span>
-                )}
+                ))}
                 {/* NULL means the poller wrote it and clustering has not
                     run yet (ADR 054, ADR 119); `false` means it ran and
                     this is a repeat within a cluster. Different facts, so

@@ -3,6 +3,7 @@ import { InferenceCell } from "./InferenceCell";
 import TickerSearch from "./TickerSearch";
 import {
   DISPLAY_TZ_LABEL,
+  REVERSAL_TYPES,
   SIGNAL_LABELS,
   clock,
   fmt,
@@ -658,7 +659,7 @@ export function ScreenerTable({
                 that names the row and the rest are dimmed as context. */}
             <td className="sig" data-label="Signal">
               {typeList(row)
-                .filter((t) => t !== "bear_close_above_upper")
+                .filter((t) => !REVERSAL_TYPES.includes(t))
                 .map((t, i) => (
                   <span key={t}>
                     {i > 0 && <span className="sep-dot"> · </span>}
