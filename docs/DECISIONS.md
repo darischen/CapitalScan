@@ -257,6 +257,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 196 | Serving mints prediction ids above a floor; research adopts below it | **Decided 2026-09-20.** `ServingParams.serving_id_floor = 1_000_000_000`. Both stores minted `predictions.id` from one range, so `cscan sync` failed nightly from 2026-09-17 on serving's unique `event_id`, and 3 ids named a different signal on each side. Serving now mints at or above the floor, research below it, `pull_live_records` adopts serving-born rows insert-only, and the pull runs before `predict` so research keeps the number a reader saw. No `config_hash` move |
 | 197 | Inbound adoption resolves on the debounce slot, not the label | **Decided 2026-09-20.** `_pull_predictions` remapped `event_id` through the natural key `(config_hash, ticker, as_of/signal_date, signal_type, entry_kind)`, which assumes the Pi and the end-of-day pass label a bar the same way. Measured: of 338 poller-written events since 2026-09-08, **0** matched the natural key, 114 shared a ticker-date with a research event under a different label, and every one of the night's 100 adopted rows carried a NULL `event_id`. `_apply_slot_remap` resolves `(config_hash, ticker, signal_date, side, entry_kind)` instead — `debounce_key` plus the fill convention, `side` derived from `signal_type` through `core/cells.py`'s `LONG_SIGNALS`/`SHORT_SIGNALS`. Nothing is relabelled: the adopted row keeps the live `signal_type`; the event it links to keeps the end-of-day one. No `config_hash` move |
 | 198 | The S&P membership-changes scraper is retired; the frozen union stands | **Decided 2026-09-21**, owner's call of 2026-09-04. Wikipedia deleted the "Selected changes to the list" section, so `fetch_membership_changes` returns an 11-row navigation box. Its only job, building `data/universe_union.csv`, finished on 2026-08-01 (759 rows, 248 removal dates, 0 pending review). Retires the scraper, `run_membership` and `cscan membership`; the CSV becomes the permanent record of the 2010-2026 S&P union and the universe grows through the refresh and by hand. Amends how ADR 035 and ADR 055 were produced, not what they hold. Code removal still to do |
+| 199 | The reliability table is not split by market regime | **Decided 2026-09-22.** BACKLOG item 3c proposed fitting ADR 174's table separately above and below the index's 200-day SMA, since coverage error separates 0.0778 against 0.0236 within 2022. One fit, two calibration schemes, both time directions on `capitalscan_hist`: the split is **worse in both** (mean |bias| 0.0150 -> 0.0185 and 0.0157 -> 0.0237; ECE up both times; Brier flat), winning 10 of 36 field x cell x direction. Cause is sample, not regime -- the below-the-line table fitted on 2024-26 carries `n_eff` 1,090 against the pooled 18,353 and triples that cell's bias. Generalises: any partition of the calibration sample must show its gain net of the `n_eff` it costs. Refutes 3c's fix; does not explain the transition |
 
 ---
 
@@ -10448,3 +10449,81 @@ hazard. Closing that needs a survivorship-free data source, not a scraper.
 - Removal touches `wikipedia.py`, `ingest.py`, the `membership` CLI
   command and their tests. `fetch_current_constituents` stays: the nightly
   refresh depends on it.
+
+---
+
+## 199. The reliability table is not split by market regime
+
+Status: Decided 2026-09-22
+
+Decision. ADR 174's reliability table stays **pooled**. It is not fitted
+separately above and below the index's 200-day SMA, and no other regime
+partition of the calibration sample is adopted without evidence that clears
+the bar this one failed.
+
+Context. `BACKLOG.md` item 3c observed that coverage error separates by a
+factor of three within 2022 once the year is held fixed: mean absolute
+error 0.0778 with SPX above its 200-day SMA against 0.0236 below it. The
+model fails during the *transition*, not during the bear market. Item 3c
+proposed sidestepping the model entirely with a per-regime calibration
+layer, on the reasoning that a table is cheap and the model is not.
+
+Measurement. One model fit, two calibration schemes, `capitalscan_hist`
+(`scripts/hist/regime-calibration-2026-09-22/`). Raw probabilities are held
+fixed, so any difference is the calibration layer and cannot be a different
+model. Trained 2010-01-01..2021-12-31; both evaluation windows are unseen
+by that fit, so both directions are legitimate and both were run:
+
+    W1  2022-01-01 .. 2023-12-31   12,408 events, 7,698 above / 4,710 below
+    W2  2024-01-01 .. 2026-09-03   26,897 events, 25,326 above / 1,571 below
+
+All metrics Kish-weighted over `cluster_id`.
+
+| calibrate -> evaluate | arm | mean \|bias\| | ECE | Brier |
+|---|---|---:|---:|---:|
+| W1 -> W2 | POOLED | 0.0150 | 0.0198 | 0.1892 |
+| W1 -> W2 | SPLIT | 0.0185 | 0.0218 | 0.1896 |
+| W2 -> W1 | POOLED | 0.0157 | 0.0245 | 0.1864 |
+| W2 -> W1 | SPLIT | 0.0237 | 0.0292 | 0.1869 |
+
+**The split is worse in both directions**, on every aggregate, and wins
+only 10 of 36 field x cell x direction combinations. Brier is flat to four
+places, so it is not trading calibration for resolution -- it is adding
+noise.
+
+Rationale. The cause is sample, and it is `core/calibration.py`'s own
+argument turned on this proposal. Equal-mass buckets with Kish weights need
+rows; splitting halves them, and the thinner side is very thin. The
+sharpest case: the below-the-line table fitted on W2 carries `n_eff` 1,090
+against the pooled 18,353, and applying it to W1's below-the-line rows
+moves bias from 0.0143 to 0.0431, a threefold degradation caused by nothing
+but the split. The one apparent gain -- above-the-line fitted on W2, bias
+0.0165 -> 0.0154 -- reverses in the other direction (0.0140 -> 0.0179), so
+it is noise rather than an effect.
+
+Scope, stated because the numbers invite a wider reading than they earn.
+Reliability tables cover the six binary published fields only
+(`p_touch_*`, `p_adverse_*`), and those already pass coverage 10/10 by
+family. Item 3c's four failing heads are `terminal` heads backing
+`q05..q95`, which no reliability table touches. **This refutes the fix item
+3c proposed. It does not explain the transition**, and the transition
+remains open.
+
+Consequences.
+
+- Item 3c's calibration-layer proposal is closed. A regime-aware *quantile*
+  adjustment for the `terminal` fan is untested and is a different thing;
+  if it is ever attempted it needs its own falsifier, and ADR 172 already
+  says that fan is negative out of sample.
+- The general form of the finding binds beyond regime: **any partition of
+  the calibration sample must show its gain net of the `n_eff` it costs.**
+  Splitting by sector, by drawdown bucket or by signal type meets the same
+  objection and needs the same two-direction test to answer it.
+- `CLAUDE.md`'s standing note holds unchanged -- the shipped probabilities
+  run about 5 points low, ranking is the durable output, the level is not,
+  and recalibrating on the forward log stays forbidden.
+
+Cost of being wrong. Low and reversible. The tables are refitted on every
+`weekly`, so adopting a split later costs one refit and no migration. The
+cost of having adopted it now would have been a published number that is
+noisier in exactly the regime a reader cares about most.

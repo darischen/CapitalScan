@@ -142,13 +142,31 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    (0.0236 -> 0.0377), so confirm the gate still passes 26/30 before
    adopting.
 
-3c. **The transition is still unexplained and unfixed.** The model can be
-   told what the market is doing and does not convert that into a wider
-   distribution at the top without over-widening everywhere. Open
-   questions, none tested: is it capacity, too few transition-with-bad-
-   outcome examples, or a real limit? A per-regime calibration layer
-   (ADR 174's reliability table fitted separately above and below the
-   200-day line) would sidestep the model entirely and is cheap.
+3c. **The transition is still unexplained, and the calibration fix is now
+   refuted too.** The model can be told what the market is doing and does
+   not convert that into a wider distribution at the top without
+   over-widening everywhere. Open questions, none tested: is it capacity,
+   too few transition-with-bad-outcome examples, or a real limit?
+
+   **The per-regime calibration layer -- ADR 174's reliability table fitted
+   separately above and below the 200-day line -- was MEASURED 2026-09-22
+   AND IS WORSE.** One fit, two calibration schemes, both time directions
+   on `capitalscan_hist`: mean |bias| 0.0150 -> 0.0185 calibrating on
+   2022-23, and 0.0157 -> 0.0237 calibrating on 2024-26. ECE up both times,
+   Brier flat, winning 10 of 36 field x cell x direction. The cause is
+   sample, not regime: the below-the-line table carries `n_eff` 1,090
+   against the pooled 18,353 and triples that cell's bias on its own.
+   **Do not retry it**, and note the general form -- any partition of the
+   calibration sample must show its gain net of the `n_eff` it costs, in
+   both directions. ADR 199, RESULTS 2026-09-22,
+   `scripts/hist/regime-calibration-2026-09-22/`.
+
+   **It also does not touch the failing heads**, which is worth stating
+   because the numbers read wider than they are. Reliability tables cover
+   the six binary published fields only, and those already pass coverage
+   10/10 by family. The four failures are `terminal` heads backing
+   `q05..q95`. A regime-aware *quantile* adjustment is a different and
+   untested thing, and ADR 172 has that fan negative out of sample.
 
    Measured as a 2x2 with the year held fixed, the regime separates by a
    factor of three within 2022:
@@ -240,8 +258,10 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
 
    **By this item's own falsifier, that ends the label-shift line**: 2a
    refuted ratio, 2b refutes count, and the text below says if neither moves
-   coverage the cause is still unfound. The remaining untested idea is
-   regime-aware calibration (item 3c), not more data.
+   coverage the cause is still unfound. Regime-aware calibration was the
+   last idea standing and **it fell on 2026-09-22** (item 3c, ADR 199), so
+   nothing on this list is now untested. The cause is unfound and no
+   proposal on the table addresses it.
 
    **Falsifier for both:** coverage errors should shrink toward zero with
    no architecture change. If neither moves them, label shift is wrong too
