@@ -62,6 +62,67 @@ pull to "keep it in sync" is the mistake.
 
 ## Open
 
+### Where Session 30 left off (2026-09-22/23) — read this first
+
+Four things shipped, three of them measured rather than reasoned. All three
+machines are at `d46ec80`.
+
+**1. `cscan events` is 8.6x faster serial, 16.6x with `--workers`**
+(2026-09-22, PR #82). Per-bar pandas overhead: membership re-resolved per
+bar, close-confirmed flags assigned through pandas' missing-key insert path
+(17.0 s of a 48.6 s profile), and the prior indicator row found by scanning
+every date. Byte-identical output on both paths. Nightly's `events` step
+went 3.5 -> 2.0 min in the wild. Full entry in *Closed*; timings in
+`TIMINGS.md`.
+
+**2. Regime-aware calibration is refuted** (ADR 199, PR #83). Item 3c's
+proposal -- fit the reliability table separately above and below the
+200-day line -- is **worse in both time directions** (mean |bias| 0.0150 ->
+0.0185 and 0.0157 -> 0.0237), winning 10 of 36 field x cell x direction.
+The cause is sample, not regime: the thin side carries `n_eff` 1,090
+against the pooled 18,353. **Nothing on the 3c list is now untested**, and
+the transition remains unexplained with no proposal on the table.
+
+**3. The forward log was stalled and is not any more** (ADR 200, PR #86).
+`cscan outcomes` had resolved **0 predictions on four consecutive nights**
+with every nightly step reporting `ok`. `peak_labels` wrote labels for
+`in_trade` rows; `path_backfill`, which produces the data it reads, prices
+`(in_trade OR in_watch)`. One predicate of difference, and 2,767
+predictions sat on events with a complete path, an entry price and no
+label. Widening it resolved **1,350 on the first run** -- the log went
+8,293 -> 9,643, +16% in one command.
+
+**4. The bull close is badged like the bear one** (PR #85). Display only;
+both types stay enabled and unchanged in the backend. `DESIGN.md` §11.2.
+
+**What this session is a lesson about, and it happened twice.** Both real
+defects were **two places that had to agree, with nothing connecting
+them**: the reversal type list (excluded in two components, both naming the
+bear side alone) and the label population (`in_trade` against
+`(in_trade OR in_watch)`). Neither raised an error, because a job asked for
+a narrower population and delivering it exactly is not failing. Both are
+now tied together by a shared constant plus a test that names which side
+moved -- `web/lib/format.ts::REVERSAL_TYPES` and
+`test_label_scope_matches_path.py`.
+
+**Open, small, and deliberate:**
+
+- **22,967 unresolved predictions are `cosmetic = true` and will never
+  resolve. That is correct.** They sit on events in neither universe
+  (ADR 178), which are excluded from `path` on purpose -- 3,609,960 of them
+  took `path_capture` from 97 s to over an hour on 2026-09-08. Verified
+  2026-09-23: every row in that residual carries the flag. **Do not
+  re-raise this as a forward-log gap.**
+- **Nightly grows by ~5 minutes.** `peak_labels` goes 3.0 -> ~8 min at the
+  widened scope (8m22s measured on the backfill run, which also swept
+  history in one pass). Measured total is **49.9-51.0 min** across the last
+  six 16-step nights, so expect ~55. Confirm against the 13:15 run before
+  quoting it; one measurement is one regime. The dominant costs are
+  elsewhere: `actions` 13.7 min and `shares` 10.1 min are half the run.
+- **Item 7's completion date needs re-deriving from measured nightlies**,
+  not from the prediction count. See that item for why the old estimate was
+  wrong.
+
 ### Deferred from the slot-keyed adoption review (2026-09-20)
 
 Six minors the branch's reviews found and deliberately did not fix. None
