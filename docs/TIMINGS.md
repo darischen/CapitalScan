@@ -820,3 +820,55 @@ serial branch.
 A wrong lead, so nobody re-runs it: an `events.run_id` index built on the
 hist store (18 s) changed nothing — the chunks after it took 1,128 s and
 1,180 s.
+
+## `cscan nightly` on `wivie`, eight consecutive nights (2026-09-23)
+
+The budget in `CLAUDE.md` read **42m27s** from a single 2026-09-15 run.
+That figure was one night and one shape. Measured from `runs` across the
+eight nights to 2026-09-23, span from the first step's `started_at` to the
+last step's `finished_at`:
+
+| day | steps | first start | last end | total |
+|---|---:|---|---|---:|
+| 2026-09-23 | 16 | 13:15:16 | 14:05:07 | **49.9 min** |
+| 2026-09-22 | 16 | 13:15:16 | 14:06:06 | 50.8 |
+| 2026-09-21 | 16 | 13:15:41 | 14:06:40 | 51.0 |
+| 2026-09-20 | 13 | 13:15:17 | 13:58:09 | 42.9 |
+| 2026-09-19 | 13 | 13:15:17 | 13:56:41 | 41.4 |
+| 2026-09-18 | 15 | 13:15:46 | 14:04:52 | 49.1 |
+| 2026-09-17 | 15 | 13:15:46 | 14:04:44 | 49.0 |
+| 2026-09-16 | 15 | 13:15:27 | 14:04:28 | 49.0 |
+
+**The two short nights are a different shape, not a faster run.** They
+carry 13 steps against 16. Compare within a step count or the number means
+nothing -- which is exactly how the 42-minute budget came to describe a
+50-minute job.
+
+**Steady state at 16 steps is 49.9-51.0 min**, a 1.1-minute spread across
+three nights, so this one is unusually well behaved for a figure in this
+file.
+
+**Where the time actually goes** (2026-09-23, minutes):
+
+| step | min | | step | min |
+|---|---:|---|---|---:|
+| `actions` | **13.7** | | `backtest` | 2.9 |
+| `shares` | **10.1** | | `path_capture` | 2.1 |
+| `bars_hourly` | 4.6 | | `events` | 2.0 |
+| `bars_daily` | 4.3 | | `predict` (score) | 1.5 |
+| `sync` | 3.1 | | `indicators` | 1.4 |
+| `peak_labels` | 3.0 | | `earnings` | 0.5 |
+
+`actions` and `shares` are **47% of the run between them**, and neither has
+ever been optimised. Every step anyone has tuned is in the bottom half.
+
+**Two changes land on this baseline:**
+
+- `events` 3.5 -> 2.0 min, the 2026-09-22 speedup arriving on the schedule.
+- `peak_labels` 3.0 -> **~8 min** from 2026-09-23 (ADR 200): the population
+  widened from 495,730 to 828,627 events, and the run that did it took
+  **8m22s for 1,657,254 rows** -- though that one also swept history in a
+  single pass, so steady state should sit under it. **Unmeasured at time of
+  writing**; the 13:15 run on 2026-09-24 is the first clean measurement.
+
+So expect **~55 min** and confirm rather than quote it.
