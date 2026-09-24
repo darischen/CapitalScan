@@ -715,23 +715,27 @@ downside of losing it.
 
 ### Bugs found in flight and NOT fixed
 
-- **`fetch_membership_changes()` returns a navigation box, not the changes
-  table.** Wikipedia deleted the "Selected changes to the list" section, so
-  `tables[1]` is now a sector navbox and the function returns 11 rows of
-  garbage. Its one caller is `run_membership()` (`cscan membership
-  --backfill`), which raises a clear error rather than corrupting anything,
-  and **nightly is unaffected** -- `run_tickers_refresh` uses only
-  `fetch_current_constituents` and the SEC CIK lookup. The user's decision
-  (2026-09-04) is to **retire it**: the universe has expanded past the S&P
-  500 into NYSE, Nasdaq and ETFs, so an S&P-membership-changes scraper is
-  vestigial. **Decided in ADR 198 (2026-09-21).** Code removal is still to
-  do: `fetch_membership_changes`, `run_membership`, the `membership` CLI
-  command and their tests. `fetch_current_constituents` stays.
+- **~~`fetch_membership_changes()` returns a navigation box~~ -- REMOVED
+  2026-09-24.** Wikipedia deleted the "Selected changes to the list"
+  section, so `tables[1]` became a sector navbox returning 11 rows of
+  garbage. Retired per the owner's 2026-09-04 call and ADR 198: the
+  universe has expanded past the S&P 500 into NYSE, Nasdaq and ETFs, so an
+  S&P-membership-changes scraper is vestigial. Gone now:
+  `fetch_membership_changes`, `run_membership`, `UniverseFrozenError`,
+  `is_reviewed`, the `cscan membership` command and
+  `test_membership_freeze.py`. **`fetch_current_constituents` stays** --
+  `run_tickers_refresh` needs it, and nightly never touched the removed
+  path. `data/universe_union.csv` stays as the permanent record of the
+  2010-2026 union. **The ADR was written 2026-09-21 and the code lived
+  three more days**; a decision is not a deletion.
 
-- **CLAUDE.md says `cscan indicators` "writes nothing until it finishes".**
-  Measured 2026-09-04: it writes incrementally (270k -> 614k -> 7.2M rows
-  observed mid-run). The warning is stale and misleads anyone diagnosing a
-  slow run.
+- **~~CLAUDE.md says `cscan indicators` "writes nothing until it
+  finishes"~~ -- FIXED 2026-09-24.** Measured 2026-09-04: it writes
+  incrementally (270k -> 614k -> 7.2M rows observed mid-run), because
+  `run_indicators` moved to per-chunk writes on 2026-08-26. The stale
+  warning survived **twenty days** after being recorded here as false,
+  which is the part worth keeping: an entry that names a defect in
+  another document does not fix it, and nobody re-reads the entry.
 
 - **All model numbers before 2026-09-04 came from unseeded initialisations.**
   `_run` called `module_factory()` *before* `torch.manual_seed(seed)`, so

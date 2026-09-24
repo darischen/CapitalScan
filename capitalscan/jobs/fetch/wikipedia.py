@@ -88,30 +88,3 @@ def fetch_current_constituents() -> pd.DataFrame:
     df = cast(pd.DataFrame, tables[0].copy())
     df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
     return cast(pd.DataFrame, df.rename(columns={"symbol": "ticker"}))
-
-
-@cached(
-    source="wikipedia_sp500_v2",
-    key_fn=lambda: f"membership_changes_{date.today():%Y-%m-%d}",
-)
-def fetch_membership_changes() -> pd.DataFrame:
-    """The second table on the page: historical adds and removes.
-
-    Wikipedia's "Selected changes to the list" table has a two-row header
-    (Effective Date / Added ticker,security / Removed ticker,security /
-    Reason), which `pandas.read_html` flattens into a `MultiIndex`;
-    collapse it to single names here so downstream code sees plain
-    columns.
-
-    Two distinct header shapes have to collapse correctly. A `colspan`
-    group ("Added" over "Ticker","Security") leaves an `Unnamed:` filler
-    on one level, which is dropped. A `rowspan` cell ("Effective Date"
-    covering both header rows) is repeated verbatim on *both* levels,
-    which would otherwise join into `effective_date_effective_date`.
-    """
-    tables = _get_tables(SP500_URL)
-    df = cast(pd.DataFrame, tables[1].copy())
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [_flatten_header(col) for col in df.columns]
-    df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
-    return df

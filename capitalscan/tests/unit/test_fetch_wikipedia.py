@@ -12,7 +12,6 @@ from __future__ import annotations
 import time
 from typing import Any
 
-import pandas as pd
 import pytest
 import requests
 
@@ -98,35 +97,3 @@ class TestFetchers:
         assert "ticker" in df.columns
         assert "gics_sector" in df.columns
         assert list(df["ticker"]) == ["NVDA", "BRK.B"]
-
-    def test_membership_changes_flattens_the_two_row_header(
-        self, stub_page: None, monkeypatch: pytest.MonkeyPatch, tmp_path
-    ):
-        monkeypatch.setattr("capitalscan.jobs.fetch.base.CACHE_ROOT", tmp_path)
-        df = wikipedia.fetch_membership_changes()
-
-        assert not isinstance(df.columns, pd.MultiIndex)
-        # colspan groups keep their prefix; the rowspan cells collapse to one label.
-        assert list(df.columns) == [
-            "effective_date",
-            "added_ticker",
-            "added_security",
-            "removed_ticker",
-            "removed_security",
-            "reason",
-        ]
-
-    def test_rowspan_labels_are_not_doubled(
-        self, stub_page: None, monkeypatch: pytest.MonkeyPatch, tmp_path
-    ):
-        """`rowspan` repeats a label on both header levels; joining it doubles it.
-
-        `run_membership` resolves its date column by suffix, so
-        `effective_date_effective_date` would silently write empty dates
-        for every add and remove.
-        """
-        monkeypatch.setattr("capitalscan.jobs.fetch.base.CACHE_ROOT", tmp_path)
-        df = wikipedia.fetch_membership_changes()
-
-        assert "effective_date_effective_date" not in df.columns
-        assert [c for c in df.columns if c.endswith("date")] == ["effective_date"]

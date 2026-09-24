@@ -100,31 +100,6 @@ def tickers(
 
 
 @app.command()
-def membership(
-    backfill: bool = typer.Option(False, help="Backfill membership history"),
-    force: bool = typer.Option(False, help="Regenerate even if the CSV is reviewed and frozen"),
-) -> None:
-    """Build universe membership from S&P 500 history.
-
-    Seeds the ticker list; does not bound it. Tickers added by other means
-    (QQQ) are evaluated by the same criteria and are not touched here.
-    """
-    from capitalscan.jobs import ingest
-
-    if not backfill:
-        console.print("[yellow]nothing to do[/yellow]: pass --backfill")
-        raise typer.Exit(code=1)
-    try:
-        report = ingest.run_membership(force=force)
-    except ingest.UniverseFrozenError as exc:
-        # A frozen file is the expected end state, not a crash: report it as
-        # a refusal rather than letting a traceback reach the terminal.
-        console.print(f"[yellow]membership: nothing to do[/yellow] — {exc}")
-        raise typer.Exit(code=0) from None
-    console.print(f"membership: {report.notes}")
-
-
-@app.command()
 def bars(
     daily: bool = typer.Option(False, help="Fetch daily bars"),
     hourly: bool = typer.Option(False, help="Fetch hourly bars"),

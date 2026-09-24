@@ -35,7 +35,6 @@ from capitalscan.jobs.fetch import sec, wikipedia
 # Fetchers whose answer means "as of now". A constant key freezes them.
 POINT_IN_TIME_FETCHERS = [
     (wikipedia, "fetch_current_constituents"),
-    (wikipedia, "fetch_membership_changes"),
     (sec, "fetch_cik_lookup"),
 ]
 
