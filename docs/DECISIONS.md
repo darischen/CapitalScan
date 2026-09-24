@@ -258,6 +258,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 197 | Inbound adoption resolves on the debounce slot, not the label | **Decided 2026-09-20.** `_pull_predictions` remapped `event_id` through the natural key `(config_hash, ticker, as_of/signal_date, signal_type, entry_kind)`, which assumes the Pi and the end-of-day pass label a bar the same way. Measured: of 338 poller-written events since 2026-09-08, **0** matched the natural key, 114 shared a ticker-date with a research event under a different label, and every one of the night's 100 adopted rows carried a NULL `event_id`. `_apply_slot_remap` resolves `(config_hash, ticker, signal_date, side, entry_kind)` instead — `debounce_key` plus the fill convention, `side` derived from `signal_type` through `core/cells.py`'s `LONG_SIGNALS`/`SHORT_SIGNALS`. Nothing is relabelled: the adopted row keeps the live `signal_type`; the event it links to keeps the end-of-day one. No `config_hash` move |
 | 198 | The S&P membership-changes scraper is retired; the frozen union stands | **Decided 2026-09-21**, owner's call of 2026-09-04. Wikipedia deleted the "Selected changes to the list" section, so `fetch_membership_changes` returns an 11-row navigation box. Its only job, building `data/universe_union.csv`, finished on 2026-08-01 (759 rows, 248 removal dates, 0 pending review). Retires the scraper, `run_membership` and `cscan membership`; the CSV becomes the permanent record of the 2010-2026 S&P union and the universe grows through the refresh and by hand. Amends how ADR 035 and ADR 055 were produced, not what they hold. Code removal still to do |
 | 199 | The reliability table is not split by market regime | **Decided 2026-09-22.** BACKLOG item 3c proposed fitting ADR 174's table separately above and below the index's 200-day SMA, since coverage error separates 0.0778 against 0.0236 within 2022. One fit, two calibration schemes, both time directions on `capitalscan_hist`: the split is **worse in both** (mean |bias| 0.0150 -> 0.0185 and 0.0157 -> 0.0237; ECE up both times; Brier flat), winning 10 of 36 field x cell x direction. Cause is sample, not regime -- the below-the-line table fitted on 2024-26 carries `n_eff` 1,090 against the pooled 18,353 and triples that cell's bias. Generalises: any partition of the calibration sample must show its gain net of the `n_eff` it costs. Refutes 3c's fix; does not explain the transition |
+| 200 | Labels cover what path capture priced, and that is not a model change | **Decided 2026-09-23.** `cscan outcomes` resolved **0 predictions on four consecutive nights** with every nightly step `ok`: the forward log waits on `peak_ret_5d`, `peak_labels` wrote it for `in_trade` only, and `path_backfill` prices `(in_trade OR in_watch)`. 2,767 unresolved predictions sat on events with a complete `path`, an entry price and no label. Widens the label predicate to match. **Not the model change ADR 183 declined** -- that entry's own remedy pins the training population on the frame (`features.TRADE_ONLY`, two tests), so labels land on rows training does not select; `config_hash` does not move and cosmetic rows (ADR 178) stay out. Amends ADR 183's rationale, not its decision |
 
 ---
 
@@ -10527,3 +10528,91 @@ Cost of being wrong. Low and reversible. The tables are refitted on every
 `weekly`, so adopting a split later costs one refit and no migration. The
 cost of having adopted it now would have been a published number that is
 noisier in exactly the regime a reader cares about most.
+
+---
+
+## 200. Labels cover what path capture priced, and that is not a model change
+
+Status: Decided 2026-09-23. Amends ADR 183's rationale; its decision stands.
+
+Decision. `peak_labels` writes labels for `(in_trade OR in_watch)`, the same
+population `path_backfill` prices, instead of `in_trade` alone. The training
+frame keeps `features.TRADE_ONLY`. ADR 178's cosmetic rows stay out of both.
+
+Context, and how it surfaced. `cscan outcomes` reported **0 resolved
+predictions on four consecutive nights** (2026-09-20 to 2026-09-23) with
+`already scored` frozen at 8,293 and `windows still open` climbing ~400 a
+night, while every step of `nightly` reported `ok`. Nothing had broken. The
+forward log resolves a prediction only when its event carries
+`peak_ret_5d` and `fwd_ret_5d`; `predict` scores both universes, and only
+one of them could ever be labelled.
+
+Measured that evening on the live generation, of 29,354 unresolved
+predictions:
+
+| in_trade | in_watch | entry price | pending | has `path` |
+|---|---|---|---:|---:|
+| f | **t** | t | 2,767 | **2,767 (100%)** |
+| f | f | t | 21,251 | 3,741 |
+| t | f | f | 2,557 | 60 |
+| f | f | f | 1,716 | 0 |
+| t | f | t | 848 | 848 |
+
+The first row is the whole defect: every input present -- a complete path,
+an entry price, a written prediction -- and no label, because one query
+said `in_trade` where the query feeding it said `(in_trade OR in_watch)`.
+
+**Why this is not the change ADR 183 declined.** That entry considered
+removing the `in_trade` filter here and rejected it: "Removing the
+`in_trade` filter from `peak_labels` and rebuilding would produce them, and
+that is a **model change** -- it moves the training population and needs
+measuring." That reasoning was sound when written and is now superseded by
+ADR 183's own remedy. The same entry introduced the split that makes the
+frame carry its own filter: `build_serving_frame(include_watch=True)`
+widens serving to `TRADE_OR_WATCH` while **the training frame keeps
+`TRADE_ONLY`**, asserted by tests in `test_model_features.py` and
+`test_nightly_chain.py`. The training population is pinned by the frame,
+not by which rows happen to hold labels. Verified before this change:
+`training_sql` and `windowed_training_sql` (ADR 193's second entry point)
+both interpolate `TRADE_ONLY`, and no other consumer reads
+`peak_ret_*`/`trough_ret_*` outside a frame that carries it -- `features`,
+`predict` and `promotion` all do; no serving view touches those columns.
+
+So widening writes labels onto rows the training query does not select. The
+population the model fits is unchanged, and `config_hash` does not move.
+
+**What still binds.** The boundary that protects the frame is *cosmetic*
+exclusion, not the `in_trade` narrowing. ADR 178's rows are in neither
+universe, have no `path` to aggregate, and fail the new predicate anyway --
+which is the same guard `test_outcomes.py` already asserts on
+`path_backfill` after 3,609,960 cosmetic rows took `path_capture` from 97 s
+to over an hour on 2026-09-08. Generation scoping is also untouched: the
+label query stays on one `config_hash` (user's decision, 2026-08-09), so
+the 3,741 path-carrying rows in the superseded generation stay unlabelled
+deliberately.
+
+Consequences.
+
+- The forward log resumes. 2,767 predictions become resolvable immediately
+  and future `in_watch` predictions resolve on the same schedule as
+  `in_trade` ones.
+- `peak_labels` widens from 495,730 to 828,627 events on the live
+  generation, a 67% larger UPDATE. It ran 3.0 min at the old scope; the
+  first run also backfills the history in one pass.
+- **BACKLOG item 7's estimate was wrong and is corrected there.** "Roughly
+  2026-12 at ~15k events a month" assumed the whole prediction stream
+  accumulated. Only the labelled population ever resolved, so the true rate
+  was 8,293 rows total and latterly zero.
+- The general lesson, which is the reusable part: **two queries in separate
+  modules that must describe the same population, with nothing connecting
+  them, fail silently.** A job asked for a narrower population and
+  delivering it exactly is not failing, so no error appears anywhere.
+  `test_label_scope_matches_path.py` ties the two together and names which
+  side moved when they diverge.
+
+Cost of being wrong. Recoverable. Labels are recomputed from `path` on
+every run and are idempotent, so narrowing the predicate again restores the
+previous state on the next nightly; no row is destroyed. The exposure is
+that a later change could route `in_watch` labels into training without
+noticing -- which is what the `TRADE_ONLY` tests exist to catch, and why
+this ADR names them rather than leaving the dependency implicit.

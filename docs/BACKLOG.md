@@ -317,10 +317,22 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    predictive power, on one seed-triple each. Re-derive against the
    six-head model; the four-head numbers no longer describe the code.
 
-7. **Refit the reliability tables on clean data.** Blocked until item 1 has
-   accumulated enough resolved rows -- roughly 2026-12 at ~15k events a
-   month. The current intervals are fitted on validate and are a lower
-   bound on the true uncertainty.
+7. **Refit the reliability tables on clean data.** Blocked until the
+   forward log has accumulated enough resolved rows. The current intervals
+   are fitted on validate and are a lower bound on the true uncertainty.
+
+   **The old estimate here -- "roughly 2026-12 at ~15k events a month" --
+   was wrong, and the way it was wrong is worth keeping.** It counted the
+   prediction stream, but only the *labelled* population ever resolved:
+   `peak_labels` wrote labels for `in_trade` rows while `predict` scored
+   `in_trade` and `in_watch` both. Measured 2026-09-23: **8,293 rows had
+   ever resolved and the current rate was zero**, with 29,354 predictions
+   waiting and 0 resolved on each of four consecutive nights. ADR 200
+   widened the label predicate to match path capture, which unblocks 2,767
+   immediately and puts `in_watch` on the same footing going forward.
+   **Re-estimate from the measured rate after a week of nightlies rather
+   than from the prediction count** -- that substitution is what produced a
+   date nothing supported.
 
 ### `exit_reason = 'timeout'` covers two different facts
 

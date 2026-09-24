@@ -115,9 +115,28 @@ def extremum_label_sql(horizons: tuple[int, ...], family: str = "peak") -> str:
     WITH eo AS (
         SELECT id, {_ENTRY_OFFSET_SQL} AS entry_offset
         FROM events
-        -- ADR 122: labels follow the measured population.
+        -- **Label exactly what `path_capture` priced** (2026-09-23). This
+        -- read `AND in_trade` alone, one predicate narrower than
+        -- `path_backfill`'s `(in_trade OR in_watch)`, and the gap stalled
+        -- the forward log: `cscan outcomes` resolved **0 predictions on
+        -- four consecutive nights** while its backlog grew ~400 a night,
+        -- because `predict` scores both populations and only one of them
+        -- could ever be labelled. Measured that day: 2,767 unresolved
+        -- predictions sat on `in_watch` events that had a complete `path`
+        -- and no labels -- every input present, excluded by this line.
+        --
+        -- **This is not the model change ADR 183 declined.** That entry
+        -- reasoned that widening here "moves the training population";
+        -- the population is pinned by `features.TRADE_ONLY` on the frame
+        -- itself, not by which rows carry labels, and two tests assert it.
+        -- Widening writes labels on rows the training query does not
+        -- select. See ADR 200.
+        --
+        -- Cosmetic rows (ADR 178, in neither universe) stay out, which is
+        -- the boundary that actually protects the frame: they have no
+        -- `path` to aggregate and this predicate excludes them anyway.
         WHERE config_hash = :config_hash AND entry_price IS NOT NULL
-          AND in_trade
+          AND (in_trade OR in_watch)
     ),
     agg AS (
         SELECT p.event_id,
