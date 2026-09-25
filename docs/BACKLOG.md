@@ -1249,6 +1249,54 @@ rate beside the model's number so a reader can see the gap themselves.
 
 ## Scheduled later
 
+### Broker position sync — intended, and it collides with invariant 7
+
+**Owner's intent, 2026-09-25:** hook up the Charles Schwab API later so
+`positions` auto-populates from the account instead of being typed by
+hand. That is the reason `positions` was kept rather than retired the same
+day (see the entry above).
+
+**The seam is already built and the schema needs no change.** ADR 048
+point 2: *"`positions` table with a `source` column, valued
+`user_declared` now and `broker_synced` later. All exit logic reads
+position state from this table."* So this was anticipated from day one and
+the column is waiting.
+
+**What is NOT planned, and was unrecorded until now: the credential
+conflict.** Invariant 7 reads *"No broker client, no order placement, **no
+brokerage credentials**. The absence is the safety property, not a disabled
+flag."* A read-only Schwab sync needs OAuth tokens, which are brokerage
+credentials. **ADR 048 plans the seam and invariant 7 forbids the key**,
+and nothing in the repo noted that the two disagree.
+
+So this is not a "wire it up when convenient" task. It needs an ADR that
+amends invariant 7 deliberately, along these lines:
+
+- from *"no credentials exist"* to *"read-only credentials only, and no
+  code path capable of placing an order"*
+- the strong half stays and becomes **testable rather than asserted**: a
+  test that no order-placing endpoint is referenced anywhere in the repo,
+  the way `mcp/` is already pinned against importing `sqlalchemy`. The
+  guarantee weakens from "we hold no key" to "the key is read-only and the
+  code physically cannot trade", which is worth having only if it is
+  enforced.
+- confirm Schwab actually offers a read-only scope before relying on one.
+
+**Settle authentication BEFORE real holdings land, not after.** The app is
+public and unauthenticated by choice at
+`https://capitalscan.tail397b3b.ts.net`. Today that is harmless: `positions`
+is empty and **nothing in `web/` renders `v_positions`** (checked
+2026-09-25). The moment the table holds real positions, any future
+positions page publishes the portfolio to anyone with the link. Reordering
+that after the fact is much harder than deciding it first.
+
+**The practical unknown is token lifetime, not the API.** An unattended
+nightly sync needs a refresh-token story; if Schwab's refresh cycle is
+short, re-auth is the part that makes this annoying rather than the
+endpoints. Check their current docs rather than any recollection here --
+broker APIs move, and the Schwab API is itself the successor to TD
+Ameritrade's.
+
 ### A serial `n_eff` — **scoped as ADR 166, deliberately not started**
 
 **Ordering (user's decision, 2026-09-02): Phase 6 first, this after the
