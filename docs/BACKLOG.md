@@ -62,6 +62,36 @@ pull to "keep it in sync" is the mistake.
 
 ## Open
 
+### Run one full `cscan sync` to heal rows rewritten before ADR 201
+
+**Added 2026-09-25. Not yet run.** Migration `e6b3d9a1f472` is live on
+both stores, so every event changed from now on reaches serving on the next
+nightly. Rows rewritten **before** the trigger existed carry
+`modified_at = NULL` and stay invisible to the incremental sync. Measured
+that night on August signals: 6,327 `peak_ret_10d` labels on research
+against 4,025 on serving.
+
+**One full sync closes it**, from `wivie`: `cscan sync` (no
+`--incremental`). No config change is involved, so the `config_hash`
+ordering rules above do not apply.
+
+**When:** outside the Pi's 06:45-13:00 session and not overlapping the
+13:15 nightly, which also writes serving. Budget **~3 hours**: the last
+three full syncs took 2h22m, 2h48m and 3h00m (`runs`, `job = 'sync'`).
+Starting at 03:26 on 2026-09-20 ran to 06:26, which is too close to the
+session; start by ~22:00 or right after a nightly finishes.
+
+**Verify afterwards** with the query that found the gap, on both stores:
+
+```sql
+SELECT count(peak_ret_10d) FROM events
+ WHERE config_hash = 'f183b0f5209a4677' AND entry_kind IN ('next_open','touch')
+   AND signal_date >= '2026-08-01' AND signal_date < '2026-09-01';
+```
+
+The two counts should match. Delete this entry once they do.
+
+
 ### Where Session 30 left off (2026-09-22/23) — read this first
 
 Four things shipped, three of them measured rather than reasoned. All three
