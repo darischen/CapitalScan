@@ -42,6 +42,10 @@ class SignalType(str, Enum):
 
 class ExitReason(str, Enum):
     TIMEOUT = "timeout"
+    # The forward window ended before `max_hold_days`: the data ran out
+    # (yesterday's signal, a delisting), not the horizon. Same fill as a
+    # timeout, the last close; only the row's claim about itself differs.
+    UNFINISHED = "unfinished"
     TARGET = "target"
     STOP = "stop"
     UPPER_BAND = "upper_band"

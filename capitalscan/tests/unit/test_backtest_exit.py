@@ -177,7 +177,7 @@ def test_entry_idx_offsets_the_forward_window():
 # ---------------------------------------------------------------------------
 
 
-def test_truncated_forward_window_times_out_instead_of_raising():
+def test_truncated_forward_window_is_unfinished_instead_of_raising():
     # 3 bars total: entry_idx=0, so only 2 forward bars exist even though
     # max_hold_days asks for 5 (e.g. a signal near the end of the ingested
     # history, or a delisting).
@@ -199,7 +199,7 @@ def test_truncated_forward_window_times_out_instead_of_raising():
     )
     ep = ExitParams(stop_mode="none", max_hold_days=5)
     result = resolve_exit_for_entry(_entry(), 0, Side.LONG, bars, indicators, ep)
-    assert result["exit_reason"] == ExitReason.TIMEOUT.value
+    assert result["exit_reason"] == ExitReason.UNFINISHED.value
     assert result["holding_days"] == 2
     assert result["exit_price"] == pytest.approx(100.7)
 

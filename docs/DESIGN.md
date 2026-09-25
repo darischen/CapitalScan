@@ -534,6 +534,7 @@ class SignalType(str, Enum):
 
 class ExitReason(str, Enum):
     TIMEOUT = "timeout"
+    UNFINISHED = "unfinished"  # data ended before max_hold_days
     TARGET = "target"
     STOP = "stop"
     UPPER_BAND = "upper_band"
@@ -1141,7 +1142,14 @@ For each forward bar `i ∈ {t+1 … t+5}`, in this order:
 
 4. TERMINAL
    if i == t+5:       exit(close_i, TIMEOUT)
+   if the data ends before t+5:
+                      exit(close_last, UNFINISHED)
 ```
+
+`UNFINISHED` (2026-09-25) fills exactly like `TIMEOUT` and changes no
+return. It records that the window was cut short by the data (yesterday's
+signal, a delisting) rather than by the horizon, so a count of timeouts
+means trades that held the full `max_hold_days`.
 
 **Four details that decide correctness:**
 

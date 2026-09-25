@@ -93,11 +93,30 @@ def test_timeout_fills_at_the_final_bar_close():
     assert r.exit_price == pytest.approx(100.5)
 
 
-def test_a_short_window_times_out_at_its_own_end():
-    # A delisting truncates the window; the position exits at the last close.
+def test_a_short_window_is_unfinished_not_a_timeout():
+    """The data ran out before the horizon: yesterday's signal, or a
+    delisting. The position still exits at the last close, so the return is
+    unchanged; only the row's claim about itself is. Labelled `timeout`
+    until 2026-09-25, when 1,455 of 788,718 timeouts turned out to hold
+    fewer than `max_hold_days` bars (BACKLOG, "`exit_reason = 'timeout'`
+    covers two different facts")."""
     r = _resolve(_quiet(2))
-    assert r.reason is ExitReason.TIMEOUT
+    assert r.reason is ExitReason.UNFINISHED
     assert r.holding_days == 2
+    assert r.exit_price == pytest.approx(100.0)
+
+
+def test_a_full_window_is_a_timeout_even_when_longer_than_the_horizon():
+    r = _resolve(_quiet(7), ep=ExitParams(max_hold_days=5))
+    assert r.reason is ExitReason.TIMEOUT
+    assert r.holding_days == 5
+
+
+def test_a_short_window_that_hits_an_exit_keeps_that_exit():
+    """`unfinished` replaces only the terminal case. A stop on bar 1 of a
+    two-bar window is a stop."""
+    bars = _fwd(opens=[100.0, 100.0], highs=[101.0, 101.0], lows=[96.0, 99.0], closes=[98.0, 100.0])
+    assert _resolve(bars).reason is ExitReason.STOP
 
 
 def test_max_hold_days_truncates_a_longer_window():
@@ -138,7 +157,7 @@ def test_gap_stop_beats_gap_target_on_the_same_bar():
 
 def test_no_gap_check_when_the_open_is_between_stop_and_target():
     bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.0])
-    assert _resolve(bars).reason is ExitReason.TIMEOUT
+    assert _resolve(bars).reason is ExitReason.UNFINISHED
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +206,7 @@ def test_stop_is_skipped_when_atr_is_null():
         atr_at_entry=np.nan,
         ep=EP,
     )
-    assert r.reason is ExitReason.TIMEOUT
+    assert r.reason is ExitReason.UNFINISHED  # one bar: no stop, no horizon
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +274,7 @@ def test_the_first_forward_bar_has_no_band_exit_without_the_entry_indicator_row(
     # rather than substituting bar i's own level and re-introducing lookahead.
     bars = _fwd(opens=[100.0], highs=[103.0], lows=[99.0], closes=[102.0])
     ind = _ind(bars, bb_upper=102.0)
-    assert _resolve(bars, ind=ind).reason is ExitReason.TIMEOUT
+    assert _resolve(bars, ind=ind).reason is ExitReason.UNFINISHED
 
 
 def test_gap_above_the_band_fills_at_the_open():
@@ -277,7 +296,7 @@ def test_upper_band_exit_can_be_disabled():
     ind = _ind(bars)
     ind.iloc[0, ind.columns.get_loc("bb_upper")] = 102.0
     r = _resolve(bars, ind=ind, ep=ExitParams(exit_on_upper_band=False))
-    assert r.reason is ExitReason.TIMEOUT
+    assert r.reason is ExitReason.UNFINISHED
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +309,7 @@ def test_mid_band_exit_is_off_by_default():
         opens=[100.0, 100.0], highs=[101.0, 103.0], lows=[99.0, 99.0], closes=[100.0, 102.0]
     )
     ind = _ind(bars, bb_mid=102.0, bb_upper=200.0)
-    assert _resolve(bars, ind=ind).reason is ExitReason.TIMEOUT
+    assert _resolve(bars, ind=ind).reason is ExitReason.UNFINISHED
 
 
 def test_mid_band_exit_fires_when_enabled():
@@ -365,13 +384,13 @@ def test_stoch_exit_can_be_disabled():
     bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.5])
     ind = _ind(bars, k_full=85.0)
     r = _resolve(bars, ind=ind, ep=ExitParams(exit_on_stoch_80=False))
-    assert r.reason is ExitReason.TIMEOUT
+    assert r.reason is ExitReason.UNFINISHED
 
 
 def test_null_k_full_does_not_trigger_the_stochastic_exit():
     bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.5])
     ind = _ind(bars, k_full=np.nan)
-    assert _resolve(bars, ind=ind).reason is ExitReason.TIMEOUT
+    assert _resolve(bars, ind=ind).reason is ExitReason.UNFINISHED
 
 
 # ---------------------------------------------------------------------------
@@ -498,7 +517,7 @@ def test_the_two_sides_are_independently_sweepable():
     # ... while the short still exits at 20, not at 30.
     short_bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[99.5])
     r = _resolve(short_bars, ind=_ind(short_bars, k_full=25.0), ep=ep, side=Side.SHORT)
-    assert r.reason is ExitReason.TIMEOUT
+    assert r.reason is ExitReason.UNFINISHED
     r2 = _resolve(short_bars, ind=_ind(short_bars, k_full=19.0), ep=ep, side=Side.SHORT)
     assert r2.reason is ExitReason.STOCH_80
 
@@ -508,14 +527,14 @@ def test_sweeping_the_long_threshold_leaves_the_short_untouched():
     bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[99.5])
     # A short at %K=35 must not exit just because the long level moved to 60.
     assert _resolve(bars, ind=_ind(bars, k_full=35.0), ep=ep, side=Side.SHORT).reason is (
-        ExitReason.TIMEOUT
+        ExitReason.UNFINISHED
     )
 
 
 def test_sweeping_the_short_threshold_leaves_the_long_untouched():
     ep = ExitParams(exit_stoch_threshold_short=40.0)
     bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.5])
-    assert _resolve(bars, ind=_ind(bars, k_full=65.0), ep=ep).reason is ExitReason.TIMEOUT
+    assert _resolve(bars, ind=_ind(bars, k_full=65.0), ep=ep).reason is ExitReason.UNFINISHED
     # ... but the short now exits at 40.
     sb = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[99.5])
     assert _resolve(sb, ind=_ind(sb, k_full=38.0), ep=ep, side=Side.SHORT).reason is (
@@ -535,7 +554,7 @@ def test_the_exit_path_derives_no_threshold_from_the_other_side():
 def test_a_swept_exit_threshold_changes_the_exit():
     bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.5])
     ind = _ind(bars, k_full=72.0)
-    assert _resolve(bars, ind=ind).reason is ExitReason.TIMEOUT
+    assert _resolve(bars, ind=ind).reason is ExitReason.UNFINISHED
     ep = ExitParams(exit_stoch_threshold=70.0)
     assert _resolve(bars, ind=ind, ep=ep).reason is ExitReason.STOCH_80
 
@@ -547,7 +566,7 @@ def test_the_exit_threshold_is_independent_of_signal_params():
     assert SignalParams(stoch_overbought=60.0).stoch_overbought == 60.0
     bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.5])
     # Exit still uses ExitParams' 80.0, unmoved by the signal config.
-    assert _resolve(bars, ind=_ind(bars, k_full=65.0)).reason is ExitReason.TIMEOUT
+    assert _resolve(bars, ind=_ind(bars, k_full=65.0)).reason is ExitReason.UNFINISHED
 
 
 def test_exits_module_contains_no_bare_stochastic_literal():
@@ -578,7 +597,7 @@ def test_long_stoch_exit_fires_exactly_at_the_configured_level():
     level = ExitParams().exit_stoch_threshold
     bars = _fwd(opens=[100.0], highs=[101.0], lows=[99.0], closes=[100.5])
     assert _resolve(bars, ind=_ind(bars, k_full=level)).reason is ExitReason.STOCH_80
-    assert _resolve(bars, ind=_ind(bars, k_full=level - 0.01)).reason is ExitReason.TIMEOUT
+    assert _resolve(bars, ind=_ind(bars, k_full=level - 0.01)).reason is ExitReason.UNFINISHED
 
 
 def test_short_stoch_exit_fires_exactly_at_the_configured_level():
@@ -587,4 +606,4 @@ def test_short_stoch_exit_fires_exactly_at_the_configured_level():
     r = _resolve(bars, ind=_ind(bars, k_full=level), side=Side.SHORT)
     assert r.reason is ExitReason.STOCH_80
     r2 = _resolve(bars, ind=_ind(bars, k_full=level + 0.01), side=Side.SHORT)
-    assert r2.reason is ExitReason.TIMEOUT
+    assert r2.reason is ExitReason.UNFINISHED
