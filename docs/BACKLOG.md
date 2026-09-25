@@ -105,6 +105,12 @@ now tied together by a shared constant plus a test that names which side
 moved -- `web/lib/format.ts::REVERSAL_TYPES` and
 `test_label_scope_matches_path.py`.
 
+**Continued 2026-09-24.** ADR 198's code removal landed (three days after
+the ADR); the stale `cscan indicators` warning in CLAUDE.md was corrected
+after surviving twenty days as a recorded-but-unfixed defect; **item 3b was
+retired** as obsolete; and scoping it surfaced that **ADR 176's ranking
+gate was never wired to a surface** -- see that item below.
+
 **Open, small, and deliberate:**
 
 - **22,967 unresolved predictions are `cosmetic = true` and will never
@@ -193,15 +199,41 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    gains. **Do not retry index-state features.** Full numbers in
    `RESULTS.md`.
 
-3b. **Ship the two breadth features anyway -- they are a net win for a
-   different reason.** `breadth_ma_above` and `breadth_mean_dd`, computed
-   from `indicators` in 3.7s, take 30 heads from 25 passing to **26** and
-   **halve** the 2023 error (0.0199 -> 0.0085). ALL-cell mean abs error
-   0.0262 -> 0.0225. That stands on its own and does not depend on the
-   transition story. Needs: two columns on `events`, a backfill, and
-   `RAW_FEATURE_COLS`. Note it makes 2022_below slightly worse
-   (0.0236 -> 0.0377), so confirm the gate still passes 26/30 before
-   adopting.
+3b. **~~Ship the two breadth features~~ -- RETIRED 2026-09-24, owner's
+   call. Its headline benefit was obsolete one day after it was written.**
+
+   The claim was that `breadth_ma_above` and `breadth_mean_dd` take 30
+   heads from 25 passing to **26** and halve the 2023 error (0.0199 ->
+   0.0085), with ALL-cell mean abs error 0.0262 -> 0.0225.
+
+   **On 2026-09-08 -- the day after -- the gate was split by task family
+   for the first time, and that inverted the priority.** `peak` (every
+   `p_touch_*`) is **10/10** and `trough` (every `p_adverse_*`) is
+   **10/10**; all four failures are `terminal` heads backing `q05..q95`,
+   which ADR 172 has negative out of sample and which nothing displays. The
+   base model already sits at 26/30. So 3b buys one more head in the one
+   family that reaches no surface, on a metric already maxed out in the two
+   families that ship -- against CLAUDE.md's own rule, "fix a displayed
+   head before an undisplayed one".
+
+   **It would not touch the thing that is actually wrong.** The live ~5
+   point calibration bias is measured on `p_touch_3`, a `peak` head,
+   against the forward log. RESULTS 2026-09-08 is explicit that this is "a
+   different question from the coverage gate, and still open". Breadth was
+   never measured against it.
+
+   **What the scoping found, kept because it is the real cost.** The entry
+   said "two columns on `events`, a backfill, and `RAW_FEATURE_COLS`". That
+   is incomplete: `cscan breadth` is not in `nightly` (see the item below),
+   `breadth_mean_dd` **does not exist** -- only `breadth_ma_above` and
+   `breadth_chg_60d` do -- and the live path needs breadth resolved at t-1,
+   because the poller writes events during a session whose breadth cannot
+   be computed until its indicators are complete.
+
+   **What would revive it:** breadth measured against Brier skill or the
+   forward-log bias rather than against coverage. That is a different
+   experiment, it is cheap now the forward log is unstalled, and it has
+   never been run.
 
 3c. **The transition is still unexplained, and the calibration fix is now
    refuted too.** The model can be told what the market is doing and does
@@ -394,6 +426,69 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    **Re-estimate from the measured rate after a week of nightlies rather
    than from the prediction count** -- that substitution is what produced a
    date nothing supported.
+
+### ADR 176's ranking gate was built and never wired to anything
+
+**Found 2026-09-24 while scoping item 3b, and the staleness is the symptom
+rather than the defect.**
+
+`cscan breadth` fills `market_days.breadth_ma_above` and
+`breadth_chg_60d`. Measured on `wivie`:
+
+| | |
+|---|---|
+| newest `breadth_ma_above` | **2026-09-01** |
+| newest `market_days` row | 2026-09-23 |
+| NULL sessions since January | **17** |
+
+**Why it stopped: nothing runs it.** `cscan breadth` has exactly one
+caller -- its own CLI command. It is in no chain: not `nightly`, not
+`weekly`, not `monthly`. It updates when someone types it, and nobody has
+since 2026-09-01.
+
+**Why nobody noticed, which is the part worth keeping.** `ranking_gate_open`
+is called from exactly one place: `jobs/breadth.py`, to print a line in that
+command's own report. Checked across `handlers/`, `mcp/`, `web/lib`,
+`web/components`, `web/app` and the serving views:
+
+- no handler reads it
+- no MCP tool reads it
+- no serving view has a breadth column
+- `InferenceModal.tsx` names the 0.68 threshold **in a code comment**
+  explaining why the modal exists. It does not read live breadth; the
+  caveat text beside every number is static.
+
+So ADR 176 shipped the classification, `GATE_OPEN_LABEL` /
+`GATE_CLOSED_LABEL`, the reader-facing copy in `GATE_CLOSED_DETAIL`, a
+sweepable `breadth_rank_floor`, a migration and a test suite -- and the
+gate reaches no reader. `core/breadth.py` says the labels live there "so
+the web copy, the MCP tool description and the CLI cannot drift apart";
+two of those three consumers were never built.
+
+**A column nobody reads does not announce that it stopped updating.** That
+is the whole mechanism, and it is the third instance this week of the same
+shape: a thing that is correct in isolation, connected to nothing, failing
+silently. See also the label population (ADR 200) and the reversal type
+list.
+
+**The order matters and is easy to get backwards.** Do not schedule
+`cscan breadth` to keep a column fresh for zero consumers. The question to
+answer first is whether the gate should reach a surface at all:
+
+- **If yes** -- ADR 176's own evidence is strong (AUC 0.6255 below the
+  floor against 0.5154 above it, and the low band *inverts* there, so a low
+  `p_touch` above the floor is not evidence against a name) -- then wiring
+  it and scheduling the job land together, in one change. The staleness
+  fixes itself as a side effect.
+- **If no**, then ADR 176 is superseded in practice and should say so, and
+  `cscan breadth` becomes a research command with no schedule, which is
+  what it already is. Write that down rather than leaving a gate that looks
+  live in the code and is not.
+
+**Not urgent, and nothing is currently wrong for a reader**: no stale
+number is displayed, because no number is displayed. The exposure is that
+the next person to read `core/breadth.py` will reasonably assume the gate
+is live.
 
 ### `exit_reason = 'timeout'` covers two different facts
 
