@@ -183,6 +183,11 @@ def _fake_read_sql(sql: Any, con: Any, params: dict[str, Any] | None = None, **_
             & ev["entry_kind"].isin(["next_open", "touch"])
         ].reset_index(drop=True)
 
+    if "id = ANY(:held)" in text_sql:
+        # `_pull_predictions`: the rows research already holds.
+        preds = tables["predictions"]
+        return preds.loc[preds["id"].isin(params["held"]), ["id"]].reset_index(drop=True)
+
     if "__owner_id" in text_sql:
         # `_null_inbound_remap_collisions`.
         preds = tables["predictions"]

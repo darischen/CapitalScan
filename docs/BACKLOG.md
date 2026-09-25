@@ -134,7 +134,12 @@ gate was never wired to a surface** -- see that item below.
 Six minors the branch's reviews found and deliberately did not fix. None
 blocks adoption; each says what would make it matter.
 
-1. **Nightly's unlinked counts cover the whole floor-scoped frame**, not the
+1. **~~Nightly's unlinked counts cover the whole floor-scoped frame~~ --
+   FIXED 2026-09-25.** `_pull_predictions` drops ids research already holds
+   before the remap, so every count describes this pull's new rows. Writes
+   are unchanged (`insert_new` skipped those ids anyway). The night before,
+   nightly logged 115 unmapped across the whole 540-row selection while
+   inserting 125. Original text: **Nightly's unlinked counts cover the whole floor-scoped frame**, not the
    rows written that night, so the 100 legacy adopted rows report
    `collision` or `no_slot` on every nightly forever. Scope the counts to
    rows actually inserted, or date-bound the selection, before anyone learns

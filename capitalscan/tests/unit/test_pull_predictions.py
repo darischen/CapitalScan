@@ -149,6 +149,11 @@ def patched_read_sql(monkeypatch):
             frame = con.predictions
             return frame[frame["id"] >= params["floor"]].reset_index(drop=True)
 
+        if "held" in params:
+            assert isinstance(con, _FakeTargetEngine)
+            frame = con.predictions
+            return frame[frame["id"].isin(params["held"])][["id"]].reset_index(drop=True)
+
         if "claimed" in params:
             assert isinstance(con, _FakeTargetEngine)
             frame = con.predictions
@@ -359,9 +364,10 @@ class TestACollisionWithADifferentResearchRowIsNulledNotRaised:
         assert pd.isna(written.loc[0, "event_id"]), "must not overwrite research's own row"
 
     def test_re_adopting_the_same_row_is_not_a_collision(self, patched_read_sql, insert_new_calls):
-        """A repeated pull sends the same `id` again. When that `id` is
-        the one already holding the `event_id` on the target, it must not
-        be treated as a collision with itself."""
+        """A repeated pull selects the same `id` again. Research already
+        holds it, so it is dropped before the remap (2026-09-25): no write,
+        and above all no count -- it must not be reported as a collision
+        with itself, tonight or on any later night."""
         source = _predictions(
             [(FLOOR, 42, CHASH, "KO", "2026-09-19", "bear_close_above_upper", "touch")]
         )
@@ -374,9 +380,15 @@ class TestACollisionWithADifferentResearchRowIsNulledNotRaised:
         adopted, no_slot, ambiguous, collision, duplicate_target, unmapped = _pull(
             source, target_events, target_predictions
         )
-        assert (no_slot, ambiguous, collision, duplicate_target, unmapped) == (0, 0, 0, 0, 0)
-        written = insert_new_calls[0]["frame"]
-        assert written.loc[0, "event_id"] == 42, "adopting itself again must not null the link"
+        assert (adopted, no_slot, ambiguous, collision, duplicate_target, unmapped) == (
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        assert insert_new_calls == [], "a held row is not re-sent, so its link cannot change"
 
     def test_research_row_is_neither_deleted_nor_rewritten(
         self, patched_read_sql, insert_new_calls
@@ -491,15 +503,16 @@ class TestTwoIncomingRowsResolvingToOneEventAreBothNulled:
         adopted, no_slot, ambiguous, collision, duplicate_target, unmapped = _pull(
             source, target_events, target_predictions
         )
-        assert adopted == 2
+        # A is already held, so only B is sent (2026-09-25); A's link on
+        # research is untouched because A is never part of the write.
+        assert adopted == 1
         assert (no_slot, ambiguous) == (0, 0)
-        # B is nulled by the collision check (it collides with A, the
-        # legitimate prior owner) -- the dedup step then has nothing left
-        # to do, which is exactly the ordering this test's docstring pins.
+        # B is nulled by the collision check against A, the legitimate
+        # prior owner sitting on the target.
         assert (collision, duplicate_target) == (1, 0)
         assert unmapped == 1, "only B is actually NULL -- A's prior link is untouched"
         written = insert_new_calls[0]["frame"].set_index("id")
-        assert written.loc[FLOOR, "event_id"] == 1, "A's own link must survive re-adoption"
+        assert FLOOR not in written.index, "A is held and not re-sent"
         assert pd.isna(written.loc[FLOOR + 1, "event_id"]), "B has nothing left to claim"
 
 
@@ -783,3 +796,31 @@ class TestItIsWiredIntoThePull:
         else:
             raise AssertionError("expected the RuntimeError to propagate")
         assert reset_calls, "the sequence reset must still run despite the raise"
+
+
+class TestHeldRowsAreNotRecounted:
+    """Deferred minor #1 from the slot-keyed adoption review (2026-09-20).
+
+    Selection is floor-scoped with no date bound, so without this every
+    earlier adoption came back each night. The 100 legacy rows adopted
+    unresolved reported `collision`/`no_slot` on every nightly forever.
+    """
+
+    def test_an_unresolved_row_already_held_reports_nothing_on_later_nights(
+        self, patched_read_sql, insert_new_calls
+    ):
+        source = _predictions([(FLOOR, 7, CHASH, "ZZ", "2026-09-10", "bb_lower_touch", "touch")])
+        # No research event shares the slot: first night, this is `no_slot`.
+        first = _pull(source, _events([]))
+        assert first[1] == 1 and first[5] == 1
+        # Research now holds it, unresolved. Every later night is silent.
+        held = pd.DataFrame([{"id": FLOOR, "event_id": None}])
+        later = _pull(source, _events([]), held)
+        assert later == (0, 0, 0, 0, 0, 0)
+
+    def test_the_held_lookup_is_scoped_to_the_selected_ids(
+        self, patched_read_sql, insert_new_calls
+    ):
+        source = _predictions([(FLOOR, 7, CHASH, "ZZ", "2026-09-10", "bb_lower_touch", "touch")])
+        _pull(source, _events([]))
+        assert any("id = ANY(:held)" in q for q in patched_read_sql.statements)
