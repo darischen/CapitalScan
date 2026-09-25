@@ -1027,6 +1027,7 @@ H earnings ───────────────────────
 | `earnings` historical | Never | 2010 → backfill date | Yes |
 | `earnings` forward | Weekly | Next 90 days | No |
 | `indicators` | Nightly | Last 5 days, expanded read window | No |
+| `market_days` breadth (ADR 176) | Nightly | **Whole history, one pass** | No |
 | `universe` evaluation | Quarterly | Current quarter | No |
 
 Overlapping windows mean a missed run self-heals on the next one. Upsert makes the overlap free.
@@ -2331,7 +2332,7 @@ Postgres tuning for 32 GB shared with other applications: `shared_buffers=1GB`, 
 Windows Task Scheduler with **"Run task as soon as possible after a scheduled start is missed"** enabled, so a job missed while the machine was off fires at next boot regardless of time (ADR 080).
 
 ```
-13:15 PT  nightly   ingest, indicators, events, path capture, outcomes, sync
+13:15 PT  nightly   ingest, indicators, breadth, events, path capture, outcomes, sync
 09:15 ET  poller    runs until 16:00
 Sun 02:00 weekly    backtest, cell_stats, sync
 1st 03:00 monthly   retrain, calibrate, promote or hold
