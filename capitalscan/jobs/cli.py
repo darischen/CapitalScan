@@ -3866,19 +3866,6 @@ def resume_check(
     raise typer.Exit(code=0 if decision == "run" else 3)
 
 
-logs_app = typer.Typer(help="Logging utilities")
-app.add_typer(logs_app, name="logs")
-
-
-@logs_app.command()
-def logs_tail(
-    job: str = typer.Argument(..., help="Job name"),
-    tail: int = typer.Option(50, help="Number of lines to tail"),
-) -> None:
-    """View recent logs for a job."""
-    raise NotImplementedError("logs tail")
-
-
 @app.command()
 def verify_indicators(
     ticker: list[str] = typer.Option([], help="Ticker"),
