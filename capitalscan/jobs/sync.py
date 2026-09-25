@@ -60,7 +60,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from string import Formatter
 from typing import Any
 
@@ -949,6 +949,20 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
             "     AND signal_date >= :cutoff AND run_id IS NOT NULL)",
             ("run_id",),
         ),
+        # **Two watermarks, two arms (2026-09-25).** `events_from` is the
+        # target's newest `signal_date`, which sees new rows. It cannot see
+        # a rewrite of an old one -- `peak_labels` lands about fourteen days
+        # after the signal, past the overlap -- so the second arm takes rows
+        # *below* that line whose `modified_at` (stamped by a trigger on any
+        # real change, migration e6b3d9a1f472) is recent.
+        #
+        # **`UNION ALL` of disjoint arms, not an `OR`.** The `OR` form
+        # planned as a sequential scan of the whole 20 GB table; each arm
+        # alone uses its own index. Disjoint because a key appearing twice
+        # in one `COPY` chunk fails the upsert ("cannot affect row a second
+        # time"). A NULL `events_modified_since` empties the second arm; a
+        # NULL `events_from` (a full pass) makes its range empty.
+        #
         # **One config, two grains.** `v_screen` reads `next_open` and
         # `v_screen_live` reads `touch`; shipping one would leave a route
         # silently empty. The other 21 config hashes are the sweep and stay
@@ -957,7 +971,13 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
             "events",
             "SELECT * FROM events WHERE config_hash = :config_hash "
             "AND entry_kind IN ('next_open', 'touch') "
-            "AND signal_date >= GREATEST(:cutoff, COALESCE(CAST(:events_from AS date), :cutoff))",
+            "AND signal_date >= GREATEST(:cutoff, COALESCE(CAST(:events_from AS date), :cutoff)) "
+            "UNION ALL "
+            "SELECT * FROM events WHERE config_hash = :config_hash "
+            "AND entry_kind IN ('next_open', 'touch') "
+            "AND modified_at >= CAST(:events_modified_since AS timestamptz) "
+            "AND signal_date >= :cutoff "
+            "AND signal_date < GREATEST(:cutoff, COALESCE(CAST(:events_from AS date), :cutoff))",
             ("config_hash", "ticker", "signal_date", "signal_type", "entry_kind"),
         ),
         SyncTable(
@@ -1160,6 +1180,16 @@ class SyncReport:
 # halfway, a bar restated by the vendor.
 SYNC_OVERLAP_DAYS = 7
 
+# Subtracted from the previous sync's start before comparing
+# `events.modified_at`. The stamp is `now()`, the *transaction* start, so a
+# write that began before the last sync and committed after it carries a
+# stamp older than that sync. A day covers every writer's transaction; the
+# backtest commits per chunk and the longest single statement is
+# `finalize_cofire` at ~4 minutes.
+SYNC_MODIFIED_OVERLAP = timedelta(days=1)
+
+BOUND_KEYS = ("bars_from", "indicators_from", "events_from", "reports_from")
+
 
 def _incremental_bounds(
     target: Engine, config_hash: str, overlap_days: int = SYNC_OVERLAP_DAYS
@@ -1196,6 +1226,34 @@ def _incremental_bounds(
             got = None
         out[name] = (got - timedelta(days=overlap_days)) if got is not None else None
     return out
+
+
+def _events_modified_since(
+    source: Engine, overlap: timedelta = SYNC_MODIFIED_OVERLAP
+) -> datetime | None:
+    """The oldest `events.modified_at` an incremental sync must re-ship.
+
+    **Read from the source, unlike every other bound.** The target's rows
+    say how far forward it has got; only the source knows what changed
+    behind that. The previous successful sync's start is the line: any row
+    stamped after it may not have been in that sync's snapshot.
+
+    Any `ok` sync counts, full or incremental -- both ship every row the
+    predicate selects as of their snapshot.
+
+    `None` when there has never been a successful sync or the read fails.
+    The caller turns that into a full `events` pass, because without a
+    known line an incremental pass cannot know what it has missed.
+    """
+    try:
+        with source.connect() as conn:
+            got = conn.execute(
+                text("SELECT max(started_at) FROM runs WHERE job = 'sync' AND status = 'ok'")
+            ).scalar_one_or_none()
+    except SQLAlchemyError:
+        logger.warning("could not read the last sync; falling back to a full events pass")
+        return None
+    return (got - overlap) if got is not None else None
 
 
 # The poller's **durable** output, as opposed to its provisional output.
@@ -1605,11 +1663,17 @@ def run_sync(
         # Even incremental, an empty table or an unseen `config_hash`
         # produces NULL bounds and falls back to the full `cutoff` pass, so
         # the fast path cannot leave a new serving store half-populated.
-        bounds: dict[str, date | None] = (
-            _incremental_bounds(target, str(config_hash))
+        bounds: dict[str, date | datetime | None] = (
+            dict(_incremental_bounds(target, str(config_hash)))
             if incremental
-            else {k: None for k in ("bars_from", "indicators_from", "events_from", "reports_from")}
+            else {k: None for k in BOUND_KEYS}
         )
+        # Backward-looking half of the `events` bound. Without it, an
+        # incremental pass cannot see a rewrite of a row older than
+        # `events_from`, so it degrades to a full `events` pass instead.
+        bounds["events_modified_since"] = _events_modified_since(source) if incremental else None
+        if bounds["events_modified_since"] is None:
+            bounds["events_from"] = None
         logger.info(
             "sync mode=%s bounds=%s",
             "incremental" if incremental else "full",
