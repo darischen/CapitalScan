@@ -427,6 +427,43 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    than from the prediction count** -- that substitution is what produced a
    date nothing supported.
 
+### Command audit, 2026-09-24 — every CLI command checked for a caller
+
+Prompted by `cscan breadth` turning out to be scheduled nowhere. All 49
+commands were checked against the three chains, `scripts/`, and the docs.
+
+**One dead command, now removed.** `cscan logs logs-tail` was the last
+survivor of the 23 `NotImplementedError` stubs in `Session 0: Scaffold`
+(2026-07-31); the other 22 were implemented over the following two months.
+It had no ADR, no BUILD entry and no spec -- a plausible CLI verb in a
+skeleton, never a designed feature. It was also obsolete twice over:
+`runs` holds job history and `journalctl -u capitalscan-*` holds the logs,
+both better than a wrapper would have been. Its only live effect was
+advertising a capability in `--help` that raised on any invocation.
+
+**`cscan positions open/close/list` works and has never been used.** Zero
+rows in `positions`, zero mentions in any doc. It is the user-declared
+trade log (ADR 048, ADR 073); the sibling `order_intents` seam is alive at
+1,926 rows. Owner is **50/50 on retiring it** (2026-09-24). Kept for now.
+If it stays it needs a doc line, since it is currently undiscoverable; if
+it goes, that is three commands, `jobs/positions.py` and a table.
+
+**Five commands are outside every chain and script by design** and stay
+that way: `scan`, `preflight`, `backfill`, `validate`,
+`verify-indicators`. All are documented research or ops tools.
+
+**No other command writes something nothing reads** -- the `breadth` class
+of defect. Every remaining command feeds a chain, backs a surface, or
+prints for a human.
+
+**A false positive worth recording, because the method produced it.** The
+first pass reported a command registered as `syn` rather than `sync`. That
+was the audit script's own bug -- `"sync".rstrip("_cmd")` strips the
+trailing `c`, because `rstrip` takes a character *set*. `cscan sync` is
+correct and all 52 doc references are right. **Verify a tooling finding
+against the tool itself before believing it**, which is the same lesson as
+`verify-with-a-different-instrument`.
+
 ### ADR 176's ranking gate was built and never wired to anything
 
 **Found 2026-09-24 while scoping item 3b, and the staleness is the symptom
