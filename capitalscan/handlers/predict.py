@@ -26,15 +26,16 @@ from the ensemble's seed spread, which would describe the optimiser rather
 than the world. `n_eff` is therefore the *calibration* bucket's effective
 sample, which is what invariant 8 needs a reader to be able to check.
 
-**A ticker that fired twice in one day is genuinely ambiguous here.**
+**A ticker that fired twice in one day is ambiguous without a side.**
 `predictions` keys on `event_id` (migration `e7b4c92f1a08`) because one
 name can produce a long and a short on the same date, and `p_touch` is
 directional -- it is the probability of a favourable excursion *for the
-side the signal assigned*. This handler is asked for a ticker and a date,
-which does not name a side, so it returns the newest row by
-`(as_of DESC, id DESC)`. That is deterministic rather than correct: the
-caller may have meant the other one. Callers that know the side should read
-the screener views, which join on the event.
+side the signal assigned*. Pass `side` to choose (2026-09-25); it filters
+through the linked event, since `predictions` stores no side of its own.
+Without it the newest row by `(as_of DESC, id DESC)` wins, and the result
+now carries `side` so the pick is visible rather than silent. A prediction
+whose event is unresolved (ADR 191, `event_id` NULL) returns `side=None`
+and never matches a side filter.
 
 **`NotFound` still happens and still means something.** No row exists for a
 ticker with no recent event, for a date before the first `cscan predict`
@@ -50,7 +51,7 @@ from sqlalchemy import Engine
 
 from capitalscan.core.calibration import MODEL_CAVEAT
 from capitalscan.core.config import StatsParams
-from capitalscan.handlers import _db
+from capitalscan.handlers import _db, enums
 from capitalscan.handlers.types import NotFound, Prediction
 from capitalscan.handlers.validate import validated
 
@@ -66,16 +67,19 @@ NO_ROW_REASON = (
 )
 
 _SQL = """
-SELECT ticker, as_of, model_version, cell_id,
-       q05, q25, q50, q75, q95,
-       p_touch_2, p_touch_3, p_touch_5, p_touch_10,
-       p_adverse_3, p_adverse_5,
-       calib_bucket, calib_n_eff, ci_low, ci_high
-  FROM predictions
- WHERE ticker = :ticker
-   AND config_hash = :chash
+SELECT p.ticker, p.as_of, p.model_version, p.cell_id,
+       p.q05, p.q25, p.q50, p.q75, p.q95,
+       p.p_touch_2, p.p_touch_3, p.p_touch_5, p.p_touch_10,
+       p.p_adverse_3, p.p_adverse_5,
+       p.calib_bucket, p.calib_n_eff, p.ci_low, p.ci_high,
+       e.side
+  FROM predictions p
+  LEFT JOIN events e ON e.id = p.event_id
+ WHERE p.ticker = :ticker
+   AND p.config_hash = :chash
    {date_filter}
- ORDER BY as_of DESC, id DESC
+   {side_filter}
+ ORDER BY p.as_of DESC, p.id DESC
  LIMIT 1
 """
 
@@ -88,6 +92,7 @@ def _as_float(value: object) -> float | None:
 def predict(
     ticker: str,
     as_of: date | None = None,
+    side: str | None = None,
     engine: Engine | None = None,
     sp: StatsParams | None = None,
 ) -> Prediction | NotFound:
@@ -104,6 +109,8 @@ def predict(
     historically behaved. Neither is a statement about this ticker.
     """
     sp = sp or StatsParams()
+    if side is not None:
+        side = enums.parse_side(side)
     engine = _db.engine_or_default(engine)
     config_hash = _db.resolve_config_hash(engine)
     _, last_bar = _db.bar_window(engine)
@@ -112,14 +119,19 @@ def predict(
     params: dict[str, object] = {"ticker": ticker.upper(), "chash": config_hash}
     date_filter = ""
     if as_of is not None:
-        date_filter = "AND as_of <= :as_of"
+        date_filter = "AND p.as_of <= :as_of"
         params["as_of"] = as_of
+    side_filter = ""
+    if side is not None:
+        side_filter = "AND e.side = :side"
+        params["side"] = side
 
-    found = _db.rows(engine, _SQL.format(date_filter=date_filter), params)
+    found = _db.rows(engine, _SQL.format(date_filter=date_filter, side_filter=side_filter), params)
     if not found:
         return validated(
             NotFound(
                 what=f"prediction for {ticker.upper()}"
+                + (f" ({side})" if side is not None else "")
                 + (f" as of {as_of}" if as_of is not None else ""),
                 reason=NO_ROW_REASON,
                 meta=meta,
@@ -133,6 +145,7 @@ def predict(
         Prediction(
             ticker=str(row["ticker"]),
             as_of=row["as_of"],
+            side=row.get("side"),
             model_version=str(row["model_version"]),
             # The reliability bucket, not an ADR 093 conditioning cell. The
             # two are different objects and the column names keep them apart;

@@ -738,7 +738,12 @@ each depends on the one above it.
 
 **Three loose ends left by session 27**, none blocking:
 
-- **`handlers.predict(ticker, as_of)` cannot name a side.** `predictions`
+- **~~`handlers.predict(ticker, as_of)` cannot name a side~~ -- FIXED
+  2026-09-25.** Optional `side` argument (handler and MCP tool), filtered
+  through the linked event, and the result now carries `side`. Verified on
+  the workstation copy: PCG on 2026-08-28 holds a long and a short; with no
+  side the handler returned the short silently, and each filter now
+  returns its own row. Original text: `predictions`
   keys on `event_id`, because a name can fire a long and a short on one day
   and `p_touch` is directional. The handler takes a ticker and a date, which
   does not identify which, and returns the newest by `(as_of DESC, id DESC)`

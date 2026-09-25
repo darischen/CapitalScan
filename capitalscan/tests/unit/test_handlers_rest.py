@@ -227,15 +227,49 @@ def test_the_query_is_scoped_to_the_live_config_generation(fake_db):
     """
     predict("TSM", engine=object())
     sql = fake_db.sql_containing("FROM predictions")[0]
-    assert "config_hash = :chash" in sql
-    assert "ORDER BY as_of DESC" in sql
+    assert "p.config_hash = :chash" in sql
+    assert "ORDER BY p.as_of DESC" in sql
 
 
 def test_an_as_of_never_reads_a_later_prediction(fake_db):
     """`as_of` bounds above. Reading a later row would be look-ahead."""
     predict("TSM", as_of=date(2026, 8, 14), engine=object())
     sql = fake_db.sql_containing("FROM predictions")[0]
-    assert "as_of <= :as_of" in sql
+    assert "p.as_of <= :as_of" in sql
+
+
+def test_the_side_the_prediction_belongs_to_is_returned(fake_db):
+    """A name can fire a long and a short on one date, and `p_touch` is
+    directional. Returning the side makes the pick visible rather than
+    silent: a caller that meant the other one can see it did not get it."""
+    fake_db.on("FROM predictions", [{**_ROW, "side": "short"}])
+    result = predict("TSM", engine=object())
+    assert result.side == "short"
+
+
+def test_a_side_filters_through_the_linked_event(fake_db):
+    """`predictions` stores no side; the event it scores does. The filter
+    joins on `event_id`, so a prediction whose event is unresolved (ADR 191,
+    `event_id` NULL) cannot match a side and is not guessed into one."""
+    predict("TSM", side="long", engine=object())
+    sql = fake_db.sql_containing("FROM predictions")[0]
+    assert "JOIN events e ON e.id = p.event_id" in sql
+    assert "e.side = :side" in sql
+    params = next(p for q, p in fake_db.calls if "FROM predictions" in q)
+    assert params["side"] == "long"
+
+
+def test_no_side_means_no_side_filter(fake_db):
+    predict("TSM", engine=object())
+    sql = fake_db.sql_containing("FROM predictions")[0]
+    assert ":side" not in sql
+
+
+def test_an_invalid_side_is_rejected_before_the_database():
+    from capitalscan.handlers.errors import InvalidEnum
+
+    with pytest.raises(InvalidEnum):
+        predict("TSM", side="Long", engine=object())
 
 
 def test_the_not_found_still_carries_meta(fake_db):

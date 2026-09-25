@@ -21,7 +21,7 @@ from datetime import date, timedelta
 
 from capitalscan.core.cells import dd_bucket_labels
 from capitalscan.core.config import SplitParams, StatsParams
-from capitalscan.core.types import EntryKind, SignalType
+from capitalscan.core.types import EntryKind, Side, SignalType
 from capitalscan.handlers.errors import DateOutOfWindow, HoldoutRequested, InvalidEnum
 
 # ADR 074: "`limit` is capped server-side at 200 regardless of the value
@@ -82,6 +82,10 @@ def entry_kinds() -> tuple[str, ...]:
     return tuple(member.value for member in EntryKind)
 
 
+def sides() -> tuple[str, ...]:
+    return tuple(member.value for member in Side)
+
+
 def dd_buckets(sp: StatsParams | None = None) -> tuple[str, ...]:
     """Drawdown labels, computed from `StatsParams.dd_buckets`.
 
@@ -140,6 +144,10 @@ def parse_universe(value: str) -> str:
 
 def parse_grain(value: str) -> str:
     return _check_one("grain", value, GRAINS)
+
+
+def parse_side(value: str) -> str:
+    return _check_one("side", value, sides())
 
 
 def parse_entry_kind(value: str) -> str:
