@@ -526,6 +526,12 @@ def test_nightly_command_threads_resolved_config(monkeypatch, tmp_path):
 
     monkeypatch.setattr(compute, "run_indicators", _fake_run_indicators)
     monkeypatch.setattr(compute, "run_events", _fake_run_events)
+    # ADR 176's breadth pass joined the chain 2026-09-24; like every other
+    # real call here it needs a stub, because this test hands `nightly()` a
+    # sentinel engine.
+    from capitalscan.jobs import breadth as breadth_mod
+
+    monkeypatch.setattr(breadth_mod, "run_breadth", lambda engine=None: None)
 
     monkeypatch.setattr(
         cli, "_sweep_provisional_poll_rows", lambda *a, **k: 0

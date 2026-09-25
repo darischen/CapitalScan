@@ -14,6 +14,7 @@ from datetime import date, timedelta
 
 import pytest
 
+from capitalscan.jobs import breadth as breadth_mod
 from capitalscan.jobs import cli, compute, db_io, ingest, scheduled_runs
 from capitalscan.research import path_backfill as path_backfill_mod
 from capitalscan.research.path_backfill import PathBackfillReport
@@ -124,6 +125,7 @@ def test_nightly_calls_run_bars_hourly_with_daily_window(monkeypatch):
         monkeypatch.setattr(ingest, name, _record_call(calls, name))
     for name in ["run_indicators", "run_events"]:
         monkeypatch.setattr(compute, name, _record_call(calls, name))
+    monkeypatch.setattr(breadth_mod, "run_breadth", _record_call(calls, "run_breadth"))
 
     monkeypatch.setattr(
         cli, "_sweep_provisional_poll_rows", lambda *a, **k: 0
@@ -171,6 +173,7 @@ def test_nightly_calls_run_path_capture_after_run_events(monkeypatch):
         monkeypatch.setattr(ingest, name, _record_call(calls, name))
     for name in ["run_indicators", "run_events"]:
         monkeypatch.setattr(compute, name, _record_call(calls, name))
+    monkeypatch.setattr(breadth_mod, "run_breadth", _record_call(calls, "run_breadth"))
     monkeypatch.setattr(
         path_backfill_mod,
         "run_path_capture",
@@ -412,6 +415,7 @@ class TestOutcomesRunsNightly:
             monkeypatch.setattr(ingest, name, _record_call(calls, name))
         for name in ["run_indicators", "run_events"]:
             monkeypatch.setattr(compute, name, _record_call(calls, name))
+        monkeypatch.setattr(breadth_mod, "run_breadth", _record_call(calls, "run_breadth"))
         monkeypatch.setattr(cli, "_sweep_provisional_poll_rows", lambda *a, **k: 0)
         monkeypatch.setattr(
             predict_mod,
@@ -501,3 +505,50 @@ class TestOutcomesRunsNightly:
         assert "pull" in names
         assert "run_predict" in names, "a failed pull stopped predict from running"
         assert "sync" in names, "a failed pull stopped the chain before sync"
+
+
+class TestBreadthIsInTheChain:
+    """Added 2026-09-24. ADR 176 stores universe breadth on `market_days`,
+    and until today nothing ran it on a schedule: `cscan breadth` had
+    exactly one caller, its own CLI command.
+
+    The column went **22 days stale** -- newest `breadth_ma_above`
+    2026-09-01 against a 2026-09-23 market day, with 17 NULL sessions since
+    January -- and nothing noticed, because ADR 176's ranking gate reaches
+    no surface yet. A derived column with no reader does not announce that
+    it stopped updating, which is the same shape as the label population
+    (ADR 200) and the reversal type list.
+
+    Six seconds for the full 5,333-session history, so the scheduling
+    argument does not depend on the gate ever being displayed.
+    """
+
+    def test_nightly_recomputes_breadth(self) -> None:
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        assert "run_breadth" in inspect.getsource(cli.nightly)
+
+    def test_it_runs_after_indicators(self) -> None:
+        """Breadth is an aggregate *of* `indicators` -- `bb_mid >= sma_200`
+        per session. Running it first would recompute yesterday's answer and
+        report it as today's, which is the failure mode that looks like
+        success.
+        """
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        src = inspect.getsource(cli.nightly)
+        assert src.index("run_indicators") < src.index("run_breadth")
+
+    def test_it_is_handed_the_chain_engine(self) -> None:
+        """Every other step takes `engine=engine`; a step opening its own
+        connection inside a chain is how a job ends up on the wrong database
+        when one is passed explicitly."""
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        assert "run_breadth(engine=engine)" in inspect.getsource(cli.nightly)

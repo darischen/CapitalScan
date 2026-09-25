@@ -441,10 +441,16 @@ rather than the defect.**
 | newest `market_days` row | 2026-09-23 |
 | NULL sessions since January | **17** |
 
-**Why it stopped: nothing runs it.** `cscan breadth` has exactly one
-caller -- its own CLI command. It is in no chain: not `nightly`, not
-`weekly`, not `monthly`. It updates when someone types it, and nobody has
+**Why it stopped: nothing ran it.** `cscan breadth` had exactly one
+caller -- its own CLI command. It was in no chain: not `nightly`, not
+`weekly`, not `monthly`. It updated when someone typed it, and nobody had
 since 2026-09-01.
+
+**FIXED 2026-09-24: breadth now runs in `nightly`, after `indicators`.**
+Six seconds for the full 5,333-session history against a ~55 minute
+nightly, so the cost does not depend on the gate ever being displayed. The
+backfill run that day took the column current (latest 0.571, gate open).
+**The scheduling half is done; the wiring half below is not.**
 
 **Why nobody noticed, which is the part worth keeping.** `ranking_gate_open`
 is called from exactly one place: `jobs/breadth.py`, to print a line in that

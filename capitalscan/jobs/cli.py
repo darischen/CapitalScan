@@ -3195,9 +3195,9 @@ def positions_list(
 @app.command()
 def nightly() -> None:
     """Orchestrates the nightly chain (DESIGN §4.12): bars, actions, market,
-    shares, earnings-forward, indicators, events, path capture. `sync` is
-    Phase 5 scope and stays unimplemented.
+    shares, earnings-forward, indicators, breadth, events, path capture.
     """
+    from capitalscan.jobs import breadth as br
     from capitalscan.jobs import compute, db_io, ingest, scheduled_runs
     from capitalscan.research.path_backfill import run_path_capture
 
@@ -3294,6 +3294,21 @@ def nightly() -> None:
     compute.run_indicators(
         tickers, start, end, params=config.indicators, max_workers=1, engine=engine
     )
+    # **Breadth, after `indicators` because it reads them** (2026-09-24).
+    # ADR 176 stores the fraction of the universe whose 20-day average sits
+    # at or above its 200-day, and until today nothing ran it on a schedule:
+    # `cscan breadth` had exactly one caller, its own CLI command. The
+    # column went **22 days stale** (newest 2026-09-01 against a 2026-09-23
+    # market day, 17 NULL sessions since January) and nothing noticed,
+    # because ADR 176's gate reaches no surface yet.
+    #
+    # Six seconds for the whole 5,333-session history, measured on `wivie`,
+    # against a ~55 minute nightly. There is no incremental path and no
+    # watermark to get wrong: it is one pass and re-running is idempotent.
+    # Cheap enough that scheduling it is the right answer even while the
+    # gate is backend-only -- a derived column that silently stops updating
+    # is a diagnosis nobody should have to repeat.
+    br.run_breadth(engine=engine)
     compute.run_events(tickers, start, end, config=config, engine=engine)
     # ADR 150. The authoritative pass has now run, so any row still carrying
     # a `poll_` run_id for this session is one the nightly did not reproduce
