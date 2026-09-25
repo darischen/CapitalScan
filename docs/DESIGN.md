@@ -800,6 +800,7 @@ One CLI entry point, `cscan`, built on Typer. Every job is idempotent and writes
 | `calendar` | `cscan calendar --through 2027` | Yearly | 2 s |
 | `tickers` | `cscan tickers --refresh` | Monthly | 3 min |
 | ~~`membership`~~ | **removed 2026-09-24 (ADR 198)** | — | — |
+| `positions` | `cscan positions open/close/list` | **By hand, when you take a trade** | — |
 | `bars_daily` | `cscan bars --daily --lookback 5` | Nightly | 4 min |
 | `bars_hourly` | `cscan bars --hourly --lookback 2` | Nightly | 6 min |
 | `actions` | `cscan actions --lookback 30` | Nightly | 2 min |

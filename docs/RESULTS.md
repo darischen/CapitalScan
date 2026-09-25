@@ -8639,3 +8639,60 @@ against SPLIT on identical rows is the only comparison here that carries;
 neither arm's absolute level transfers to production.
 
 Script, log and per-cell CSV: `scripts/hist/regime-calibration-2026-09-22/`.
+
+---
+
+## 2026-09-25 — the breadth ranking gate does not survive its own clean test
+
+**ADR 176 named `cscan outcomes` as the test of its threshold and warned
+"nothing should be sized on 0.6255 holding." The forward log now disagrees
+with it**, so the gate stays dormant. → ADR 176, amended.
+
+**Why this could not be run until now.** The forward log had resolved **0
+predictions on four consecutive nights** because `peak_labels` wrote labels
+for `in_trade` rows while `predict` scored `in_trade` and `in_watch` both
+(ADR 200, 2026-09-23). And `market_days.breadth_ma_above` was **22 days
+stale**, because `cscan breadth` was in no chain until 2026-09-24. Both
+halves of the instrument were broken; neither announced it.
+
+**Method.** 9,656 resolved predictions, signal dates 2026-07-14 to
+2026-09-17, each joined to `market_days.breadth_ma_above` **at its own
+signal date**. AUC by the rank identity, Hanley-McNeil intervals.
+
+| | validate (ADR 176) | forward log | n | 95% CI |
+|---|---:|---:|---:|---|
+| AUC, breadth < 0.68 | 0.6255 | **0.6108** | 7,924 | [0.5985, 0.6231] |
+| AUC, breadth ≥ 0.68 | **0.5154** | **0.6381** | 1,732 | [0.6112, 0.6650] |
+
+**The above-floor side ranks better, not worse** — +0.0273 AUC, z = +1.81.
+ADR 176's decision rests on ranking specifically ("`p_touch` only *ranks*
+when breadth < 0.68"), and 0.5154 is far outside the measured interval.
+
+**The effect is real and was attributed to the wrong mechanism.**
+
+| | base rate | Brier | skill |
+|---|---:|---:|---:|
+| breadth < 0.68 | 0.5587 | 0.2313 | **+6.2%** |
+| breadth ≥ 0.68 | 0.4042 | 0.2447 | **−1.6%** |
+
+Brier skill splits almost exactly as validate said (+5.62% / −0.56%), which
+is why the original measurement looked conclusive. Brier mixes calibration
+with discrimination; AUC isolates ranking. What actually differs across the
+floor is the **base rate** — 0.5587 against 0.4042 — against isotonic
+tables anchored to one level. That is the non-stationary base rate already
+documented as the shipped-probabilities-run-low problem, and ADR 179
+already refuted the rolling window as its fix.
+
+**Two limits, stated because they bound the conclusion.** The above-floor
+sample is 1,732 rows from **one episode**, not a cross-section of regimes.
+And the scores come from **six `model_version`s**, because `weekly` refits —
+a pooled AUC across six models is not a clean instrument for a threshold.
+**The gate's evidence no longer supports shipping it; the effect is not
+proven absent.**
+
+**The general lesson.** ADR 176 was explicit that its threshold came from
+searching validate and needed out-of-sample confirmation. That confirmation
+sat unavailable for two weeks because two unrelated things were quietly
+broken — and the gate was never wired, so nothing forced the question. **A
+finding that names its own test should schedule that test**, not wait for
+someone to ask what a command is for.

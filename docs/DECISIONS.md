@@ -235,7 +235,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 173 | `signal_type` must be a feature: the model was never told the direction | **Decided 2026-09-04.** Neither `signal_type` nor `side` is in `FEATURE_COLS`, and `fwd_ret_*` is the raw price return, not the position return (train medians: longs +0.549%, shorts +0.282%, both positive). So the directional head predicted a 38/62 mix of opposing populations without being told which — **mis-posed, not unanswerable**. Explains why `peak_ret_*`, which IS side-adjusted, works. Measurable only on validate now |
 | 174 | `p_touch` is the shipped product, and its interval is empirical | **Decided 2026-09-05.** Second checkpoint after ADR 172. `touched_3pct` is exactly `peak_ret_5d >= 0.03`, so `exceedance()` on the fitted peak head IS `Prediction.p_touch_3` -- calibrated, monotone across ten deciles, AUC 0.607-0.771, **no retraining**. Ships the probability rather than the fan. Invariant 8's interval is **empirical** (Wilson on the reliability bucket's realised rate at its `n_eff`), not the ensemble spread, which measures seed choice rather than uncertainty. `predict()` stops returning `NotFound` |
 | 175 | The adverse head reads a fixed window, not `mae` | **Decided 2026-09-05.** Completes `p_adverse_*` and the other two terms of `E[net_ret]`. `events.mae` is adverse excursion **until exit**, so `ExitParams` is baked into it and every sweep would silently redefine the target. Adds `trough_ret_{1,2,3,5,10}d` as the exact mirror of `peak_ret_*` from `path.adverse`, which is already side-adjusted. `p_adverse_3 = P(trough_ret_5d <= -0.03)`, read off the same CDF. Heads 4 -> 6, so ADR 174's tables refit |
-| 176 | Predictions are gated on market breadth | **Decided 2026-09-07.** `p_touch` is calibrated everywhere and only *ranks* in some regimes. Below 0.68 universe breadth: AUC **0.6255**, skill +5.62% (n=6,078). At or above: **0.5154**, −0.56% (n=3,037), and the low band inverts. Publish the probability always, gate the ranking. A gate, not a suppression -- the number is trustworthy, the ordering is not. Found by searching validate; `cscan outcomes` is the clean test |
+| 176 | Predictions are gated on market breadth | **Decided 2026-09-07.** `p_touch` is calibrated everywhere and only *ranks* in some regimes. Below 0.68 universe breadth: AUC **0.6255**, skill +5.62% (n=6,078). At or above: **0.5154**, −0.56% (n=3,037), and the low band inverts. Publish the probability always, gate the ranking. A gate, not a suppression -- the number is trustworthy, the ordering is not. Found by searching validate; `cscan outcomes` is the clean test **AMENDED 2026-09-25: the forward log refutes the ranking claim** -- AUC 0.6381 above the floor against 0.6108 below, the opposite of the validate finding, on 9,656 resolved predictions. What splits is the base rate (0.5587 / 0.4042) and therefore calibration, not ranking. Gate stays dormant and unwired; `cscan breadth` stays scheduled |
 | 177 | The model trains and serves on `touch` entry, not `next_open` | **Decided 2026-09-08, corrected same day.** The first measurement included `breach_depth`, which is **look-ahead under a touch entry** (it reads the session's low); a test caught it. Re-measured without it, `p_touch_3` skill +6.57% -> **+10.14%** and `p_adverse_3` +3.83% -> **+7.17%** -- the decision holds, the adverse gain was two-thirds leak. `breach_depth` deleted (worth 0.0003 AUC where legal); every field improves, bias stays +0.0000. A `next_open` label measures from a price the features never saw, and the overnight gap is noise in the *label*. Costs the stochastic-only signals (no fill price, 42% of rows) -- but **zero** of those share a ticker-date with a confluence row, so confluence retains the stochastic condition entirely. Does not move `config_hash` |
 | 179 | The model refits on a rolling window; the forward log is never trained on | **Decided 2026-09-08.** Coverage error grows with distance from the training window (2024 0.0182 -> 2026 0.0480) and **46,232 labelled events** sit outside it -- 49% more than the 94,054 trained on. Weekly refit, all three bounds rolling. **`outcomes` is never trained on**: it is the only estimate nothing has iterated against, and training on it converts it irreversibly. Newly closed labels enter training only after serving as forward-log evidence |
 | 180 | Serving scores only the signal types the model was fitted on | **Decided 2026-09-08.** **4,207 of 8,699 predictions (48%) were extrapolation**: `stoch_oversold`/`stoch_overbought`, of which the training frame holds **zero** rows, shipped with a calibrated probability, a CI and an `n_eff` formatted exactly like the 4,492 legitimate ones. Cause is a correct guard -- `build_training_frame` drops NULL labels (removing them), `build_serving_frame` drops `LABEL_COLS` outright per ADR 174 (so it cannot filter). Measured on 5,986 resolved forward-log rows, Brier skill against each population's own base rate: in-population **0.079** (pred 51.7% vs actual 57.1%), outside **0.021** (pred 52.3% vs actual 49.0%) -- the model gives both ~52% while their real rates differ by 8pp, and the error flips from understating to **overstating**. Serving now filters on `predictor.trained_signal_types`, read off the fit, never a literal list. Existing rows flagged via `predictions.model_scored`, not deleted: their 1,966 outcomes are the only off-distribution measurement the project has. `v_forward` stays unfiltered. Does not move `config_hash` |
@@ -8643,6 +8643,63 @@ one search of fifteen produces by chance. Not adopted.
 sits on this split; it is not a law. The gate is a display state and a
 warning, not a trading rule, and ADR 001's advisory-only constraint is
 untouched.
+
+**AMENDED 2026-09-25: the forward log refutes the ranking claim, and this
+ADR named that test itself.** The text above says "`cscan outcomes` is the
+clean test and it is already running" and "Nothing should be sized on
+0.6255 holding." It was not running -- the log stalled and resolved 0
+predictions for four nights until ADR 200 -- and now that it is, it
+disagrees.
+
+Measured on **9,656 resolved predictions**, 2026-07-14 to 2026-09-17, each
+joined to `market_days.breadth_ma_above` at its own signal date:
+
+| | validate (above) | **forward log** | n | 95% CI |
+|---|---:|---:|---:|---|
+| AUC, breadth < 0.68 | 0.6255 | **0.6108** | 7,924 | [0.5985, 0.6231] |
+| AUC, breadth >= 0.68 | **0.5154** | **0.6381** | 1,732 | [0.6112, 0.6650] |
+
+**Above the floor ranks BETTER out of sample**, by +0.0273 AUC (z = +1.81).
+The coin flip does not reproduce: 0.5154 sits far outside the measured
+interval. The decision above rests specifically on ranking -- "`p_touch`
+only *ranks* when breadth < 0.68" -- and that is the claim that failed.
+
+**Something real is there, and this ADR attributed it to the wrong
+mechanism.** Brier skill does split the way the original measurement found:
+
+| | base rate | Brier | skill |
+|---|---:|---:|---:|
+| breadth < 0.68 | 0.5587 | 0.2313 | **+6.2%** |
+| breadth >= 0.68 | 0.4042 | 0.2447 | **-1.6%** |
+
+Brier mixes calibration with discrimination. AUC isolates ranking and says
+ranking is fine. What differs across the floor is the **base rate** --
+0.5587 against 0.4042 -- while the isotonic tables are anchored to one
+level, so above the floor the published probabilities are systematically
+too high. That is the non-stationary base rate `CLAUDE.md` already records
+as the shipped-probabilities-run-low problem, not a ranking failure, and
+ADR 179 already refuted the rolling window as its fix.
+
+**Consequence: the gate stays dormant and is not wired to a surface.**
+Displaying "Ranking unreliable" above 0.68 would print a warning on days
+when ranking is measurably fine, which is worse than printing nothing.
+`core/breadth.py`, `ranking_gate_open`, the labels and the copy all stay --
+they cost nothing and the question may come back with a different
+threshold -- but nothing consumes them, and that is now deliberate rather
+than an oversight. The oversight is recorded in `BACKLOG.md`.
+
+**`cscan breadth` stays scheduled** (added to `nightly` 2026-09-24, six
+seconds). The column is honest, cheap, and it is what made this test
+possible; it was 22 days stale when the test was first attempted.
+
+**Two limits on this refutation, which is why the ADR is amended rather
+than withdrawn.** The above-floor sample is 1,732 rows from a single
+episode, so it is one regime rather than a cross-section of them. And the
+scores come from **six different `model_version`s**, because `weekly`
+refits -- a pooled AUC across six models is not a clean instrument for a
+threshold question. **The honest reading is that the gate's evidence no
+longer supports shipping it, not that the effect is proven absent.**
+
 
 ## 177. The model trains and serves on `touch` entry, not `next_open`
 

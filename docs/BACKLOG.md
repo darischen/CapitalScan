@@ -450,12 +450,27 @@ by removing the placeholder. **Deleting an unimplemented stub needs this
 check** -- an empty command can be a forgotten requirement rather than dead
 code, and the two look identical in the source.
 
-**`cscan positions open/close/list` works and has never been used.** Zero
-rows in `positions`, zero mentions in any doc. It is the user-declared
-trade log (ADR 048, ADR 073); the sibling `order_intents` seam is alive at
-1,926 rows. Owner is **50/50 on retiring it** (2026-09-24). Kept for now.
-If it stays it needs a doc line, since it is currently undiscoverable; if
-it goes, that is three commands, `jobs/positions.py` and a table.
+**`cscan positions open/close/list` works and has never been used --
+DECIDED 2026-09-25: keep it, and it now has a doc line.** Zero rows in
+`positions`; the sibling `order_intents` seam is alive at 1,926 rows.
+
+**What it is for, from ADR 073, which is the argument for keeping it:** the
+trade log is *"a second forward record measuring **user decisions** rather
+than model predictions, and comparing the two is directly informative about
+whether the system helps."* `outcomes` measures the model against what
+happened; this would measure **you** against what happened, and the
+comparison answers a question neither record answers alone -- when you
+overrode the model, were you right? ADR 074 already reserves
+`compare_positions` as the tool that joins them.
+
+**Why retiring was rejected on cost, not merit.** `v_positions` reads the
+table (`db/schema.sql:1228`), and `test_v_positions_config.py` uses that
+view to enforce an **unrelated** invariant -- that `serving_config` matches
+live `ExitParams` (ADR 115). Retiring therefore means a migration dropping
+a table and a view, amending ADR 048 and ADR 073, and **rehoming a live
+test guard that has nothing to do with trade logging**. That is a lot of
+moving parts to remove something that costs nothing dormant. Zero rows is a
+usage cost -- it needs a trade logged by hand -- not a design fault.
 
 **Five commands are outside every chain and script by design** and stay
 that way: `scan`, `preflight`, `backfill`, `validate`,
@@ -523,9 +538,18 @@ shape: a thing that is correct in isolation, connected to nothing, failing
 silently. See also the label population (ADR 200) and the reversal type
 list.
 
-**The order matters and is easy to get backwards.** Do not schedule
-`cscan breadth` to keep a column fresh for zero consumers. The question to
-answer first is whether the gate should reach a surface at all:
+**ANSWERED 2026-09-25: the gate stays dormant, and it is not an
+oversight any more.** With `cscan breadth` scheduled (2026-09-24) and the
+forward log unstalled (ADR 200), the out-of-sample test ADR 176 asked for
+became possible for the first time -- and it **refutes the ranking claim**:
+AUC 0.6381 above the floor against 0.6108 below, on 9,656 resolved
+predictions. Wiring it would print "Ranking unreliable" on days when
+ranking is measurably fine. What really splits across 0.68 is the base rate
+(0.5587 / 0.4042) and therefore calibration. -> ADR 176 amended,
+RESULTS 2026-09-25.
+
+**Kept for the record, because the reasoning was right even though the
+conclusion moved.** The original question was:
 
 - **If yes** -- ADR 176's own evidence is strong (AUC 0.6255 below the
   floor against 0.5154 above it, and the low band *inverts* there, so a low
