@@ -566,7 +566,19 @@ number is displayed, because no number is displayed. The exposure is that
 the next person to read `core/breadth.py` will reasonably assume the gate
 is live.
 
-### `exit_reason = 'timeout'` covers two different facts
+### ~~`exit_reason = 'timeout'` covers two different facts~~ -- FIXED 2026-09-25
+
+`ExitReason.UNFINISHED` (`'unfinished'`) is what `core.exits.resolve_exit`
+now returns when the loop falls through on a window shorter than
+`max_hold_days`. Fill and return are unchanged. DESIGN §5.5 carries the
+rule. Measured on the live generation that day: 7,569 of 2,263,549
+timeouts held fewer than five bars.
+**Stored rows change when a backtest next rewrites them**: `nightly`
+relabels recent events as their windows complete, and the next `weekly`
+relabels the historical ones. No migration, because the value is computed
+by `core/` and a SQL backfill would be a second exit implementation
+(invariant 2). Original entry kept:
+
 
 **Found 2026-09-08 from a user question about SPG.** A trade closed because
 the forward data ran out is labelled `timeout`, identically to one that

@@ -53,6 +53,7 @@ def test_signal_type_values():
 def test_exit_reason_values():
     assert {r.value for r in ExitReason} == {
         "timeout",
+        "unfinished",
         "target",
         "stop",
         "upper_band",

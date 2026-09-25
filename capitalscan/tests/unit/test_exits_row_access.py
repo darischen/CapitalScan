@@ -99,8 +99,13 @@ CASES = {
         {"bb_upper": 102.0},
         ExitReason.UPPER_BAND,
     ),
-    "timeout": (
+    "unfinished": (
         _bars([100.0, 100.0], [100.5, 100.5], [99.5, 99.5], [100.0, 100.2]),
+        None,
+        ExitReason.UNFINISHED,
+    ),
+    "timeout": (
+        _bars([100.0] * 5, [100.5] * 5, [99.5] * 5, [100.0, 100.1, 100.0, 100.1, 100.2]),
         None,
         ExitReason.TIMEOUT,
     ),

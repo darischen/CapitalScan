@@ -224,7 +224,9 @@ def resolve_exit(
 
     exit_idx = len(window) - 1
     exit_price = float(window.iloc[-1]["close"])
-    reason = ExitReason.TIMEOUT
+    # A window shorter than the horizon ran out of data, not time. Filled
+    # the same way; labelled apart so a count of timeouts means five bars.
+    reason = ExitReason.TIMEOUT if len(window) >= ep.max_hold_days else ExitReason.UNFINISHED
     ambiguous = False
 
     for i in range(len(window)):
@@ -236,7 +238,8 @@ def resolve_exit(
             exit_idx = i
             break
 
-    # 4. TERMINAL — the loop falling through leaves the final bar's close.
+    # 4. TERMINAL — the loop falling through leaves the final bar's close,
+    # as TIMEOUT at the horizon or UNFINISHED before it.
 
     # Path metrics run over [t+1, exit_idx] (DESIGN §5.6). Reachability spans
     # the full window regardless of exit timing and belongs to the backtest
