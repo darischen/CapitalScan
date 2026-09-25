@@ -435,11 +435,20 @@ commands were checked against the three chains, `scripts/`, and the docs.
 **One dead command, now removed.** `cscan logs logs-tail` was the last
 survivor of the 23 `NotImplementedError` stubs in `Session 0: Scaffold`
 (2026-07-31); the other 22 were implemented over the following two months.
-It had no ADR, no BUILD entry and no spec -- a plausible CLI verb in a
-skeleton, never a designed feature. It was also obsolete twice over:
-`runs` holds job history and `journalctl -u capitalscan-*` holds the logs,
-both better than a wrapper would have been. Its only live effect was
-advertising a capability in `--help` that raised on any invocation.
+Its only live effect was advertising a capability in `--help` that raised
+on any invocation.
+
+**It did have an origin, and the origin is why it is safe to delete**
+(owner, 2026-09-24): the Session 0 planning asked for *logging everywhere*,
+and this command was that requirement's CLI shape. The requirement was then
+met properly and somewhere better -- **`runs` holds every job's history in
+the database**, queried directly and read by `cscan system-status`, and
+`journalctl -u capitalscan-*` holds the process output with following and
+time filtering a wrapper would not have had. So the stub is superseded
+rather than abandoned: the thing it stood for exists, and nothing was lost
+by removing the placeholder. **Deleting an unimplemented stub needs this
+check** -- an empty command can be a forgotten requirement rather than dead
+code, and the two look identical in the source.
 
 **`cscan positions open/close/list` works and has never been used.** Zero
 rows in `positions`, zero mentions in any doc. It is the user-declared
