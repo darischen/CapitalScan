@@ -1391,6 +1391,23 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int, in
     )
     if frame.empty:
         return 0, 0, 0, 0, 0, 0
+    # **Only rows research does not hold yet (2026-09-25).** Selection has
+    # no date bound, so every earlier adoption came back each night and
+    # re-ran the remap: the 100 legacy rows adopted unresolved on
+    # 2026-09-20 reported `collision`/`no_slot` on every nightly forever,
+    # training a reader to ignore the line. `insert_new` already skipped
+    # them (`ON CONFLICT (id) DO NOTHING`), so dropping them here changes
+    # no write -- only what the counts describe: this pull's new rows.
+    held = pd.read_sql(
+        text("SELECT id FROM predictions WHERE id = ANY(:held)"),
+        target,
+        # pandas-stubs types `params` values as scalars; psycopg binds a list
+        # to `ANY` fine. Same stub gap as the `_tables` loop's bounds.
+        params={"held": [int(i) for i in frame["id"]]},  # type: ignore[arg-type]
+    )
+    frame = frame[~frame["id"].isin(held["id"])].reset_index(drop=True)
+    if frame.empty:
+        return 0, 0, 0, 0, 0, 0
     frame, no_slot, ambiguous = _apply_slot_remap(frame, target)
     # **Collision-against-the-target FIRST, intra-frame dedup SECOND --
     # order found wrong in review (2026-09-20 round 2).** A row already
