@@ -756,7 +756,13 @@ each depends on the one above it.
   does not identify which, and returns the newest by `(as_of DESC, id DESC)`
   -- deterministic, not correct. Either add an optional `side` argument or
   return both. The screener is unaffected: it joins on the event.
-- **`clear_predictions` does not clear serving.** The foreign-key half was
+- **~~`clear_predictions` does not clear serving~~ -- FIXED 2026-09-25.**
+  `cscan predict --clear` now clears both stores, running every check on
+  both before deleting from either. It refuses when serving holds Pi-born
+  predictions research has not adopted (the only copy), whatever
+  `drop_outcomes` says. Checked read-only that night: all 540 Pi-born
+  live-generation predictions on serving were already on research.
+  Original text: The foreign-key half was
   fixed 2026-09-08: it now refuses when predictions have resolved outcomes
   and names how many, instead of raising a raw `ForeignKeyViolation` the
   CLI swallowed. `drop_outcomes=True` is the deliberate override. **The

@@ -378,15 +378,31 @@ def predict(
             )
 
     if clear:
+        # **Both stores (2026-09-25).** Clearing research alone left serving
+        # holding the old rows, and the rescore's new ids then failed
+        # serving's unique `predictions_event_id` on the next sync. No
+        # serving URL is a development box, where research is all there is.
+        import os
+
+        from capitalscan.jobs import sync as sync_job
+
+        db_io._load_env()
+        serving_store = (
+            sync_job.serving_engine() if os.environ.get("DATABASE_URL_SERVING") else None
+        )
         try:
-            removed = jp.clear_predictions(db_io.get_engine(), chash)
+            cleared = jp.clear_predictions(db_io.get_engine(), chash, serving=serving_store)
         except ValueError as exc:
             # Refusing is the correct outcome, not an error to swallow: the
             # first version failed with a raw ForeignKeyViolation and the
             # run carried on, leaving two models' predictions in one table.
             console.print(f"[red]refused[/red]: {exc}")
             raise typer.Exit(code=1) from exc
-        console.print(f"predict: deleted {removed} predictions for config {chash}")
+        served = "not configured" if cleared.serving is None else str(cleared.serving)
+        console.print(
+            f"predict: deleted {cleared.research} predictions on research, "
+            f"{served} on serving, for config {chash}"
+        )
         return
 
     parsed = _date.fromisoformat(since) if since else None

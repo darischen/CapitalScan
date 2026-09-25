@@ -273,8 +273,75 @@ def run_predict(
     return report
 
 
-def clear_predictions(engine: Engine, config_hash: str, drop_outcomes: bool = False) -> int:
-    """Delete predictions for one config generation.
+@dataclass
+class ClearReport:
+    research: int
+    serving: int | None  # None: no serving store was given
+
+
+_SCORED_SQL = (
+    "SELECT count(*) FROM outcomes o JOIN predictions p ON p.id = o.prediction_id "
+    "WHERE p.config_hash = :c"
+)
+
+
+def _scored(engine: Engine, config_hash: str) -> int:
+    with engine.connect() as conn:
+        return int(conn.execute(text(_SCORED_SQL), {"c": config_hash}).scalar() or 0)
+
+
+def _unadopted(research: Engine, serving: Engine, config_hash: str, floor: int) -> int:
+    """Serving-born predictions research does not hold yet.
+
+    The poller mints `predictions.id` at or above `serving_id_floor` and
+    nightly's `_pull_predictions` adopts them into research under the same
+    id. Until that pull runs, serving holds the only copy, so clearing it
+    would delete a forward-log record nobody else has.
+    """
+    with serving.connect() as conn:
+        ids = [
+            int(r[0])
+            for r in conn.execute(
+                text("SELECT id FROM predictions WHERE config_hash = :c AND id >= :floor"),
+                {"c": config_hash, "floor": floor},
+            )
+        ]
+    if not ids:
+        return 0
+    with research.connect() as conn:
+        held = int(
+            conn.execute(
+                text("SELECT count(*) FROM predictions WHERE id = ANY(:ids)"), {"ids": ids}
+            ).scalar()
+            or 0
+        )
+    return len(ids) - held
+
+
+def _delete(engine: Engine, config_hash: str, drop_outcomes: bool) -> int:
+    with engine.begin() as conn:
+        if drop_outcomes:
+            conn.execute(
+                text(
+                    "DELETE FROM outcomes WHERE prediction_id IN "
+                    "(SELECT id FROM predictions WHERE config_hash = :c)"
+                ),
+                {"c": config_hash},
+            )
+        result = conn.execute(
+            text("DELETE FROM predictions WHERE config_hash = :c"), {"c": config_hash}
+        )
+    return int(result.rowcount or 0)
+
+
+def clear_predictions(
+    engine: Engine,
+    config_hash: str,
+    drop_outcomes: bool = False,
+    serving: Engine | None = None,
+    id_floor: int | None = None,
+) -> ClearReport:
+    """Delete predictions for one config generation, on research and serving.
 
     **Refuses by default once the forward log has scored anything, and that
     is the point.** `outcomes.prediction_id` is a foreign key with no
@@ -291,35 +358,40 @@ def clear_predictions(engine: Engine, config_hash: str, drop_outcomes: bool = Fa
     way, and `drop_outcomes=True` is the deliberate, named way to say
     otherwise.
 
-    Returns rows deleted.
+    **Serving too, since 2026-09-25.** Clearing research alone left serving
+    holding the old rows: the rescore mints new ids for the same events,
+    `sync` copies `predictions` keyed on `id`, and serving's unique
+    `predictions_event_id` rejected every one. Every check runs on **both**
+    stores before anything is deleted from either, so a refusal leaves both
+    untouched. A serving store holding Pi-born predictions research has not
+    adopted yet is refused outright, whatever `drop_outcomes` says: the
+    flag is about outcomes, and those rows are the only copy of a record.
+    The next nightly adopts them; clear after that.
     """
-    with engine.begin() as conn:
-        scored = int(
-            conn.execute(
-                text(
-                    "SELECT count(*) FROM outcomes o JOIN predictions p ON p.id = o.prediction_id "
-                    "WHERE p.config_hash = :c"
-                ),
-                {"c": config_hash},
-            ).scalar()
-            or 0
+    scored = _scored(engine, config_hash)
+    scored_serving = _scored(serving, config_hash) if serving is not None else 0
+    if (scored or scored_serving) and not drop_outcomes:
+        where = f"{scored} on research"
+        if serving is not None:
+            where += f", {scored_serving} on serving"
+        raise ValueError(
+            f"these predictions have resolved outcomes ({where}). Those are the "
+            "forward log -- the only measurement here that nothing has iterated "
+            "against -- and deleting the predictions would delete them too. Pass "
+            "drop_outcomes=True to do it anyway."
         )
-        if scored and not drop_outcomes:
+    if serving is not None:
+        from capitalscan.core.config import ServingParams
+
+        floor = ServingParams().serving_id_floor if id_floor is None else id_floor
+        pending = _unadopted(engine, serving, config_hash, floor)
+        if pending:
             raise ValueError(
-                f"{scored} of these predictions have resolved outcomes. Those are the "
-                "forward log -- the only measurement here that nothing has iterated "
-                "against -- and deleting the predictions would delete them too. Pass "
-                "drop_outcomes=True to do it anyway."
+                f"serving holds {pending} poller-born predictions research has not "
+                "adopted yet, and clearing would delete the only copy. Run nightly "
+                "(its pull adopts them), then clear."
             )
-        if drop_outcomes:
-            conn.execute(
-                text(
-                    "DELETE FROM outcomes WHERE prediction_id IN "
-                    "(SELECT id FROM predictions WHERE config_hash = :c)"
-                ),
-                {"c": config_hash},
-            )
-        result = conn.execute(
-            text("DELETE FROM predictions WHERE config_hash = :c"), {"c": config_hash}
-        )
-    return int(result.rowcount or 0)
+
+    research = _delete(engine, config_hash, drop_outcomes)
+    served = _delete(serving, config_hash, drop_outcomes) if serving is not None else None
+    return ClearReport(research=research, serving=served)
