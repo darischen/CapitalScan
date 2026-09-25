@@ -259,6 +259,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 198 | The S&P membership-changes scraper is retired; the frozen union stands | **Decided 2026-09-21**, owner's call of 2026-09-04. Wikipedia deleted the "Selected changes to the list" section, so `fetch_membership_changes` returns an 11-row navigation box. Its only job, building `data/universe_union.csv`, finished on 2026-08-01 (759 rows, 248 removal dates, 0 pending review). Retires the scraper, `run_membership` and `cscan membership`; the CSV becomes the permanent record of the 2010-2026 S&P union and the universe grows through the refresh and by hand. Amends how ADR 035 and ADR 055 were produced, not what they hold. Code removal still to do |
 | 199 | The reliability table is not split by market regime | **Decided 2026-09-22.** BACKLOG item 3c proposed fitting ADR 174's table separately above and below the index's 200-day SMA, since coverage error separates 0.0778 against 0.0236 within 2022. One fit, two calibration schemes, both time directions on `capitalscan_hist`: the split is **worse in both** (mean |bias| 0.0150 -> 0.0185 and 0.0157 -> 0.0237; ECE up both times; Brier flat), winning 10 of 36 field x cell x direction. Cause is sample, not regime -- the below-the-line table fitted on 2024-26 carries `n_eff` 1,090 against the pooled 18,353 and triples that cell's bias. Generalises: any partition of the calibration sample must show its gain net of the `n_eff` it costs. Refutes 3c's fix; does not explain the transition |
 | 200 | Labels cover what path capture priced, and that is not a model change | **Decided 2026-09-23.** `cscan outcomes` resolved **0 predictions on four consecutive nights** with every nightly step `ok`: the forward log waits on `peak_ret_5d`, `peak_labels` wrote it for `in_trade` only, and `path_backfill` prices `(in_trade OR in_watch)`. 2,767 unresolved predictions sat on events with a complete `path`, an entry price and no label. Widens the label predicate to match. **Not the model change ADR 183 declined** -- that entry's own remedy pins the training population on the frame (`features.TRADE_ONLY`, two tests), so labels land on rows training does not select; `config_hash` does not move and cosmetic rows (ADR 178) stay out. Amends ADR 183's rationale, not its decision |
+| 201 | Incremental sync reads a write watermark as well as a date watermark | **Decided 2026-09-25.** `events.modified_at`, stamped by a trigger on any real change (`run_id`-only rewrites excluded), lets `sync --incremental` ship older rows changed since the last `ok` sync. The date watermark alone never saw `peak_labels` (research 6,327 August `peak_ret_10d` labels, serving 4,025). Two disjoint `UNION ALL` arms, because the `OR` form seq-scanned 20 GB. One full sync after deploying heals rows rewritten before the trigger |
 
 ---
 
@@ -10673,3 +10674,69 @@ previous state on the next nightly; no row is destroyed. The exposure is
 that a later change could route `in_watch` labels into training without
 noticing -- which is what the `TRADE_ONLY` tests exist to catch, and why
 this ADR names them rather than leaving the dependency implicit.
+
+## 201. Incremental sync reads a write watermark as well as a date watermark
+
+Status: Decided 2026-09-25. Closes the BACKLOG item "`sync --incremental`
+cannot see backwards".
+
+Decision. `events` gains `modified_at`, stamped by a `BEFORE INSERT OR
+UPDATE` trigger whenever a row really changes. `cscan sync --incremental`
+ships the events at or after the target's `max(signal_date)` minus
+`SYNC_OVERLAP_DAYS`, as before, **plus** any older event whose
+`modified_at` is at or after the previous successful sync's start minus
+`SYNC_MODIFIED_OVERLAP` (one day). Migration `e6b3d9a1f472`.
+
+Context. The date watermark sees forward only. On 2026-09-08 a cosmetic
+backtest rewrote history and an incremental sync reported "synced 118,340
+rows" while serving sat at 699,402 events against research's 10,823,948.
+The workaround was "run a full sync after any historical rewrite", and it
+was not being followed for the writer nobody thought of: `peak_labels`
+labels an event about fourteen calendar days after its signal, past the
+seven-day overlap. Measured 2026-09-25, August signals on the live
+generation: **6,327 `peak_ret_10d` labels on research, 4,025 on serving.**
+
+Why a trigger rather than any of the three options the backlog listed.
+
+- **Each writer recording what it touched** (option 2) needs all seven
+  writers to cooperate: two `copy_upsert` paths, three `UPDATE`s in
+  `db_io`, `finalize_cofire`, `peak_labels`, `path_backfill`. The bug is a
+  writer nobody listed, so a design that depends on the list repeats it.
+- **A row-count divergence warning** (option 3) cannot see a value rewrite.
+  `finalize_cofire` and `peak_labels` change no counts.
+- **A `computed_at` watermark** (option 1) is this decision. `events` had no
+  such column, and a column the application sets is option 2 again. A
+  trigger sets it for every writer, including ones not yet written.
+
+**Stamped on a real change only.** The trigger compares `NEW` to `OLD` with
+`modified_at` and `run_id` carried over. Every backtest re-touches its rows
+and rewrites `run_id` (Ruling C4). Stamping those would re-ship the whole
+generation after each `weekly` for nothing. Test 3 (determinism) is what
+makes an unchanged re-run stamp nothing.
+
+**`UNION ALL` of two disjoint arms, not an `OR`.** Measured on the
+workstation copy: the `OR` form planned as a sequential scan of the 20 GB
+table. Each arm alone uses its own index, `events_ticker_date` and the new
+partial `events_modified_at (config_hash, modified_at) WHERE modified_at IS
+NOT NULL`. The arms must be disjoint because a key twice in one `COPY`
+chunk fails the upsert.
+
+**The line comes from the source.** The target's rows say how far forward
+it has got. Only research's `runs` knows when the last `ok` sync started.
+No prior sync, or an unreadable `runs`, turns the `events` pass full rather
+than guessing.
+
+Consequences.
+
+- Rows rewritten **before** this migration carry `modified_at = NULL` and
+  are invisible to the new arm. **One full `cscan sync` after deploying**
+  heals them, including the August label gap. From then on, a historical
+  rewrite reaches serving on the next nightly with no manual step.
+- The trigger costs one row comparison per written row. A real rewrite of
+  the whole generation (a config change) makes the next incremental sync
+  ship all of it, which is correct and is what the manual full sync did.
+- The trigger also runs on serving (ADR 053: same migrations on both),
+  where `modified_at` carries no meaning.
+
+Cost of being wrong. Low. Dropping the trigger restores the old behaviour
+exactly, and a full sync always converges.

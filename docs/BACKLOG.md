@@ -593,7 +593,17 @@ only what the row claims about itself. Cheap, and it makes the count of
 "not computed yet" when it means the opposite -- the backtest looked and
 correctly wrote nothing. Now `N/A: awaiting next open`.
 
-### `sync --incremental` cannot see backwards -- a full sync is required after any historical rewrite
+### ~~`sync --incremental` cannot see backwards~~ -- FIXED 2026-09-25, ADR 201
+
+**Built as a trigger-stamped `events.modified_at`** (migration
+`e6b3d9a1f472`). The incremental sync now also ships any older event
+changed since the previous `ok` sync, whichever job changed it. The
+measurement that made it urgent: August signals carried 6,327
+`peak_ret_10d` labels on research and 4,025 on serving, because
+`peak_labels` writes past the seven-day overlap. **One full `cscan sync`
+after deploying heals the rows rewritten before the trigger existed.**
+The rule below no longer binds after that. Original entry kept:
+
 
 **Found 2026-09-08 the hard way.** `_incremental_bounds` computes
 `events_from` as `max(signal_date)` **on the serving database**. Serving

@@ -268,3 +268,84 @@ def test_nightly_opts_into_incremental():
 
     src = inspect.getsource(cli.nightly)
     assert "run_sync(incremental=True)" in src
+
+
+# ---------------------------------------------------------------------------
+# The backward-looking watermark (2026-09-25)
+# ---------------------------------------------------------------------------
+#
+# `events_from` is the target's newest `signal_date`. It cannot see a rewrite
+# of an older row: measured 2026-09-25, research held 6,327 August
+# `peak_ret_10d` labels against serving's 4,025, because `peak_labels` writes
+# about fourteen days after the signal and the overlap is seven. The second
+# watermark is `events.modified_at`, stamped by a trigger on any real change.
+
+
+def test_the_modified_line_is_the_last_ok_sync_minus_the_overlap():
+    from datetime import UTC, datetime
+
+    last = datetime(2026, 9, 24, 21, 8, tzinfo=UTC)
+    source = _Engine({"job = 'sync' AND status = 'ok'": last})
+    assert sync_mod._events_modified_since(source) == last - sync_mod.SYNC_MODIFIED_OVERLAP
+
+
+def test_no_prior_sync_or_an_unreadable_source_gives_no_line():
+    assert sync_mod._events_modified_since(_Engine({})) is None
+    assert sync_mod._events_modified_since(_Engine(raises=True)) is None
+
+
+def test_without_a_modified_line_an_incremental_sync_ships_events_whole(monkeypatch):
+    """No line means no way to know what changed behind `events_from`. The
+    old behaviour -- ship forward only -- is exactly the bug; a full events
+    pass is slow and correct."""
+    seen = _capture(monkeypatch)
+    monkeypatch.setattr(
+        sync_mod,
+        "_incremental_bounds",
+        lambda t, c, **k: {k2: date(2026, 8, 18) for k2 in BOUND_KEYS},
+    )
+    monkeypatch.setattr(sync_mod, "_events_modified_since", lambda s: None)
+    sync_mod.run_sync(source=_Engine(), target=_Engine(), config_hash=CONFIG, incremental=True)
+    assert seen and all(p["events_from"] is None for p in seen)
+    assert all(p["bars_from"] == date(2026, 8, 18) for p in seen)
+
+
+def test_with_a_modified_line_both_watermarks_reach_the_query(monkeypatch):
+    from datetime import UTC, datetime
+
+    line = datetime(2026, 9, 23, tzinfo=UTC)
+    seen = _capture(monkeypatch)
+    monkeypatch.setattr(
+        sync_mod,
+        "_incremental_bounds",
+        lambda t, c, **k: {k2: date(2026, 9, 17) for k2 in BOUND_KEYS},
+    )
+    monkeypatch.setattr(sync_mod, "_events_modified_since", lambda s: line)
+    sync_mod.run_sync(source=_Engine(), target=_Engine(), config_hash=CONFIG, incremental=True)
+    assert all(p["events_from"] == date(2026, 9, 17) for p in seen)
+    assert all(p["events_modified_since"] == line for p in seen)
+
+
+def test_a_full_sync_does_not_consult_the_modified_line(monkeypatch):
+    seen = _capture(monkeypatch)
+    monkeypatch.setattr(
+        sync_mod,
+        "_events_modified_since",
+        lambda s: pytest.fail("a full sync must not consult the last sync"),
+    )
+    sync_mod.run_sync(source=_Engine(), target=_Engine(), config_hash=CONFIG)
+    assert seen and all(p["events_modified_since"] is None for p in seen)
+
+
+def test_the_events_arms_are_disjoint_and_not_an_or():
+    """An `OR` of the two watermarks planned as a sequential scan of the
+    whole 20 GB table on the workstation copy; `UNION ALL` lets each arm
+    use its own index. The arms must not overlap, because a key twice in
+    one `COPY` chunk fails the upsert."""
+    sql = {t.name: t.sql for t in sync_mod._tables(date(2020, 1, 1), CONFIG)}["events"]
+    first, second = sql.split("UNION ALL")
+    bound = "GREATEST(:cutoff, COALESCE(CAST(:events_from AS date), :cutoff))"
+    assert f"signal_date >= {bound}" in first
+    assert f"signal_date < {bound}" in second
+    assert ":events_modified_since" in second and ":events_modified_since" not in first
+    assert " OR " not in sql
