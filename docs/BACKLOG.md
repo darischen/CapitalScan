@@ -744,6 +744,15 @@ each depends on the one above it.
    serve different entry conventions after ADR 177, and the next person to
    query `v_screen` directly will get the superseded model's rows.
 
+   **Measured 2026-09-25, and it needs the owner's call rather than a
+   patch.** On `wivie` the view holds 73,123 rows and **zero** carry a
+   prediction: its `predictions` join matches `p.entry_kind =
+   e.entry_kind`, the view selects `next_open`, and ADR 177 scores `touch`
+   only. No handler reads those columns (`handlers/screen.py` takes the
+   event and cell columns), so nothing a reader sees is wrong. The fix
+   depends on whether `grain="next_open"` survives, which is a product
+   decision: see DECISIONS.md, Open items.
+
 6. **~~`breach_depth` should be deleted~~ -- DONE in ADR 177.** Removed
    from `DERIVED_FEATURE_COLS`, the `_breach_depth` function deleted, and
    `TestBreachDepthIsGone` asserts both. `docs/model_spec_adr170.json`
@@ -1100,7 +1109,12 @@ backfilled: `state_json` carries indicator state but no signal type, and the
 events that would have supplied it are the ones ADR 150 deleted, so a guessed
 value would be fabrication where NULL is true.
 
-**One step remains**: `v_screen_live` still resolves `fired_at` by
+**~~One step remains~~ -- DONE 2026-09-01, recorded 2026-09-25.** Migration
+`b7f3c5d21a94` (`screen_live_prefers_signal_type`) made the `fired_at`
+lateral match `r.signal_type IS NULL OR r.signal_type = e.signal_type`, and
+every later rebuild of the view kept it (checked on `wivie`). 4,383 of 6,214
+`signal_reports` rows carry the type, all since 2026-08-31. This entry was
+never updated. Original text: `v_screen_live` still resolves `fired_at` by
 `(ticker, signal_date)`. It should prefer `signal_type` where the column is
 populated and fall back to the match where it is NULL. Deferred because no
 row carries the value yet — the view has nothing to prefer until the poller
