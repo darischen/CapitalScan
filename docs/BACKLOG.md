@@ -769,7 +769,7 @@ each depends on the one above it.
    model, and a 2 GB torch wheel on ARM is not the way -- the numpy forward
    pass over exported weights is.
 
-5. **`v_screen` still filters `next_open`.** Harmless today -- every real
+5. **~~`v_screen` still filters `next_open`~~ -- RESOLVED 2026-09-25, B + C.** Migration `f4a9c2e71b58`: the dead prediction columns are gone and the `touch` twin's prediction is exposed under a `touch_` prefix; see DECISIONS.md Open items. Original entry: **`v_screen` still filters `next_open`.** Harmless today -- every real
    query in `screen.ts` reads `v_screen_live` -- but it means the two views
    serve different entry conventions after ADR 177, and the next person to
    query `v_screen` directly will get the superseded model's rows.
