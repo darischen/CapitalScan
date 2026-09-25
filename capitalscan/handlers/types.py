@@ -330,6 +330,10 @@ class Prediction:
 
     ticker: str
     as_of: date
+    # The side of the event this prediction scores, or None when its
+    # `event_id` is unresolved. `p_touch` is directional, so a caller needs
+    # to know which of a same-day long and short it received.
+    side: str | None
     model_version: str
     cell_id: str | None
     q05: float | None

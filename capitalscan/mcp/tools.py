@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     UniverseArg = str
     DdBucketArg = str
     EntryKindArg = str
+    SideArg = str
     SplitArg = str
     IndicatorFieldArg = str
     GrainArg = str
@@ -59,6 +60,7 @@ else:
     UniverseArg = Literal[enums.UNIVERSES]
     DdBucketArg = Literal[enums.dd_buckets()]
     EntryKindArg = Literal[enums.entry_kinds()]
+    SideArg = Literal[enums.sides()]
     # Two members, and `holdout` is not one of them. The refusal is in the
     # handler; this makes the request unrepresentable a layer earlier, so a
     # client that reads the schema never composes it.
@@ -196,7 +198,7 @@ def get_events(
     )
 
 
-def predict(ticker: str, as_of: date | None = None) -> dict[str, Any]:
+def predict(ticker: str, as_of: date | None = None, side: SideArg | None = None) -> dict[str, Any]:
     """Calibrated probabilities that price reaches a threshold, for one ticker.
 
     Returns `p_touch_2/3/5/10` -- the probability of a favourable excursion
@@ -218,11 +220,16 @@ def predict(ticker: str, as_of: date | None = None) -> dict[str, Any]:
     cell frequencies, which answer a different question: the base rate for
     every past event of this shape, rather than a model output for this one.
 
+    A ticker can fire a long and a short on the same date, and `p_touch`
+    is directional. Pass `side` ("long" or "short") to choose; without it
+    the newest prediction wins. The result's `side` names which one was
+    returned, and is null when the prediction's event is unresolved.
+
     Probabilities are calibrated on a split that was reused during model
     selection, so the intervals are a lower bound on the true uncertainty.
     Say so when reporting one.
     """
-    return to_wire_dict(handlers.predict(ticker=ticker, as_of=as_of))
+    return to_wire_dict(handlers.predict(ticker=ticker, as_of=as_of, side=side))
 
 
 def explain_signal(
