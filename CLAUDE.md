@@ -223,17 +223,17 @@ and only then restart. Recovery is the same as any broken build:
 
 Budgets, so nobody starts one blind. Per-step tables, regimes, and the history of every figure that was wrong are in `docs/TIMINGS.md` -- **a step has regimes, and one measurement is one regime; check `runs` for the distribution.**
 
-**Every figure below was measured on the workstation**, and `wivie`'s multiplier is **unmeasured** — the 1.58x in `BACKLOG.md` is a different laptop. Run `scripts/cpu_bench.py` there before quoting a budget.
+**Every figure below was measured on the workstation unless it names `wivie`.** `wivie` runs about **3.48x** workstation time on average (owner's figure, 2026-09-26); the 1.58x in `BACKLOG.md` is a different laptop. **First measured `wivie` refit, 2026-09-26 weekly: 30m54s** (`predict`, 13:14:35 to 13:45:29 PT; the outer row 32m04s) against the workstation's 10m46s, so **2.87x**, about par. Multiply a workstation budget by ~3.5 before quoting it for `wivie`.
 
 | job | budget |
 |---|---|
 | `cscan backtest --workers 8`, full universe (~1,470 tickers) | **~2 h** (compute 82 min, finalize 4 min, harness 36 min) |
 | `cscan nightly`, cold | **~30 min** measured 2026-09-04 (29m54s) and 2026-09-07 (31m42s) from `runs`; the older 35-40 min figure was never measured. **Add ~11 min** now that `predict` is in the chain, and **~15 min more** for the `next_open` resolution step, measured end to end on 2026-09-15 (12m17s backtest at 40 tickers, then 2m30s of harness — the harness is easy to forget and it is a sixth of the step). Whole chain that night: **42m27s**, 21:47:15 to 22:29:42 PT. **That was one night and one shape.** Measured across the eight nights to 2026-09-23, a 16-step run is **49.9-51.0 min** and the 42-minute nights carry 13 steps -- compare within a step count or the figure is meaningless. Expect **~55 min** from 2026-09-23, when ADR 200 took `peak_labels` from 3.0 to ~8 min; `actions` (13.7) and `shares` (10.1) are 47% of the run and have never been tuned. A bad night is longer: 2026-09-08 took 1h53m when `path_capture` hit the cosmetic scope. **On 2026-09-15 that step was uncapped, selected 675 tickers, and was killed by `RuntimeMaxSec=4h` twice without reaching `sync`** — a step that picks its own work needs its own cap. → `OPERATIONS.md` |
-| `cscan weekly` | ~36 min (runs the backtest, skips the harness) |
+| `cscan weekly` | **12h22m on `wivie`, 2026-09-26** (01:23:59 to 13:45:33 PT): backtest compute 59 chunks 01:24 to 12:50, finalize 10,870,938 rows, refit 30m54s, publish. The old ~36 min figure predates chunked compute and the refit, and was not a `wivie` number |
 | `cscan bars --daily --lookback 8000` | ~11 min / 521 tickers |
 | `cscan bars --hourly --backfill`, all tickers | ~4.5-5.5 h, no incremental path |
 | `cscan universe --quarter` x 66 | ~20 min |
-| `cscan predict` (ADR 174/175), bare (refit) | **~11 min** measured at six heads — refit only, needs the `neural` extra, stays on whichever box runs `weekly` |
+| `cscan predict` (ADR 174/175), bare (refit) | **~11 min** on the workstation at six heads; **30m54s on `wivie`** (2026-09-26 weekly, 2.87x) — refit only, needs the `neural` extra, stays on whichever box runs `weekly` |
 | `cscan predict --from-artifact` / `--serving` | milliseconds — numpy forward pass, no `neural` extra, runs on the Pi via `wait_and_poll.sh` |
 | `cscan monthly` | none — no-op stub, `retrain/calibrate are Phase 6 scope` (`cli.py`); nothing runs so there is nothing to time |
 
