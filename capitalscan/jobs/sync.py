@@ -243,6 +243,53 @@ class SyncTable:
     #: `_prepare_chunk` after the remaps run and before the write, so they
     #: never reach the target table.
     helper_columns: tuple[str, ...] = ()
+    # Columns whose values exceed float64's 2**53 exact-integer range. The
+    # SQL must also select each as `<col>::text AS __exact_<col>`;
+    # `_restore_exact_ints` swaps the text back in before any write. See
+    # `EXACT_INT_COLUMNS`.
+    exact_int_columns: tuple[str, ...] = ()
+
+
+# **`events.cluster_id` is a 63-bit hash, and pandas rounds it (2026-09-25).**
+# `_deterministic_id` produces values near 6e17. A chunk read through
+# `pd.read_sql` that holds even one NULL `cluster_id` becomes `float64`,
+# which is exact only to 2**53 (~9e15), so the last two or three digits
+# are lost: research `648924461278083920`, serving `648924461278083968`.
+# `copy_upsert`'s per-value `int()` cannot restore what the read dropped.
+# Found when ADR 201's trigger stamped 433,127 of the first 500,000 rows of
+# a full sync as changed, and a 300-row sample differed in `cluster_id`
+# alone on 298. Selecting the column again as text keeps every digit.
+EXACT_INT_COLUMNS: dict[str, tuple[str, ...]] = {"events": ("cluster_id",)}
+
+
+def _exact_select(table: str) -> str:
+    """`SELECT *` plus a text copy of each `EXACT_INT_COLUMNS` column."""
+    extra = "".join(f", {c}::text AS __exact_{c}" for c in EXACT_INT_COLUMNS.get(table, ()))
+    return f"SELECT *{extra}"
+
+
+def _restore_exact_ints(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
+    """Replace each column with its exact value parsed from the text copy.
+
+    Object dtype on purpose: any numeric dtype pandas infers for ints mixed
+    with None is `float64` again, the loss this exists to undo.
+    """
+    if not columns or (frame.empty and len(frame.columns) == 0):
+        # A column-less empty chunk carries nothing to restore; the same
+        # exemption `_prepare_chunk` gives helper columns.
+        return frame
+    out = frame.copy()
+    for col in columns:
+        helper = f"__exact_{col}"
+        if helper not in out.columns:
+            raise ValueError(f"{col!r} needs {helper!r} in the SELECT; see EXACT_INT_COLUMNS")
+        text_values = out.pop(helper)
+        out[col] = pd.Series(
+            [int(v) if isinstance(v, str) else None for v in text_values],
+            index=out.index,
+            dtype=object,
+        )
+    return out
 
 
 _RESET_SEQUENCES_SQL = """
@@ -969,16 +1016,17 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
         # local.
         SyncTable(
             "events",
-            "SELECT * FROM events WHERE config_hash = :config_hash "
+            f"{_exact_select('events')} FROM events WHERE config_hash = :config_hash "
             "AND entry_kind IN ('next_open', 'touch') "
             "AND signal_date >= GREATEST(:cutoff, COALESCE(CAST(:events_from AS date), :cutoff)) "
             "UNION ALL "
-            "SELECT * FROM events WHERE config_hash = :config_hash "
+            f"{_exact_select('events')} FROM events WHERE config_hash = :config_hash "
             "AND entry_kind IN ('next_open', 'touch') "
             "AND modified_at >= CAST(:events_modified_since AS timestamptz) "
             "AND signal_date >= :cutoff "
             "AND signal_date < GREATEST(:cutoff, COALESCE(CAST(:events_from AS date), :cutoff))",
             ("config_hash", "ticker", "signal_date", "signal_type", "entry_kind"),
+            exact_int_columns=EXACT_INT_COLUMNS["events"],
         ),
         SyncTable(
             "signal_reports",
@@ -1600,6 +1648,7 @@ def _prepare_chunk(chunk: pd.DataFrame, target: Engine, table: SyncTable) -> pd.
     Helper columns are dropped after every remap has read them and before
     anything is written.
     """
+    chunk = _restore_exact_ints(chunk, table.exact_int_columns)
     for spec in table.remaps:
         chunk = _apply_remap(chunk, target, spec)
         if spec.unique_on_target:
@@ -1936,9 +1985,10 @@ def _live_tables(chash: str, d: date, run_id: str, since: LiveWatermark) -> tupl
         SyncTable("runs", "SELECT * FROM runs WHERE run_id = :run_id", ("run_id",)),
         SyncTable(
             "events",
-            "SELECT * FROM events WHERE config_hash = :chash AND signal_date = :d "
-            "AND entry_kind = 'touch' AND id > :since_event",
+            f"{_exact_select('events')} FROM events WHERE config_hash = :chash "
+            "AND signal_date = :d AND entry_kind = 'touch' AND id > :since_event",
             ("config_hash", "ticker", "signal_date", "signal_type", "entry_kind"),
+            exact_int_columns=EXACT_INT_COLUMNS["events"],
         ),
         SyncTable(
             "signal_reports",
@@ -2004,7 +2054,9 @@ def run_live_sync(
     high = {"events": since.event_id, "signal_reports": since.report_id}
     quote_ts = since.quote_ts
     for table in _live_tables(chash, d, run_id, since):
-        frame = pd.read_sql(text(table.sql), source, params=params)
+        frame = _restore_exact_ints(
+            pd.read_sql(text(table.sql), source, params=params), table.exact_int_columns
+        )
         written = 0
         per_batch = _rows_per_batch(len(frame.columns))
         for start in range(0, len(frame), per_batch):

@@ -62,35 +62,36 @@ pull to "keep it in sync" is the mistake.
 
 ## Open
 
-### Run one full `cscan sync` to heal rows rewritten before ADR 201
+### Serving's `events.cluster_id` is rounded; one more full sync fixes it
 
-**Added 2026-09-25. Not yet run.** Migration `e6b3d9a1f472` is live on
-both stores, so every event changed from now on reaches serving on the next
-nightly. Rows rewritten **before** the trigger existed carry
-`modified_at = NULL` and stay invisible to the incremental sync. Measured
-that night on August signals: 6,327 `peak_ret_10d` labels on research
-against 4,025 on serving.
+**Found 2026-09-25 during the ADR 201 healing sync; code FIXED the same
+night, data not yet.** `cluster_id` is a 63-bit hash near 6e17. `pd.read_sql`
+reads a nullable integer column as `float64` whenever a chunk holds a NULL,
+and `float64` is exact only to 2**53, so sync wrote research's
+`648924461278083920` to serving as `648924461278083968`. Every sync since
+the column existed has done this to any chunk containing a NULL; on
+`wivie` 4,309 recent `touch` events carry a NULL `cluster_id`, enough to
+put one in nearly every 500,000-row chunk.
 
-**One full sync closes it**, from `wivie`: `cscan sync` (no
-`--incremental`). No config change is involved, so the `config_hash`
-ordering rules above do not apply.
+**How it surfaced:** ADR 201's trigger stamps only real changes, and it
+stamped 433,127 of the first 500,000 rows of the full sync. A 300-row
+sample differed from research in `cluster_id` alone, on 298 rows.
 
-**When:** outside the Pi's 06:45-13:00 session and not overlapping the
-13:15 nightly, which also writes serving. Budget **~3 hours**: the last
-three full syncs took 2h22m, 2h48m and 3h00m (`runs`, `job = 'sync'`).
-Starting at 03:26 on 2026-09-20 ran to 06:26, which is too close to the
-session; start by ~22:00 or right after a nightly finishes.
+**The fix** (`sync.EXACT_INT_COLUMNS`): the `events` SELECTs also read
+`cluster_id::text`, and `_restore_exact_ints` puts the exact value back
+before any write. Verified against `wivie` research: without it 772 of
+21,694 non-NULL values survive exactly, with it 21,694 of 21,694, and all
+4,309 NULLs stay NULL.
 
-**Verify afterwards** with the query that found the gap, on both stores:
+**Still to do: one full `cscan sync`** so serving's existing rows get the
+exact values. Budget ~4h10m (2026-09-25: 17:36 to 21:45, 12,614,233 rows).
+Run it when nothing else writes serving and `wivie` is free: **not
+alongside `weekly`**, which needs `wivie`'s memory (the sync held 6 GB of
+7.6 GB). Saturday after `weekly` finishes is the widest window: no nightly
+(Sun-Fri timer), no poller session.
 
-```sql
-SELECT count(peak_ret_10d) FROM events
- WHERE config_hash = 'f183b0f5209a4677' AND entry_kind IN ('next_open','touch')
-   AND signal_date >= '2026-08-01' AND signal_date < '2026-09-01';
-```
-
-The two counts should match. Delete this entry once they do.
-
+**The ADR 201 healing sync is DONE** (2026-09-25, `ok`, 4h08m45s). August
+`peak_ret_10d` labels: research 6,327, serving 6,327 (was 4,025).
 
 ### Where Session 30 left off (2026-09-22/23) — read this first
 
