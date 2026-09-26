@@ -175,13 +175,17 @@ def _fake_read_sql(sql: Any, con: Any, params: dict[str, Any] | None = None, **_
         # The pre-fix outbound SELECT, used only by the control test.
         return tables["predictions"].copy()
 
-    if text_sql.startswith("SELECT * FROM events WHERE config_hash"):
-        # The outbound events SELECT.
+    if text_sql.startswith("SELECT *, cluster_id::text AS __exact_cluster_id FROM events"):
+        # The outbound events SELECT, with the exact-integer text copy
+        # Postgres would return beside `cluster_id`.
         ev = tables["events"]
-        return ev.loc[
+        out = ev.loc[
             (ev["config_hash"] == params["config_hash"])
             & ev["entry_kind"].isin(["next_open", "touch"])
         ].reset_index(drop=True)
+        return out.assign(
+            __exact_cluster_id=[None if pd.isna(v) else str(int(v)) for v in out["cluster_id"]]
+        )
 
     if "id = ANY(:held)" in text_sql:
         # `_pull_predictions`: the rows research already holds.
@@ -274,7 +278,14 @@ def _fake_storage(monkeypatch):
 
 
 def _events(rows: list[tuple]) -> pd.DataFrame:
-    return pd.DataFrame(rows, columns=_EVENT_COLS)
+    # `cluster_id` at real magnitude (a 63-bit hash, above float64's 2**53),
+    # so the chain is exercised on the values `EXACT_INT_COLUMNS` protects.
+    frame = pd.DataFrame(rows, columns=_EVENT_COLS)
+    return frame.assign(
+        cluster_id=pd.Series(
+            [648924461278083920 + i for i in range(len(frame))], index=frame.index, dtype=object
+        )
+    )
 
 
 def _preds(rows: list[tuple]) -> pd.DataFrame:
