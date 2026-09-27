@@ -1277,6 +1277,8 @@ exactly this, and reading it as a single number is what kept the wrong
 target in view for so long — split by family before drawing any conclusion
 from it.
 
+**ANSWERED 2026-09-27 (RESULTS):** per-family re-run at T = 2025-09-26 on ADR 193's window. No interference: the six-task model covers all ten `terminal` heads (10/10 in the calibration window, 10/10 out of sample); a `terminal`-only model does worse in window (7/10). The 6/10 was a fixed-split result. Original text:
+
 **Open question this raises and does not answer:** why the `terminal` head
 alone is miscalibrated when it shares a trunk with the other two families.
 Multi-task interference was tested and refuted earlier, but that test was
