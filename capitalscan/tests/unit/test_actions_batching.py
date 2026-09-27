@@ -140,12 +140,17 @@ class _Report:
     tickers: list[str] = []
 
 
-def _no_run_job(monkeypatch) -> None:
+def _no_run_job(monkeypatch) -> list[list[str]]:
+    """Also stubs the full-history marker; returns what it was asked to record."""
+
     @contextlib.contextmanager
     def _fake(engine, job, params):
         yield _Report()
 
     monkeypatch.setattr(ingest, "run_job", _fake)
+    recorded: list[list[str]] = []
+    monkeypatch.setattr(ingest, "_record_full_history", lambda e, t: recorded.append(list(t)))
+    return recorded
 
 
 def test_a_ticker_with_history_takes_the_batched_path(monkeypatch):
@@ -217,3 +222,34 @@ def test_the_default_window_is_a_lookback_not_a_single_day(monkeypatch):
     start, end = seen[0]
     assert (end - start).days == ingest.ACTIONS_WINDOW_DAYS
     assert ingest.ACTIONS_WINDOW_DAYS >= 7
+
+
+# ---------------------------------------------------------------------------
+# The full-history marker (2026-09-27)
+# ---------------------------------------------------------------------------
+
+
+def test_a_full_fetch_is_recorded_even_when_it_finds_nothing(monkeypatch):
+    """286 of 1,463 tickers have never split or paid a dividend. With no row
+    to show for it, each paid for its whole history again every night
+    (~9.5 of 13.7 minutes). Recording the fetch is what ends that."""
+    recorded = _no_run_job(monkeypatch)
+    monkeypatch.setattr(ingest, "_tickers_with_actions", lambda e, t: {"AAA"})
+    monkeypatch.setattr(ingest.yahoo, "fetch_actions", lambda t: pd.DataFrame())
+    monkeypatch.setattr(ingest.yahoo, "fetch_actions_many", lambda ts, s, e: {})
+    monkeypatch.setattr(ingest.db_io, "upsert", lambda *a, **k: 0)
+
+    ingest.run_actions(["AAA", "NODIV"], engine=object())
+
+    assert recorded == [["NODIV"]]
+
+
+def test_the_known_set_reads_the_marker_within_the_refetch_window():
+    """`_tickers_with_actions` must union the marker table, bounded by
+    `ACTIONS_FULL_REFETCH_DAYS`, or the full fetch never comes back."""
+    import inspect
+
+    src = inspect.getsource(ingest._tickers_with_actions)
+    assert "actions_full_history" in src
+    assert "ACTIONS_FULL_REFETCH_DAYS" in src
+    assert 7 <= ingest.ACTIONS_FULL_REFETCH_DAYS <= 90

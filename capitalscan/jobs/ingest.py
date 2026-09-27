@@ -1352,21 +1352,54 @@ def _update_ticker_coverage(engine: Engine, clean_bars: pd.DataFrame) -> None:
 
 ACTIONS_WINDOW_DAYS = 30
 
+# How long a full-history fetch counts as current for a ticker with no rows
+# in `corporate_actions` (migration `c3e7a9d15f40`). Inside it the ticker
+# takes the batched path; after it, the full fetch runs once more, so an
+# empty result from a transient failure cannot hide an old split for good.
+ACTIONS_FULL_REFETCH_DAYS = 30
+
 
 def _tickers_with_actions(engine: Engine, tickers: list[str]) -> set[str]:
-    """Which of these already have corporate actions on file.
+    """Which of these need only the incremental fetch.
 
     Decides full-history versus incremental per ticker. One query, not one
     per ticker.
+
+    **Rows on file, or a recent full-history fetch (2026-09-27).** Rows
+    alone missed every company that has never split or paid a dividend:
+    no row ever lands for it, so it paid for its whole history again every
+    night -- 286 of 1,463 tickers, ~9.5 of the step's 13.7 minutes.
+    `actions_full_history` records the fetch itself, and counts for
+    `ACTIONS_FULL_REFETCH_DAYS`.
     """
     if not tickers:
         return set()
     with engine.connect() as conn:
         rows = conn.execute(
-            text("SELECT DISTINCT ticker FROM corporate_actions WHERE ticker = ANY(:tickers)"),
-            {"tickers": tickers},
+            text(
+                "SELECT ticker FROM corporate_actions WHERE ticker = ANY(:tickers) "
+                "UNION "
+                "SELECT ticker FROM actions_full_history WHERE ticker = ANY(:tickers) "
+                "AND fetched_at >= now() - make_interval(days => :days)"
+            ),
+            {"tickers": tickers, "days": ACTIONS_FULL_REFETCH_DAYS},
         ).scalars()
         return set(rows)
+
+
+def _record_full_history(engine: Engine, tickers: list[str]) -> None:
+    """Mark these tickers' full history as fetched now, found or not."""
+    if not tickers:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO actions_full_history (ticker, fetched_at) "
+                "SELECT unnest(CAST(:tickers AS text[])), now() "
+                "ON CONFLICT (ticker) DO UPDATE SET fetched_at = EXCLUDED.fetched_at"
+            ),
+            {"tickers": tickers},
+        )
 
 
 def run_actions(
@@ -1409,9 +1442,11 @@ def run_actions(
         frames: list[pd.DataFrame] = []
         if incremental:
             frames.extend(yahoo.fetch_actions_many(incremental, start, end).values())
-        # Full history, one request each. Rare by construction -- this is a
-        # ticker's first ingest, not a nightly cost.
+        # Full history, one request each. Rare by construction -- a ticker's
+        # first ingest, or its monthly refetch -- and recorded whether or not
+        # it found anything, which is what keeps it rare.
         frames.extend(yahoo.fetch_actions(t) for t in fresh)
+        _record_full_history(engine, fresh)
         frames = [f for f in frames if not f.empty]
         if not frames:
             report.tickers = []
