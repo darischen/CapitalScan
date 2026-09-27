@@ -979,9 +979,8 @@ downside of losing it.
   seeds controlled only the batch shuffle. Fixed, with cuDNN pinned. **The
   ADR 170 validate figures (17/20 coverage) were measured under the bug and
   a re-run gave 14/20**, so the recorded spread understates run-to-run
-  variance. `docs/model_spec_adr170.json` needs re-recording against the
-  fixed code, and its "seeds" field currently implies a reproducibility the
-  measurements did not have.
+  variance. `docs/model_spec_adr170.json` needed re-recording against the
+  fixed code -- **done 2026-09-27** (`remeasured_2026_09_27`: 24/30, reproducible).
 
 ### Data walls that block the history work
 
@@ -1022,8 +1021,7 @@ reached the site as `p_touch` (ADR 174), and the calibration caveat is
 and rendered on the screener. The coverage-decay figures it carried
 (2024 0.0182, 2025 0.0311, 2026 0.0480) live on in that constant.
 
-- **Re-measure the ADR 170 baseline under the seeding fix**, since every
-  published figure predates it.
+- **~~Re-measure the ADR 170 baseline under the seeding fix~~ -- DONE 2026-09-27.** Fixed splits, seeded, six heads: 24/30 coverage (peak 9/10, terminal 5/10, trough 10/10), beats constant 28/30, +8.351%, identical across two runs. Recorded in `model_spec_adr170.json` under `remeasured_2026_09_27`.
 
 ### Operational, small
 

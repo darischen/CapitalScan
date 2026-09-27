@@ -8861,3 +8861,25 @@ base arm itself (0.0465 vs 0.0451). AUC is flat under both.
 under the second (`p_adverse_3` -0.0425 -> -0.0535, mostly shorts). So
 breadth helps the favourable-excursion heads a little and may cost the
 adverse ones, in one shared model. Decision recorded in DECISIONS.md.
+
+## 2026-09-27 — the ADR 170 baseline, re-measured seeded: 24/30, and reproducible
+
+BACKLOG "Re-measure the ADR 170 baseline under the seeding fix".
+`scripts/hist/adr170-remeasure-2026-09-27/`. The spec's own fixed splits
+(train 92,060 rows, validate 19,164), today's code: seeded, six heads,
+touch entry. Run twice in one process.
+
+| | run 1 | run 2 |
+|---|---|---|
+| steps | [742, 545, 545] | [742, 545, 545] |
+| coverage within ±5 pts | 24/30 | 24/30 |
+| by family | peak 9/10, terminal 5/10, trough 10/10 | identical |
+| beats the global constant | 28/30 | 28/30 |
+| mean improvement | +8.351% | +8.351% |
+
+**Identical to every decimal**, where the pre-fix spec recorded 17/20 and a
+re-run gave 14/20. Read beside the per-family test above: on the fixed
+split `terminal` fails (5/10); on ADR 193's expanding window at
+T = 2025-09-26 it passes 10/10. The stale training window, not the model,
+was the `terminal` failure. `model_spec_adr170.json` records this under
+`remeasured_2026_09_27`.

@@ -108,7 +108,7 @@
   "known_limitation": "Calibrated for uptrending and choppy markets. All three coverage failures are 2022, the only sustained decline in train+validate. Train is 90.9% uptrend by index-above-200SMA; validate is 58.8%.",
   "revised": "2026-09-08",
   "revision_notes": "ADR 177 moved training and serving to `touch` entry (same-bar fill at the signal price) from `next_open`. With population held constant, p_touch_3 Brier skill +6.57% -> +10.14% and p_adverse_3 +3.83% -> +7.17%. `breach_depth` deleted in the same change as look-ahead under that convention. Stochastic-only signals leave the population entirely (no band level to fill at); confluence retains the stochastic condition because DESIGN 4.7's debounce already folds coincident rows into it. ADR 175 added the adverse family: heads went from 4 to 6 with ('trough', 5) and ('trough', 10), reading the new events.trough_ret_{h}d columns. Those are the exact mirror of peak_ret_* computed from path.adverse, NOT events.mae -- mae is adverse excursion until the trade exits, so ExitParams would be baked into the target and every sweep of stop_atr_k would silently redefine it. Earlier, ADR 173 added signal_type as a categorical (the model was never told whether a signal is a long or a short). EVERY measured_on_validate and holdout figure below predates BOTH changes and the seeding fix: they describe the 4-head model listed as previous_tasks, not the model this file now specifies.",
-  "reproducibility_warning": "Every figure here was measured before 2026-09-04, when `_run` built the module BEFORE calling torch.manual_seed -- so initial weights were unseeded and the seeds controlled only the batch shuffle. Two runs of identical code gave step counts [364, 384, 372] and [437, 323, 510], and validate coverage 17/20 and 14/20. Seeding order is fixed and cuDNN pinned as of that date; these numbers have NOT been re-measured under the fix.",
+  "reproducibility_warning": "Every figure here was measured before 2026-09-04, when `_run` built the module BEFORE calling torch.manual_seed -- so initial weights were unseeded and the seeds controlled only the batch shuffle. Two runs of identical code gave step counts [364, 384, 372] and [437, 323, 510], and validate coverage 17/20 and 14/20. Seeding order is fixed and cuDNN pinned as of that date; these numbers have NOT been re-measured under the fix. RESOLVED 2026-09-27: see remeasured_2026_09_27, which is seeded and reproducible.",
   "holdout": {
     "spent_on": "2026-09-04 (ADR 172)",
     "window": "2024-01-02..2026-09-03",
@@ -135,5 +135,25 @@
     "interval_source": "the realised rate of past predictions in the same reliability bucket, NOT the ensemble seed spread, which measures the optimiser rather than the world",
     "caveat": "fitted on a split reused during model selection, so the interval is a lower bound on the true uncertainty"
   },
-  "entry_kind": "touch"
+  "entry_kind": "touch",
+  "remeasured_2026_09_27": {
+    "why": "Every figure above predates the 2026-09-04 seeding fix. Re-measured on the spec's own fixed splits with today's code: seeded, six heads (ADR 175), touch entry (ADR 177).",
+    "splits": "train split_key=train (92,060 rows), validate split_key=validate (19,164 rows)",
+    "seeds": [
+      20260903,
+      20260904,
+      20260905
+    ],
+    "steps": [
+      742,
+      545,
+      545
+    ],
+    "coverage_within_5pts": "24/30 (peak 9/10, terminal 5/10, trough 10/10)",
+    "beats_global_constant": "28/30",
+    "mean_improvement_pct": 8.351,
+    "reproducible": "two runs in one process gave identical steps and identical coverage to every decimal",
+    "context": "On ADR 193's expanding window at T=2025-09-26 the terminal family covers 10/10 (RESULTS 2026-09-27), so the fixed-split terminal failure is a stale-window effect, not a property of the model",
+    "script": "scripts/hist/adr170-remeasure-2026-09-27/"
+  }
 }
