@@ -16,62 +16,6 @@ deleting the entry loses nothing.
 
 # HIGHEST PRIORITY
 
-## Serving's `events.cluster_id` is rounded -- fix merged, full sync PENDING
-
-**Status 2026-09-26: the code fix is on `main` (PR #102, `06d479a`) and
-deployed to all three machines. The data fix is not done.** Serving still
-holds rounded `cluster_id` values until one full `cscan sync` runs on the
-fixed code. Delete this entry once the check below passes.
-
-**The bug.** `cluster_id` is a 63-bit hash near 6e17. `pd.read_sql` reads a
-nullable integer column as `float64` whenever a chunk holds a NULL, and
-`float64` is exact only to 2**53, so sync wrote research's
-`648924461278083920` to serving as `648924461278083968`. Every sync did
-this to any chunk containing a NULL, and `wivie` holds 4,309 recent `touch`
-events with a NULL `cluster_id`, enough to put one in nearly every
-500,000-row chunk. Found 2026-09-25: ADR 201's trigger stamped 433,127 of
-the first 500,000 rows of a full sync as changed, and a 300-row sample
-differed from research in `cluster_id` alone on 298.
-
-**The fix.** `sync.EXACT_INT_COLUMNS`: the `events` SELECTs also read
-`cluster_id::text`, and `_restore_exact_ints` writes the exact value back
-before any remap or write. Verified against `wivie` research: without it
-772 of 21,694 non-NULL values survive exactly, with it 21,694 of 21,694,
-and all 4,309 NULLs stay NULL.
-
-**The pending run, scheduled 2026-09-26 on `wivie`:**
-
-| unit | what it does |
-|---|---|
-| `capitalscan-full-sync-0926.timer` | 01:21 PT: runs `~/full-sync-after-weekly.sh` |
-| the script | waits for tonight's `weekly` to START (gives up at 04:00), then to FINISH; `git pull --ff-only`; aborts if `EXACT_INT_COLUMNS` is absent or serving has active backends; runs `cscan sync` under `MemoryMax=6G` |
-| `capitalscan-full-sync-0926-deadline.timer` | Sun 2026-09-27 12:30 PT: stops the sync before Sunday's 13:15 nightly |
-
-Log: `~/full-sync-0926.log` on `wivie`. Budget ~4h10m (the 2026-09-25
-run: 17:36 to 21:45, 12,614,233 rows). **Not concurrent with `weekly`**:
-both run on `wivie`, the sync held 6 GB of its 7.6 GB, and `weekly` has
-been OOM-killed there before. Saturday has no nightly and no poller
-session, so after `weekly` there is a ~24h window.
-
-**If it did not run** (log shows ABORT, or the deadline stopped it): run
-`cscan sync` on `wivie` by hand in any window with no nightly, `weekly` or
-poller session. It upserts, so a stopped run loses nothing.
-
-**Check it worked**, with a sample of keys that carry a `cluster_id`,
-compared across both stores (the 2026-09-25 check used 300 random rows):
-
-```sql
--- on each store, then diff the outputs
-SELECT ticker, signal_date, signal_type, entry_kind, cluster_id::text
-  FROM events
- WHERE config_hash = 'f183b0f5209a4677' AND cluster_id IS NOT NULL
-   AND ticker IN ('CNI', 'EOG', 'AXP', 'LNG', 'DXCM', 'APO')
- ORDER BY 1, 2, 3, 4;
-```
-
-Zero differing lines means done. Before the fix every one of those tickers
-had rows that differed in the last digits.
-
 ## The Pi must be pulled LAST across a `config_hash` change
 
 Written 2026-09-10 while sequencing the bull-reversal rebuild, before it
@@ -1433,6 +1377,18 @@ in the measured population, where clusters cap at 6. It was computed on a
 population mixing entry kinds. Re-run through `research/returns.py`.
 
 ## Closed, refuted or answered — do not reopen
+
+## DONE 2026-09-26: serving's `events.cluster_id` is exact
+
+`cluster_id`, a 63-bit hash, was rounded through pandas `float64` by every
+sync (research `648924461278083920`, serving `648924461278083968`). Fixed
+in code by `sync.EXACT_INT_COLUMNS` (PR #102); serving's existing rows
+corrected by a full sync after `weekly`, 2026-09-26 13:45 to 18:15 PT, `ok`,
+12,618,505 rows. **Checked on both stores:** a 5,000-row random sample and
+all 27,126 live-generation rows for CNI, EOG, AXP, LNG, DXCM and APO match
+exactly, 0 differing lines. Compare `entry_kind IN ('next_open','touch')`
+only: research also holds entry kinds serving never receives, and an
+unfiltered comparison reports every one of those as a difference.
 
 ## DONE 2026-09-22: `cscan events` is 8.6x faster serial, 16.6x with `--workers`
 
