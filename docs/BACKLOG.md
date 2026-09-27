@@ -1295,9 +1295,12 @@ base rate, and a rolling one moves the anchor, it does not remove it.
 Sample note: 2,314 rows over about two weeks of signals, heavily clustered,
 so the effective sample is much smaller; re-measure as the log grows.
 
-**`core.calibration.MODEL_CAVEAT` is now wrong for readers.** It says the
-numbers are "anchored to a 43% period" and "ran low", which predates ADR
-193. Changing it is reader-facing copy and waits on the owner.
+**`MODEL_CAVEAT` rewritten 2026-09-27 (owner-approved wording).** It said
+the numbers were "anchored to a 43% period" and "ran low", which predated
+ADR 193. It now says the model recalibrates weekly on the last six months,
+so the level runs high when the market cools and low when it heats up, and
+gives the 2026-09-27 measurement. Same change in `web/lib/format.ts` and
+the MCP `predict` description.
 
 Original entry (pre-ADR-193):
 

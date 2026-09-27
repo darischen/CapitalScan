@@ -225,9 +225,11 @@ def predict(ticker: str, as_of: date | None = None, side: SideArg | None = None)
     the newest prediction wins. The result's `side` names which one was
     returned, and is null when the prediction's event is unresolved.
 
-    Probabilities are calibrated on a split that was reused during model
-    selection, so the intervals are a lower bound on the true uncertainty.
-    Say so when reporting one.
+    Probabilities are recalibrated weekly on the last six months, so their
+    level leans with the market: measured 2026-09-27 they ran about 7
+    points high while the ranking held. Treat them as a ranking, and say
+    that the interval is a lower bound on the true uncertainty when
+    reporting one.
     """
     return to_wire_dict(handlers.predict(ticker=ticker, as_of=as_of, side=side))
 

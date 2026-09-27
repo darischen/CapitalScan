@@ -1849,7 +1849,7 @@ Isotonic regression fit on the **validation** split, never train, applied to eve
 Two consequences worth stating plainly:
 
 - **The published probability is piecewise constant**, ten distinct values rather than a continuum. Interpolating between bucket centres would look smoother and would let the point estimate fall outside its own interval, which is the one thing a displayed probability may never do.
-- **The interval is a lower bound on the uncertainty, not an estimate of it.** Validate has been scored repeatedly across many architectures, and the holdout was spent under ADR 172. Every surface that renders a probability renders this caveat with it (`core.calibration.MODEL_CAVEAT`). A clean refit needs data that was never used for selection, which is what the §7.8 forward log accumulates.
+- **The interval is a lower bound on the uncertainty, not an estimate of it.** Since ADR 193 the tables are refit weekly on the last six months, so the level leans with the market's base rate: ~5 points low on the fixed split (2026-09-08), ~6.7 points high on the rolling window (2026-09-27), ranking intact both times. The holdout was spent under ADR 172. Every surface that renders a probability renders this caveat with it (`core.calibration.MODEL_CAVEAT`). A clean refit needs data that was never used for selection, which is what the §7.8 forward log accumulates.
 
 ### 7.7 Promotion gate
 

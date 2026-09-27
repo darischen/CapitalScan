@@ -102,33 +102,32 @@ DEFAULT_BUCKETS = 10
 #: row; `handlers/predict.py` re-exports it to the wire. A handler that
 #: imported `research` to reach a string would drag the fitting stack into
 #: the serving path, and no handler has ever done that.
-#: **Measured against the live forward log on 2026-09-08**, not asserted.
-#: Across 4,020 resolved in-population predictions the ordering held across
-#: all eight probability buckets (41.6% to 87.1% realised) while the shipped
-#: value fell below the bucket's own 95% interval in six of the eight. The
-#: cause is a base rate that will not sit still: the isotonic tables are
-#: anchored to the validate split's 43.2%, the last twelve months average
-#: about 49.5%, and the month-to-month range is 36.5% to 65.0%. That swing
-#: is larger than the model's entire Brier skill of 0.079, so the ordering
-#: is the durable part of the output and the level is not.
+#: **Measured against the live forward log, twice, and the sign flipped.**
+#: 2026-09-08, fixed 2022-23 calibration split (43.2% anchor): ordering held
+#: across all eight bands while the shipped value ran low in six. ADR 193
+#: (2026-09-10) moved calibration to a rolling six-month window, and on
+#: 2026-09-27 the 2,314 resolved in-population predictions from those models
+#: ran ~6.7 points HIGH (mean 0.615, realised 0.548), ranking still monotone
+#: across quintiles. The mechanism is the same both times: the level anchors
+#: to the calibration window's base rate, and the market's 3% touch rate
+#: swings 37-65% month to month, more than the model's Brier skill of 0.079.
+#: So the ordering is the durable part and the level is not, and the caveat
+#: says which way the level leans instead of a fixed direction.
 #:
 #: Saying so is the point. A number carrying an interval that has been
 #: measured to miss reads as more trustworthy than one that admits it,
-#: which is the worse failure. → RESULTS.md 2026-09-08.
+#: which is the worse failure. -> RESULTS.md 2026-09-08, BACKLOG 2026-09-27.
 MODEL_CAVEAT = (
-    "Use these to rank signals, not to read an exact chance. Measured "
-    "against live results through 2026-09-08, the ordering held across "
-    "every probability band, but the stated percentage ran low in six of "
-    "eight bands. The reason is the market, not the signal: how often any "
-    "signal reaches +3% has ranged from 37% to 65% month to month over the "
-    "past year, while these numbers are anchored to a 43% period. Expect "
-    "the figure to understate in a rising market and overstate in a "
-    "falling one. Calibration also uses the validate split, which model "
-    "selection has scored repeatedly, so the intervals are a lower bound "
-    "on the true uncertainty, and accuracy decays with distance from the "
-    "training window (2024 0.0182, 2025 0.0311, 2026 0.0480). Advisory "
-    "only: this states what historically followed signals like this one, "
-    "not what will happen."
+    "Use these to rank signals, not as exact odds. The model recalibrates "
+    "weekly on the last six months, so when the market cools the stated "
+    "chance runs high, and when it heats up it runs low. Measured against "
+    "live results on 2026-09-27: about 7 points high, with the ranking "
+    "intact across every band. How often any signal reaches +3% has ranged "
+    "from 37% to 65% month to month over the past year, more than the "
+    "model's whole edge, so the interval is a lower bound on the true "
+    "uncertainty, and coverage decays with distance from the training "
+    "window. Advisory only: this states what historically followed signals "
+    "like this one, not what will happen."
 )
 
 
