@@ -343,7 +343,10 @@ All four failing heads are `terminal` heads. Five hypotheses, four
 refutations, ADR 179 and two 22-minute runs went into a miscalibration in
 the one family nobody sees. **Split by family before drawing any conclusion
 from an aggregate**, and fix a displayed head before an undisplayed one.
-→ `BACKLOG.md`
+**Those numbers are the fixed 2010-21 split, before ADR 193.** Re-run per
+family on the expanding window at T = 2025-09-26 (2026-09-27): `terminal`
+covers 10/10 in window and out of sample, and a `terminal`-only model does
+worse, so it was never interference. → `BACKLOG.md`, `RESULTS.md`
 
 **The shipped probabilities carry a level bias whose sign follows the
 market, and it is not a bug.** Since ADR 193 (2026-09-10) the weekly refit

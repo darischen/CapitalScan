@@ -1,0 +1,55 @@
+db: 192.168.1.12/capitalscan  T=2025-09-26
+train 132,563  validate 7,111  eval 17,350
+
+=== multi: 6 tasks ===
+  steps [829, 714, 772]
+
+=== terminal_only: 2 tasks ===
+  steps [536, 695, 522]
+
+========================================================================
+arm                              multi  terminal_only
+window        head                                   
+eval          terminal_h10_q05  0.0125         0.0107
+              terminal_h10_q25  0.0412         0.0229
+              terminal_h10_q50  0.0347         0.0108
+              terminal_h10_q75 -0.0140        -0.0297
+              terminal_h10_q95 -0.0377        -0.0419
+              terminal_h5_q05   0.0168         0.0168
+              terminal_h5_q25   0.0470         0.0325
+              terminal_h5_q50   0.0341         0.0132
+              terminal_h5_q75  -0.0198        -0.0322
+              terminal_h5_q95  -0.0330        -0.0342
+validate      terminal_h10_q05 -0.0143        -0.0165
+              terminal_h10_q25 -0.0377        -0.0532
+              terminal_h10_q50 -0.0345        -0.0590
+              terminal_h10_q75 -0.0310        -0.0569
+              terminal_h10_q95 -0.0120        -0.0208
+              terminal_h5_q05   0.0012         0.0027
+              terminal_h5_q25  -0.0102        -0.0226
+              terminal_h5_q50  -0.0059        -0.0278
+              terminal_h5_q75  -0.0244        -0.0417
+              terminal_h5_q95  -0.0127        -0.0223
+validate_gate terminal_h10_q05 -0.0143        -0.0165
+              terminal_h10_q25 -0.0377        -0.0532
+              terminal_h10_q50 -0.0345        -0.0590
+              terminal_h10_q75 -0.0310        -0.0569
+              terminal_h10_q95 -0.0120        -0.0208
+              terminal_h5_q05   0.0012         0.0027
+              terminal_h5_q25  -0.0102        -0.0226
+              terminal_h5_q50  -0.0059        -0.0278
+              terminal_h5_q75  -0.0244        -0.0417
+              terminal_h5_q95  -0.0127        -0.0223
+
+heads within tolerance / mean |error|:
+                             ok   n  mean_abs
+window        arm                            
+eval          multi          10  10    0.0291
+              terminal_only  10  10    0.0245
+validate      multi          10  10    0.0184
+              terminal_only   7  10    0.0323
+validate_gate multi          10  10    0.0184
+              terminal_only   7  10    0.0323
+
+results: C:\Users\daris\Desktop\School\CapitalScan\scripts\hist\terminal-interference-2026-09-27\results.csv
+=== DONE ===

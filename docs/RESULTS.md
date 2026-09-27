@@ -8804,3 +8804,33 @@ and there is now no gain to weigh against that.
 breadth run's base arm (same day, separate processes, same seeds and
 window) produced identical step counts [829, 714, 772] and identical
 scores to four decimals. The 2026-09-04 seeding fix holds.
+
+## 2026-09-27 — `terminal` is not suffering interference, and on ADR 193's window it passes
+
+BACKLOG "The coverage gate watches a family the product does not display":
+why `terminal` alone failed (6/10 heads, 2026-09-08) while sharing a trunk
+with `peak` and `trough` (10/10 each), re-run per family as that entry
+asked. `scripts/hist/terminal-interference-2026-09-27/`.
+
+Two arms, production's window shape at T = 2025-09-26 (ADR 193), same
+frames and seeds: the production six-task model against a `terminal`-only
+model. Coverage of the ten `terminal` heads, cluster-weighted, tolerance
+±0.05, on the calibration window (the gate's own `promotion.score_family`)
+and on the following twelve months:
+
+| window | multi-task | `terminal` only |
+|---|---|---|
+| calibration (gate) | **10/10**, mean \|err\| 0.0184 | 7/10, 0.0323 |
+| out of sample | **10/10**, 0.0291 | 10/10, 0.0245 |
+
+**No interference.** Sharing the trunk does not hurt `terminal`; in the
+calibration window it helps (three heads fail without it). Out of sample
+the two are within noise.
+
+**And the failure itself is gone at this anchor.** The 6/10 was measured
+on the fixed 2010-21 / 2022-23 split before ADR 193. On the expanding
+window all ten `terminal` heads cover, in window and out of sample. The
+likely cause of the old failure was the stale fixed training window, the
+same thing ADR 193 found for the gate as a whole (25/30 -> 14/30 -> 25/30).
+One anchor and one seed triple; the weekly refit's own gate numbers are
+the ongoing check.
