@@ -311,7 +311,8 @@ def test_the_predict_tool_describes_what_it_returns_and_what_it_does_not_claim()
     What replaces it pins the three things a caller can get wrong:
     that the probabilities are directional (favourable *for the side the
     signal assigned*), that a high `p_touch` is not a recommendation, and
-    that the calibration split was reused so the interval is a lower bound.
+    that the interval is a lower bound (since 2026-09-27: because the level
+    leans with the rolling six-month calibration window, ADR 193).
     """
     doc = (tools.predict.__doc__ or "").lower()
     assert "no model exists" not in doc

@@ -95,9 +95,12 @@ class TestTheTargetsAreChosenNotDefaulted:
 
 
 class TestTheCaveatTravels:
-    def test_it_says_the_calibration_split_was_reused(self) -> None:
+    def test_it_says_the_level_leans_with_the_calibration_window(self) -> None:
+        """ADR 193 rolls calibration weekly; the level follows that window's
+        base rate. Measured 2026-09-27: ~6.7 points high, ranking intact."""
         text = calib.MODEL_CAVEAT.lower()
-        assert "validate" in text
+        assert "six months" in text
+        assert "runs high" in text and "runs low" in text
         assert "lower bound" in text
 
     def test_it_says_the_system_is_advisory(self) -> None:
@@ -154,12 +157,20 @@ class TestTheCaveatTravels:
         assert "`${PREDICTION_CAVEAT_SUMMARY} ${PREDICTION_CAVEAT_DETAIL}`" in ts, (
             "PREDICTION_CAVEAT must be composed from its halves, not restated"
         )
-        # "rank" and "understate" pin the 2026-09-08 measurement: the
-        # ordering held across all eight probability bands while the shipped
-        # value missed the band's own 95% interval in six. A caveat that
-        # drops it leaves a number the project has measured as biased
-        # looking exactly as trustworthy as one it has not.
-        for claim in ("validate", "lower bound", "advisory", "coverage", "rank", "understate"):
+        # "rank", "runs high" and "runs low" pin the two live measurements:
+        # low under the fixed 2022-23 calibration (2026-09-08), ~6.7 points
+        # high under ADR 193's rolling window (2026-09-27), ordering intact
+        # both times. A caveat that drops them leaves a number the project
+        # has measured as biased looking as trustworthy as one it has not.
+        for claim in (
+            "six months",
+            "lower bound",
+            "advisory",
+            "coverage",
+            "rank",
+            "runs high",
+            "runs low",
+        ):
             assert claim in copy, f"the UI caveat dropped '{claim}'"
 
 

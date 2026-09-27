@@ -243,8 +243,9 @@ export function band(payload: Record<string, unknown> | null, field: string): Ba
 export const ADVERSE_CAVEAT =
   "Probability the position moves 3% against you within five sessions — " +
   "down for a long, up for a short. Calibrated separately from P(+3%), " +
-  "with its own interval. Same caveat: the calibration split was reused " +
-  "during model selection, so the interval is a lower bound.";
+  "with its own interval. Same caveat: it recalibrates weekly on the last " +
+  "six months, so its level leans with the market and the interval is a " +
+  "lower bound.";
 
 // PREDICTION_CAVEAT moved to `format.ts` on 2026-09-08. This module
 // imports `./db` on line 1, so anything a client component imports from

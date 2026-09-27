@@ -28,26 +28,26 @@
  * nothing is a disclosure nobody opens.
  *
  * The ranking-versus-level claim leads because it is the one measured
- * against live results (2026-09-08, 4,020 resolved predictions): the
- * ordering held across all eight probability bands while the stated
- * percentage fell below the band's own 95% interval in six of them. See
- * RESULTS.md.
+ * against live results, twice: low under the fixed 2022-23 calibration
+ * (2026-09-08, 4,020 predictions) and ~6.7 points high under ADR 193's
+ * rolling six-month window (2026-09-27, 2,314). The ordering held both
+ * times. See `core.calibration.MODEL_CAVEAT` and BACKLOG.
  */
 export const PREDICTION_CAVEAT_SUMMARY =
   "Use these to rank signals, not as exact odds.";
 
 /** The rest, shown only when the reader opens the disclosure. */
 export const PREDICTION_CAVEAT_DETAIL =
-  "Measured against live results, the ordering held across every " +
-  "probability band, but the stated percentage ran low in six of eight. " +
-  "How often any signal reaches +3% has ranged from 37% to 65% month to " +
-  "month over the past year, while these numbers are anchored to a 43% " +
-  "period, so expect them to understate in a rising market and overstate " +
-  "in a falling one. Calibrated on the validate split, which was scored " +
-  "repeatedly during model selection, so the interval is a lower bound on " +
-  "the true uncertainty, and coverage decays with distance from the " +
-  "training window. Advisory only: this is what historically followed " +
-  "signals like this one, not what will happen.";
+  "The model recalibrates weekly on the last six months, so when the " +
+  "market cools the stated chance runs high, and when it heats up " +
+  "it runs low. Measured against live results on 2026-09-27: about 7 " +
+  "points high, " +
+  "with the ranking intact across every band. How often any signal reaches " +
+  "+3% has ranged from 37% to 65% month to month over the past year, more " +
+  "than the model's whole edge, so the interval is a lower bound on the " +
+  "true uncertainty, and coverage decays with distance from the training " +
+  "window. Advisory only: this is what historically followed signals like " +
+  "this one, not what will happen.";
 
 /**
  * Shown instead of the normal caveat when the row is cosmetic (ADR 183).
