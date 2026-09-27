@@ -415,7 +415,24 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    predictive power, on one seed-triple each. Re-derive against the
    six-head model; the four-head numbers no longer describe the code.
 
-7. **Refit the reliability tables on clean data.** Blocked until the
+7. **~~Refit the reliability tables on clean data~~ -- SUPERSEDED by ADR 193,
+   recorded 2026-09-27 (owner's correction).** The weekly refit already does
+   this. `core/folds.training_window` rolls every week: train from
+   `event_start` to today-6mo-10d, calibrate on today-6mo to today-5d, and
+   hold the last 5 days out as the forward log. `research/predict.py` fits the
+   reliability tables on that rolling validate frame (`expanding=True`, the
+   production default), so each refit calibrates on a week's newer labels.
+   The forward log stays clean because a prediction keeps its first-written
+   number (ADR 195); a label enters training only after it has served as
+   forward-log evidence (ADR 179). **Do not refit the tables on `outcomes`**:
+   that is the recalibration CLAUDE.md forbids, and nothing here needs it.
+
+   Measured the same day, for the record: ~350 in-population predictions a
+   week (211 to 475 since August), 2,314 resolved on the live generation,
+   837 pending. The "28,233 windows still open" in the `outcomes` log line
+   is mostly cosmetic rows that never resolve by design.
+
+   Original text: **Refit the reliability tables on clean data.** Blocked until the
    forward log has accumulated enough resolved rows. The current intervals
    are fitted on validate and are a lower bound on the true uncertainty.
 
