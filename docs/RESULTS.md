@@ -8834,3 +8834,30 @@ likely cause of the old failure was the stale fixed training window, the
 same thing ADR 193 found for the gate as a whole (25/30 -> 14/30 -> 25/30).
 One anchor and one seed triple; the weekly refit's own gate numbers are
 the ongoing check.
+
+## 2026-09-27 — breadth, second seed triple: the `p_touch` gain replicates; `p_adverse` may pay for it
+
+Continues "breadth as a feature" above. Same script and anchor, seeds
+(11, 12, 13) in place of the default triple.
+`scripts/hist/breadth-brier-2026-09-27/run_seeds_11_12_13.log`.
+
+| | seeds default: base / +breadth | seeds 11-13: base / +breadth |
+|---|---|---|
+| `p_touch_2` Brier skill | 0.0033 / 0.0134 | 0.0026 / 0.0105 |
+| `p_touch_3` Brier skill | 0.0465 / 0.0496 | 0.0451 / 0.0484 |
+| `p_touch_5` Brier skill | 0.0771 / 0.0828 | 0.0740 / 0.0793 |
+| `p_touch_10` Brier skill | 0.1298 / 0.1307 | 0.1289 / 0.1320 |
+| `p_touch_3` level gap | -0.0567 / -0.0424 | -0.0575 / -0.0489 |
+| `p_touch_3` mean monthly \|gap\| | 0.0775 / 0.0666 | 0.0773 / 0.0717 |
+| `p_adverse_3` Brier skill | -0.0434 / -0.0432 | -0.0425 / -0.0535 |
+| `p_adverse_5` Brier skill | 0.0143 / 0.0129 | 0.0155 / 0.0098 |
+
+**The `p_touch` gain replicates.** Every `p_touch` field improves under
+both triples, and the `p_touch_3` level gap shrinks both times. The gain on
+`p_touch_3` (~+0.003) is about twice the seed-to-seed difference of the
+base arm itself (0.0465 vs 0.0451). AUC is flat under both.
+
+**`p_adverse` does not share it.** Flat under the default triple, worse
+under the second (`p_adverse_3` -0.0425 -> -0.0535, mostly shorts). So
+breadth helps the favourable-excursion heads a little and may cost the
+adverse ones, in one shared model. Decision recorded in DECISIONS.md.
