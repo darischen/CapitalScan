@@ -39,15 +39,9 @@ WEB_VIEWS = ("v_screen", "v_stats")
 # A test below asserts every entry still describes a real gap, so an entry
 # that stops matching has to be deleted rather than quietly kept.
 KNOWN_GAPS: dict[str, str] = {
-    "v_forward": (
-        "Phase 6. Exposes p_touch_* and p_adverse_* from `predictions`, which "
-        "is empty because no model exists (ADR 093 Provisional, ADR 113 "
-        "opened the phase conditionally). It carries `cell_n_eff` but no "
-        "interval and no q-value, so it cannot satisfy invariant 8 as it "
-        "stands. **ADR 113's model must add them before `/forward` ships** - "
-        "a quantile fan with a sample size and no interval is exactly the "
-        "object ADR 112 argues against."
-    ),
+    # Empty since 2026-09-27. `v_forward` was listed from Phase 5 until
+    # migration `b6d1e8f30a27` projected `predictions`' interval and
+    # `calib_n_eff` into it (ADR 174 had shipped them; nothing read them).
 }
 
 
@@ -184,7 +178,13 @@ def test_every_known_gap_is_still_a_gap(views, view):
 
 def test_the_known_gap_names_what_would_close_it(views):
     """A reason string that does not say what to do is a shrug in a dict."""
-    assert "ADR 113" in KNOWN_GAPS["v_forward"]
+    for view, reason in KNOWN_GAPS.items():
+        assert "ADR" in reason, f"{view}'s KNOWN_GAPS reason names no decision"
+
+
+def test_v_forward_carries_every_companion(views):
+    """The gap `KNOWN_GAPS` held open from Phase 5, pinned closed."""
+    assert not _missing(views["v_forward"])
 
 
 # ---------------------------------------------------------------------------
