@@ -345,13 +345,21 @@ the one family nobody sees. **Split by family before drawing any conclusion
 from an aggregate**, and fix a displayed head before an undisplayed one.
 → `BACKLOG.md`
 
-**The shipped probabilities run ~5 points low, and it is not a bug.** The
-isotonic tables are anchored to the validate split's 43.2% 3% touch rate;
-the trailing twelve months average ~49.5% and range 36.5-65.0%. That swing
-exceeds the model's whole Brier skill of 0.079, so **ranking is the durable
-output and the level is not**. ADR 179's rolling window is refuted as the
-fix, and recalibrating on the forward log is forbidden — it would destroy
-the only clean evidence the project has. → `BACKLOG.md`
+**The shipped probabilities carry a level bias whose sign follows the
+market, and it is not a bug.** Since ADR 193 (2026-09-10) the weekly refit
+calibrates on a **rolling** window: `core/folds.training_window` trains to
+today-6mo-10d, fits the isotonic tables on today-6mo to today-5d, and holds
+the last 5 days out as the forward log. So the level tracks the last six
+months, not a fixed period. **Measured 2026-09-27** on 2,314 resolved
+in-population predictions, all from post-ADR-193 models: mean `p_touch_3`
+0.615 against 0.548 realised, **~6.7 points high**, with ranking monotone
+across quintiles (0.393 to 0.827 realised). The 2026-09-08 measurement,
+on the previous generation's fixed 2022-23 anchor (43.2%), ran ~5 points
+**low**. The market's own 3% touch rate swings 36.5-65.0% month to month,
+more than the model's whole Brier skill of 0.079, so **ranking is the
+durable output and the level is not**. Recalibrating on the forward log is
+still forbidden -- it would destroy the only clean evidence the project
+has. → `BACKLOG.md`
 
 ---
 
