@@ -1535,6 +1535,12 @@ gap** — the `threshold_lint.KNOWN_EXCEPTIONS` pattern, which learned the
 hard way that an exemption kept past its fix hides a working thing instead
 of documenting a broken one.
 
+**Closed 2026-09-27** by migration `b6d1e8f30a27`: `v_forward` now projects
+`n_eff`, `ci_low` and `ci_high` from each prediction's calibration bucket
+(ADR 174) and `q_value` as NULL. `KNOWN_GAPS` is empty, and
+`test_v_forward_carries_every_companion` plus the fast-tier
+`test_v_forward_companions.py` pin it closed.
+
 ---
 
 ### Web Tests (web/tests/) — 145 tests, vitest
