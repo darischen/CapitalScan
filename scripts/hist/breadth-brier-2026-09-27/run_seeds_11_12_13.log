@@ -1,0 +1,56 @@
+db: 192.168.1.12/capitalscan  T=2025-09-26  eval=(datetime.date(2025, 9, 26), datetime.date(2026, 9, 25))
+breadth rows: 5334  latest 2026-09-25
+eval frame: FrameReport(rows=17350, dropped_etf=594, dropped_missing_sector=0, dropped_no_label=14791, dropped_untrained_type=0)  breadth NaN: 0
+
+=== A_base: features 22 ===
+  n_train=132,563 n_calibrate=7,111 steps=[714, 795, 772]
+
+=== B_breadth: features 24 ===
+  n_train=132,563 n_calibrate=7,111 steps=[592, 637, 759]
+
+==============================================================================
+OUT OF SAMPLE 2025-09-26 .. 2026-09-25
+==============================================================================
+                           auc               gap           skill_vs_eval_base          
+arm                     A_base B_breadth  A_base B_breadth             A_base B_breadth
+field       scope                                                                      
+p_adverse_3 all         0.6264    0.6221  0.1478    0.1553            -0.0425   -0.0535
+            side=long   0.6221    0.6128  0.1177    0.1132            -0.0166   -0.0176
+            side=short  0.6316    0.6350  0.1691    0.1850            -0.0606   -0.0786
+p_adverse_5 all         0.6656    0.6605  0.1024    0.1039             0.0155    0.0098
+            side=long   0.6560    0.6463  0.0579    0.0514             0.0356    0.0330
+            side=short  0.6812    0.6836  0.1339    0.1409             0.0026   -0.0052
+p_touch_10  all         0.7543    0.7526 -0.0312   -0.0211             0.1289    0.1320
+            side=long   0.7573    0.7569 -0.0235   -0.0161             0.1499    0.1487
+            side=short  0.7472    0.7428 -0.0366   -0.0247             0.1106    0.1174
+p_touch_2   all         0.6100    0.6142 -0.0754   -0.0660             0.0026    0.0105
+            side=long   0.6388    0.6437 -0.1027   -0.0911             0.0074    0.0215
+            side=short  0.5853    0.5899 -0.0562   -0.0482            -0.0006    0.0031
+p_touch_3   all         0.6446    0.6460 -0.0575   -0.0489             0.0451    0.0484
+            side=long   0.6674    0.6704 -0.0788   -0.0713             0.0595    0.0686
+            side=short  0.6222    0.6232 -0.0425   -0.0331             0.0349    0.0342
+p_touch_5   all         0.6936    0.6923 -0.0586   -0.0448             0.0740    0.0793
+            side=long   0.7136    0.7140 -0.0688   -0.0546             0.1060    0.1136
+            side=short  0.6723    0.6701 -0.0515   -0.0379             0.0488    0.0524
+
+p_touch_3 by month: |realised - predicted|
+arm            A_base  B_breadth
+scope                           
+month=2025-09  0.1785     0.1650
+month=2025-10  0.0018     0.0144
+month=2025-11  0.0209     0.0096
+month=2025-12  0.1334     0.1261
+month=2026-01  0.0451     0.0324
+month=2026-02  0.0656     0.0545
+month=2026-03  0.1732     0.1635
+month=2026-04  0.1641     0.1628
+month=2026-05  0.0713     0.0654
+month=2026-06  0.0421     0.0359
+month=2026-07  0.0733     0.0796
+month=2026-08  0.0233     0.0158
+month=2026-09  0.0116     0.0068
+
+mean monthly |gap| p_touch_3: {'A_base': 0.0773, 'B_breadth': 0.0717}
+
+results: C:\Users\daris\Desktop\School\CapitalScan\scripts\hist\breadth-brier-2026-09-27\results_seeds_11_12_13.csv
+=== DONE ===
