@@ -707,7 +707,7 @@ each depends on the one above it.
    is arithmetic with no IO. Refresh **weekly**; a config change forces a
    refit through the hash check automatically.
 
-2. **Rename `p_adverse_*` in the UI. "Moves 3% against" did not read
+2. **~~Rename `p_adverse_*` in the UI~~ -- DONE in PR #66 (`4e9510d`), recorded 2026-09-26.** The labels are side-aware (`web/lib/format.ts`: a short reads "Falls 2% in 5 days" in the signal's direction and "Rises 3% in 5 days" against it), and the modal groups them under "In the signal's direction" and "Against the position". Original entry: **Rename `p_adverse_*` in the UI. "Moves 3% against" did not read
    clearly -- user's words, 2026-09-08.** Shipped as a placeholder in
    `MODEL_FIELD_LABELS`, not as a settled name. It is side-adjusted -- against a short is *up* -- so "falls
    3%" would be wrong half the time and wrong in the expensive direction.
