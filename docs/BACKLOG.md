@@ -1303,6 +1303,40 @@ rate beside the model's number so a reader can see the gap themselves.
 
 ### Broker position sync — intended, and it collides with invariant 7
 
+**Decided 2026-09-26 (owner): build both paths, later.** Not started;
+positions will not be added for a while. When they are:
+
+- **A. CSV import first.** `cscan positions import <file>` loads Schwab's
+  positions CSV export with `source = 'broker_import'`. No credentials, no
+  token, invariant 7 untouched. It needs a new `source` value (ADR 048
+  anticipated `user_declared` and `broker_synced` only) and a parser
+  mapping Schwab's export columns onto `positions`.
+- **B. Live API sync second.** Needs, in this order: an ADR amending
+  invariant 7; authentication on the public site before any positions
+  page; stored tokens; a weekly re-login and an alert when the token
+  lapses; a test that no Schwab order endpoint is referenced anywhere.
+  A's parser and column mapping carry over.
+
+**Measured facts about Schwab's API (checked 2026-09-26, recheck at build
+time):**
+
+- **There is no read-only access level.** Positions come only with the
+  "Accounts and Trading Production" product, which also places orders.
+  The other product, "Market Data Production", cannot see an account. So
+  the stored key could trade, and "read-only" would be enforced by code
+  alone, not by the credential. That is weaker than invariant 7 today and
+  is why the order-endpoint test in B is required, not optional.
+- **Refresh tokens expire after 7 days and cannot be extended.** Access
+  tokens last 30 minutes. After day 7 Schwab rejects the refresh with
+  `invalid_client` and a browser login is needed. A nightly sync that
+  nobody re-authorises fails on the eighth day.
+
+Sources: schwab-py docs (auth, getting started), Schwab Developer Portal
+("How API products are organized").
+
+The original entry follows.
+
+
 **Owner's intent, 2026-09-25:** hook up the Charles Schwab API later so
 `positions` auto-populates from the account instead of being typed by
 hand. That is the reason `positions` was kept rather than retired the same
