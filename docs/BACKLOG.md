@@ -144,21 +144,21 @@ blocks adoption; each says what would make it matter.
    `collision` or `no_slot` on every nightly forever. Scope the counts to
    rows actually inserted, or date-bound the selection, before anyone learns
    to ignore the line.
-2. **`slot_side` raises on an unknown `signal_type`.** With no date bound on
+2. **~~`slot_side` raises on an unknown `signal_type`~~ -- FIXED 2026-09-27.** Worse than written: since #1 a never-inserted row returns every night, so one bad row would have blocked all adoption forever. `_apply_slot_remap` now leaves such a row unresolved, counted as `no_slot`, with a warning naming the type; an event with an unknown type cannot own a slot. `slot_side` itself still raises, and no side is ever guessed. Original: **`slot_side` raises on an unknown `signal_type`.** With no date bound on
    selection, one bad serving row would fail adoption every night, hidden by
    nightly's broad `except`. Low risk while `core/cells.py` covers every
    `SignalType`; it bites the day a member is added without a side.
-3. **The test fakes restate the adoption SELECT's columns** in
+3. **~~The test fakes restate the adoption SELECT's columns~~ -- FIXED 2026-09-27.** `sync.SLOT_REMAP_INPUT_COLUMNS` and `SLOT_EVENT_COLUMNS` name them once; the guard, the event SELECT and both test files' fakes build from them. Original: **The test fakes restate the adoption SELECT's columns** in
    `test_pull_predictions.py` and `test_slot_remap.py`, so a column added to
    the real query drifts silently. Derive both from one constant.
-4. **`_apply_slot_remap`'s input guard omits `event_id`**, so a frame missing
+4. **~~`_apply_slot_remap`'s input guard omits `event_id`~~ -- FIXED 2026-09-27** (the guard enforces `SLOT_REMAP_INPUT_COLUMNS`, which includes it). Original: **`_apply_slot_remap`'s input guard omits `event_id`**, so a frame missing
    it raises `KeyError` rather than the guard's `ValueError`. Unreachable
    through `SELECT *`.
-5. **The backfill takes no table lock.** A concurrent nightly can race it
+5. **~~The backfill takes no table lock~~ -- MOOT, measured 2026-09-27.** A dry run against `wivie` found 125 unresolved adopted rows and **0** it could link (81 `no_slot`, 44 `collision`); the script has nothing left to write, so there is no write to race. Sampled `no_slot` rows (ADI, L on 2026-09-25) have no event on either store: an intraday touch the end-of-day pass did not confirm, swept by ADR 150. Original: **The backfill takes no table lock.** A concurrent nightly can race it
    into a unique-index violation; the loser rolls back cleanly and a rerun
    converges. Documented as a run window instead: after a finished nightly,
    before the Pi's 06:45 session.
-6. **The backfill replays the slot lookup once per unresolved row** to split
+6. **~~The backfill replays the slot lookup once per unresolved row~~ -- MOOT** for the same reason as #5: 125 rows, one-off, nothing to link. Original: **The backfill replays the slot lookup once per unresolved row** to split
    `no_slot` from `ambiguous`. Fine for ~100 rows once; not for a hot path.
 
 ### Where Session 26 left off — read this first

@@ -439,6 +439,57 @@ _SIDE_BY_SIGNAL_TYPE: dict[str, str] = {t: "long" for t in LONG_SIGNALS} | {
 }
 
 
+# **The columns `_apply_slot_remap` reads, named once (2026-09-27).** The
+# adoption frame's SELECT is `SELECT *`, so nothing else pins them, and the
+# test fakes in `test_pull_predictions.py` and `test_slot_remap.py` used to
+# restate both lists by hand: a column the remap started reading would have
+# passed every fake and raised on the first real pull. Both fakes now build
+# from these tuples, and the input guard enforces the first one, including
+# `event_id`, which the guard used to omit (a frame without it raised a
+# bare `KeyError` from `.drop` instead of the guard's `ValueError`).
+SLOT_REMAP_INPUT_COLUMNS: tuple[str, ...] = (
+    "event_id",
+    "config_hash",
+    "ticker",
+    "as_of",
+    "signal_type",
+    "entry_kind",
+)
+SLOT_EVENT_COLUMNS: tuple[str, ...] = (
+    "id",
+    "config_hash",
+    "ticker",
+    "signal_date",
+    "signal_type",
+    "entry_kind",
+)
+
+
+def _side_or_unkeyable(frame: pd.DataFrame, what: str) -> pd.DataFrame:
+    """Attach `side`, leaving it NULL for a `signal_type` with no side.
+
+    **Why not `slot_side`'s raise, here (2026-09-27).** `_pull_predictions`
+    selects by id floor with no date bound, and a row that fails adoption is
+    never inserted, so it is selected again the next night. A raise would
+    make one malformed serving row block every adoption on every nightly,
+    hidden by nightly's broad `except`. A NULL side cannot match any slot
+    (the lookup never carries one), so the row adopts unresolved and is
+    counted as `no_slot`, and the warning names the type. No side is ever
+    guessed, which is the property `slot_side` raises to protect.
+    """
+    known = frame["signal_type"].isin(list(_SIDE_BY_SIGNAL_TYPE))
+    if not bool(known.all()):
+        bad = sorted(set(frame.loc[~known, "signal_type"].astype(str)))
+        logger.warning(
+            "%d %s carry a signal_type with no side (%s); they cannot key a "
+            "slot and resolve as no_slot. Add the type to core.cells.",
+            int((~known).sum()),
+            what,
+            ", ".join(bad),
+        )
+    return frame.assign(side=frame["signal_type"].map(_SIDE_BY_SIGNAL_TYPE))
+
+
 def slot_side(frame: pd.DataFrame) -> pd.DataFrame:
     """Attach the slot's `side`, derived from `signal_type`.
 
@@ -600,11 +651,10 @@ def _apply_slot_remap(
     """
     if frame.empty:
         return frame, 0, 0
-    needed = ("config_hash", "ticker", "as_of", "signal_type", "entry_kind")
-    missing = [c for c in needed if c not in frame.columns]
+    missing = [c for c in SLOT_REMAP_INPUT_COLUMNS if c not in frame.columns]
     if missing:
         raise ValueError(f"slot remap needs {missing!r} in the frame; widen the query's SELECT")
-    frame = slot_side(frame)
+    frame = _side_or_unkeyable(frame, "adopted prediction(s)")
 
     keys = frame[list(_SLOT_SOURCE_KEY)].drop_duplicates()
     # `side` is excluded here -- it is not a database column, so it plays
@@ -618,7 +668,7 @@ def _apply_slot_remap(
     params = {f"v{i}": keys[s].drop_duplicates().tolist() for i, (s, _t) in enumerate(select_pairs)}
     events = pd.read_sql(
         text(
-            "SELECT id, config_hash, ticker, signal_date, signal_type, entry_kind "  # noqa: S608
+            f"SELECT {', '.join(SLOT_EVENT_COLUMNS)} "  # noqa: S608
             f'FROM "{table}" WHERE {where}'
         ),
         target,
@@ -627,7 +677,11 @@ def _apply_slot_remap(
     if events.empty:
         return frame.drop(columns=["side"]).assign(event_id=None), len(frame), 0
 
-    events = slot_side(events)
+    # An event whose type has no side cannot own a slot either. Dropped
+    # from the lookup, not raised on, for the reason `_side_or_unkeyable`
+    # gives; the warning names it.
+    events = _side_or_unkeyable(events, "research event(s)")
+    events = events.loc[events["side"].notna()]
     lookup = events[[*_SLOT_TARGET_KEY, "id"]]
 
     # `duplicated(keep=False)` marks BOTH rows of a two-event slot, not

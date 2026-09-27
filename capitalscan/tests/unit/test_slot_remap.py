@@ -26,6 +26,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import Engine
 
+from capitalscan.jobs import sync as sync_job
 from capitalscan.jobs.sync import _apply_slot_remap
 
 
@@ -55,9 +56,7 @@ def patched_read_sql(monkeypatch):
         frame = con.events
         for i, col in enumerate(select_cols):
             frame = frame[frame[col].isin(params[f"v{i}"])]
-        return frame[
-            ["id", "config_hash", "ticker", "signal_date", "signal_type", "entry_kind"]
-        ].reset_index(drop=True)
+        return frame[list(sync_job.SLOT_EVENT_COLUMNS)].reset_index(drop=True)
 
     monkeypatch.setattr("capitalscan.jobs.sync.pd.read_sql", fake_read_sql)
     return fake_read_sql
@@ -66,14 +65,14 @@ def patched_read_sql(monkeypatch):
 def _events(rows: list[tuple]) -> pd.DataFrame:
     return pd.DataFrame(
         rows,
-        columns=["id", "config_hash", "ticker", "signal_date", "signal_type", "entry_kind"],
+        columns=list(sync_job.SLOT_EVENT_COLUMNS),
     )
 
 
 def _predictions(rows: list[tuple]) -> pd.DataFrame:
     return pd.DataFrame(
         rows,
-        columns=["id", "event_id", "config_hash", "ticker", "as_of", "signal_type", "entry_kind"],
+        columns=["id", *sync_job.SLOT_REMAP_INPUT_COLUMNS],
     )
 
 
@@ -181,11 +180,17 @@ class TestTwoEventsInOneSlotIsNullNeverAPick:
         assert (no_slot, ambiguous) == (0, 1)
 
 
-class TestSideDerivationRaisesRatherThanDefaulting:
-    def test_an_unknown_signal_type_on_the_incoming_frame_raises(self) -> None:
+class TestSideDerivationNeverDefaults:
+    """The remap used to raise here, which blocked every nightly adoption
+    on one bad row (minor #2). It now leaves the row unresolved instead
+    (`TestAnUnknownSignalTypeDoesNotBlockAdoption`). What must not change
+    is that no side is ever guessed: `slot_side` itself still raises, and
+    `test_slot_side.py` pins that."""
+
+    def test_slot_side_itself_still_raises(self) -> None:
         predictions = _predictions([(10, 0, "h1", "AA", "2026-09-09", "not_a_real_type", "touch")])
         with pytest.raises(ValueError, match="has no side"):
-            slot_remap(predictions, _FakeEngine(_events([])))
+            sync_job.slot_side(predictions)
 
 
 class TestTheTableParameterIsAdditiveOnly:
@@ -249,3 +254,48 @@ class TestTheFrameStaysWritable:
         predictions = _predictions([(10, 5, "h1", "AA", "2026-09-09", "bb_lower_touch", "touch")])
         out, _n, _a = slot_remap(predictions, _FakeEngine(events))
         assert len(out) == 1
+
+
+class TestAnUnknownSignalTypeDoesNotBlockAdoption:
+    """Deferred minor #2 (2026-09-20 review), fixed 2026-09-27.
+
+    Selection is floor-scoped with no date bound and a failed row is never
+    inserted, so a raise here would block every adoption on every nightly.
+    """
+
+    def test_the_row_adopts_unresolved_and_counts_as_no_slot(self, patched_read_sql) -> None:
+        events = _events([(81001, "h1", "USB", "2026-09-18", "bull_close_below_lower", "touch")])
+        predictions = _predictions(
+            [
+                (500, 0, "h1", "USB", "2026-09-18", "bb_lower_touch", "touch"),
+                (501, 0, "h1", "USB", "2026-09-18", "not_a_signal_type", "touch"),
+            ]
+        )
+        out, no_slot, ambiguous = slot_remap(predictions, _FakeEngine(events))
+        by_id = out.set_index("id")
+        assert by_id.loc[500, "event_id"] == 81001, "the good row still links"
+        assert pd.isna(by_id.loc[501, "event_id"]), "no side is guessed"
+        assert (no_slot, ambiguous) == (1, 0)
+        assert by_id.loc[501, "signal_type"] == "not_a_signal_type"
+
+    def test_it_warns_and_names_the_type(self, patched_read_sql, caplog) -> None:
+        predictions = _predictions([(501, 0, "h1", "USB", "2026-09-18", "mystery", "touch")])
+        with caplog.at_level("WARNING"):
+            slot_remap(predictions, _FakeEngine(_events([])))
+        assert "mystery" in caplog.text
+
+    def test_an_unknown_event_type_cannot_own_a_slot(self, patched_read_sql) -> None:
+        events = _events([(9, "h1", "USB", "2026-09-18", "mystery", "touch")])
+        predictions = _predictions([(500, 0, "h1", "USB", "2026-09-18", "bb_lower_touch", "touch")])
+        out, no_slot, _ = slot_remap(predictions, _FakeEngine(events))
+        assert pd.isna(out.loc[0, "event_id"])
+        assert no_slot == 1
+
+
+def test_a_frame_without_event_id_fails_the_guard_not_a_keyerror() -> None:
+    """Deferred minor #4: the guard omitted `event_id`, so a frame missing
+    it raised a bare `KeyError` from `.drop` instead of the guard's
+    message naming what to add."""
+    frame = _predictions([(500, 0, "h1", "USB", "2026-09-18", "bb_lower_touch", "touch")])
+    with pytest.raises(ValueError, match="event_id"):
+        slot_remap(frame.drop(columns=["event_id"]), _FakeEngine(_events([])))

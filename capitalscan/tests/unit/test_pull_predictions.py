@@ -93,14 +93,14 @@ class _FakeTargetEngine:
 def _predictions(rows: list[tuple]) -> pd.DataFrame:
     return pd.DataFrame(
         rows,
-        columns=["id", "event_id", "config_hash", "ticker", "as_of", "signal_type", "entry_kind"],
+        columns=["id", *sync_job.SLOT_REMAP_INPUT_COLUMNS],
     )
 
 
 def _events(rows: list[tuple]) -> pd.DataFrame:
     return pd.DataFrame(
         rows,
-        columns=["id", "config_hash", "ticker", "signal_date", "signal_type", "entry_kind"],
+        columns=list(sync_job.SLOT_EVENT_COLUMNS),
     )
 
 
@@ -168,8 +168,7 @@ def patched_read_sql(monkeypatch):
         frame = con.events
         for i, col in enumerate(_SLOT_SELECT_COLS):
             frame = frame[frame[col].isin(params[f"v{i}"])]
-        cols = ["id", "config_hash", "ticker", "signal_date", "signal_type", "entry_kind"]
-        return frame[cols].reset_index(drop=True)
+        return frame[list(sync_job.SLOT_EVENT_COLUMNS)].reset_index(drop=True)
 
     monkeypatch.setattr("capitalscan.jobs.sync.pd.read_sql", fake_read_sql)
     fake_read_sql.statements = statements
