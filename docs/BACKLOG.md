@@ -691,7 +691,7 @@ candidate query rather than a re-run.
 **Agreed in session 29 (2026-09-08), not yet built.** In build order --
 each depends on the one above it.
 
-1. **Persist the fitted model and serve it from numpy.** ADR 174 refits
+1. **~~Persist the fitted model and serve it from numpy~~ -- SHIPPED, verified against the code 2026-09-27.** `jobs/artifact.py` saves and publishes the `.npz` artifact and raises `StaleArtifact` on a mismatch; `core/inference.py` runs the numpy forward pass; `weekly` publishes to serving (ADR 185) and the Pi scores with `--serving`. Original text: Persist the fitted model and serve it from numpy. ADR 174 refits
    every run so a fit cannot outlive the feature code that built it. A
    per-ticker button cannot wait 12 minutes, so the artifact has to be
    stored -- but keep the guarantee by stamping it with `git_sha`,
@@ -715,7 +715,7 @@ each depends on the one above it.
    placeholder. `MODEL_FIELD_LABELS` in `web/lib/format.ts` is the one
    place to change it.
 
-3. **The inference column.** Drop `STR`; tighten the Signal-to-bands gap;
+3. **~~The inference column~~ -- SHIPPED, verified 2026-09-27.** `Screener.tsx` has the `Inference` column (`InferenceCell`, an ellipsis button with no number in the grid) opening `InferenceModal`; the `Str` column is gone. Original text: The inference column. Drop `STR`; tighten the Signal-to-bands gap;
    add an `Inference` column right of `Fired` whose cell is a small square
    with an ellipsis -- no number in the grid, which is what stops a reader
    eyeball-ranking a column the breadth gate says is not rankable. Clicking
@@ -723,7 +723,7 @@ each depends on the one above it.
    the interval, `n_eff` and the gate tier. **Populated automatically on
    nightly and live poller runs.**
 
-4. **Inference on the ticker/graph page**, for any searched ticker and any
+4. **~~Inference on the ticker/graph page~~ -- SHIPPED, verified 2026-09-27.** `PredictButton` ("Predict movement") on `Ticker.tsx` opens the same modal. Original text: Inference on the ticker/graph page, for any searched ticker and any
    past report. Deliberate click rather than automatic. Same panel as the
    modal.
 
@@ -798,7 +798,7 @@ each depends on the one above it.
   removes. `nightly` will load a 1.1 MB artifact and do a forward pass, not
   fit anything.
 
-- **Watch-universe rows never get a prediction, and that is no longer
+- **~~Watch-universe rows never get a prediction~~ -- SHIPPED as ADR 183, verified 2026-09-27.** `in_watch` rows are scored with `cosmetic = true`, and the modal replaces the normal caveat with "Reference only. This name is outside the trade universe." (`web/lib/format.ts`). Original text: Watch-universe rows never get a prediction, and that is no longer
   what is wanted.** `build_serving_frame` filters `in_trade`, so watch rows
   carry no `p_touch`. The session-29 plan wants them scored for display:
   they are already fully backtested -- AAPL sits in the watch universe with
@@ -1014,7 +1014,7 @@ addresses are written into configuration (the Pi's `pg_hba.conf`,
 connection strings on every end), so a reshuffle would have broken the sync
 with an error that reads like an auth failure.
 
-**`cscan weekly` and `monthly` are still manual, and stay that way until
+**~~`cscan weekly` and `monthly` are still manual~~ -- SUPERSEDED by the 2026-09-10 cutover.** All three timers run on `wivie` (`systemctl list-timers`, checked 2026-09-27; the 2026-09-26 weekly ran 12h22m on its own). Original text: `cscan weekly` and `monthly` are still manual, and stay that way until
 the cutover** (user's decision, 2026-09-01). `nightly` runs from Task
 Scheduler on the workstation (13:15 daily, now through
 `scripts/run_job.ps1`, which refuses if the resolved config hash is not the
