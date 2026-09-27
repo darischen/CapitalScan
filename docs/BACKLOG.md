@@ -410,7 +410,7 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    probabilities from its caller so it cannot pretend otherwise; nothing in
    the serving path calls it.
 
-6. **Adopt arm D's config, with a caveat.** Sector-relative features plus
+6. **~~Adopt arm D's config~~ -- RE-DERIVED 2026-09-27, NOT ADOPTED (RESULTS).** On the six-head model and the expanding window, arm D moves Brier skill within about ±0.3 points in no consistent direction. Original: **Adopt arm D's config, with a caveat.** Sector-relative features plus
    `net_ret`/`mae` tasks beat base on Brier skill at all three thresholds
    (t3 +5.54% -> +6.22%) and do not interfere, **but AUC is flat**
    (0.6379 -> 0.6411), so it is better calibration rather than new
