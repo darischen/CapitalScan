@@ -1270,7 +1270,37 @@ the signal. Worth re-running per family.
 
 Not urgent. Nothing a reader sees is wrong because of it.
 
-### The shipped probabilities run about 5 points low, and the cause is not the model
+### The shipped probabilities are level-biased, and the sign follows the market
+
+**Updated 2026-09-27: the direction has flipped, and the text below is the
+pre-ADR-193 state.** Since ADR 193 (2026-09-10) the isotonic tables are
+refit weekly on the six months ending today-5d, not on the 2022-23 split.
+Measured on 2,314 resolved in-population forward-log predictions, all from
+post-ADR-193 models (created 2026-09-11 to 09-25): mean `p_touch_3`
+**0.615**, realised **0.548**, so the shipped level runs **~6.7 points
+high**. Ranking holds across quintiles:
+
+| quintile | mean `p_touch_3` | realised |
+|---|---:|---:|
+| 1 | 0.466 | 0.393 |
+| 2 | 0.519 | 0.428 |
+| 3 | 0.586 | 0.486 |
+| 4 | 0.671 | 0.605 |
+| 5 | 0.833 | 0.827 |
+
+The mechanism is the one below with a new anchor: the last six months
+touched 3% more often than the weeks these predictions resolved in. The
+lesson generalises -- any calibration window anchors the level to its own
+base rate, and a rolling one moves the anchor, it does not remove it.
+Sample note: 2,314 rows over about two weeks of signals, heavily clustered,
+so the effective sample is much smaller; re-measure as the log grows.
+
+**`core.calibration.MODEL_CAVEAT` is now wrong for readers.** It says the
+numbers are "anchored to a 43% period" and "ran low", which predates ADR
+193. Changing it is reader-facing copy and waits on the owner.
+
+Original entry (pre-ADR-193):
+
 
 Measured 2026-09-08 on 4,020 resolved in-population forward-log rows
 (`RESULTS.md` has the full table).
