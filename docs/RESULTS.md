@@ -8773,3 +8773,34 @@ little and ranking hardly at all.**
 **One seed triple.** 2026-09-05 found ~0.7pp skill differences
 reproducible but never shown to exceed seed choice. A second seed triple is
 queued; adoption waits on it and on the owner.
+
+## 2026-09-27 — arm D does not reproduce on the six-head model
+
+BACKLOG item 6 ("Adopt arm D's config, with a caveat ... re-derive against
+the six-head model"). The 2026-09-05 script is not in the repo, so the arm
+was reconstructed from that entry: `rel_dd` and `sector_dd_med` (the
+sector's median `dd_52w` on the last session strictly before the signal,
+from `indicators`) plus `net_ret` and `mae` training tasks. Production's
+refit at T = 2025-09-26, population held identical across arms, scored on
+the following twelve months. `scripts/hist/arm-d-2026-09-27/`.
+
+| field | Brier skill base | arm D | AUC base | arm D |
+|---|---:|---:|---:|---:|
+| `p_touch_2` | 0.0033 | 0.0070 | 0.6105 | 0.6140 |
+| `p_touch_3` | 0.0465 | 0.0456 | 0.6442 | 0.6465 |
+| `p_touch_5` | 0.0771 | 0.0797 | 0.6917 | 0.6942 |
+| `p_touch_10` | 0.1298 | 0.1275 | 0.7535 | 0.7543 |
+| `p_adverse_3` | -0.0434 | -0.0441 | 0.6266 | 0.6302 |
+| `p_adverse_5` | 0.0143 | 0.0101 | 0.6665 | 0.6697 |
+
+**Mixed, within about ±0.3 points, no consistent direction.** The
+2026-09-05 win (a four-head model on the fixed split) does not survive the
+move to six heads and the expanding window. **Not adopted.** That also
+settles the conflict the arm carried: its `net_ret` and `mae` tasks bake
+`ExitParams` into the target, which ADR 175 declined for the trough head,
+and there is now no gain to weigh against that.
+
+**Determinism, confirmed across processes.** This run's base arm and the
+breadth run's base arm (same day, separate processes, same seeds and
+window) produced identical step counts [829, 714, 772] and identical
+scores to four decimals. The 2026-09-04 seeding fix holds.
