@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, IBM_Plex_Sans_Condensed, Inter_Tight } from "next/font/google";
+import localFont from "next/font/local";
 
 import "./globals.css";
 
@@ -8,9 +8,14 @@ import "./globals.css";
  * mono and display so data and headers look related, and a narrower body
  * face so dense rows fit without dropping below 13px.
  *
- * **Self-hosted via `next/font/google`, which is not the same as loading
- * from Google.** The fonts are fetched once at build time, emitted into the
- * app's own static output, and served from this origin. The `<link>` tags
+ * **Self-hosted from files in `app/fonts/` (2026-09-27).** This used
+ * `next/font/google`, which fetched the fonts from Google at *build* time.
+ * A bad fetch fails the build as `TypeError: Cannot read properties of
+ * null` inside webpack: it failed CI's `web` job on 2026-09-23, 09-25 and
+ * 09-27 on branches that touched no `web/` file, and the same fetch runs in
+ * every Pi build. The woff2 files (latin subset, OFL, see
+ * `app/fonts/README.md`) are committed, so no build reaches the network.
+ * Served from this origin exactly as before. The `<link>` tags
  * this replaced made a request to `fonts.googleapis.com` on every first
  * paint — the only outbound request the app made, and one that told a third
  * party who was reading the page.
@@ -24,23 +29,24 @@ import "./globals.css";
  * every component reads those. The variables are the seam.
  */
 
-const mono = IBM_Plex_Mono({
-  subsets: ["latin"],
-  weight: ["400", "500"],
+const mono = localFont({
+  src: [
+    { path: "./fonts/IBMPlexMono-400-latin.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/IBMPlexMono-500-latin.woff2", weight: "500", style: "normal" },
+  ],
   variable: "--font-mono",
   display: "swap",
 });
 
-const sans = Inter_Tight({
-  subsets: ["latin"],
-  weight: ["400", "500"],
+// One variable file covers both weights; Google serves Inter Tight that way.
+const sans = localFont({
+  src: [{ path: "./fonts/InterTight-var-latin.woff2", weight: "400 500", style: "normal" }],
   variable: "--font-sans",
   display: "swap",
 });
 
-const display = IBM_Plex_Sans_Condensed({
-  subsets: ["latin"],
-  weight: ["600"],
+const display = localFont({
+  src: [{ path: "./fonts/IBMPlexSansCondensed-600-latin.woff2", weight: "600", style: "normal" }],
   variable: "--font-display",
   display: "swap",
 });
