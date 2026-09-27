@@ -1,0 +1,16 @@
+train FrameReport(rows=92060, dropped_etf=5486, dropped_missing_sector=0, dropped_no_label=66190, dropped_untrained_type=0)
+validate FrameReport(rows=19164, dropped_etf=930, dropped_missing_sector=0, dropped_no_label=15032, dropped_untrained_type=0)
+
+=== run 1: steps [742, 545, 545] ===
+
+=== run 2: steps [742, 545, 545] ===
+
+========================================================================
+run 1: coverage 24/30  beats constant 28/30  mean improvement +8.351%  steps [742, 545, 545]
+  by family: peak 9/10, terminal 5/10, trough 10/10
+run 2: coverage 24/30  beats constant 28/30  mean improvement +8.351%  steps [742, 545, 545]
+  by family: peak 9/10, terminal 5/10, trough 10/10
+
+run 1 and run 2 identical coverage: True
+results: C:\Users\daris\Desktop\School\CapitalScan\scripts\hist\adr170-remeasure-2026-09-27\results.csv
+=== DONE ===
