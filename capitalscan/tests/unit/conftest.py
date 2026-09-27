@@ -31,6 +31,11 @@ def _no_real_yahoo_shares_fallback(monkeypatch):
         "fetch_shares_full",
         lambda ticker, start, end: pd.DataFrame(columns=["ticker", "filed_on", "shares"]),
     )
+    # `fetch_ledger` (2026-09-27) is database IO on the same path. Empty and
+    # a no-op by default, so every existing fake engine keeps working;
+    # `test_fetch_ledger.py` overrides both to exercise the skip.
+    monkeypatch.setattr(ingest, "_ledger_fresh", lambda engine, source, tickers, days: set())
+    monkeypatch.setattr(ingest, "_ledger_record", lambda engine, source, tickers: None)
 
 
 # ---------------------------------------------------------------------------

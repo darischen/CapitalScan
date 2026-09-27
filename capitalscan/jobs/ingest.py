@@ -62,6 +62,14 @@ MIN_TRADE_PRICE = 1.0
 # quarter of grace on top before a gap counts as "the feed stopped," not
 # "the next filing hasn't landed yet."
 SHARES_STALENESS_DAYS = 365 + 90
+
+# How long a Yahoo shares fetch (`fetch_shares_full` or, for an ETF,
+# `fetch_net_assets`) counts as current per ticker (`fetch_ledger`,
+# 2026-09-27). ~280 tickers take that path and each costs 2 s at the rate
+# limit, ~9.5 of the step's ~10.4 minutes, for a share count that moves
+# quarterly and a universe evaluated quarterly. Existing rows stay in
+# place meanwhile; nothing is deleted by skipping.
+SHARES_YAHOO_REFETCH_DAYS = 7
 # `get_shares_full` was verified live (BRK-B, MA, V, META) to return dated
 # points back to ~2015 regardless of how far before that `start` asks for;
 # 2015-01-01 costs nothing extra and is far enough back to backfill any
@@ -1353,7 +1361,7 @@ def _update_ticker_coverage(engine: Engine, clean_bars: pd.DataFrame) -> None:
 ACTIONS_WINDOW_DAYS = 30
 
 # How long a full-history fetch counts as current for a ticker with no rows
-# in `corporate_actions` (migration `c3e7a9d15f40`). Inside it the ticker
+# in `corporate_actions` (`fetch_ledger`, migration `c3e7a9d15f40`). Inside it the ticker
 # takes the batched path; after it, the full fetch runs once more, so an
 # empty result from a transient failure cannot hide an old split for good.
 ACTIONS_FULL_REFETCH_DAYS = 30
@@ -1369,36 +1377,56 @@ def _tickers_with_actions(engine: Engine, tickers: list[str]) -> set[str]:
     alone missed every company that has never split or paid a dividend:
     no row ever lands for it, so it paid for its whole history again every
     night -- 286 of 1,463 tickers, ~9.5 of the step's 13.7 minutes.
-    `actions_full_history` records the fetch itself, and counts for
-    `ACTIONS_FULL_REFETCH_DAYS`.
+    `fetch_ledger` records the fetch itself (`LEDGER_ACTIONS_FULL`), and it
+    counts for `ACTIONS_FULL_REFETCH_DAYS`.
     """
+    if not tickers:
+        return set()
+    with engine.connect() as conn:
+        rows = set(
+            conn.execute(
+                text("SELECT DISTINCT ticker FROM corporate_actions WHERE ticker = ANY(:tickers)"),
+                {"tickers": tickers},
+            ).scalars()
+        )
+    return rows | _ledger_fresh(engine, LEDGER_ACTIONS_FULL, tickers, ACTIONS_FULL_REFETCH_DAYS)
+
+
+# `fetch_ledger` sources (migration `c3e7a9d15f40`). One table, keyed by
+# source, for every slow per-ticker fetch a nightly step would otherwise
+# repeat whether or not anything changed.
+LEDGER_ACTIONS_FULL = "yahoo_actions_full"
+LEDGER_YAHOO_SHARES = "yahoo_shares"
+
+
+def _ledger_fresh(engine: Engine, source: str, tickers: list[str], days: int) -> set[str]:
+    """Tickers whose `source` fetch ran within the last `days` days."""
     if not tickers:
         return set()
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                "SELECT ticker FROM corporate_actions WHERE ticker = ANY(:tickers) "
-                "UNION "
-                "SELECT ticker FROM actions_full_history WHERE ticker = ANY(:tickers) "
+                "SELECT ticker FROM fetch_ledger WHERE source = :source "
+                "AND ticker = ANY(:tickers) "
                 "AND fetched_at >= now() - make_interval(days => :days)"
             ),
-            {"tickers": tickers, "days": ACTIONS_FULL_REFETCH_DAYS},
+            {"source": source, "tickers": tickers, "days": days},
         ).scalars()
         return set(rows)
 
 
-def _record_full_history(engine: Engine, tickers: list[str]) -> None:
-    """Mark these tickers' full history as fetched now, found or not."""
+def _ledger_record(engine: Engine, source: str, tickers: list[str]) -> None:
+    """Mark these tickers' `source` fetch as run now, found or not."""
     if not tickers:
         return
     with engine.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO actions_full_history (ticker, fetched_at) "
-                "SELECT unnest(CAST(:tickers AS text[])), now() "
-                "ON CONFLICT (ticker) DO UPDATE SET fetched_at = EXCLUDED.fetched_at"
+                "INSERT INTO fetch_ledger (source, ticker, fetched_at) "
+                "SELECT :source, unnest(CAST(:tickers AS text[])), now() "
+                "ON CONFLICT (source, ticker) DO UPDATE SET fetched_at = EXCLUDED.fetched_at"
             ),
-            {"tickers": tickers},
+            {"source": source, "tickers": tickers},
         )
 
 
@@ -1446,7 +1474,7 @@ def run_actions(
         # first ingest, or its monthly refetch -- and recorded whether or not
         # it found anything, which is what keeps it rare.
         frames.extend(yahoo.fetch_actions(t) for t in fresh)
-        _record_full_history(engine, fresh)
+        _ledger_record(engine, LEDGER_ACTIONS_FULL, fresh)
         frames = [f for f in frames if not f.empty]
         if not frames:
             report.tickers = []
@@ -2044,6 +2072,9 @@ def run_shares(
         # wrong number". Yahoo's count is already per ADR, so nothing is
         # computed and nothing is rounded.
         depositary = _depositary_tickers(engine, tickers)
+        yahoo_fresh = _ledger_fresh(engine, LEDGER_YAHOO_SHARES, tickers, SHARES_YAHOO_REFETCH_DAYS)
+        yahoo_attempted: list[str] = []
+        yahoo_recent: list[str] = []
 
         for ticker in tickers:
             latest = latest_sec_filed_on.get(ticker)
@@ -2053,6 +2084,11 @@ def run_shares(
                 and ticker not in depositary
             ):
                 continue  # SEC is current enough; do not spend a Yahoo call
+            if ticker in yahoo_fresh:
+                # Fetched within SHARES_YAHOO_REFETCH_DAYS; its rows are on
+                # file already. Counted, so the notes show it was a skip.
+                yahoo_recent.append(ticker)
+                continue
             # **ADR 156: a fund does not have a share count to report.**
             # `netAssets / price` is exact for a fund (`price x shares` IS
             # net assets, by definition of NAV), so this is a change of
@@ -2065,6 +2101,7 @@ def run_shares(
                 except Exception as exc:  # noqa: BLE001 - a skip, not a failure
                     yahoo_skipped.append((ticker, f"netAssets fetch raised: {exc}"))
                     continue
+                yahoo_attempted.append(ticker)
                 if na.empty:
                     yahoo_skipped.append((ticker, "no netAssets published"))
                     continue
@@ -2111,6 +2148,7 @@ def run_shares(
             except Exception as exc:  # yfinance failure is a skip, not a job failure
                 yahoo_skipped.append((ticker, f"yahoo shares_full fetch raised: {exc}"))
                 continue
+            yahoo_attempted.append(ticker)
             if full.empty:
                 yahoo_skipped.append((ticker, "no yahoo shares_full data either"))
                 continue
@@ -2163,6 +2201,10 @@ def run_shares(
         report.rows_written = db_io.upsert(
             engine, "shares_outstanding", upsert_rows, ["ticker", "filed_on"]
         )
+        # After the write, so a failed upsert does not mark tickers fetched.
+        # Only attempts that did not raise are recorded: a raise retries the
+        # next night.
+        _ledger_record(engine, LEDGER_YAHOO_SHARES, yahoo_attempted)
         report.tickers = touched + [t for t in yahoo_used if t not in touched]
 
         if share_rejects:
@@ -2182,6 +2224,11 @@ def run_shares(
                 f"{len(yahoo_used)} ticker(s) backed by {SHARES_YAHOO_SOURCE} "
                 "fallback (SEC data absent or older than "
                 f"{SHARES_STALENESS_DAYS} days): " + ", ".join(sorted(yahoo_used))
+            )
+        if yahoo_recent:
+            note_parts.append(
+                f"{len(yahoo_recent)} ticker(s) skipped the Yahoo fallback, fetched "
+                f"within {SHARES_YAHOO_REFETCH_DAYS} days"
             )
         if yahoo_skipped:
             note_parts.append(

@@ -149,7 +149,8 @@ def _no_run_job(monkeypatch) -> list[list[str]]:
 
     monkeypatch.setattr(ingest, "run_job", _fake)
     recorded: list[list[str]] = []
-    monkeypatch.setattr(ingest, "_record_full_history", lambda e, t: recorded.append(list(t)))
+    monkeypatch.setattr(ingest, "_ledger_record", lambda e, source, t: recorded.append(list(t)))
+    monkeypatch.setattr(ingest, "_ledger_fresh", lambda e, source, t, days: set())
     return recorded
 
 
@@ -245,11 +246,11 @@ def test_a_full_fetch_is_recorded_even_when_it_finds_nothing(monkeypatch):
 
 
 def test_the_known_set_reads_the_marker_within_the_refetch_window():
-    """`_tickers_with_actions` must union the marker table, bounded by
+    """`_tickers_with_actions` must union the ledger, bounded by
     `ACTIONS_FULL_REFETCH_DAYS`, or the full fetch never comes back."""
     import inspect
 
     src = inspect.getsource(ingest._tickers_with_actions)
-    assert "actions_full_history" in src
+    assert "LEDGER_ACTIONS_FULL" in src
     assert "ACTIONS_FULL_REFETCH_DAYS" in src
     assert 7 <= ingest.ACTIONS_FULL_REFETCH_DAYS <= 90
