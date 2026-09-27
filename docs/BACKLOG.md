@@ -1025,6 +1025,19 @@ and rendered on the screener. The coverage-decay figures it carried
 
 ### Operational, small
 
+**`actions` and `shares` stop repeating per-ticker fetches -- BUILT
+2026-09-27 (`fetch_ledger`, migration `c3e7a9d15f40`).** The two steps were
+13.7 and 10.1 of a ~55-minute nightly and had never been profiled.
+Measured causes: `actions` re-fetched the full history of 286 tickers that
+have never split or paid a dividend (no row ever landed, so they looked
+new every night), ~9.5 min at the 0.5/s rate limit; `shares` spent ~575 of
+its 621 seconds on the Yahoo fallback for ~280 tickers, whose cache key
+carries today's date. The ledger records each fetch per `(source, ticker)`;
+`actions` skips a ticker's full refetch for 30 days, `shares` its Yahoo
+call for 7. On the workstation copy the second `shares` run took **19.8 s**
+(277 skipped) against 621 s uncached. Confirm on the next measured
+nightly before quoting a new budget in CLAUDE.md.
+
 ~~**Reserve DHCP leases**~~ — **done 2026-09-01.** All three reserved:
 workstation 192.168.1.14, `wivie` 192.168.1.12, the Pi 192.168.1.30. The
 addresses are written into configuration (the Pi's `pg_hba.conf`,
