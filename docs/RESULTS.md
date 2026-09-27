@@ -8696,3 +8696,80 @@ sat unavailable for two weeks because two unrelated things were quietly
 broken — and the gate was never wired, so nothing forced the question. **A
 finding that names its own test should schedule that test**, not wait for
 someone to ask what a command is for.
+
+## 2026-09-27 — P(stop) cannot be read off `p_adverse_3`, and barely beats its base rate
+
+BACKLOG "Measure `P(stop)`, which is not `p_adverse_*`". No `run_id`: a
+read-only measurement over `wivie`'s research store plus one research fit;
+scripts and logs in `scripts/hist/p-stop-2026-09-27/`.
+
+**1. The ordering the backlog worried about costs little.** 161,642 exited
+in-trade touch events on the live generation (ExitParams: target 5%, stop
+2 x ATR, 5 sessions). P(stop exit) 0.2223 against P(5-day trough crosses
+the stop level) 0.2368. Of the 38,279 trades whose trough crossed it,
+**92.3% exited on the stop**, 2.3% hit the target first, 5.3% timed out.
+
+**2. `p_adverse_3` points the wrong way across volatility.** The stop
+scales with ATR, so across stop-distance quintiles the realised 3% adverse
+rate rises 0.20 -> 0.57 while the realised stop rate falls 0.27 -> 0.18.
+
+**3. Out of sample it has no skill at the stop.** One production fit
+anchored at T = 2025-09-26 (ADR 193 window), scored on the 17,350 exits of
+the following year (stop rate 0.2024):
+
+| estimator | mean | AUC | Brier skill |
+|---|---:|---:|---:|
+| `p_adverse_3`, calibrated | 0.318 | 0.496 | -0.191 |
+| trough CDF at each event's own stop | 0.135 | 0.573 | -0.034 |
+| same, calibrated on the 6-month window | 0.123 | 0.573 | -0.029 |
+| historical stop rate by stop-distance decile, fitted before T | 0.205 | 0.558 | **+0.004** |
+
+The trough head ranks slightly better than anything else but sits ~7
+points low, and its calibration window does not fix that. The historical
+table gets the level exactly and ranks barely. **Nothing reaches useful
+skill: the stop is close to its base rate.**
+
+**What this means.** `research.predict.expected_net_return` stays
+unwired. If it is ever wanted, the honest P(stop) input is the historical
+table, not any published probability. Using `p_adverse_3` would be worse
+than a constant.
+
+## 2026-09-27 — breadth as a feature: a small level and Brier gain on `p_touch` (first seed triple)
+
+BACKLOG 3b's open question: breadth measured against Brier skill and the
+level bias rather than coverage. Scripts and log in
+`scripts/hist/breadth-brier-2026-09-27/`. No `run_id` (research fits,
+read-only against `wivie`).
+
+**Forward log first, and it cannot answer this.** 8,330 resolved
+in-population predictions span 2026-07-14 to 09-18, with breadth only
+between 0.60 and 0.75. It did show something else: **the level bias is a
+long-side problem.** Live generation: longs predicted 0.641, realised
+0.518; shorts 0.598 against 0.603.
+
+**History does vary breadth.** 38,662 labelled in-trade touch cluster heads,
+2010-2026: the realised 3% touch rate falls with breadth on both sides (long
+0.571 at 0.2-0.4 to 0.330 at 0.75-0.85; short 0.390 to 0.232), but breadth
+explains only 7% (long) and 15% (short) of the month-to-month variance.
+
+**The model test.** Production's `fit_and_calibrate` at T = 2025-09-26,
+two arms differing only in two features (`breadth_ma_above`,
+`breadth_chg_60d`, attached as of the last session strictly before the
+signal), scored on the following twelve months:
+
+| field | Brier skill base | + breadth | level gap base | + breadth |
+|---|---:|---:|---:|---:|
+| `p_touch_2` | 0.0033 | 0.0134 | -0.0757 | -0.0614 |
+| `p_touch_3` | 0.0465 | 0.0496 | -0.0567 | -0.0424 |
+| `p_touch_5` | 0.0771 | 0.0828 | -0.0562 | -0.0403 |
+| `p_touch_10` | 0.1298 | 0.1307 | -0.0289 | -0.0211 |
+| `p_adverse_3` | -0.0434 | -0.0432 | +0.1497 | +0.1489 |
+
+`p_touch_3` mean monthly |gap| 0.0775 -> 0.0666, better in 10 of 13
+months. AUC moves +0.001 to +0.005 on `p_touch`, flat to slightly worse on
+`p_adverse`. **Consistent with 2026-09-07: breadth improves calibration a
+little and ranking hardly at all.**
+
+**One seed triple.** 2026-09-05 found ~0.7pp skill differences
+reproducible but never shown to exceed seed choice. A second seed triple is
+queued; adoption waits on it and on the owner.

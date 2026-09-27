@@ -235,6 +235,8 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    because the poller writes events during a session whose breadth cannot
    be computed until its indicators are complete.
 
+   **Run 2026-09-27 (RESULTS):** measured against Brier skill and the level gap, breadth gives a small, consistent `p_touch` gain on one seed triple (`p_touch_3` skill 0.0465 -> 0.0496, level gap -5.7 -> -4.2 points, AUC flat). A second seed triple is queued; adoption is in DECISIONS.md Open items.
+
    **What would revive it:** breadth measured against Brier skill or the
    forward-log bias rather than against coverage. That is a different
    experiment, it is cheap now the forward log is unstalled, and it has
@@ -400,7 +402,7 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    `trough` is *better* shared). Bin resolution does not separate the
    families either: the q25-q75 body spans 3.7-5.0 bins for all six.
 
-5. **Measure `P(stop)`, which is not `p_adverse_*`.** A trade can reach its
+5. **~~Measure `P(stop)`~~ -- MEASURED 2026-09-27 (RESULTS).** 92.3% of trades whose trough crosses the stop exit on it; `p_adverse_3` has no skill at the stop out of sample (AUC 0.496) and points the wrong way across volatility; nothing tested beats the historical stop-rate table by more than +0.4% Brier skill. `expected_net_return` stays unwired; whether to wire it with that table is in DECISIONS.md Open items. Original: **Measure `P(stop)`, which is not `p_adverse_*`.** A trade can reach its
    target before its stop, so the two are not independent and
    `P(stop) != P(trough <= stop)`. The ordering is already in `path`, so
    this is a measurement over existing rows.
