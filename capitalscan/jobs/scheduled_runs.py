@@ -33,6 +33,10 @@ _LA = ZoneInfo("America/Los_Angeles")
 # change whether 19:00 runs.
 SCHEDULE: dict[str, tuple[time, str]] = {
     "nightly": (time(13, 15), "daily"),
+    # ADR 203: the same chain at 05:30 PT, Mon-Fri, for session bars Yahoo
+    # corrected after the 13:15 run. Its own key so it keeps its own row and
+    # its own resume period rather than overwriting the 13:15 slot's.
+    "premarket": (time(5, 30), "daily"),
     "poll": (time(9, 15), "daily"),
     "weekly": (time(0, 0), "weekly"),  # Saturday (moved from Sunday 02:00 in 4271dbb)
     "monthly": (time(3, 0), "monthly"),  # 1st of the month

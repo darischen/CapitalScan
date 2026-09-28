@@ -260,7 +260,8 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 199 | The reliability table is not split by market regime | **Decided 2026-09-22.** BACKLOG item 3c proposed fitting ADR 174's table separately above and below the index's 200-day SMA, since coverage error separates 0.0778 against 0.0236 within 2022. One fit, two calibration schemes, both time directions on `capitalscan_hist`: the split is **worse in both** (mean |bias| 0.0150 -> 0.0185 and 0.0157 -> 0.0237; ECE up both times; Brier flat), winning 10 of 36 field x cell x direction. Cause is sample, not regime -- the below-the-line table fitted on 2024-26 carries `n_eff` 1,090 against the pooled 18,353 and triples that cell's bias. Generalises: any partition of the calibration sample must show its gain net of the `n_eff` it costs. Refutes 3c's fix; does not explain the transition |
 | 200 | Labels cover what path capture priced, and that is not a model change | **Decided 2026-09-23.** `cscan outcomes` resolved **0 predictions on four consecutive nights** with every nightly step `ok`: the forward log waits on `peak_ret_5d`, `peak_labels` wrote it for `in_trade` only, and `path_backfill` prices `(in_trade OR in_watch)`. 2,767 unresolved predictions sat on events with a complete `path`, an entry price and no label. Widens the label predicate to match. **Not the model change ADR 183 declined** -- that entry's own remedy pins the training population on the frame (`features.TRADE_ONLY`, two tests), so labels land on rows training does not select; `config_hash` does not move and cosmetic rows (ADR 178) stay out. Amends ADR 183's rationale, not its decision |
 | 201 | Incremental sync reads a write watermark as well as a date watermark | **Decided 2026-09-25.** `events.modified_at`, stamped by a trigger on any real change (`run_id`-only rewrites excluded), lets `sync --incremental` ship older rows changed since the last `ok` sync. The date watermark alone never saw `peak_labels` (research 6,327 August `peak_ret_10d` labels, serving 4,025). Two disjoint `UNION ALL` arms, because the `OR` form seq-scanned 20 GB. One full sync after deploying heals rows rewritten before the trigger |
-| 202 | The poller skips a stale band; the screener stops borrowing another signal's reversal | **Decided 2026-09-28.** ADI showed a confirmed live reversal that did not exist: Friday's 13:15 fetch returned no 2026-09-25 bar, so Monday's poller read 2026-09-24 as t-1 (5 to 16 tickers every session), and `v_screen_live`'s reversal laterals matched on ticker and date only, so the badge attached to nightly's differently typed event. The poller now skips a ticker whose newest indicator row predates the previous trading day; the reversal laterals match `signal_type` like `fired_at` (`e4b7a2c9d160`); bar windows within 7 days bypass the fetch cache; nightly refetches missing session bars before `indicators`. `run_job.sh` appends to the day's log instead of truncating it |
+| 202 | The poller skips a stale band; the screener stops borrowing another signal's reversal | **Decided 2026-09-28.** ADI showed a confirmed live reversal that did not exist: Friday's 13:15 fetch returned no 2026-09-25 bar, so Monday's poller read 2026-09-24 as t-1 (5 to 16 tickers every session), and `v_screen_live`'s reversal laterals matched on ticker and date only, so the badge attached to nightly's differently typed event. The poller now skips a ticker whose newest indicator row predates the previous trading day; the reversal laterals match `signal_type` like `fired_at` (`e4b7a2c9d160`); bar windows within 7 days bypass the fetch cache; nightly refetches missing session bars before `indicators`. `run_job.sh` appends to the day's log instead of truncating it. **Amended same day:** the bar was not missing but rejected by `open_outside_range` (49 to 101 tickers a session); ADR 203 is the recovery |
+| 203 | A second nightly at 05:30 PT recovers the bars Yahoo corrects after the close | **Decided 2026-09-28 (user).** Yahoo's session bar at 13:15 PT often has an open outside its own high/low; `open_outside_range` rejects it, 49 to 101 tickers a session. Off-schedule runs show Yahoo corrects about 97% by 17:30-19:00 PT with the open unchanged (871 of 871). `capitalscan-premarket.timer` runs the same chain Mon-Fri 05:30 under its own `scheduled_runs` key, sharing nightly's lock, never after 06:30, no catch-up firing. Nightly's `end` becomes the last closed session, so a pre-market run neither fetches an unopened session nor sweeps that morning's poller rows. The rejection rule is unchanged |
 
 ---
 
@@ -10748,6 +10749,18 @@ exactly, and a full sync always converges.
 ## 202. The poller skips a stale band; the screener stops borrowing another signal's reversal
 
 Status: Decided 2026-09-28 (user). Four changes, one defect chain.
+**Amended the same evening: the diagnosis in item 1 and the "Measured"
+paragraph below was wrong. See ADR 203.** The 2026-09-25 bar was not
+missing from the fetch. Yahoo returned it with an open outside its own
+high/low, and `open_outside_range` rejected it (`bar_rejects`, run
+`bars_daily_20260925T201548`). The 63 gaps after the 14:41 rerun were the
+same rejection, not a cache read. The cache bypass and the in-chain
+refetch stay because they are harmless and correct in principle, but
+neither recovers these bars: Yahoo still serves them inconsistent 15
+minutes after the first fetch. ADR 203 recovers them. The poller guard
+and the view change stand as written, and the undercount matters: 49 to
+101 tickers per session were rejected, not 5 to 16. The smaller figure
+counted only tickers that fired.
 
 Context. ADI on 2026-09-28 showed `confluence_high` on the home page with
 no fire time and a "live reversal" badge. All three were wrong in a way
@@ -10814,3 +10827,71 @@ Consequences.
 Cost of being wrong. Low. Each change reverts on its own: the migration
 downgrades to the exact prior view definition, and the other three are
 code.
+
+## 203. A second nightly at 05:30 PT recovers the bars Yahoo corrects after the close
+
+Status: Decided 2026-09-28 (user). Corrects ADR 202's diagnosis.
+
+Context. ADR 202 blamed a missing bar. The bar was rejected. Right after
+the close, Yahoo's session bar often has an open outside its own high and
+low, and `ingest.validate_bars` rejects it under `open_outside_range`
+(invariant 4: drop and log, never repair). Measured from `bar_rejects` and
+`runs` on `wivie`:
+
+- **49 to 101 tickers per session** rejected at the 13:15 PT fetch,
+  2026-09-10 to 2026-09-28. 325 of the rejected tickers are NYSE-listed and
+  35 NASDAQ, which fits the opening auction print arriving late in the
+  consolidated high/low.
+- **The open is right and the range is late.** 871 of 872 rejected bars
+  from 2026-09-10 to 09-25 were accepted by a later run, every one with the
+  same open. In 589 the final high/low is exactly the provisional range
+  stretched to include the open. The other 282 moved about 6 bps further.
+- **Yahoo corrects them the same evening.** On the two days with an
+  off-schedule fetch, 95 of 98 were accepted at 17:30 PT (2026-09-15) and 87
+  of 90 at 19:00 PT (2026-09-11). At 16:00 PT on 2026-09-28, 80 of 89 were
+  still inconsistent.
+
+Every nightly fetches at 13:15 and next at 13:15 the following day, so the
+poller used t-2 bands for all of these tickers in every session.
+
+Decision. Run the nightly chain a second time at **05:30 PT, Mon-Fri**
+(`capitalscan-premarket.timer`, `run_job.sh premarket`, `cscan nightly
+--slot premarket`). The 13:15 run stays: it is the one that sees the
+session's signals, and the 05:30 run is only data catch-up.
+
+- **Its own `scheduled_runs` key**, `premarket` at 05:30 daily, so it
+  neither overwrites the 13:15 row nor inherits its resume period (nightly's
+  period starts at 13:15, so a 05:30 run under that key would always skip).
+- **Nightly's lock**, so the two can never overlap.
+- **Never into the session.** The wrapper refuses to start at or after
+  06:30, the unit has no `Restart=`, the timer has no `Persistent=` or
+  `OnBootSec=`, and `RuntimeMaxSec=105min` kills a run still going at
+  07:15. Measured nightly runs take 37 to 55 minutes, so 05:30 leaves
+  about 25 minutes before the poller loads its bands at 06:45.
+- **Not Saturday.** `weekly` starts Sat 00:00 and runs about 12 hours.
+  Monday's run recovers Friday's session.
+- **`end` is the last closed session** (`cli._nightly_end`): today at or
+  after 16:00 ET, else the previous trading day from `trading_days`, else
+  yesterday. With `date.today()` a pre-market run would have fetched a
+  session that had not traded, reported every ticker as missing its bar,
+  and swept that morning's provisional poller rows from serving.
+
+Why not relax `open_outside_range`. Accepting the provisional bar would
+work (the open is right, and indicators read only high, low and close), but
+it stores a bar the project's own validation calls inconsistent, and it is
+an amendment to invariant 4's enforcement. A second run keeps the rule and
+costs only compute on an idle machine.
+
+Consequences.
+
+- About 97% of the rejected tickers get their t-1 bar and indicator row
+  before the poll. The rest are skipped by ADR 202's poller guard and named
+  in the poll run's `notes`.
+- Serving is synced twice a day. The 05:30 sync ships the recovered bars,
+  indicators and events.
+- The sweep and the in-chain refetch now target the same closed session in
+  both slots.
+
+Cost of being wrong. Low. Disabling the timer restores one run a day, and
+`_nightly_end` returns `date.today()` for every run after the close, which
+is every run the 13:15 slot makes.

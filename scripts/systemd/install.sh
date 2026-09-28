@@ -13,7 +13,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 RUN_USER="${SUDO_USER:-$USER}"
 UNIT_DIR=/etc/systemd/system
-UNITS=(capitalscan-nightly capitalscan-weekly capitalscan-monthly)
+UNITS=(capitalscan-nightly capitalscan-premarket capitalscan-weekly capitalscan-monthly)
 REMOVE=0
 [ "${1:-}" = "--remove" ] && REMOVE=1
 

@@ -4,6 +4,7 @@
 #   scripts/run_job.sh nightly
 #   scripts/run_job.sh weekly
 #   scripts/run_job.sh monthly
+#   scripts/run_job.sh premarket   # nightly's chain at 05:30 PT (ADR 203)
 #
 # The Windows equivalent is scripts/run_job.ps1 -- the two must stay in
 # step. Nothing machine-specific is written in: the repo root is derived
@@ -27,9 +28,27 @@ set -uo pipefail
 
 JOB="${1:-}"
 case "$JOB" in
-  nightly | weekly | monthly) ;;
-  *) echo "usage: $0 <nightly|weekly|monthly>" >&2; exit 2 ;;
+  nightly | weekly | monthly | premarket) ;;
+  *) echo "usage: $0 <nightly|weekly|monthly|premarket>" >&2; exit 2 ;;
 esac
+
+# **`premarket` is nightly's chain, not a job of its own** (ADR 203). It
+# shares nightly's log directory and lock, so the two can never run at
+# once, and records under its own `scheduled_runs` key via `--slot`.
+LOCKJOB="$JOB"
+CMD=("$JOB")
+if [ "$JOB" = premarket ]; then
+  LOCKJOB=nightly
+  CMD=(nightly --slot premarket)
+  # Never start into the session. The poller loads its bands at 06:45, and
+  # a run starting later only competes with it for serving. The unit has no
+  # Persistent= or OnBootSec= for the same reason; this covers a manual
+  # start or a slow boot.
+  if (( 10#$(date +%H%M) >= 630 )); then
+    echo "[premarket] $(date '+%Y-%m-%d %H:%M:%S') past 06:30; not starting into the session" >&2
+    exit 0
+  fi
+fi
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
@@ -38,7 +57,7 @@ PY="$REPO/.venv/bin/python"
 CSCAN="$REPO/.venv/bin/cscan"
 [ -x "$PY" ] || { echo "no venv at $PY -- run 'uv sync' in $REPO" >&2; exit 3; }
 
-LOGDIR="reports/$JOB"
+LOGDIR="reports/$LOCKJOB"
 mkdir -p "$LOGDIR"
 LOG="$LOGDIR/${JOB}_$(date +%Y_%m_%d).log"
 
@@ -46,7 +65,7 @@ LOG="$LOGDIR/${JOB}_$(date +%Y_%m_%d).log"
 # Non-blocking: a losing invocation must not truncate the winner's log or
 # start a second writer. The message goes to stderr because the tee to the
 # day's log is not set up yet.
-exec 9>"$LOGDIR/${JOB}.lock"
+exec 9>"$LOGDIR/${LOCKJOB}.lock"
 if ! flock -n 9; then
   echo "[$JOB] $(date '+%Y-%m-%d %H:%M:%S') another run holds the lock; exiting 0" >&2
   exit 0
@@ -102,7 +121,7 @@ fi
 echo "config ok: $resolved"
 
 # --- run ------------------------------------------------------------
-"$CSCAN" "$JOB"
+"$CSCAN" "${CMD[@]}"
 code=$?
 if [ "$code" -ne 0 ]; then
   echo "=== $JOB FAILED $(date +%H:%M:%S) exit=$code ==="

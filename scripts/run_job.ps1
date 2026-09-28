@@ -34,7 +34,7 @@
 
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('nightly', 'weekly', 'monthly')]
+    [ValidateSet('nightly', 'weekly', 'monthly', 'premarket')]
     [string]$Job
 )
 
@@ -48,7 +48,20 @@ if (-not (Test-Path $py)) { Write-Error "no venv at $py -- run 'uv sync' in $Rep
 
 # One log per day under reports/<job>/. The directory is created if missing
 # so a fresh clone does not lose the run to a path that is not there yet.
-$logDir = Join-Path $RepoRoot "reports\$Job"
+# ADR 203: `premarket` is nightly's chain at 05:30 PT. It shares nightly's
+# log directory and lock (so the two never overlap) and records under its
+# own scheduled_runs key through `--slot`. Mirrors run_job.sh.
+$lockJob = $Job
+$cmdArgs = @($Job)
+if ($Job -eq 'premarket') {
+    $lockJob = 'nightly'
+    $cmdArgs = @('nightly', '--slot', 'premarket')
+    if ((Get-Date).TimeOfDay -ge [TimeSpan]'06:30') {
+        Write-Host "[premarket] $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') past 06:30; not starting into the session"
+        exit 0
+    }
+}
+$logDir = Join-Path $RepoRoot "reports\$lockJob"
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Force $logDir | Out-Null }
 $log = Join-Path $logDir "${Job}_$(Get-Date -Format 'yyyy_MM_dd').log"
 
@@ -57,7 +70,7 @@ $log = Join-Path $logDir "${Job}_$(Get-Date -Format 'yyyy_MM_dd').log"
 # held for the process lifetime; Windows releases it on exit, so no
 # finally block is needed. Done before the log is truncated so a losing
 # invocation cannot blank the winner's log.
-$lockPath = Join-Path $logDir "$Job.lock"
+$lockPath = Join-Path $logDir "$lockJob.lock"
 try {
     $script:jobLock = [System.IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None')
 }
@@ -142,7 +155,7 @@ if ($resolved -ne $expected) {
 # Scoped to the call so real cmdlet errors elsewhere still stop the script.
 $prev = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
-& $cscan $Job 2>&1 | Write-Log
+& $cscan @cmdArgs 2>&1 | Write-Log
 $code = $LASTEXITCODE
 $ErrorActionPreference = $prev
 if ($code -ne 0) {
