@@ -95,6 +95,15 @@ def seeded(engine, monkeypatch):
         ],
         ["ticker", "as_of", "config_hash"],
     )
+    # ADR 202: the poller reads t-1 from `trading_days` and skips a ticker
+    # whose newest indicator row is older. The 2026-07-30 row below is t-1
+    # only if the calendar says so.
+    db_io.upsert(
+        engine,
+        "trading_days",
+        [{"d": date(2026, 7, 30)}, {"d": SIGNAL_DATE}],
+        ["d"],
+    )
     db_io.upsert(
         engine,
         "indicators",

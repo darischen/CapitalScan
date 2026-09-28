@@ -504,6 +504,8 @@ def _patch_nightly_io(monkeypatch):
         "run_earnings",
     ):
         monkeypatch.setattr(ingest, name, lambda *a, **k: None)
+    # ADR 202's session-bar catch-up reads `bars` before `indicators`.
+    monkeypatch.setattr(ingest, "tickers_missing_session", lambda *a, **k: [])
 
 
 def test_nightly_command_threads_resolved_config(monkeypatch, tmp_path):
