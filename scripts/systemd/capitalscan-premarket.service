@@ -1,0 +1,26 @@
+[Unit]
+Description=CapitalScan premarket (nightly's chain again, for bars Yahoo corrected after 13:15)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+# ADR 203. The same chain as capitalscan-nightly, recorded under its own
+# scheduled_runs key. run_job.sh gives it nightly's lock, so the two never
+# overlap, and refuses to start after 06:30.
+#
+# **No Restart=.** nightly retries because a whole day dark is worse than a
+# late run. Here a retry 15 minutes later lands on the 06:45 poller, and a
+# failed premarket costs nothing the 13:15 run does not repair.
+Type=simple
+User={{USER}}
+WorkingDirectory={{REPO}}
+ExecStart={{REPO}}/scripts/run_job.sh premarket
+# Measured nightly runs are 37 to 55 minutes. A premarket still running at
+# 07:15 is killed rather than left syncing into the session.
+RuntimeMaxSec=105min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=capscan-premarket
+
+[Install]
+WantedBy=multi-user.target

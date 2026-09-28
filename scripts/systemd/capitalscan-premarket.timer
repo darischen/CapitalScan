@@ -1,0 +1,19 @@
+[Unit]
+Description=CapitalScan premarket, 05:30 PT before the 06:45 poll
+
+[Timer]
+# ADR 203. Yahoo's session bar right after the close often has an open
+# outside its own high/low, and `open_outside_range` rejects it: 49 to 101
+# tickers a session from 2026-09-10 to 09-28. Yahoo corrects most of them
+# by 17:30 PT (95 of 98 on 09-15, 87 of 90 by 19:00 on 09-11), so a run
+# before the open recovers them before the poller loads its bands.
+#
+# Mon-Fri: Monday's run recovers Friday's session. **Not Saturday**:
+# `weekly` starts Sat 00:00 and runs about 12 hours on `wivie`.
+OnCalendar=Mon,Tue,Wed,Thu,Fri *-*-* 05:30:00
+# **No Persistent= and no OnBootSec=.** A missed 05:30 must not fire when
+# the machine comes back mid-session; the 13:15 nightly covers it.
+Unit=capitalscan-premarket.service
+
+[Install]
+WantedBy=timers.target

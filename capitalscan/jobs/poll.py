@@ -178,8 +178,9 @@ def drop_stale_indicator_rows(
     `_load_indicator_rows` returns each ticker's newest row, which is t-1
     only when last night's bars arrived. When a ticker's settled bar was
     missing, its newest row is t-2, and the poller compared live price
-    against bands one session old. Measured on serving: 5 to 16 tickers per
-    session from 2026-09-15 to 2026-09-28. ADI on 2026-09-28 reported a
+    against bands one session old. The bar goes missing because Yahoo's
+    first post-close bar fails `open_outside_range`: 49 to 101 tickers per
+    session from 2026-09-10 to 2026-09-28 (ADR 203). ADI on 2026-09-28 reported a
     confirmed bear reversal at 392.07 against a 389.24 band. The correct
     band was 392.83, so price was inside it and no reversal existed.
 

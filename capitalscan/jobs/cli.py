@@ -2,8 +2,9 @@
 
 import time
 from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
 import typer
 from rich.console import Console
@@ -3208,10 +3209,59 @@ def positions_list(
     console.print(result.to_string(index=False))
 
 
+# The closing bell in New York. Before it, the current day's session is not
+# a finished session and nightly must not treat it as one (ADR 203).
+_SESSION_CLOSE_ET = dtime(16, 0)
+
+
+def _nightly_end(engine, now_et: datetime) -> date:
+    """The last *closed* session: today after 16:00 ET, else the trading day before.
+
+    **`date.today()` was right only because nightly ran after the close.**
+    The 05:30 PT `premarket` slot (ADR 203) runs before the open, and with
+    `end = today` it would ask Yahoo for a session that has not traded,
+    report every ticker as missing today's bar, and sweep *today's*
+    provisional poller rows from serving -- which, on a run that overran
+    06:45, deletes the morning's live signals.
+
+    Before the close the answer is the previous trading day from the
+    calendar, so Monday 05:30 means Friday. An unreadable or empty calendar
+    falls back to yesterday: a weekend `end` makes nightly skip the price
+    fetchers, which costs one retry and breaks nothing.
+    """
+    today = now_et.date()
+    if now_et.time() >= _SESSION_CLOSE_ET:
+        return today
+    try:
+        from sqlalchemy import text
+
+        with engine.connect() as conn:
+            prev = conn.execute(
+                text("SELECT max(d) FROM trading_days WHERE d < :d"), {"d": today}
+            ).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 - fails toward a harmless weekend end
+        prev = None
+    return prev if prev is not None else today - timedelta(days=1)
+
+
 @app.command()
-def nightly() -> None:
+def nightly(
+    slot: Annotated[
+        str,
+        typer.Option(
+            "--slot",
+            help="scheduled_runs job this run records under: nightly or premarket (ADR 203)",
+        ),
+    ] = "nightly",
+) -> None:
     """Orchestrates the nightly chain (DESIGN §4.12): bars, actions, market,
     shares, earnings-forward, indicators, breadth, events, path capture.
+
+    `--slot premarket` is the same chain at 05:30 PT (ADR 203). It records
+    under its own `scheduled_runs` job so the 13:15 slot keeps its own row
+    and resume period, and `_nightly_end` points it at the last closed
+    session. Any other slot fails at `scheduled_runs.record`, before any
+    work, because `SCHEDULE` has no entry for it.
     """
     from capitalscan.jobs import breadth as br
     from capitalscan.jobs import compute, db_io, ingest, scheduled_runs
@@ -3228,7 +3278,7 @@ def nightly() -> None:
     # Config is still resolved before every `ingest.run_*`/`compute.run_*`
     # call below, so a bad config still aborts before any partial pipeline
     # runs — the property the original fix was for is unchanged.
-    scheduled_runs.record(engine, "nightly")
+    scheduled_runs.record(engine, slot)
     config = _resolve_config_or_exit()
 
     # **Refresh the ticker seed first, so tonight's fetchers see tonight's
@@ -3259,7 +3309,9 @@ def nightly() -> None:
         console.print(f"[yellow]warn[/yellow] ticker refresh skipped: {exc}")
 
     tickers = _resolve_tickers(None)
-    end = date.today()
+    from capitalscan.jobs.poll import _now_et
+
+    end = _nightly_end(engine, _now_et())
     start = end - timedelta(days=5)
 
     # **A reduced pass on a non-trading day, never a blanket skip.**
@@ -3327,7 +3379,7 @@ def nightly() -> None:
             if still:
                 console.print(
                     f"[yellow]warn[/yellow] {len(still)} ticker(s) still lack the "
-                    f"{end.isoformat()} bar; tomorrow's poller will skip them: "
+                    f"{end.isoformat()} bar; the next nightly or premarket run retries them: "
                     f"{' '.join(still)}"
                 )
     compute.run_indicators(
@@ -3577,7 +3629,7 @@ def nightly() -> None:
     # `run_id` as part of this table's contract; both went unwritten until
     # 2026-08-09). `run_id` is the path-capture job's, the last link in the
     # chain, so a reader landing here can follow it into `runs`.
-    scheduled_runs.complete(engine, "nightly", "ok", run_id=path_job.run_id)
+    scheduled_runs.complete(engine, slot, "ok", run_id=path_job.run_id)
 
     # ADR 053's last link: "a nightly export builds the subset locally and
     # upserts to cloud". Skipped visibly rather than silently when the
@@ -3874,7 +3926,7 @@ def monthly() -> None:
 
 @app.command(name="resume-check")
 def resume_check(
-    job: str = typer.Argument(..., help="nightly, weekly, or monthly"),
+    job: str = typer.Argument(..., help="nightly, premarket, weekly, or monthly"),
 ) -> None:
     """Decide whether a scheduled job still needs to run (used by run_job.{sh,ps1}).
 
