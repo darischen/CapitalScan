@@ -260,6 +260,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 199 | The reliability table is not split by market regime | **Decided 2026-09-22.** BACKLOG item 3c proposed fitting ADR 174's table separately above and below the index's 200-day SMA, since coverage error separates 0.0778 against 0.0236 within 2022. One fit, two calibration schemes, both time directions on `capitalscan_hist`: the split is **worse in both** (mean |bias| 0.0150 -> 0.0185 and 0.0157 -> 0.0237; ECE up both times; Brier flat), winning 10 of 36 field x cell x direction. Cause is sample, not regime -- the below-the-line table fitted on 2024-26 carries `n_eff` 1,090 against the pooled 18,353 and triples that cell's bias. Generalises: any partition of the calibration sample must show its gain net of the `n_eff` it costs. Refutes 3c's fix; does not explain the transition |
 | 200 | Labels cover what path capture priced, and that is not a model change | **Decided 2026-09-23.** `cscan outcomes` resolved **0 predictions on four consecutive nights** with every nightly step `ok`: the forward log waits on `peak_ret_5d`, `peak_labels` wrote it for `in_trade` only, and `path_backfill` prices `(in_trade OR in_watch)`. 2,767 unresolved predictions sat on events with a complete `path`, an entry price and no label. Widens the label predicate to match. **Not the model change ADR 183 declined** -- that entry's own remedy pins the training population on the frame (`features.TRADE_ONLY`, two tests), so labels land on rows training does not select; `config_hash` does not move and cosmetic rows (ADR 178) stay out. Amends ADR 183's rationale, not its decision |
 | 201 | Incremental sync reads a write watermark as well as a date watermark | **Decided 2026-09-25.** `events.modified_at`, stamped by a trigger on any real change (`run_id`-only rewrites excluded), lets `sync --incremental` ship older rows changed since the last `ok` sync. The date watermark alone never saw `peak_labels` (research 6,327 August `peak_ret_10d` labels, serving 4,025). Two disjoint `UNION ALL` arms, because the `OR` form seq-scanned 20 GB. One full sync after deploying heals rows rewritten before the trigger |
+| 202 | The poller skips a stale band; the screener stops borrowing another signal's reversal | **Decided 2026-09-28.** ADI showed a confirmed live reversal that did not exist: Friday's 13:15 fetch returned no 2026-09-25 bar, so Monday's poller read 2026-09-24 as t-1 (5 to 16 tickers every session), and `v_screen_live`'s reversal laterals matched on ticker and date only, so the badge attached to nightly's differently typed event. The poller now skips a ticker whose newest indicator row predates the previous trading day; the reversal laterals match `signal_type` like `fired_at` (`e4b7a2c9d160`); bar windows within 7 days bypass the fetch cache; nightly refetches missing session bars before `indicators`. `run_job.sh` appends to the day's log instead of truncating it |
 
 ---
 
@@ -10743,3 +10744,73 @@ Consequences.
 
 Cost of being wrong. Low. Dropping the trigger restores the old behaviour
 exactly, and a full sync always converges.
+
+## 202. The poller skips a stale band; the screener stops borrowing another signal's reversal
+
+Status: Decided 2026-09-28 (user). Four changes, one defect chain.
+
+Context. ADI on 2026-09-28 showed `confluence_high` on the home page with
+no fire time and a "live reversal" badge. All three were wrong in a way
+that looked right:
+
+1. **Yahoo had not published ADI's 2026-09-25 bar when Friday's nightly
+   fetched it** at 13:15 PT. The batch did not fail; it returned history
+   without the last row, so nothing logged a miss. Sunday's nightly skips
+   price fetchers, so no pass refetched it before Monday's session.
+2. **The poller read 2026-09-24 as t-1.** `_load_indicator_rows` takes
+   each ticker's newest row, which is t-1 only when the bar arrived. It
+   compared 392.07 against a 389.24 band and reported a confirmed bear
+   reversal, where the correct band, 392.83, puts price inside it. It
+   also fired `bb_upper_touch` where the settled night wrote
+   `confluence_high`.
+3. **The screener attached that reversal to the wrong row.** The
+   `fired_at` lateral matches `signal_type` (`b7f3c5d21a94`), and the two
+   reversal laterals did not. The type mismatch blanked the timestamp and
+   kept the badge.
+
+Measured on serving before building: 5 to 16 tickers polled against t-2
+bands in every session from 2026-09-15 to 2026-09-28, a different set
+each day. 3 to 28 screener rows per day carried a reversal borrowed from a
+different signal's report, 1 to 5 of them a confirmed one. Today's first
+nightly left 63 of 1,454 tickers without the session bar, and a 14:41
+rerun wrote the same 63 gaps by reading the 13:15 cache files back.
+
+Decision.
+
+- **The poller skips any ticker whose newest indicator row predates the
+  previous trading day** (`poll.drop_stale_indicator_rows`), naming them in
+  the run's `notes`. The previous day comes from the target's
+  `trading_days`, and an empty calendar refuses to start rather than
+  assuming every band is fresh.
+- **`v_screen_live`'s reversal laterals match `r.signal_type IS NULL OR
+  r.signal_type = e.signal_type`**, the same predicate as `fired_at`.
+  Migration `e4b7a2c9d160`.
+- **Bar fetches whose window ends within `RECENT_WINDOW_DAYS` (7) of today
+  bypass the fetch cache**, read and write (`cached(bypass_fn=...)`). No
+  source bump: what the fetcher returns for given arguments is unchanged,
+  and old windows still cache.
+- **Nightly refetches tickers that had yesterday's bar and lack today's**
+  (`ingest.tickers_missing_session`) as the last step before
+  `indicators`, about 14 minutes after the first pass.
+
+Also: `scripts/run_job.sh` truncated the day's log on every run, so the
+19:00 resume-check skip replaced the 13:15 log with a 182-byte notice. It
+appends now, as `run_job.ps1` always did.
+
+Why skip rather than substitute. There is no correct band for a ticker
+whose t-1 bar is missing, and invariant 4 forbids filling one. A skipped
+ticker is a named, bounded loss. A stale band is a wrong signal on the
+surface the reader acts on.
+
+Consequences.
+
+- A skipped ticker fires nothing live that day. Nightly still writes its
+  settled events once the bar arrives, so the screener shows them the
+  next morning without a fire time, which is the truth.
+- The screener shows fewer reversal badges: the borrowed ones go.
+- Nightly spends one extra batch download when a bar is missing and none
+  otherwise.
+
+Cost of being wrong. Low. Each change reverts on its own: the migration
+downgrades to the exact prior view definition, and the other three are
+code.

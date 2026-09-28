@@ -3307,6 +3307,29 @@ def nightly() -> None:
     ingest.run_actions(tickers, engine=engine)
     ingest.run_shares(tickers, engine=engine)
     ingest.run_earnings(tickers, historical=False, forward_days=90, engine=engine)
+    # **A second pass for the session bars Yahoo had not published yet**
+    # (ADR 202). The 13:15 PT fetch lands minutes after the close, and 5 to
+    # 16 tickers a session came back without that day's bar. Nothing
+    # refetched them until the next nightly, after the next session's
+    # poller had already compared live prices against t-2 bands. ~14
+    # minutes of `actions`/`shares`/`earnings` sit between the two passes,
+    # which is the delay this buys. Last before `indicators`, because an
+    # indicator row is only written for a bar that exists.
+    if trading_day:
+        missing = ingest.tickers_missing_session(engine, tickers, end)
+        if missing:
+            console.print(
+                f"nightly: {len(missing)} ticker(s) lack the {end.isoformat()} bar; "
+                f"refetching: {' '.join(missing)}"
+            )
+            ingest.run_bars_daily(missing, start, end, engine=engine)
+            still = ingest.tickers_missing_session(engine, missing, end)
+            if still:
+                console.print(
+                    f"[yellow]warn[/yellow] {len(still)} ticker(s) still lack the "
+                    f"{end.isoformat()} bar; tomorrow's poller will skip them: "
+                    f"{' '.join(still)}"
+                )
     compute.run_indicators(
         tickers, start, end, params=config.indicators, max_workers=1, engine=engine
     )

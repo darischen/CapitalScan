@@ -169,6 +169,58 @@ def _load_indicator_rows(engine: Engine, tickers: list[str]) -> dict[str, pd.Ser
     return {row["ticker"]: row for _, row in df.iterrows()}
 
 
+def drop_stale_indicator_rows(
+    ind_rows: dict[str, pd.Series], expected_ts: date
+) -> tuple[dict[str, pd.Series], list[str]]:
+    """Keep only tickers whose newest indicator row is the expected t-1 (ADR 202).
+
+    **"Latest row" and "t-1" are not the same thing, and the gap is silent.**
+    `_load_indicator_rows` returns each ticker's newest row, which is t-1
+    only when last night's bars arrived. When a ticker's settled bar was
+    missing, its newest row is t-2, and the poller compared live price
+    against bands one session old. Measured on serving: 5 to 16 tickers per
+    session from 2026-09-15 to 2026-09-28. ADI on 2026-09-28 reported a
+    confirmed bear reversal at 392.07 against a 389.24 band. The correct
+    band was 392.83, so price was inside it and no reversal existed.
+
+    Skipping is the only honest option. A stale band produces a wrong
+    signal, and there is no correct band to substitute (invariant 4).
+
+    Returns `(kept, stale_tickers)`, with `stale_tickers` sorted. A row
+    *newer* than `expected_ts` is kept. It means a store ahead of the
+    calendar, which `assert_target_is_current` owns, not a stale band.
+    """
+    kept: dict[str, pd.Series] = {}
+    stale: list[str] = []
+    for ticker, row in ind_rows.items():
+        if pd.Timestamp(row["ts"]).date() < expected_ts:
+            stale.append(ticker)
+        else:
+            kept[ticker] = row
+    return kept, sorted(stale)
+
+
+def _previous_trading_day(engine: Engine, session_date: date) -> date:
+    """The session before `session_date`, from the store's own calendar.
+
+    **Fails closed.** A calendar that cannot answer is not evidence that
+    every band is fresh. Refusing to start names the problem, and polling
+    against unknown-age bands repeats the 2026-09-28 ADI defect on every
+    ticker at once.
+    """
+    with engine.connect() as conn:
+        prev = conn.execute(
+            text("SELECT max(d) FROM trading_days WHERE d < :today"),
+            {"today": session_date},
+        ).scalar_one_or_none()
+    if prev is None:
+        raise RuntimeError(
+            f"trading_days has no session before {session_date.isoformat()}, so "
+            "indicator freshness cannot be checked. Run `cscan calendar` or `cscan sync`."
+        )
+    return cast(date, prev)
+
+
 def _bands_from(ind_row: pd.Series) -> Bands:
     return Bands(
         bb_lower=float(ind_row["bb_lower"]),
@@ -1051,13 +1103,20 @@ def run_poll(
             report.notes = "no in_trade tickers on file"
             return report
 
-        ind_rows = _load_indicator_rows(engine, resolved_tickers)
+        session_date = now_fn().date()
+        ind_rows, stale = drop_stale_indicator_rows(
+            _load_indicator_rows(engine, resolved_tickers),
+            _previous_trading_day(engine, session_date),
+        )
         bands = {t: _bands_from(row) for t, row in ind_rows.items()}
+        # Recorded on the run and the session row, so a ticker that never
+        # fired today can be told apart from one that was never polled.
+        if stale:
+            report.notes = f"skipped {len(stale)} stale-band ticker(s): {' '.join(stale)}"
 
         ticks_expected = max(1, round(SESSION_SECONDS / interval))
         ticks_completed = 0
         consecutive_failures = 0
-        session_date = now_fn().date()
         started_at = now_fn()
 
         watermark = sync.LiveWatermark()

@@ -179,6 +179,24 @@ def _tidy_daily(sub: pd.DataFrame, ticker: str) -> pd.DataFrame:
 _KEY_TICKER_LIMIT = 20
 
 
+# A bar window ending this recently may still be filling in (ADR 202).
+# Yahoo publishes some tickers' settled daily bar minutes to hours after the
+# close; nightly fetches at 13:15 PT. Seven calendar days covers the whole
+# nightly lookback, so no window nightly asks for is ever served from disk.
+RECENT_WINDOW_DAYS = 7
+
+
+def _window_is_recent(tickers: object, start: date, end: date) -> bool:
+    """`bypass_fn` for the bar fetchers: never cache a window still changing.
+
+    On 2026-09-28 the 13:15 PT nightly cached batches missing 63 tickers'
+    session bar. A rerun at 14:41 read those files back and wrote the same
+    63 gaps, though Yahoo had every bar by then. Backfills of old windows
+    still cache, which is what the cache is for (DESIGN §4.2).
+    """
+    return end >= date.today() - timedelta(days=RECENT_WINDOW_DAYS)
+
+
 def _batch_key(tickers: list[str], start: date, end: date) -> str:
     """A cache key for one batch fetch, bounded in length.
 
@@ -224,7 +242,7 @@ def _batch_key(tickers: list[str], start: date, end: date) -> str:
 # future semantic change to what a key means gets the same treatment.
 # `data/cache/yahoo_daily/` (394 MB) and `data/cache/yahoo_hourly/` are now
 # unread and safe to delete.
-@cached(source="yahoo_daily_v2", key_fn=_batch_key)
+@cached(source="yahoo_daily_v2", key_fn=_batch_key, bypass_fn=_window_is_recent)
 def _fetch_daily_batch(tickers: list[str], start: date, end: date) -> pd.DataFrame:
     """One batch, with the partial-batch-failure retry (DESIGN §4.3)."""
     raw = _download_daily(tickers, start, end)
@@ -317,7 +335,7 @@ def _window_key(ticker: str, start: date, end: date) -> str:
 # `_v2` for the same reason as `yahoo_daily_v2` above: `_window_key` is
 # `ticker_start_end` and the exclusive-`end` fix changed what those dates
 # fetch.
-@cached(source="yahoo_hourly_v2", key_fn=_window_key)
+@cached(source="yahoo_hourly_v2", key_fn=_window_key, bypass_fn=_window_is_recent)
 def _fetch_hourly_window(ticker: str, start: date, end: date) -> pd.DataFrame:
     raw = _download_hourly(ticker, start, end)
     if raw.empty:
@@ -441,7 +459,7 @@ def _hourly_batch_key(tickers: list[str], start: date, end: date) -> str:
 # semantic change costs: the `yahoo_daily` fix merged, passed CI, and never
 # ran, because every cached entry answered the post-fix request with the
 # pre-fix result.
-@cached(source="yahoo_hourly_v3", key_fn=_hourly_batch_key)
+@cached(source="yahoo_hourly_v3", key_fn=_hourly_batch_key, bypass_fn=_window_is_recent)
 def _fetch_hourly_window_batch(tickers: list[str], start: date, end: date) -> pd.DataFrame:
     """One 60-day window for a batch, long-form with a `ticker` column.
 

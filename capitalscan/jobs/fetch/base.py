@@ -145,6 +145,7 @@ def cached(
     source: str,
     key_fn: Callable[..., str],
     cache_root: Path | None = None,
+    bypass_fn: Callable[..., bool] | None = None,
 ) -> Any:
     """Cache a fetcher's `DataFrame` result to `data/cache/{source}/{key}.parquet`.
 
@@ -157,11 +158,21 @@ def cached(
     time**, not decoration time — that is what lets tests monkeypatch
     `capitalscan.jobs.fetch.base.CACHE_ROOT` to a tmp directory even though
     fetcher modules apply this decorator at import time.
+
+    `bypass_fn` receives the same arguments and, when it returns True, the
+    call neither reads nor writes the cache (ADR 202). It exists for windows
+    whose answer is still changing: a daily batch ending today, fetched at
+    13:15 PT, came back without the day's bar for 63 of 1,454 tickers on
+    2026-09-28, and every same-day retry read that incomplete file back.
+    Skipping the write alone would not help, because a file written before
+    the bypass existed would still answer.
     """
 
     def decorator(inner: Callable[..., pd.DataFrame]) -> Callable[..., pd.DataFrame]:
         @functools.wraps(inner)
         def wrapper(*args: Any, **kwargs: Any) -> pd.DataFrame:
+            if bypass_fn is not None and bypass_fn(*args, **kwargs):
+                return inner(*args, **kwargs)
             root = cache_root if cache_root is not None else CACHE_ROOT
             key = key_fn(*args, **kwargs)
             path = cache_path(source, key, root)

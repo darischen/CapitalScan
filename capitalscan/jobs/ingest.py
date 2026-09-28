@@ -982,6 +982,34 @@ def run_bars_daily(
     return report
 
 
+def tickers_missing_session(engine: Engine, tickers: Sequence[str], session: date) -> list[str]:
+    """Tickers with a daily bar on the session before `session` and none on it (ADR 202).
+
+    **"Had a bar yesterday" is the denominator**, so a delisted or dead
+    symbol, which has no bar on either day, is not reported as missing.
+    What is left is the case that hurts: a live ticker whose settled bar
+    Yahoo had not published when nightly fetched. Its indicator row for
+    `session` is never written, and tomorrow's poller would otherwise read
+    t-2 as t-1.
+    """
+    if not tickers:
+        return []
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT b.ticker FROM bars b "
+                "WHERE b.interval = '1d' AND b.ticker = ANY(:tickers) "
+                "  AND b.ts = (SELECT max(d) FROM trading_days WHERE d < :s)::timestamp "
+                "             AT TIME ZONE 'UTC' "
+                "  AND NOT EXISTS (SELECT 1 FROM bars c WHERE c.ticker = b.ticker "
+                "      AND c.interval = '1d' AND c.ts = (:s)::timestamp AT TIME ZONE 'UTC') "
+                "ORDER BY b.ticker"
+            ),
+            {"tickers": list(tickers), "s": session},
+        ).scalars()
+        return list(rows)
+
+
 # How far back to look for splits needing reconciliation. A split is only
 # ever mis-served around its ex-date, and re-checking twenty years of
 # history every night would read the whole table to find nothing.

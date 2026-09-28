@@ -52,7 +52,11 @@ if ! flock -n 9; then
   exit 0
 fi
 
-: > "$LOG"
+# **Append, never truncate** (ADR 202). This line was `: > "$LOG"`, so the
+# 19:00 OnCalendar slot, which resume-check skips, emptied the day's real
+# 13:15 log to a 182-byte skip notice every night. Every nightly log on
+# `wivie` from 2026-09-22 to 2026-09-27 held only that notice. run_job.ps1
+# has always appended (`Add-Content`).
 # Everything from here to both the terminal and the day's log.
 exec > >(tee -a "$LOG") 2>&1
 

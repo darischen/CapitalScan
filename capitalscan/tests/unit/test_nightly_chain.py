@@ -90,6 +90,11 @@ def _no_real_nightly_io(monkeypatch):
         lambda **kwargs: ingest.IngestReport(job="tickers", run_id="test-run-id"),
     )
 
+    # The session-bar catch-up (ADR 202) queries `bars` before
+    # `indicators`. Stubbed to report nothing missing, so the chain's
+    # recorded calls are the ones these tests were written against.
+    monkeypatch.setattr(ingest, "tickers_missing_session", lambda *args, **kwargs: [])
+
     # The `next_open` resolution step (joined 2026-09-15) queries `events`
     # directly, a fourth database boundary. Stubbed to report no open
     # positions so the step's `backtest()` call — itself a huge amount of
