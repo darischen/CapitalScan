@@ -1,0 +1,36 @@
+part 2: forward S&P on t-1 state, out of sample 2012-2026
+ h    n  oos_r2  direction_hit
+ 3 3702 -0.0047         0.4827
+ 5 3700 -0.0082         0.4859
+10 3695 -0.0197         0.4806
+train FrameReport(rows=92060, dropped_etf=5486, dropped_missing_sector=0, dropped_no_label=66190, dropped_untrained_type=0, dropped_no_breadth=0)
+W1    FrameReport(rows=19164, dropped_etf=930, dropped_missing_sector=0, dropped_no_label=15032, dropped_untrained_type=0, dropped_no_breadth=0)
+W2    FrameReport(rows=45988, dropped_etf=1604, dropped_missing_sector=0, dropped_no_label=36189, dropped_untrained_type=0, dropped_no_breadth=0)
+steps [575, 409, 616]
+W1: 19,164 rows, transition 2,472
+W2: 45,988 rows, transition 0
+
+bias (mean p - realised), fitted on W2, applied to W1
+arm                           RAW    BASE   STATE  ORACLE
+field       cell                                         
+p_adverse_3 W1 rest        0.0037  0.0501 -0.0213  0.0460
+            W1 transition -0.2106 -0.1616 -0.1655 -0.1394
+p_adverse_5 W1 rest        0.0044  0.0456  0.0340  0.0476
+            W1 transition -0.1669 -0.1240 -0.1168 -0.0885
+p_touch_10  W1 rest       -0.0075  0.0302  0.0599  0.0458
+            W1 transition -0.0190  0.0202  0.0069  0.0441
+p_touch_2   W1 rest       -0.0099  0.0071  0.0339  0.0011
+            W1 transition  0.1096  0.1208  0.1140  0.1074
+p_touch_3   W1 rest       -0.0092  0.0175  0.0689  0.0141
+            W1 transition  0.1073  0.1309  0.1224  0.1165
+p_touch_5   W1 rest        0.0035  0.0372  0.1161  0.0412
+            W1 transition  0.0586  0.0942  0.0852  0.0798
+
+mean over six fields
+              abs_bias                           brier                       
+arm               BASE  ORACLE     RAW   STATE    BASE  ORACLE     RAW  STATE
+cell                                                                         
+W1 rest         0.0313  0.0326  0.0064  0.0557  0.1736  0.1617  0.1729  0.190
+W1 transition   0.1086  0.0960  0.1120  0.1018  0.2169  0.1826  0.2212  0.226
+
+=== TRANSITION DONE ===

@@ -8928,3 +8928,67 @@ shorts do worst on days of high breadth.
 
 Options for the owner are in DECISIONS.md Open items. Every change to which
 shorts fire moves `config_hash`.
+
+## 2026-09-29 — the transition is the long side in January 2022, and t-1 cannot see it
+
+BACKLOG 3c. `scripts/hist/transition-2026-09-29/`, read-only against
+`wivie`'s research store. One six-head fit on 2010-2021 with production's
+24 features (ADR 204), scored on W1 (2022-23) and W2 (2024-26-09-03). The
+transition cell is W1 events whose previous session closed with the S&P
+above its 200-day SMA, in 2022: 2,472 events.
+
+**Part 2 first, because it is the premise.** Out-of-sample R^2 of the S&P's
+forward return on t-1 state (above the 200-day, drawdown from the 252-day
+high, 20-day return, VIX, both breadth columns), refit yearly, 2012-2026:
+
+| horizon | n days | OOS R^2 | direction hit |
+|---|---|---|---|
+| 3 | 3,702 | −0.0047 | 48.3% |
+| 5 | 3,700 | −0.0082 | 48.6% |
+| 10 | 3,695 | −0.0197 | 48.1% |
+
+Worse than the expanding mean at every horizon.
+
+**The cell is one episode.** 38 distinct market days; 1,435 of the 2,472
+events are in January 2022, 432 in February, and the rest are March,
+April and five December days.
+
+**The error is the long side.** Raw model probability against realised,
+Kish-weighted:
+
+| field | longs stated | longs realised | shorts stated | shorts realised | rest of W1 bias |
+|---|---|---|---|---|---|
+| `p_touch_2` | 0.770 | 0.467 | 0.650 | 0.685 | −0.010 |
+| `p_touch_3` | 0.648 | 0.327 | 0.499 | 0.552 | −0.009 |
+| `p_touch_5` | 0.390 | 0.148 | 0.284 | 0.363 | +0.004 |
+| `p_adverse_3` | 0.329 | 0.750 | 0.230 | 0.283 | +0.004 |
+| `p_adverse_5` | 0.183 | 0.531 | 0.091 | 0.123 | +0.004 |
+
+1,321 longs, 1,151 shorts. The S&P moved 2.95% against the longs over the
+5-day window on average, and 1.82% in favour of the shorts.
+
+**Recalibration layers, fitted on W2 and applied to W1**, mean |bias| over
+the six fields:
+
+| layer | inputs beyond `logit(p)` | transition longs | transition shorts | rest of W1 |
+|---|---|---|---|---|
+| RAW | none, no layer | 0.293 | 0.063 | 0.006 |
+| BASE | none | 0.291 | 0.027 | 0.031 |
+| STATE | t-1 market state, raw and signed by side | **0.315** | 0.058 | 0.056 |
+| ORACLE | the S&P's signed move over the label horizon | **0.163** | 0.046 | 0.033 |
+| PATH | its best and worst close in the window | 0.195 | 0.035 | 0.038 |
+| ORACLE_W1 | ORACLE, fitted on W1 outside the cell | 0.155 | 0.057 | 0.000 |
+
+**Reading.** The model promised a bounce to longs that touched the lower
+band in January 2022, and the market kept falling. Handing a layer the
+market's actual move removes about half the error, whether its slope is
+learned in the calm (W2) or in the bear (W1). The same layer given t-1
+state gets worse, and part 2 says why: nothing at t-1 knows the next
+week. The capacity-or-sample question in BACKLOG 3c is answered: the input
+that would fix this does not exist when the signal fires. The remaining
+half, stock moves beyond a beta-1 market move, is not tested here.
+
+**The live long gap is a different thing.** PR #127's first reading had
+longs stated at 61.5% against 39.0% realised over 20 sessions. Across
+2026-08-20 to 2026-09-28 the S&P sat 5.3-8.7% above its 200-day and never
+more than 3.2% below its 252-day high. That is not a transition.
