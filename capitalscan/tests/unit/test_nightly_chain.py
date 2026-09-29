@@ -10,7 +10,8 @@ This test asserts `nightly()` calls `ingest.run_bars_hourly` with the same
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -135,6 +136,17 @@ def test_nightly_calls_run_bars_hourly_with_daily_window(monkeypatch):
     monkeypatch.setattr(
         cli, "_sweep_provisional_poll_rows", lambda *a, **k: 0
     )  # ADR 150; sentinel engine has no .begin()
+    # **Pinned clock.** Since ADR 203 nightly's `end` is the last *closed*
+    # session in ET (`_nightly_end`), not `date.today()`. Against the real
+    # clock this test failed whenever CI ran in the evening Pacific time,
+    # after UTC had rolled over to the next date. A Friday after the close
+    # makes `_nightly_end` return that Friday without touching the database.
+    after_close = datetime(2026, 9, 25, 17, 0, tzinfo=ZoneInfo("America/New_York"))
+    # `nightly` imports `_now_et` from `jobs.poll` inside its body, so the
+    # module attribute is what has to change.
+    from capitalscan.jobs import poll as poll_mod
+
+    monkeypatch.setattr(poll_mod, "_now_et", lambda: after_close)
 
     cli.nightly()
 
@@ -154,7 +166,7 @@ def test_nightly_calls_run_bars_hourly_with_daily_window(monkeypatch):
 
     # Pin the actual window too, so a future refactor that changes the
     # lookback silently can't slip through just because start == end holds.
-    end = date.today()
+    end = date(2026, 9, 25)
     assert daily_start == end - timedelta(days=5)
     assert daily_end == end
 

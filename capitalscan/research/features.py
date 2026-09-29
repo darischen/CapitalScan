@@ -104,7 +104,21 @@ RAW_FEATURE_COLS: tuple[str, ...] = (
 #: reading a disabled constant as an invitation.
 DERIVED_FEATURE_COLS: tuple[str, ...] = ("k_minus_d", "mcap_log")
 
-FEATURE_COLS: tuple[str, ...] = RAW_FEATURE_COLS + DERIVED_FEATURE_COLS
+#: **Market breadth, as of the previous trading session (ADR 204).** One
+#: value per day, shared by every signal that day. Read from `market_days`
+#: for exactly the last `trading_days` session before `signal_date`, never
+#: "the latest row available": a day `cscan breadth` did not write stays
+#: missing instead of being forward-filled from an older one (invariant 4),
+#: and the frame builders drop and count such rows. t-1 because a touch
+#: fires intraday, before that day's breadth exists (invariant 3).
+#:
+#: Measured 2026-09-27 on two seed triples (RESULTS): every `p_touch` field
+#: gains Brier skill (`p_touch_3` about +0.003, twice seed noise) and the
+#: level gap shrinks 1-1.5 points; AUC flat; `p_adverse` flat to slightly
+#: worse. Adopted on the owner's call that small calibration gains compound.
+MARKET_FEATURE_COLS: tuple[str, ...] = ("breadth_ma_above", "breadth_chg_60d")
+
+FEATURE_COLS: tuple[str, ...] = RAW_FEATURE_COLS + DERIVED_FEATURE_COLS + MARKET_FEATURE_COLS
 
 #: `sector` and `signal_type` are the categoricals. DESIGN §7.3 excludes
 #: `ticker` identity deliberately: 60 names over 40k events permits
@@ -273,6 +287,10 @@ class FrameReport:
     #: on. Counted rather than silently filtered, because the number going
     #: up means training and serving have drifted apart.
     dropped_untrained_type: int = 0
+    #: Rows with no breadth for the previous session (ADR 204). Non-zero
+    #: means `cscan breadth` did not run for that day; the rows are dropped,
+    #: never filled from an older session.
+    dropped_no_breadth: int = 0
 
 
 # **`sector` is the one column not read from the event row**, and the
@@ -322,6 +340,11 @@ SELECT {cols}
        ORDER BY u.as_of DESC
        LIMIT 1
   ) u ON TRUE
+  LEFT JOIN LATERAL (
+      SELECT m.breadth_ma_above, m.breadth_chg_60d
+        FROM market_days m
+       WHERE m.ts = (SELECT max(td.d) FROM trading_days td WHERE td.d < e.signal_date)
+  ) mb ON TRUE
  WHERE e.config_hash = :chash
    AND e.entry_kind = :entry_kind
    {universe_filter}
@@ -339,8 +362,10 @@ def _select_columns() -> tuple[str, ...]:
     exists, is spelled correctly, and is empty is exactly how both of these
     were nearly shipped as all-NULL features.
     """
-    names = dict.fromkeys(META_COLS + RAW_FEATURE_COLS + LABEL_COLS + ("mcap_usd",))
-    source = {"sector": "t", "mcap_usd": "u"}
+    names = dict.fromkeys(
+        META_COLS + RAW_FEATURE_COLS + MARKET_FEATURE_COLS + LABEL_COLS + ("mcap_usd",)
+    )
+    source = {"sector": "t", "mcap_usd": "u"} | {c: "mb" for c in MARKET_FEATURE_COLS}
     return tuple(f"{source[n]}.{n} AS {n}" if n in source else f"e.{n}" for n in names)
 
 
@@ -448,6 +473,7 @@ def build_training_frame(
     if require_labels:
         kept = kept.dropna(subset=list(LABEL_COLS)).reset_index(drop=True)
     dropped_no_label = before - len(kept)
+    kept, dropped_no_breadth = _drop_missing_breadth(kept)
 
     kept = _coerce_boolean_features(kept)
     kept = _add_derived(kept)
@@ -456,8 +482,20 @@ def build_training_frame(
         dropped_etf=len(etf),
         dropped_missing_sector=len(missing),
         dropped_no_label=dropped_no_label,
+        dropped_no_breadth=dropped_no_breadth,
     )
     return kept, report
+
+
+def _drop_missing_breadth(frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Drop rows with no previous-session breadth, and count them (ADR 204).
+
+    Dropped, never imputed: invariant 4, and a mean-filled breadth on a day
+    the nightly failed would look like an ordinary market to the model.
+    """
+    before = len(frame)
+    kept = frame.dropna(subset=list(MARKET_FEATURE_COLS)).reset_index(drop=True)
+    return kept, before - len(kept)
 
 
 def restrict_to_trained_types(
@@ -557,6 +595,7 @@ def build_serving_frame(
     # cannot drift: when stochastic rows start carrying labels they enter
     # training first and become predictable second, in that order.
     kept, dropped_untrained = restrict_to_trained_types(kept, trained_types)
+    kept, dropped_no_breadth = _drop_missing_breadth(kept)
 
     return kept, FrameReport(
         rows=len(kept),
@@ -564,6 +603,7 @@ def build_serving_frame(
         dropped_missing_sector=len(missing),
         dropped_no_label=0,
         dropped_untrained_type=dropped_untrained,
+        dropped_no_breadth=dropped_no_breadth,
     )
 
 

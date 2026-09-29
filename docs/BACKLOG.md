@@ -204,7 +204,7 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    gains. **Do not retry index-state features.** Full numbers in
    `RESULTS.md`.
 
-3b. **~~Ship the two breadth features~~ -- RETIRED 2026-09-24, owner's
+3b. **~~Ship the two breadth features~~ -- ADOPTED 2026-09-28 as ADR 204** (owner), after the Brier and level test this entry asked for replicated on two seed triples (RESULTS 2026-09-27). Retired 2026-09-24 on a coverage argument; the history below is kept. Original heading: **Ship the two breadth features -- RETIRED 2026-09-24, owner's
    call. Its headline benefit was obsolete one day after it was written.**
 
    The claim was that `breadth_ma_above` and `breadth_mean_dd` take 30
@@ -402,7 +402,7 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    `trough` is *better* shared). Bin resolution does not separate the
    families either: the q25-q75 body spans 3.7-5.0 bins for all six.
 
-5. **~~Measure `P(stop)`~~ -- MEASURED 2026-09-27 (RESULTS).** 92.3% of trades whose trough crosses the stop exit on it; `p_adverse_3` has no skill at the stop out of sample (AUC 0.496) and points the wrong way across volatility; nothing tested beats the historical stop-rate table by more than +0.4% Brier skill. `expected_net_return` stays unwired; whether to wire it with that table is in DECISIONS.md Open items. Original: **Measure `P(stop)`, which is not `p_adverse_*`.** A trade can reach its
+5. **~~Measure `P(stop)`~~ -- MEASURED 2026-09-27 (RESULTS); wiring it DEFERRED, LOW PRIORITY (owner, 2026-09-28).** 92.3% of trades whose trough crosses the stop exit on it; `p_adverse_3` has no skill at the stop out of sample (AUC 0.496) and points the wrong way across volatility; nothing tested beats the historical stop-rate table by more than +0.4% Brier skill. `expected_net_return` stays unwired; whether to wire it with that table is in DECISIONS.md Open items. Original: **Measure `P(stop)`, which is not `p_adverse_*`.** A trade can reach its
    target before its stop, so the two are not independent and
    `P(stop) != P(trough <= stop)`. The ordering is already in `path`, so
    this is a measurement over existing rows.

@@ -262,6 +262,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 201 | Incremental sync reads a write watermark as well as a date watermark | **Decided 2026-09-25.** `events.modified_at`, stamped by a trigger on any real change (`run_id`-only rewrites excluded), lets `sync --incremental` ship older rows changed since the last `ok` sync. The date watermark alone never saw `peak_labels` (research 6,327 August `peak_ret_10d` labels, serving 4,025). Two disjoint `UNION ALL` arms, because the `OR` form seq-scanned 20 GB. One full sync after deploying heals rows rewritten before the trigger |
 | 202 | The poller skips a stale band; the screener stops borrowing another signal's reversal | **Decided 2026-09-28.** ADI showed a confirmed live reversal that did not exist: Friday's 13:15 fetch returned no 2026-09-25 bar, so Monday's poller read 2026-09-24 as t-1 (5 to 16 tickers every session), and `v_screen_live`'s reversal laterals matched on ticker and date only, so the badge attached to nightly's differently typed event. The poller now skips a ticker whose newest indicator row predates the previous trading day; the reversal laterals match `signal_type` like `fired_at` (`e4b7a2c9d160`); bar windows within 7 days bypass the fetch cache; nightly refetches missing session bars before `indicators`. `run_job.sh` appends to the day's log instead of truncating it. **Amended same day:** the bar was not missing but rejected by `open_outside_range` (49 to 101 tickers a session); ADR 203 is the recovery |
 | 203 | A second nightly at 05:30 PT recovers the bars Yahoo corrects after the close | **Decided 2026-09-28 (user).** Yahoo's session bar at 13:15 PT often has an open outside its own high/low; `open_outside_range` rejects it, 49 to 101 tickers a session. Off-schedule runs show Yahoo corrects about 97% by 17:30-19:00 PT with the open unchanged (871 of 871). `capitalscan-premarket.timer` runs the same chain Mon-Fri 05:30 under its own `scheduled_runs` key, sharing nightly's lock, never after 06:30, no catch-up firing. Nightly's `end` becomes the last closed session, so a pre-market run neither fetches an unopened session nor sweeps that morning's poller rows. The rejection rule is unchanged |
+| 204 | Market breadth enters the model as previous-session features | **Decided 2026-09-28 (owner).** `breadth_ma_above` and `breadth_chg_60d`, read for exactly the previous trading session (t-1, never forward-filled; rows without it dropped and counted). Two seed triples: every `p_touch` field gains Brier skill, level gap 1-1.5 pts smaller, AUC flat, `p_adverse` flat to slightly worse. The published artifact goes stale on deploy by design: refit and publish before pulling the Pi |
 
 ---
 
@@ -4931,8 +4932,8 @@ that one logs whatever still gets through.
 
 | Item | Options | Current lean |
 |---|---|---|
-| **Add breadth as a model feature** (2026-09-27) | A: adopt `breadth_ma_above` and `breadth_chg_60d` at t-1 as features. B: leave them out | **Owner's call; replicated on two seed triples.** Every `p_touch` field gains (`p_touch_3` skill +0.003, about twice seed noise; level gap 1-1.5 points smaller; AUC flat). `p_adverse` is flat on one triple and worse on the other (`p_adverse_3` -0.0425 -> -0.0535). Adopting is a model change: two columns resolved at t-1 for the live path, a feature-list edit, a refit. Lean A only if the screener's `p_touch` level matters more than the adverse fields |
-| **Wire `P(stop)` into `expected_net_return`** (2026-09-27) | A: leave it unwired. B: use the historical stop-rate table by stop-distance decile. C: use the trough head's CDF at each event's stop | **A until a surface wants an expected value.** Nothing beats the historical table by more than +0.4% Brier skill, and `p_adverse_3` is worse than a constant (RESULTS 2026-09-27). If one is wanted, B |
+| ~~**Add breadth as a model feature**~~ (2026-09-27) | A: adopt `breadth_ma_above` and `breadth_chg_60d` at t-1 as features. B: leave them out | **Resolved: A, ADR 204 (owner, 2026-09-28).** |
+| **Wire `P(stop)` into `expected_net_return`** (2026-09-27) | A: leave it unwired. B: use the historical stop-rate table by stop-distance decile. C: use the trough head's CDF at each event's stop | **Deferred, low priority (owner, 2026-09-28).** Not wired: a small feature in the predictions modal is not worth a level-biased expected return. If revisited, use the historical table (B) |
 | ~~**`cscan nightly` never ingests the session it runs after**~~ | Pass `end + 1 day` to the fetcher, or make `_download_daily`'s `end` inclusive to match every other date range in the codebase | **Resolved 2026-08-17 (`b50afa1`): the fetcher passes `end + 1 day`, since yfinance's `end` is exclusive.** Audited 2026-09-26: the 2026-09-25 nightly ingested bars through 2026-09-25 |
 | ~~**`v_screen` carries prediction columns that can never fill**~~ (2026-09-25) | A: retire the `next_open` grain -- drop `v_screen` and `grain` from `screen_signals`, leaving `v_screen_live` as the one feed. B: keep the grain, drop the five dead prediction columns from `v_screen` (a `DROP VIEW` + recreate, since `CREATE OR REPLACE` cannot remove columns). C: join the prediction of the same signal's `touch` event, so a `next_open` row shows the model's number -- but beside an outcome measured from a different entry | **Resolved: B + C, owner 2026-09-25.** Migration `f4a9c2e71b58` drops the eleven dead columns and adds the same signal's `touch` prediction as `touch_p_touch_2/3/5/10`, `touch_p_adverse_3`, `touch_ci_low/high`, `touch_n_eff`, `touch_model_version`, `touch_calibration_json`. The prefix keeps a touch-entry probability from reading as a forecast of the row's `next_open` outcome. Measured on the workstation copy: row count unchanged (72,861), 564 rows filled (all its predictions cover), values equal `v_screen_live`'s for the same signal, undated feed 1.55 -> 1.15 s |
 | ~~**`v_forward` exposes probabilities with no interval or q-value**~~ | Add `cell_ci_low`/`cell_ci_high`/`cell_q_value` to the view, or have the model carry its own interval | **Resolved 2026-09-27, migration `b6d1e8f30a27`.** `v_forward` projects `n_eff` (`calib_n_eff`), `ci_low` and `ci_high` from each prediction, and `q_value` as NULL (one calibrated probability is not a hypothesis test). On the workstation copy all 32,807 rows carry the companions and every `p_touch_3` lies inside its own interval. `KNOWN_GAPS` is empty |
@@ -10895,3 +10896,46 @@ Consequences.
 Cost of being wrong. Low. Disabling the timer restores one run a day, and
 `_nightly_end` returns `date.today()` for every run after the close, which
 is every run the 13:15 slot makes.
+
+## 204. Market breadth enters the model as previous-session features
+
+Status: Decided 2026-09-28 (owner). Supersedes BACKLOG 3b's retirement.
+
+Decision. `breadth_ma_above` and `breadth_chg_60d` join the model's features
+(`features.MARKET_FEATURE_COLS`), read from `market_days` for exactly the
+last `trading_days` session before `signal_date`. Rows with no breadth for
+that session are dropped and counted (`FrameReport.dropped_no_breadth`),
+never filled from an older session.
+
+Evidence (RESULTS 2026-09-27). Production's refit at T = 2025-09-26, scored
+on the following twelve months, on two seed triples: every `p_touch` field
+gains Brier skill (`p_touch_3` +0.003, about twice the base arm's
+seed-to-seed difference), the `p_touch_3` level gap shrinks 1-1.5 points,
+and the monthly level miss falls in 10 of 13 months. AUC is flat.
+`p_adverse` is flat on one triple and worse on the other
+(`p_adverse_3` -0.0425 -> -0.0535).
+
+Why adopted on a small gain. The owner's reasoning: small calibration gains
+compound across building blocks, and breadth is already computed every
+night (`cscan breadth` in `nightly` since 2026-09-24, ~4 s) and was read by
+nothing. The adverse cost is the known risk and is watched through the
+weekly refit's gate and the forward log.
+
+Why t-1 and exact. A touch fires intraday, before that day's breadth exists
+(invariant 3). "The latest row before the signal" would silently reuse an
+older day whenever a nightly failed, which is a forward fill (invariant 4);
+the exact previous session makes that day's rows drop visibly instead.
+
+Consequences.
+
+- `features.FEATURE_COLS` goes from 22 to 24. `config_hash` does not move:
+  the feature list is a module constant, like `TRAINING_ENTRY_KIND`
+  (ADR 177).
+- **The published artifact goes stale the moment this code is deployed**,
+  by design: `jobs/artifact.py` refuses a model whose feature list does not
+  match the running code. Deploy order: research machine first, refit and
+  publish (`cscan predict --publish`), then pull the Pi. The Pi pulled
+  first would refuse the old artifact and score nothing.
+- The live path needs yesterday's breadth on serving before the session.
+  The nightly computes it and `cscan sync` ships `market_days`, so it is
+  there by ~14:00 the previous day.
