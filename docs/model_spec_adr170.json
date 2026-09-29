@@ -50,7 +50,7 @@
   "ensemble": "mean of per-seed pmfs, then invert (NOT mean of quantiles)",
   "selection": "median best-step across the purged walk-forward ladder at horizon_days=10, then refit on all of train",
   "features": {
-    "n": 22,
+    "n": 24,
     "cols": [
       "bb_pctb",
       "bb_width_pct",
@@ -73,7 +73,9 @@
       "signal_type",
       "sector",
       "k_minus_d",
-      "mcap_log"
+      "mcap_log",
+      "breadth_ma_above",
+      "breadth_chg_60d"
     ],
     "categorical": [
       "sector",
@@ -85,6 +87,9 @@
     ],
     "removed": {
       "breach_depth": "ADR 177, 2026-09-08. Read the signal day's LOW against the t-1 band -- known to a `next_open` entry, not to a `touch` entry, so look-ahead once the convention changed (invariant 3). Worth 0.0003 AUC where it was legal."
+    },
+    "added": {
+      "breadth_ma_above, breadth_chg_60d": "ADR 204, 2026-09-28. Market breadth from market_days for exactly the previous trading session (t-1, never forward-filled; rows without it are dropped and counted). Replicated on two seed triples: every p_touch field gains Brier skill (p_touch_3 ~+0.003), level gap 1-1.5 pts smaller, AUC flat, p_adverse flat to slightly worse (RESULTS 2026-09-27)."
     }
   },
   "grid": {

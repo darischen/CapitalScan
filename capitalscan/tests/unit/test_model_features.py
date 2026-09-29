@@ -189,7 +189,41 @@ def test_twenty_raw_plus_two_derived():
     # also worth 0.0003 AUC where it was legal, so nothing measurable went
     # with it. RESULTS 2026-09-08.
     assert len(feat.DERIVED_FEATURE_COLS) == 2
-    assert len(feat.FEATURE_COLS) == 22
+    # **Plus two market-breadth features on 2026-09-28 (ADR 204).** Read
+    # off `market_days` for the previous session, not off the event row.
+    assert feat.MARKET_FEATURE_COLS == ("breadth_ma_above", "breadth_chg_60d")
+    assert len(feat.FEATURE_COLS) == 24
+
+
+class TestBreadthIsThePreviousSessionExactly:
+    """ADR 204. Breadth is joined at t-1 (a touch fires before the day's
+    breadth exists) and for exactly that session: a day `cscan breadth`
+    missed must stay missing, not be forward-filled (invariant 4)."""
+
+    def test_the_join_names_the_previous_trading_session(self):
+        sql = " ".join(feat._SQL.split())
+        assert "FROM market_days m" in sql
+        assert "m.ts = (SELECT max(td.d) FROM trading_days td WHERE td.d < e.signal_date)" in sql
+        assert "<= e.signal_date" not in sql.split("FROM market_days m", 1)[1].split(") mb")[0]
+
+    def test_the_columns_come_from_the_market_lateral(self):
+        cols = feat._select_columns()
+        for c in feat.MARKET_FEATURE_COLS:
+            assert f"mb.{c} AS {c}" in cols
+
+    def test_a_missing_day_is_dropped_and_counted_not_filled(self):
+        import pandas as pd
+
+        frame = pd.DataFrame(
+            {
+                "breadth_ma_above": [0.6, None, 0.5],
+                "breadth_chg_60d": [0.01, 0.02, None],
+                "x": [1, 2, 3],
+            }
+        )
+        kept, dropped = feat._drop_missing_breadth(frame)
+        assert dropped == 2
+        assert kept["x"].tolist() == [1]
 
 
 def test_no_duplicate_features():
