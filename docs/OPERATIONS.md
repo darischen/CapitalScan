@@ -1762,6 +1762,13 @@ If a re-run fails the same way twice on a branch that touched no web
 file, then it is not transient and the font dependency itself is worth
 looking at.
 
+**Fixed at the source 2026-09-27.** It recurred on 09-25 and 09-27,
+the second time on `main` after a merge that touched no web file. The fonts
+are now committed woff2 files loaded with `next/font/local`
+(`web/app/fonts/`, PR #115), so no build fetches from Google and this
+failure mode is gone. If the same `TypeError` returns, something re-added a
+Google font.
+
 **The Vercel preview check is separate and does not re-run with it.**
 `gh run rerun` covers the GitHub Actions jobs only, so the Vercel row can
 stay red against a deployment that failed for the same reason. On a

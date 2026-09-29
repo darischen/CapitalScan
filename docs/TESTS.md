@@ -2111,6 +2111,8 @@ original wording is kept beneath each.
   `peak` (`p_touch_*`) and `trough` (`p_adverse_*`) reach a surface;
   `terminal` backs only `q05..q95`, which nothing displays. **Met**: peak
   10/10, trough 10/10, terminal 6/10; in-population Brier skill 0.079.
+  (The 6/10 is the fixed 2010-21 split. On ADR 193's expanding window at
+  T = 2025-09-26, terminal covers 10/10; RESULTS 2026-09-27.)
   *(was: "Model beats cell-lookup Brier score on validation, or lookup
   ships alone" — silent on which population, and a pooled figure hid an
   inversion between the displayed and undisplayed families)*

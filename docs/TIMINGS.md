@@ -114,7 +114,9 @@ time and the runs in that window differ in more than one variable.
   quoting one.
 - `cscan weekly` genuinely is ~36 min: it calls `run_backtest` and
   deliberately skips the harness (`cli.py::weekly` docstring). Do not read a
-  weekly duration as a `cscan backtest` duration.
+  weekly duration as a `cscan backtest` duration. **Stale since the chunked
+  compute (2026-09-13) and the weekly refit (ADR 184):** the 2026-09-26
+  weekly on `wivie` took **12h22m**. See CLAUDE.md's budget table.
 - **Never run `cscan universe --quarter` while a backtest is running.** Not
   locking -- MVCC handles that -- but determinism: workers resolving
   eligibility against a `universe` that changes mid-run produce different
