@@ -16,6 +16,23 @@ deleting the entry loses nothing.
 
 # HIGHEST PRIORITY
 
+## Next session: check the first scheduled runs on the ADR 204 model
+
+Added 2026-09-28. The breadth model (`adr175-f183b0f5-8528fa5`) was
+published at 22:01 PT and has not yet been used by a scheduled run. Check:
+
+- the 05:30 PT premarket nightly on 2026-09-29 (ADR 203): every step `ok`,
+  `predict` scored with no `StaleArtifact`, and the frame reports
+  `dropped_no_breadth = 0`;
+- the Pi's live session that day: `journalctl -u capitalscan-poller
+  --since today` shows `cscan predict --serving` passes writing new rows
+  under the new model version;
+- the 13:15 PT nightly: same checks, plus `actions` ~3.6 min and `shares`
+  ~18 s holding.
+
+Delete this entry once all three pass.
+
+
 ## The Pi must be pulled LAST across a `config_hash` change
 
 Written 2026-09-10 while sequencing the bull-reversal rebuild, before it
