@@ -1,0 +1,33 @@
+exit mix and payoffs by side
+exit_reason  stoch_80   stop  target  timeout  upper_band
+side                                                     
+long            0.006  0.221   0.243    0.510       0.021
+short           0.003  0.224   0.156    0.598       0.020
+side           long   short
+exit_reason                
+stoch_80     0.0329  0.0337
+stop        -0.0557 -0.0442
+target       0.0540  0.0535
+timeout      0.0019 -0.0011
+upper_band   0.0329  0.0322
+cost (gross - net): side
+long     0.00060
+short    0.00067
+dtype: float64
+
+day-clustered 95% intervals
+  short net                            -0.147% [-0.208, -0.086] n=91,413 days=3,974
+  short market component               -0.315% [-0.384, -0.245] n=91,413 days=3,974
+  short hedged                         +0.168% [+0.117, +0.218] n=91,413 days=3,974
+  long net                             +0.264% [+0.098, +0.430] n=70,315 days=3,790
+  long hedged                          +0.389% [+0.272, +0.505] n=70,315 days=3,790
+  short net, SPX above 200d            -0.167% [-0.229, -0.105] n=85,251 days=3,365
+  short net, SPX below 200d            +0.126% [-0.175, +0.427] n=6,162 days=609
+  short hedged, SPX above 200d         +0.137% [+0.088, +0.187] n=85,251 days=3,365
+  short net, bear_close_above_upper    +0.471% [+0.337, +0.606] n=4,699 days=1,816
+  short net, bb_upper_touch            -0.260% [-0.333, -0.187] n=34,753 days=3,738
+  short net, confluence_high           -0.128% [-0.196, -0.059] n=51,961 days=3,662
+  long net, bull_close_below_lower     +1.644% [+1.228, +2.061] n=3,968 days=1,347
+
+shorts fired with SPX above its 200d: 0.933
+mean SPX move during short holds: +0.315%

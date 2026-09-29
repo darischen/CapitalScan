@@ -8883,3 +8883,48 @@ split `terminal` fails (5/10); on ADR 193's expanding window at
 T = 2025-09-26 it passes 10/10. The stale training window, not the model,
 was the `terminal` failure. `model_spec_adr170.json` records this under
 `remeasured_2026_09_27`.
+
+## 2026-09-29 — the short book loses to market drift, not to its signal
+
+BACKLOG item 10. `scripts/hist/short-book-2026-09-29/`: `export.sql` read
+`wivie` read-only, `short_book.py` reproduces every figure below
+(`run.log`). Every exited, in-trade, touch-entry event on the live
+generation `f183b0f5209a4677`, 161,728 trades. The market component is what
+the S&P alone paid that side from the close before the signal to the exit
+close; hedged is `net_ret` minus it, a beta-1 approximation. Intervals are
+95%, clustered by signal date.
+
+| | mean net | 95% CI | n |
+|---|---|---|---|
+| short, net | **−0.147%** | −0.208, −0.086 | 91,413 |
+| short, market component | −0.315% | −0.384, −0.245 | |
+| short, hedged | **+0.168%** | +0.117, +0.218 | |
+| long, net | +0.264% | +0.098, +0.430 | 70,315 |
+| long, hedged | +0.389% | +0.272, +0.505 | |
+
+**The stock selection works on both sides. The short side pays the
+market's drift**, 0.315% a trade, and that is twice its selection edge.
+
+**93.3% of shorts fire with the S&P above its 200-day.** There they lose
+0.167% net; below it they make +0.126% (−0.175, +0.427; n=6,162, 609 days),
+an interval too wide to act on alone.
+
+| short entry | net | 95% CI | n |
+|---|---|---|---|
+| `bear_close_above_upper` | **+0.471%** | +0.337, +0.606 | 4,699 |
+| `confluence_high` | −0.128% | −0.196, −0.059 | 51,961 |
+| `bb_upper_touch` | −0.260% | −0.333, −0.187 | 34,753 |
+
+The close-confirmed short is the only profitable short entry, the mirror of
+the long side, where `bull_close_below_lower` makes **+1.644%** (+1.228,
++2.061; n=3,968).
+
+**Not the cause:** costs (0.067% short against 0.060% long) and stops (22.4%
+against 22.1%). The difference is targets, hit 15.6% of the time short
+against 24.3% long, and timeouts, 59.8% against 51.0%: a short waits for a
+3% fall in a rising market and runs out of time. The pattern holds in every
+split but validate (2022-23, a bear market), where shorts made +0.13%, and
+shorts do worst on days of high breadth.
+
+Options for the owner are in DECISIONS.md Open items. Every change to which
+shorts fire moves `config_hash`.

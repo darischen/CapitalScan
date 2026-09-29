@@ -866,6 +866,14 @@ each depends on the one above it.
   events against +0.233% over 62,271 longs, with stops firing at the same
   rate (0.219 vs 0.215) but targets at half (0.116 vs 0.198). A strategy
   question, measurable independently of any model.
+  **MEASURED 2026-09-29: it loses to market drift, not to its signal.**
+  On 91,413 exited in-trade touch shorts (live generation), the S&P rose
+  0.315% on average across each hold; strip that out with a beta-1 hedge
+  and the short book earns **+0.168%** [+0.117, +0.218], day-clustered.
+  93% of shorts fire with the S&P above its 200-day. `bear_close_above_upper`
+  alone makes **+0.471%** net; `bb_upper_touch` loses 0.260%. Costs match
+  the long side. Options A-D for the owner are in DECISIONS.md Open items;
+  every one but D moves `config_hash`. RESULTS 2026-09-29.
 
 ### Where Session 25 left off
 
