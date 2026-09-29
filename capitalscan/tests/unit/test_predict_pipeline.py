@@ -174,6 +174,20 @@ class TestTheCaveatTravels:
             assert claim in copy, f"the UI caveat dropped '{claim}'"
 
 
+class TestTheRealisedRateConstantsAgree:
+    """The web keeps its own copy of the trailing-rate window and floor, so
+    the modal need not wait on a round trip; this pins the copy to
+    `core.config.ServingParams`, the single source (invariant 9)."""
+
+    def test_the_typescript_constants_match_the_config(self) -> None:
+        from capitalscan.core.config import ServingParams
+
+        ts = (REPO / "web" / "lib" / "reliability.ts").read_text(encoding="utf-8")
+        sp = ServingParams()
+        assert f"REALISED_RATE_SESSIONS = {sp.realised_rate_sessions};" in ts
+        assert f"REALISED_RATE_MIN_N_EFF = {sp.realised_rate_min_n_eff};" in ts
+
+
 class TestTheServingFrameCannotBeScored:
     """Predicting on holdout rows is fine. Scoring them spends the holdout."""
 

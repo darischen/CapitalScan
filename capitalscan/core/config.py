@@ -522,6 +522,16 @@ class ServingParams:
     # past either store's measured max (224,862 / 191,860), so headroom is
     # not the risk this guards against -- a collision is.
     serving_id_floor: int = 1_000_000_000
+    # **The trailing realised rate beside `p_touch_3` (2026-09-29).** The
+    # modal shows what the model stated against what happened over the last
+    # `realised_rate_sessions` resolved signal dates, per side, from the
+    # forward log; below `realised_rate_min_n_eff` effective signals it is
+    # withheld. Read by the web app, which keeps its own copy
+    # (`web/lib/reliability.ts`); `test_predict_pipeline.py` pins the two
+    # equal. `ServingParams` is not part of the hashed `Config`, so these
+    # do not move `config_hash`.
+    realised_rate_sessions: int = 20
+    realised_rate_min_n_eff: int = 30
 
 
 @dataclass(frozen=True)
