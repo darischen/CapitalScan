@@ -1035,8 +1035,10 @@ its 621 seconds on the Yahoo fallback for ~280 tickers, whose cache key
 carries today's date. The ledger records each fetch per `(source, ticker)`;
 `actions` skips a ticker's full refetch for 30 days, `shares` its Yahoo
 call for 7. On the workstation copy the second `shares` run took **19.8 s**
-(277 skipped) against 621 s uncached. Confirm on the next measured
-nightly before quoting a new budget in CLAUDE.md.
+(277 skipped) against 621 s uncached. **Confirmed in production
+2026-09-28:** four nightly-chain runs that day took `actions` 3m28s-3m58s
+(was 13m40s) and `shares` 16.9-18.9 s (was 10m09s). CLAUDE.md's budget
+updated.
 
 ~~**Reserve DHCP leases**~~ — **done 2026-09-01.** All three reserved:
 workstation 192.168.1.14, `wivie` 192.168.1.12, the Pi 192.168.1.30. The

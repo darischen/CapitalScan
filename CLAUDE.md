@@ -228,12 +228,12 @@ Budgets, so nobody starts one blind. Per-step tables, regimes, and the history o
 | job | budget |
 |---|---|
 | `cscan backtest --workers 8`, full universe (~1,470 tickers) | **~2 h** (compute 82 min, finalize 4 min, harness 36 min) |
-| `cscan nightly`, cold | **~30 min** measured 2026-09-04 (29m54s) and 2026-09-07 (31m42s) from `runs`; the older 35-40 min figure was never measured. **Add ~11 min** now that `predict` is in the chain, and **~15 min more** for the `next_open` resolution step, measured end to end on 2026-09-15 (12m17s backtest at 40 tickers, then 2m30s of harness — the harness is easy to forget and it is a sixth of the step). Whole chain that night: **42m27s**, 21:47:15 to 22:29:42 PT. **That was one night and one shape.** Measured across the eight nights to 2026-09-23, a 16-step run is **49.9-51.0 min** and the 42-minute nights carry 13 steps -- compare within a step count or the figure is meaningless. Expect **~55 min** from 2026-09-23, when ADR 200 took `peak_labels` from 3.0 to ~8 min; `actions` (13.7) and `shares` (10.1) are 47% of the run and have never been tuned. A bad night is longer: 2026-09-08 took 1h53m when `path_capture` hit the cosmetic scope. **On 2026-09-15 that step was uncapped, selected 675 tickers, and was killed by `RuntimeMaxSec=4h` twice without reaching `sync`** — a step that picks its own work needs its own cap. → `OPERATIONS.md` |
+| `cscan nightly`, cold | **~30 min** measured 2026-09-04 (29m54s) and 2026-09-07 (31m42s) from `runs`; the older 35-40 min figure was never measured. **Add ~11 min** now that `predict` is in the chain, and **~15 min more** for the `next_open` resolution step, measured end to end on 2026-09-15 (12m17s backtest at 40 tickers, then 2m30s of harness — the harness is easy to forget and it is a sixth of the step). Whole chain that night: **42m27s**, 21:47:15 to 22:29:42 PT. **That was one night and one shape.** Measured across the eight nights to 2026-09-23, a 16-step run is **49.9-51.0 min** and the 42-minute nights carry 13 steps -- compare within a step count or the figure is meaningless. Expect **~55 min** from 2026-09-23, when ADR 200 took `peak_labels` from 3.0 to ~8 min; `actions` (13.7) and `shares` (10.1) were 47% of the run until `fetch_ledger` (2026-09-27, migration `c3e7a9d15f40`) stopped both repeating per-ticker fetches nightly: **measured 2026-09-28, `actions` ~3.6 min and `shares` ~18 s**, about 20 minutes off every run of the chain, which ADR 203 now runs twice a day. A bad night is longer: 2026-09-08 took 1h53m when `path_capture` hit the cosmetic scope. **On 2026-09-15 that step was uncapped, selected 675 tickers, and was killed by `RuntimeMaxSec=4h` twice without reaching `sync`** — a step that picks its own work needs its own cap. → `OPERATIONS.md` |
 | `cscan weekly` | **12h22m on `wivie`, 2026-09-26** (01:23:59 to 13:45:33 PT): backtest compute 59 chunks 01:24 to 12:50, finalize 10,870,938 rows, refit 30m54s, publish. The old ~36 min figure predates chunked compute and the refit, and was not a `wivie` number |
 | `cscan bars --daily --lookback 8000` | ~11 min / 521 tickers |
 | `cscan bars --hourly --backfill`, all tickers | ~4.5-5.5 h, no incremental path |
 | `cscan universe --quarter` x 66 | ~20 min |
-| `cscan predict` (ADR 174/175), bare (refit) | **~11 min** on the workstation at six heads; **30m54s on `wivie`** (2026-09-26 weekly, 2.87x) — refit only, needs the `neural` extra, stays on whichever box runs `weekly` |
+| `cscan predict` (ADR 174/175), bare (refit) | **~11 min** on the workstation at six heads; **30m54s on `wivie`** (2026-09-26 weekly, 2.87x); **27m on `wivie`** for the ADR 204 refit and publish (2026-09-28, 21:34 to 22:01 PT) — refit only, needs the `neural` extra, stays on whichever box runs `weekly` |
 | `cscan predict --from-artifact` / `--serving` | milliseconds — numpy forward pass, no `neural` extra, runs on the Pi via `wait_and_poll.sh` |
 | `cscan monthly` | none — no-op stub, `retrain/calibrate are Phase 6 scope` (`cli.py`); nothing runs so there is nothing to time |
 
@@ -303,6 +303,16 @@ SELECT config_hash FROM serving_config;                            -- serving, o
 ```
 uv run python -c "from capitalscan.jobs.config import config_hash, resolve_config; print(config_hash(resolve_config()))"
 ```
+
+**A feature-list change stales the published model, by design (ADR 204).**
+`jobs/artifact.py` refuses a model whose ordered feature list does not match
+the running code, so the moment new `features.FEATURE_COLS` reach a machine,
+that machine scores nothing until a refit publishes a matching artifact.
+`config_hash` does not move, so none of the steps above fire. The order is:
+pull the research machine, `cscan predict --publish` (~27 min on `wivie`),
+then pull the Pi, all outside a live session and before the 05:30 PT
+premarket nightly (ADR 203). Done that way on 2026-09-28: the Pi's
+`predictor.npz` came out byte-identical to `wivie`'s.
 
 **A `psql` session on the Pi reads the wrong generation.** `run_sync`'s pin on the serving DB fails silently (needs superuser); the site is fine because `web/lib/db.ts` sets the hash per connection from `serving_config` (ADR 115), but a hand query reads a generation the site does not serve. Re-pin after every rebuild via SSH as `postgres`, or `SET capitalscan.default_config_hash = '<hash>'` per session. → `OPERATIONS.md`
 
