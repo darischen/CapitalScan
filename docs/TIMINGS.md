@@ -872,3 +872,25 @@ ever been optimised. Every step anyone has tuned is in the bottom half.
   writing**; the 13:15 run on 2026-09-24 is the first clean measurement.
 
 So expect **~55 min** and confirm rather than quote it.
+
+---
+
+## `actions` and `shares` after `fetch_ledger` (2026-09-28)
+
+The two steps that were 47% of the nightly (above) were measured, fixed and
+re-measured. Cause and fix: BACKLOG "`actions` and `shares` stop repeating
+per-ticker fetches", migration `c3e7a9d15f40`.
+
+| step | 2026-09-27 (ledger filling) | 2026-09-28, four runs |
+|---|---:|---:|
+| `actions` | 13m40s | **3m28s to 3m58s** |
+| `shares` | 10m09s | **16.9 s to 18.9 s** |
+
+About **20 minutes off every run** of the chain. ADR 203 runs it twice a
+day, so roughly 40 minutes of daily machine time. The first night after
+deploy pays the old cost once, because that is the run that fills the
+ledger; do not read it as the new baseline.
+
+**Refit on `wivie`, second measurement:** 27 min for `cscan predict
+--publish` (ADR 204, 2026-09-28, 21:34 to 22:01 PT, 149,380 training rows),
+against 30m54s inside the 2026-09-26 weekly.
