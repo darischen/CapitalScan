@@ -1724,6 +1724,12 @@ Without the model, a live signal is answered by lookup, and that is a complete s
 
 Twenty-two, all available at t−1, all already on the event row.
 
+**As built, 2026-09-29: 24** (`features.FEATURE_COLS`). The table below is
+the original plan; the code is the authority. Two market-breadth features
+joined on 2026-09-28 (ADR 204), `breadth_ma_above` and `breadth_chg_60d`,
+read from `market_days` for the previous trading session rather than off
+the event row.
+
 | Group | Features |
 |---|---|
 | Band state | `bb_pctb`, `bb_width_pct`, distance to mid in ATR units |
@@ -1915,6 +1921,15 @@ The poller loads all 11 artifacts at 09:15. Inference on one row across 11 model
 - **It is not LightGBM and there are not 11 models.** It is one torch network with four distributional heads (ADR 170), and `p_touch_2/3/5/10` are read off two of them by `distributions.exceedance` rather than fitted as separate classifiers.
 
 The consequence to remember: **predictions go stale unless someone runs the job.** It is not in `nightly`, because that would put a 2GB torch wheel and an unmeasured CPU cost on `wivie`. → `BACKLOG.md`
+
+**Superseded, recorded 2026-09-29.** The three bullets above describe
+2026-09-05. Since then the fit is serialised after all, as a numpy `.npz`
+artifact stamped with `git_sha`, `config_hash` and the ordered feature
+list, which refuses to load when any disagrees with the running code
+(`jobs/artifact.py`, ADR 181). `weekly` refits and publishes it to serving
+(ADR 184, 185); `nightly` scores from it; the Pi's poller scores live with
+`cscan predict --serving` every 20 s. A feature-list change stales it on
+purpose, so refit and publish before pulling the Pi (ADR 204).
 
 ### 7.10 Failure modes
 
@@ -2345,6 +2360,21 @@ Windows Task Scheduler with **"Run task as soon as possible after a scheduled st
 09:15 ET  poller    runs until 16:00
 Sun 02:00 weekly    backtest, cell_stats, sync
 1st 03:00 monthly   retrain, calibrate, promote or hold
+```
+
+**As scheduled, 2026-09-29** (systemd timers on `wivie` since the
+2026-09-10 cutover; the Pi runs the poller). The block above is the
+original Task Scheduler plan:
+
+```
+05:30 PT Mon-Fri   premarket  the nightly chain again, data catch-up only (ADR 203)
+13:15 PT Sun-Fri   nightly    ingest, indicators, breadth, events, backtest (next_open
+                              resolution), path capture, peak labels, predict (score
+                              from artifact), outcomes, sync; 19:00 retry
+00:00 PT Pi        poller     waits to 06:45 PT, polls to the 13:00 close, scores live
+Sat 00:00-02:00    weekly     chunked backtest + finalize, refit + publish (ADR 184/185);
+                              12h22m on 2026-09-26
+1st 03:00          monthly    no-op stub
 ```
 
 Path capture added to the nightly line 2026-08-06. Task 10.6 deferred the

@@ -141,8 +141,9 @@ sudo scripts/systemd/install.sh
 Fills `User` and `WorkingDirectory` into the unit templates in
 `scripts/systemd/`, installs them to `/etc/systemd/system`, and enables
 `capitalscan-nightly.timer` (13:15 and a 19:00 retry, **Sunday through Friday** -- not Saturday, when `weekly` is running),
-`capitalscan-weekly.timer` (Sun 02:00), `capitalscan-monthly.timer`
-(1st, 03:00).
+`capitalscan-weekly.timer` (Saturday 00:00 plus up to 2 h random delay; it
+said "Sun 02:00" here until 2026-09-29), `capitalscan-premarket.timer`
+(05:30 Mon-Fri, ADR 203), `capitalscan-monthly.timer` (1st, 03:00).
 
 ```
 systemctl list-timers 'capitalscan-*'
@@ -372,8 +373,9 @@ which machine *holds* research and *pushes* to it. `wivie`'s
 
 | job | when (PT) | does | ~time |
 |---|---|---|---|
-| `nightly` | 13:15 Sun-Fri, 19:00 retry (no Saturday) | `pull_live_records` from the Pi, ingest chain, indicators, events, `sync` to serving | 35-40 min |
-| `weekly` | Sun 02:00 | `run_backtest` (no harness) | ~36 min |
+| `premarket` | 05:30 Mon-Fri | the nightly chain again, data catch-up for bars Yahoo corrects late (ADR 203) | as nightly |
+| `nightly` | 13:15 Sun-Fri, 19:00 retry (no Saturday) | `pull_live_records` from the Pi, ingest chain, indicators, breadth, events, backtest, path capture, peak labels, predict, outcomes, `sync` to serving | expected ~35 min since `fetch_ledger` (was ~55; not yet measured end to end) |
+| `weekly` | Sat 00:00 + up to 2 h | chunked backtest + finalize, refit and publish the model | **12h22m** on 2026-09-26 |
 | `monthly` | 1st, 03:00 | maintenance | short |
 
 Deadlines are loose — `weekly` only has to land within ~2.5 days, and

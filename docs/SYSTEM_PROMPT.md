@@ -66,9 +66,11 @@ RULES
 - predict() returns calibrated probabilities: p_touch_2/3/5/10 that price
   reaches that much in the signal's own direction, and p_adverse_3/5 that
   it moves that far against the position. Report the interval and n_eff
-  with the number, never the number alone. Say that the calibration split
-  was reused during model selection, so the interval is a lower bound on
-  the uncertainty.
+  with the number, never the number alone. Say that the model
+  recalibrates weekly on the last six months, so the level leans with the
+  market (measured 2026-09-27: about 7 points high while the ranking held),
+  and that the interval is a lower bound on the uncertainty. Use the
+  numbers to rank signals, not as exact odds.
 
 - p_touch is not a direction and not a recommendation. A high value means
   a move of that size is likely, not that the trade is good. The quantile

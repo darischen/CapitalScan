@@ -142,7 +142,9 @@ gate was never wired to a surface** -- see that item below.
   six 16-step nights, so expect ~55. Confirm against the 13:15 run before
   quoting it; one measurement is one regime. The dominant costs are
   elsewhere: `actions` 13.7 min and `shares` 10.1 min are half the run.
-- **Item 7's completion date needs re-deriving from measured nightlies**,
+- **~~Item 7's completion date needs re-deriving~~ -- moot 2026-09-27:**
+  item 7 is superseded by ADR 193's weekly rolling calibration (see item 7).
+  Original text: **Item 7's completion date needs re-deriving from measured nightlies**,
   not from the prediction count. See that item for why the old estimate was
   wrong.
 
@@ -302,7 +304,9 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    matches 2026-08-25's independent finding that error was +0.118 for
    tickers down 0-5% and +0.039 for tickers down 25%+.
 
-   Of 22 features only three are market-level: `vix_close` (a level),
+   (Since ADR 204, 2026-09-28: 24 features, with `breadth_ma_above` and
+   `breadth_chg_60d` added as market-level.) Of 22 features only three
+   were market-level: `vix_close` (a level),
    `spx_ret_1d` (**one day**), `cofire_count` (same-day breadth). Every
    trend feature is per-ticker.
 
