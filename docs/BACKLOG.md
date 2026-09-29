@@ -261,7 +261,25 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    experiment, it is cheap now the forward log is unstalled, and it has
    never been run.
 
-3c. **The transition is still unexplained, and the calibration fix is now
+3c. **MEASURED 2026-09-29: the transition is a long-side failure in one
+   episode, half of it is the market's next move, and nothing at t-1
+   predicts it.** RESULTS 2026-09-29, `scripts/hist/transition-2026-09-29/`.
+   On the production model (24 features), the cell is **38 market days,
+   58% of its events in January 2022**. Longs there were promised
+   `p_touch_3` 64.8% and got 32.7%; `p_adverse_3` 32.9% against 75.0%.
+   Shorts in the same cell are within 5 points. A recalibration layer that
+   is handed the S&P's actual forward move (an oracle, not a proposal)
+   removes about half the long bias (mean |bias| 0.293 -> 0.163); one
+   handed t-1 market state makes it worse (0.315), and t-1 state forecasts
+   the S&P's next 3-10 days worse than a flat mean out of sample (R^2
+   −0.005 to −0.020, 2012-2026). **So capacity and sample are the wrong
+   questions: the input that would fix it does not exist at t-1.** The
+   other half is untested; a beta-scaled oracle is the next cheap check.
+   The live long gap in the modal (61.5% stated, 39.0% realised) is not
+   this: the S&P sat 5-9% above its 200-day through those 20 sessions.
+   A proposal for the display is in DECISIONS.md Open items.
+
+   Earlier text, kept: **The transition is still unexplained, and the calibration fix is now
    refuted too.** The model can be told what the market is doing and does
    not convert that into a wider distribution at the top without
    over-widening everywhere. Open questions, none tested: is it capacity,
