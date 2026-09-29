@@ -20,6 +20,7 @@ import {
   PREDICTION_CAVEAT_SUMMARY,
   pct,
 } from "@/lib/format";
+import type { RecentRate } from "@/lib/reliability";
 import type { Band, Prediction } from "@/lib/screen";
 
 /**
@@ -134,6 +135,69 @@ function BandRow({
  * answer on days the name did not fire — and faking a `ScreenRow` there
  * would mean inventing a dozen fields the modal never touches.
  */
+/**
+ * What the model stated against what happened, lately, for this side
+ * (`lib/reliability.ts::recentRealised`).
+ *
+ * **Why it sits in the table.** The published level leans with the market
+ * (the caveat says so), and a reader can only judge by how much if the two
+ * numbers are side by side. Same columns as the rows above, so "Chance"
+ * and "Error" keep their meaning; the model's average has no error column
+ * because it is an average of stated numbers, not an estimate.
+ *
+ * Type-only import from `reliability.ts`: it imports `./db`, and a value
+ * import would pull `pg` into the browser bundle (2026-09-08).
+ */
+function RecentRows({ recent }: { recent: RecentRate }) {
+  const target = label("p_touch_3", recent.side);
+  const who = recent.side === "long" ? "long" : "short";
+  const span = `${recent.sessions} sessions of resolved ${who} signals, ${recent.firstDate} to ${recent.lastDate}`;
+  const halfWidth = (recent.ciHigh - recent.ciLow) / 2;
+  return (
+    <>
+      <tr className="modal-group">
+        <th scope="rowgroup" colSpan={3} title={span}>
+          Recent {who} signals: {target.toLowerCase()}
+        </th>
+      </tr>
+      {recent.enough ? (
+        <>
+          <tr>
+            <th scope="row" title={`The model's stated chance, averaged over ${recent.n.toLocaleString()} ${span}.`}>
+              Model said, on average
+            </th>
+            <td className="r num">{pct(recent.stated, 1)}</td>
+            <td className="r num dim" />
+          </tr>
+          <tr>
+            <th scope="row" title={`How often it actually happened, over the same ${span}.`}>
+              Actually happened
+            </th>
+            <td className="r num">{pct(recent.realised, 1)}</td>
+            <td
+              className="r num dim"
+              title={`Based on ${recent.nEff.toLocaleString()} effective signals: same-day signals share one market move, so they count as less than one each.`}
+            >
+              ±{(halfWidth * 100).toFixed(1)}
+            </td>
+          </tr>
+          <tr className="modal-span">
+            <td colSpan={3} className="dim">
+              {recent.firstDate} to {recent.lastDate}, {recent.sessions} sessions
+            </td>
+          </tr>
+        </>
+      ) : (
+        <tr className="modal-span">
+          <td colSpan={3} className="dim">
+            Too few resolved {who} signals in the last {recent.sessions} sessions to compare yet.
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
 export interface InferenceSubject {
   ticker: string;
   signalDate: string;
@@ -238,6 +302,7 @@ export function InferenceModal({
             {adverse.map((f) => (
               <BandRow key={f} field={f} band={bands[f]} side={row.side} />
             ))}
+            {prediction.recent && !prediction.cosmetic && <RecentRows recent={prediction.recent} />}
           </tbody>
         </table>
 

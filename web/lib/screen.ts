@@ -1,4 +1,5 @@
 import { num, query } from "./db";
+import { type RecentRate, recentRealisedOrNone } from "./reliability";
 
 /**
  * The screener query. Reads `v_screen_live` (ADR 119), which already decides:
@@ -273,6 +274,13 @@ export interface Band {
 }
 
 export interface Prediction {
+  /**
+   * What the model stated against what happened over the last
+   * `REALISED_RATE_SESSIONS` resolved sessions, for this signal's side
+   * (`lib/reliability.ts`). `null` when it could not be computed; the modal
+   * then shows nothing rather than a guess.
+   */
+  recent?: RecentRate | null;
   pTouch3: number | null;
   ciLow: number | null;
   ciHigh: number | null;
@@ -946,6 +954,12 @@ export async function screen(
   }));
 
   await attachLiveBars(rows);
+
+  // One query for the page, then each row takes its own side's figures.
+  const recent = await recentRealisedOrNone();
+  for (const row of rows) {
+    if (row.prediction) row.prediction.recent = recent[row.side] ?? null;
+  }
 
   if (options.withStats) {
     await attachStats(rows);

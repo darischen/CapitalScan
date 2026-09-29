@@ -2430,6 +2430,15 @@ table.screen th.r .sortlink {
   border-bottom: 1px solid var(--rule);
 }
 
+/* A one-line note under the recent-results rows: the date span, or why the
+ * comparison is withheld. Prose, so sans and allowed to wrap. */
+.modal-span td {
+  padding: 1px 0 3px;
+  font-family: var(--sans);
+  font-size: 10.5px;
+  white-space: normal;
+}
+
 .modal-note {
   margin: 12px 0 0;
   font-family: var(--sans);

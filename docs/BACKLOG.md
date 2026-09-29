@@ -1387,6 +1387,18 @@ regime feature such as the ADR 176 breadth reading, which is already
 computed and already known to separate. Publishing the trailing realised
 rate beside the model's number so a reader can see the gap themselves.
 
+**BUILT 2026-09-29: the trailing realised rate.** The inference modal now
+shows, for the signal's side, what the model stated on average against how
+often +3% was actually reached, over the last 20 resolved signal dates
+from the forward log (`web/lib/reliability.ts::recentRealised`; window and
+floor in `ServingParams.realised_rate_sessions` / `_min_n_eff`). The
+interval is Wilson on a day-clustered effective sample, since same-day
+signals share one market move. **First real reading, serving, 2026-08-21
+to 09-18: longs stated 61.5%, realised 39.0% (848 signals); shorts 61.5%
+against 58.9% (394).** The level bias is almost entirely a long-side
+problem, which the pooled "~7 points high" hid. Item 10 (the short book)
+and this gap point in opposite directions and are worth reading together.
+
 ## Scheduled later
 
 ### Broker position sync — intended, and it collides with invariant 7

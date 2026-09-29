@@ -1,4 +1,5 @@
 import { num, query } from "./db";
+import { recentRealisedOrNone } from "./reliability";
 import { EQUITY_LOOKBACK_SESSIONS, compoundEquity } from "./equity";
 import {
   allBands,
@@ -956,7 +957,9 @@ export async function latestPrediction(sym: string): Promise<Prediction | null> 
   );
   const r = rows[0];
   if (!r) return null;
+  const recent = await recentRealisedOrNone();
   return {
+    recent: r.side === "long" || r.side === "short" ? recent[r.side as "long" | "short"] : null,
     pTouch3: num(r.p_touch_3),
     ciLow: num(r.ci_low),
     ciHigh: num(r.ci_high),
