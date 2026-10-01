@@ -263,6 +263,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 202 | The poller skips a stale band; the screener stops borrowing another signal's reversal | **Decided 2026-09-28.** ADI showed a confirmed live reversal that did not exist: Friday's 13:15 fetch returned no 2026-09-25 bar, so Monday's poller read 2026-09-24 as t-1 (5 to 16 tickers every session), and `v_screen_live`'s reversal laterals matched on ticker and date only, so the badge attached to nightly's differently typed event. The poller now skips a ticker whose newest indicator row predates the previous trading day; the reversal laterals match `signal_type` like `fired_at` (`e4b7a2c9d160`); bar windows within 7 days bypass the fetch cache; nightly refetches missing session bars before `indicators`. `run_job.sh` appends to the day's log instead of truncating it. **Amended same day:** the bar was not missing but rejected by `open_outside_range` (49 to 101 tickers a session); ADR 203 is the recovery |
 | 203 | A second nightly at 05:30 PT recovers the bars Yahoo corrects after the close | **Decided 2026-09-28 (user).** Yahoo's session bar at 13:15 PT often has an open outside its own high/low; `open_outside_range` rejects it, 49 to 101 tickers a session. Off-schedule runs show Yahoo corrects about 97% by 17:30-19:00 PT with the open unchanged (871 of 871). `capitalscan-premarket.timer` runs the same chain Mon-Fri 05:30 under its own `scheduled_runs` key, sharing nightly's lock, never after 06:30, no catch-up firing. Nightly's `end` becomes the last closed session, so a pre-market run neither fetches an unopened session nor sweeps that morning's poller rows. The rejection rule is unchanged |
 | 204 | Market breadth enters the model as previous-session features | **Decided 2026-09-28 (owner).** `breadth_ma_above` and `breadth_chg_60d`, read for exactly the previous trading session (t-1, never forward-filled; rows without it dropped and counted). Two seed triples: every `p_touch` field gains Brier skill, level gap 1-1.5 pts smaller, AUC flat, `p_adverse` flat to slightly worse. The published artifact goes stale on deploy by design: refit and publish before pulling the Pi |
+| 205 | `nightly` fills `fwd_ret_*d` so the forward log resolves daily | **Decided 2026-09-30 (owner).** `outcomes` needs `fwd_ret_5d`, which only the backtest wrote, so the forward log resolved once a week (0 predictions on eight runs to 2026-09-30). `research/fwd_labels.py` fills it from daily bars inside the `peak_labels` step, NULL-only, for `(in_trade OR in_watch)` events. Reproduces 99.97% of the backtest's stored values to six decimals. No migration, no `config_hash` change |
 
 ---
 
@@ -10942,3 +10943,48 @@ Consequences.
 - The live path needs yesterday's breadth on serving before the session.
   The nightly computes it and `cscan sync` ships `market_days`, so it is
   there by ~14:00 the previous day.
+
+## 205. `nightly` fills `fwd_ret_*d` so the forward log resolves daily
+
+Status: Decided 2026-09-30 (owner).
+
+`research/fwd_labels.py`, called inside the `peak_labels` step of `nightly`.
+
+The problem. `cscan outcomes` resolves a prediction only when its event has
+both `peak_ret_5d` and `fwd_ret_5d`. `peak_labels` writes the first every
+night. Only `run_backtest` wrote the second, and `nightly`'s backtest step
+covers the few tickers holding an open `next_open` position, so every
+other ticker waited for Saturday's `weekly`. Measured 2026-09-30:
+`outcomes` resolved 0 predictions on eight consecutive runs, with 432
+predictions dated 09-21 to 09-23 holding a peak label and no `fwd_ret_5d`.
+The modal's trailing realised rate (PR #127) reads that log and lagged with
+it.
+
+The decision. A set-based, NULL-only fill:
+`adj_close[entry bar + h] / adj_close[entry bar] - 1` from the daily bars,
+for `(in_trade OR in_watch)` events of the live `config_hash`, written only
+when bar `h` exists.
+
+Why not widen the nightly backtest. About 18 s a ticker on `wivie` and
+roughly 300 tickers a day: 90 minutes, twice a day under ADR 203. The
+fill is one statement, 31 s measured from the workstation.
+
+Why a second writer is tolerable. The backtest stays the authority:
+`COALESCE` never replaces a stored value, and `weekly` still writes every
+row. The arithmetic is `core.returns.forward_returns` restated in SQL, the
+same product-and-oracle pairing `peak_labels` has. Checked before it was
+written, on 833k events from 2025-09-01: 99.97% of the backtest's stored
+values reproduce to six decimals. The remainder are rows whose `adj_close`
+was revised after the backtest wrote them, which is also the one way a
+nightly-filled value can differ from what `weekly` would have written.
+
+Consequences.
+
+- `outcomes` resolves each night what closed that day. A read-only dry run
+  on 2026-09-30 found 434 predictions that become resolvable at once.
+- Resolved outcomes are never rewritten, so a prediction resolved on a
+  nightly-filled `fwd_ret_5d` keeps that value if a later bar revision
+  moves it. `fwd_ret_5d` feeds `realized_ret_5d` and the pinball loss only;
+  `brier_3pct` and the touch flags read `peak_ret_5d`.
+- No migration, no `config_hash` change, no new `runs` step: the count
+  joins `peak_labels`' `rows_written`.

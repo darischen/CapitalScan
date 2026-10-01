@@ -1424,6 +1424,13 @@ regime feature such as the ADR 176 breadth reading, which is already
 computed and already known to separate. Publishing the trailing realised
 rate beside the model's number so a reader can see the gap themselves.
 
+**BUILT 2026-09-30: the forward log resolves nightly (ADR 205).**
+`outcomes` had resolved 0 predictions on eight runs because `fwd_ret_5d`
+came only from the weekly backtest. `nightly` now fills it from the daily
+bars inside the `peak_labels` step, NULL-only. **Check after the first
+run:** `outcomes` should report about 434 resolved, and its count should
+then move every night.
+
 **BUILT 2026-09-29: the trailing realised rate.** The inference modal now
 shows, for the signal's side, what the model stated on average against how
 often +3% was actually reached, over the last 20 resolved signal dates

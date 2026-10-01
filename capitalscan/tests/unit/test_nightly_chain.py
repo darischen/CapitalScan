@@ -50,6 +50,10 @@ def _no_real_nightly_io(monkeypatch):
     # label families refresh. Stubbing the old peak-only name let the real
     # function run against this fixture's fake engine.
     monkeypatch.setattr(peak_labels_mod, "backfill_extremum_labels", lambda *args, **kwargs: 0)
+    # The NULL-only `fwd_ret_*d` fill rides in the same step (2026-09-30).
+    from capitalscan.research import fwd_labels as fwd_labels_mod
+
+    monkeypatch.setattr(fwd_labels_mod, "backfill_fwd_returns", lambda *args, **kwargs: 0)
 
     # `predict` joined the chain 2026-09-08, between `peak_labels` and
     # `sync`. Unstubbed it runs for real and dies on `'str' object has no
