@@ -9041,3 +9041,45 @@ The 5% target and the 5-day timeout both cut winners. This is a simulation
 with exact fills and a 10-day ceiling set by the grid, so it is a reason to
 run the backtest, not a result to ship: two arms are running on the
 workstation and are recorded when they finish.
+
+## 2026-10-01 — a longer hold pays longs per trade and nothing per day
+
+Follow-up to 2026-09-30's path simulation, which had longs at +0.656% on a
+10-day hold. Two real backtest arms on the workstation's research copy
+(data to 2026-09-09), `scripts/hist/long-hold-2026-09-30/`: `run_arms.sh`
+wrote them, `compare.py` reads them. The same 69,416 long and 90,967 short
+events in every arm: touch entry, in trade, exited, signal date on or
+before 2026-08-20. Net % per trade, 95% intervals clustered by signal
+date.
+
+| arm | `config_hash` | longs | days held | per day | shorts |
+|---|---|---|---|---|---|
+| current: 5 days, 2 ATR, 5% | `f183b0f5209a4677` | +0.270 [+0.102, +0.438] | 3.9 | 0.0700 | −0.150 [−0.212, −0.089] |
+| 10 days, 2 ATR, 5% | `47beeecbd6d41696` | +0.411 [+0.239, +0.583] | 5.9 | 0.0700 | −0.200 [−0.269, −0.130] |
+| 10 days, 3 ATR, no target | `a90d4561f883c4a5` | +0.581 [+0.296, +0.867] | 8.3 | 0.0701 | −0.260 [−0.353, −0.167] |
+
+**The return per day held is the same to three decimals in all three.**
+The longer arms earn more per trade because they are in the trade longer,
+not because the current exit leaves anything behind. "Longs are sold too
+early" (2026-09-30) was the wrong reading of a per-trade number.
+
+The simulation overstated the no-target arm (+0.656 against +0.581)
+because it left out the stochastic and band exits, which close 25% of
+longs in that arm once the 5-day timeout stops pre-empting them.
+
+By long entry, per trade (per day): `confluence_low` +0.344 (0.088),
++0.520 (0.087), +0.776 (0.090); `bb_lower_touch` +0.057 (0.015), +0.171
+(0.030), +0.304 (0.038); `bull_close_below_lower` +1.650 (0.446), +1.771
+(0.314), +1.618 (0.182). The close-confirmed long earns most of its return
+in the first days and is diluted by a longer hold; `bb_lower_touch` is the
+one entry whose per-day return rises, from a base indistinguishable from
+zero.
+
+Both periods agree for longs: pre-2019 +0.299, +0.397, +0.579; from 2019
++0.255, +0.419, +0.583.
+
+**An arm needs `universe` rows under its own hash.** The first launch ran
+93 chunks `ok` and wrote 0 events, because the backtest reads eligibility
+by `config_hash` and an exit-only arm has none. `seed_universe.sql` copies
+the live generation's rows, which are what a recompute would produce since
+the arms change `ExitParams` only.

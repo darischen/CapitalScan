@@ -900,8 +900,11 @@ each depends on the one above it.
   that wins under any exit. So the exit is not the problem; the entries
   are. **The same sweep says longs are sold too early**: 10 days with no
   target makes +0.65% a trade against +0.22% now, and the pre-2019 choice
-  holds from 2019 on. Two backtest arms are measuring that on the
-  workstation; DECISIONS.md Open items. RESULTS 2026-09-30,
+  holds from 2019 on. **Measured 2026-10-01 with two real backtest arms,
+  and the reading was too strong:** longs earn 0.070% per day held under
+  the current exit and under both 10-day arms, so the larger return per
+  trade is only more days in the trade. DECISIONS.md Open items, lean:
+  leave the exit alone. RESULTS 2026-09-30,
   `scripts/hist/exit-sweep-2026-09-30/`.
 
 ### Where Session 25 left off
@@ -1427,9 +1430,9 @@ rate beside the model's number so a reader can see the gap themselves.
 **BUILT 2026-09-30: the forward log resolves nightly (ADR 205).**
 `outcomes` had resolved 0 predictions on eight runs because `fwd_ret_5d`
 came only from the weekly backtest. `nightly` now fills it from the daily
-bars inside the `peak_labels` step, NULL-only. **Check after the first
-run:** `outcomes` should report about 434 resolved, and its count should
-then move every night.
+bars inside the `peak_labels` step, NULL-only. **Confirmed on the first run, 2026-10-01 05:59
+premarket: `resolved 436 predictions`.** The count should now move every
+night.
 
 **BUILT 2026-09-29: the trailing realised rate.** The inference modal now
 shows, for the signal's side, what the model stated on average against how
