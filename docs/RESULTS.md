@@ -8992,3 +8992,52 @@ half, stock moves beyond a beta-1 market move, is not tested here.
 longs stated at 61.5% against 39.0% realised over 20 sessions. Across
 2026-08-20 to 2026-09-28 the S&P sat 5.3-8.7% above its 200-day and never
 more than 3.2% below its 252-day high. That is not a transition.
+
+## 2026-09-30 — no exit rescues the shorts, and the longs are sold too early
+
+BACKLOG item 10, the owner's follow-up: is the short book losing on bad
+sell timing? `scripts/hist/exit-sweep-2026-09-30/`, read-only against
+`wivie`. **A path simulation, not a backtest.** The same 161,728 exited
+in-trade touch events as 2026-09-29, replayed from `path` under 180 exits:
+target 2-7% or none, stop 1-3 ATR or none, hold 1-10 sessions. A day that
+reaches both stop and target counts as a stop; fills are exact, so gaps are
+not charged; the stochastic and band exits (about 2% of real exits) are not
+simulated. The simulated current policy lands at −0.153% for shorts
+against the real −0.147%, and +0.220% for longs against +0.264%.
+
+**Shorts, net % per trade:**
+
+| exit | net | note |
+|---|---|---|
+| current: 5%, 2 ATR, 5 days | −0.153 | |
+| best of 180: no target, 1 ATR, 1 day | −0.010 | |
+| chosen on pre-2019: no target, 1 ATR, 3 days | −0.014 [−0.065, +0.037] | +0.001 before 2019, −0.021 after |
+| no stop or target, close of day 1 / 5 / 10 | −0.078 / −0.150 / −0.303 | about 0.03 a day |
+
+No exit in the grid makes the short book positive. Holding longer does
+cost, as the owner suspected, but the floor is break-even.
+
+**By short entry, day-clustered 95%:**
+
+| entry | n | current | 1 ATR / 1 day | no exit / 10 days |
+|---|---|---|---|---|
+| `bb_upper_touch` | 34,753 | −0.265 [−0.334, −0.196] | −0.068 [−0.110, −0.027] | −0.474 [−0.599, −0.350] |
+| `confluence_high` | 51,961 | −0.131 [−0.196, −0.066] | −0.020 [−0.064, +0.024] | −0.242 [−0.366, −0.118] |
+| `bear_close_above_upper` | 4,699 | +0.430 [+0.306, +0.553] | +0.533 [+0.456, +0.611] | +0.288 [+0.075, +0.500] |
+
+The entry decides the sign under every exit tried. **Owner's decision,
+2026-09-30: shorts stay as they are, drift documented** (DECISIONS.md).
+
+**Longs run the other way.** With no stop or target the mean net return
+climbs every day held: +0.038 at day 1, +0.386 at day 5, +0.649 at day 10.
+
+| exit | net | pre-2019 | from 2019 |
+|---|---|---|---|
+| current: 5%, 2 ATR, 5 days | +0.220 | +0.286 | +0.186 |
+| no target, 3 ATR, 10 days | +0.656 | +0.649 | +0.659 |
+| no target, no stop, 10 days (chosen on pre-2019) | +0.649 [+0.305, +0.994] | +0.801 | +0.570 |
+
+The 5% target and the 5-day timeout both cut winners. This is a simulation
+with exact fills and a 10-day ceiling set by the grid, so it is a reason to
+run the backtest, not a result to ship: two arms are running on the
+workstation and are recorded when they finish.

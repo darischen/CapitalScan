@@ -1,0 +1,4 @@
+-- Read-only export from wivie's research store. Run with psql from the folder
+-- that should hold the two CSVs; exit_sweep.py reads them from EXIT_SWEEP_DIR.
+\copy (SELECT e.id, e.signal_date, e.side, e.signal_type, e.exit_reason, e.holding_days, e.gross_ret::float, e.net_ret::float, (e.atr_14/e.entry_price)::float atr_pct FROM events e WHERE e.config_hash='f183b0f5209a4677' AND e.entry_kind='touch' AND e.in_trade AND e.exit_reason IS NOT NULL AND e.exit_reason <> 'unfinished' AND e.net_ret IS NOT NULL) TO 'ev.csv' CSV HEADER
+\copy (SELECT p.event_id, p.day_offset, p.favorable::float, p.adverse::float, p.terminal::float FROM path p JOIN events e ON e.id=p.event_id WHERE e.config_hash='f183b0f5209a4677' AND e.entry_kind='touch' AND e.in_trade AND e.exit_reason IS NOT NULL AND e.exit_reason <> 'unfinished' AND e.net_ret IS NOT NULL AND p.day_offset <= 15) TO 'path.csv' CSV HEADER
