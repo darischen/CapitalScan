@@ -1,0 +1,29 @@
+long  current 5d / 2 ATR / 5%    +0.270 [+0.102, +0.438] n=69,416 hold=3.9d per_day=+0.0700 win=0.556
+long  10d / 2 ATR / 5%           +0.411 [+0.239, +0.583] n=69,416 hold=5.9d per_day=+0.0700 win=0.565
+long  10d / 3 ATR / no target    +0.581 [+0.296, +0.867] n=69,416 hold=8.3d per_day=+0.0701 win=0.560
+short current 5d / 2 ATR / 5%    -0.150 [-0.212, -0.089] n=90,967 hold=4.2d per_day=-0.0360 win=0.462
+short 10d / 2 ATR / 5%           -0.200 [-0.269, -0.130] n=90,967 hold=6.6d per_day=-0.0304 win=0.453
+short 10d / 3 ATR / no target    -0.260 [-0.353, -0.167] n=90,967 hold=8.4d per_day=-0.0309 win=0.458
+  bb_lower_touch           current 5d / 2 ATR / 5%    +0.057 [-0.107, +0.222] n=35,737 hold=3.9d per_day=+0.0149 win=0.537
+  bb_lower_touch           10d / 2 ATR / 5%           +0.171 [-0.001, +0.343] n=35,737 hold=5.8d per_day=+0.0295 win=0.545
+  bb_lower_touch           10d / 3 ATR / no target    +0.304 [+0.032, +0.576] n=35,737 hold=7.9d per_day=+0.0384 win=0.551
+  bull_close_below_lower   current 5d / 2 ATR / 5%    +1.650 [+1.231, +2.069] n=3,941 hold=3.7d per_day=+0.4456 win=0.671
+  bull_close_below_lower   10d / 2 ATR / 5%           +1.771 [+1.343, +2.198] n=3,941 hold=5.6d per_day=+0.3142 win=0.672
+  bull_close_below_lower   10d / 3 ATR / no target    +1.618 [+0.694, +2.543] n=3,941 hold=8.9d per_day=+0.1815 win=0.618
+  confluence_low           current 5d / 2 ATR / 5%    +0.344 [+0.132, +0.555] n=29,738 hold=3.9d per_day=+0.0882 win=0.564
+  confluence_low           10d / 2 ATR / 5%           +0.520 [+0.307, +0.733] n=29,738 hold=6.0d per_day=+0.0868 win=0.575
+  confluence_low           10d / 3 ATR / no target    +0.776 [+0.436, +1.117] n=29,738 hold=8.6d per_day=+0.0899 win=0.563
+  from2019  current 5d / 2 ATR / 5%    +0.255 [+0.018, +0.492] n=45,298 hold=3.8d per_day=+0.0672 win=0.556
+  from2019  10d / 2 ATR / 5%           +0.419 [+0.177, +0.660] n=45,298 hold=5.7d per_day=+0.0735 win=0.571
+  from2019  10d / 3 ATR / no target    +0.583 [+0.169, +0.996] n=45,298 hold=8.3d per_day=+0.0700 win=0.553
+  pre2019   current 5d / 2 ATR / 5%    +0.299 [+0.112, +0.487] n=24,118 hold=4.0d per_day=+0.0748 win=0.555
+  pre2019   10d / 2 ATR / 5%           +0.397 [+0.199, +0.596] n=24,118 hold=6.2d per_day=+0.0641 win=0.553
+  pre2019   10d / 3 ATR / no target    +0.579 [+0.312, +0.845] n=24,118 hold=8.2d per_day=+0.0702 win=0.573
+exit_reason                    stoch_80   stop  target  timeout  upper_band
+side  arm                                                                  
+long  current 5d / 2 ATR / 5%     0.006  0.221   0.243    0.509       0.022
+      10d / 2 ATR / 5%            0.028  0.316   0.347    0.270       0.039
+      10d / 3 ATR / no target     0.121  0.183     NaN    0.562       0.133
+short current 5d / 2 ATR / 5%     0.003  0.224   0.155    0.599       0.020
+      10d / 2 ATR / 5%            0.020  0.374   0.240    0.326       0.039
+      10d / 3 ATR / no target     0.070  0.201     NaN    0.589       0.141
