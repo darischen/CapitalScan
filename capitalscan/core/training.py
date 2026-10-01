@@ -25,7 +25,8 @@ from capitalscan.core.sectors import is_canonical
 # agree today and need not: a foreign private issuer can file nothing useful
 # and still be a company, and an ETF sponsor could in principle file. Sharing
 # one list would silently couple a training decision to an ingest detail.
-ETF_TICKERS: frozenset[str] = frozenset({"QQQ", "SPY", "VOO", "IBIT"})
+ETF_TICKERS: frozenset[str] = frozenset({"QQQ", "SPY", "VOO", "IBIT", "VGT"})
+# `VGT` added 2026-10-01 (owner), with its `SEC_NON_FILER_TICKERS` entry.
 # `SPY` added 2026-08-25 alongside its `SEC_NON_FILER_TICKERS` entry.
 # BACKLOG named this the step that would be forgotten: an ETF added to one
 # list and not the other trains the model on a fund.
