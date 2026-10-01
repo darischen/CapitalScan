@@ -3500,6 +3500,15 @@ def nightly(
             backfill_extremum_labels(engine, chash, config.stats.fwd_ret_horizons, family)
             for family in FAMILIES
         )
+        # **`fwd_ret_*d` too, or `outcomes` waits for Saturday** (2026-09-30).
+        # Only the backtest wrote it, and this chain's backtest covers a
+        # handful of tickers, so the forward log resolved once a week.
+        # NULL-only: a value the backtest stored is never touched.
+        from capitalscan.research.fwd_labels import backfill_fwd_returns
+
+        filled = backfill_fwd_returns(engine, chash, config.stats.fwd_ret_horizons)
+        pk.rows_written += filled
+        console.print(f"nightly: filled fwd_ret on {filled} event(s)")
     from capitalscan.jobs import sync as sync_job
 
     # **Pull the poller's durable rows back first (ADR 158), and ahead of
@@ -3738,7 +3747,8 @@ def weekly(
     Why the backtest belongs on a schedule rather than being run by hand.
     Event labels (`mfe`, `mae`, `touched_*pct`, `capture_ratio`,
     `fwd_ret_*d`) are written only by `run_backtest` through
-    `research/enrich.py`. `nightly` runs `run_events` and `run_path_capture`,
+    `research/enrich.py`. (`nightly` also fills `fwd_ret_*d`,
+    NULL-only, since ADR 205.) `nightly` runs `run_events` and `run_path_capture`,
     so new events get rows and `path` keeps growing, but an event whose
     forward window was still open when the backtest last ran keeps the labels
     frozen at that moment — permanently, with nothing in the system to
