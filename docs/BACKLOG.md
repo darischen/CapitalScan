@@ -892,6 +892,17 @@ each depends on the one above it.
   alone makes **+0.471%** net; `bb_upper_touch` loses 0.260%. Costs match
   the long side. Options A-D for the owner are in DECISIONS.md Open items;
   every one but D moves `config_hash`. RESULTS 2026-09-29.
+  **DECIDED 2026-09-30, owner: D. Shorts stay as they are and the drift is
+  documented.** The owner's question was whether a better sell time would
+  rescue them. Swept 2026-09-30 over 180 exits on the stored paths: the
+  best is break-even (−0.010%, 1 ATR stop, 1 day), every extra day held
+  costs about 0.03%, and `bear_close_above_upper` is the only short entry
+  that wins under any exit. So the exit is not the problem; the entries
+  are. **The same sweep says longs are sold too early**: 10 days with no
+  target makes +0.65% a trade against +0.22% now, and the pre-2019 choice
+  holds from 2019 on. Two backtest arms are measuring that on the
+  workstation; DECISIONS.md Open items. RESULTS 2026-09-30,
+  `scripts/hist/exit-sweep-2026-09-30/`.
 
 ### Where Session 25 left off
 
