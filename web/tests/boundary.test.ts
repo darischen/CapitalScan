@@ -248,6 +248,12 @@ describe("the client boundary", () => {
     // takes `prediction` as a prop rather than fetching one -- a client
     // component that queried would pull `lib/db` into the bundle, which is
     // exactly the failure the transitive check below exists for.
+    //
+    // `TouchNotes` joined 2026-10-05 with the phone layout (DESIGN §11.9):
+    // a touch screen never shows a `title`, and the screener keeps the
+    // sample behind every margin of error in one. It needs a document
+    // click listener and one string of state, imports nothing from `lib/`,
+    // and renders nothing above 720px.
     expect(clients).toEqual([
       "components/Chat.tsx",
       "components/DatePicker.tsx",
@@ -259,6 +265,7 @@ describe("the client boundary", () => {
       "components/PredictButton.tsx",
       "components/TickerChart.tsx",
       "components/TickerSearch.tsx",
+      "components/TouchNotes.tsx",
     ]);
     for (const path of sources().filter((p) => /^\s*["']use client["']/.test(read(p)))) {
       expect(code(path)).not.toMatch(/from "pg"|@\/lib\/db/);

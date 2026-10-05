@@ -116,8 +116,14 @@ function BandRow({
         * continuous, so the extra digit now separates rows that really do
         * differ. The margin beside it still says what the level is worth. */}
       <td className="r num">{pct(band.p, 1)}</td>
+      {/* `data-n` is the effective sample alone, for a phone. The `title`
+        * carries it on desktop and a touch screen shows no `title`, so under
+        * 720px the stylesheet prints this beside the margin. Invariant 8
+        * asks for the sample with every probability, and a hover that
+        * cannot happen does not supply it. Nothing reads it above 720px. */}
       <td
         className="r num dim"
+        data-n={Math.round(band.nEff).toLocaleString()}
         title={`Based on ${Math.round(band.nEff).toLocaleString()} comparable past signals, counted by independent information rather than row count.`}
       >
         {centred
@@ -176,6 +182,7 @@ function RecentRows({ recent }: { recent: RecentRate }) {
             <td className="r num">{pct(recent.realised, 1)}</td>
             <td
               className="r num dim"
+              data-n={recent.nEff.toLocaleString()}
               title={`Based on ${recent.nEff.toLocaleString()} effective signals: same-day signals share one market move, so they count as less than one each.`}
             >
               ±{(halfWidth * 100).toFixed(1)}

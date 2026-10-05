@@ -2247,20 +2247,8 @@ table.screen td.pick input:focus-visible {
 }
 
 @media (max-width: 720px) {
-  /* The card grid gains a column for the checkbox, ahead of the rail —
-   * only once armed, or every card would carry an empty 22px gutter. */
-  .picker-form.armed table.screen tr {
-    grid-template-columns: auto 3px 1fr 1fr;
-  }
-
-  .picker-form.armed table.screen td.pick {
-    display: block;
-    grid-row: 1 / -1;
-    align-self: start;
-    padding-top: 2px;
-    padding-right: 10px;
-  }
-
+  /* The card's checkbox column moved to the `screener on a phone` block
+   * below (2026-10-05), with the rest of the card layout it belongs to. */
   .picker {
     flex-wrap: wrap;
     gap: 10px 14px;
@@ -2545,6 +2533,782 @@ table.screen th.r .sortlink {
 
 .modal-note.cosmetic {
   border-top-color: var(--short);
+}
+
+/* --- screener on a phone (2026-10-05) ----------------------------------- */
+
+/* DESIGN §11.9. Everything `/` needs under 720px, in one block and after
+ * the sections it adjusts, because a later rule of equal weight wins and
+ * several of those sections (`.modal`, `.datenav`, `.cal`) sit below the
+ * older `--- mobile ---` block. Nothing here applies above 720px.
+ *
+ * The card rules are scoped to `.picker-form`, the form `OpenSelected`
+ * wraps the screener table in. `table.screen` is also the ticker page's
+ * history table, whose cards have different fields and their own pass. */
+@media (max-width: 720px) {
+  /* ---- status strip ---------------------------------------------------- */
+
+  /* Three bands instead of one wrapped run: the date control, then search
+   * beside the two page links, then the status readouts. The desktop strip
+   * wraps wherever its 18px gaps happen to break, which on a phone stood
+   * 250px of chrome above the first signal. */
+  .strip {
+    gap: 6px 12px;
+    padding-top: 6px;
+    padding-bottom: 8px;
+  }
+
+  .strip > * {
+    order: 3;
+  }
+
+  /* The dots separate items along one line. Wrapped, one of them opens a
+   * line or closes it, and the row gap already does the separating. */
+  .strip > .sep {
+    display: none;
+  }
+
+  /* A full row of its own, and the box the calendar is positioned in. */
+  .strip > .datenav {
+    order: 0;
+    flex: 1 1 100%;
+    position: relative;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Search and the links share a row and fill it exactly: the links take a
+   * fixed 96px, search takes the rest, and nothing else fits beside them.
+   * The fixed width is also what lets the result menu below be sized to
+   * the whole row. */
+  .strip > .search {
+    order: 1;
+    flex: 1 1 calc(100% - 108px);
+    min-width: 0;
+  }
+
+  .strip > .strip-nav {
+    order: 2;
+    flex: 0 0 96px;
+    margin-left: 0;
+    justify-content: flex-end;
+  }
+
+  /* A readout with a note behind it (`TouchNotes`) gets a taller box to
+   * tap. The bordered badges keep their own. */
+  .strip > span[title]:not(.stale-badge) {
+    padding-block: 4px;
+  }
+
+  /* ---- date navigation ------------------------------------------------- */
+
+  /* The arrows are one glyph in 13px type, 13px square to a finger. Each
+   * becomes a 36px box with the glyph centred, and the disabled arrow
+   * keeps the same box so the date does not shift at either end of the
+   * history. */
+  .datenav a,
+  .datenav .off {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 36px;
+    min-height: 36px;
+    font-size: 16px;
+  }
+
+  /* An underline drawn by the text rather than by the box's bottom border,
+   * which at 36px tall would sit well below the word. */
+  .datenav .latest {
+    padding: 0 4px;
+    font-size: 12px;
+    border-bottom: 0;
+    text-decoration: underline;
+    text-decoration-color: var(--rule);
+    text-underline-offset: 3px;
+  }
+
+  /* `.picker` is also the name of the bar under the table, whose top
+   * margin this span inherits. `static` hands the calendar's containing
+   * block to `.datenav`, so the popover can span the strip instead of
+   * hanging off the button. */
+  .datenav .picker {
+    position: static;
+    margin-top: 0;
+  }
+
+  /* Dotted under the text, as on desktop, for the same reason `.latest`
+   * moves its underline: the box is now 36px tall. */
+  .picker-btn {
+    min-height: 36px;
+    font-size: 13px;
+    border-bottom: 0;
+    text-decoration: underline dotted var(--rule);
+    text-underline-offset: 4px;
+  }
+
+  /* ---- date picker ----------------------------------------------------- */
+
+  /* 232px wide with 26px days on desktop. Here it spans the strip, which
+   * makes every day at least 38px wide at a 360px viewport. */
+  .datenav .cal {
+    left: 0;
+    right: 0;
+    top: calc(100% + 4px);
+    width: auto;
+    padding: 10px;
+  }
+
+  .cal-head strong {
+    font-size: 13px;
+  }
+
+  .cal-head button {
+    min-width: 36px;
+    min-height: 36px;
+    font-size: 16px;
+  }
+
+  .cal-grid {
+    gap: 6px;
+  }
+
+  .cal-day,
+  .cal-pad {
+    height: 36px;
+    font-size: 13px;
+  }
+
+  /* The count, which desktop gives on hover. The bar along the bottom
+   * still draws the month's shape; at this cell size there is room for the
+   * figure as well, small and in the corner so it does not compete with
+   * the date. */
+  a.cal-day::after {
+    content: attr(data-n);
+    position: absolute;
+    top: 2px;
+    right: 3px;
+    font-size: 9px;
+    line-height: 1;
+    color: var(--muted);
+  }
+
+  .cal-foot {
+    margin-top: 8px;
+    font-size: 11px;
+  }
+
+  /* ---- ticker search --------------------------------------------------- */
+
+  .strip .search input {
+    min-height: 36px;
+    padding: 6px 0;
+  }
+
+  /* As wide as the row, not as wide as the field: the field's own width
+   * plus the 12px gap and the 96px of links beside it. A menu the width of
+   * the field alone leaves a company name about 40px. */
+  .strip .search-menu {
+    min-width: 0;
+    width: calc(100% + 108px);
+    padding: 4px 0;
+  }
+
+  .strip .search-menu li {
+    align-items: center;
+    min-height: 36px;
+    padding: 0 10px;
+    font-size: 13px;
+  }
+
+  .strip .search-menu li + li {
+    margin-top: 6px;
+  }
+
+  /* ---- sort ------------------------------------------------------------ */
+
+  /* `MobileSort`: the header row's links, which `thead { display: none }`
+   * removes. The block carries `hidden` so that no rule outside this query
+   * is needed to keep it off the desktop page; this is the one place it is
+   * shown. */
+  .msort[hidden] {
+    display: block;
+    margin-top: 4px;
+  }
+
+  .msort summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 36px;
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--text);
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .msort summary::-webkit-details-marker {
+    display: none;
+  }
+
+  /* Drawn, for the reason the dialog's caveat draws its own: the platform
+   * triangle differs across browsers. On the right, so the label lines up
+   * with the cards below it. */
+  .msort summary::after {
+    content: "+";
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 14px;
+    line-height: 1;
+    color: var(--muted);
+  }
+
+  .msort details[open] > summary::after {
+    content: "\2212";
+  }
+
+  /* The same small capitals a card uses for its field labels. */
+  .msort-k {
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .msort ul {
+    margin: 0;
+    padding: 6px 0 8px;
+    list-style: none;
+    border-top: 1px solid var(--rule);
+  }
+
+  .msort li + li {
+    margin-top: 6px;
+  }
+
+  .msort a {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 36px;
+    padding: 3px 0;
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+
+  .msort a.on {
+    color: var(--text);
+  }
+
+  .msort-label {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  /* The header's hover text, printed: what the column sorts on. */
+  .msort-why {
+    font-size: 11px;
+    line-height: 1.35;
+  }
+
+  /* ---- cards ----------------------------------------------------------- */
+
+  /* A row is a card (§11.9: cards, not a sideways-scrolling table). The
+   * older block above makes each `tr` a grid and lets the cells place
+   * themselves, which broke twice over: `td.pick` is `display: none` until
+   * selection is armed, so every cell landed one track left of where the
+   * template expected it, and the `nowrap` cells set the table's width at
+   * 647px on a 390px screen.
+   *
+   * So the cells are placed by name. Each field has one position whatever
+   * is hidden, and `minmax(0, 1fr)` stops a long value widening its track.
+   *
+   *   ticker, side                    inference
+   *   signal types, reversal
+   *   Bollinger lower / mid / upper       fired
+   *   stochastic fast / slow      vol     live
+   *   open        high            low     close
+   *   cell statistics (with ?stats=1)
+   *
+   * Live sits over Close because they are the same reading at two times. */
+  /* Child combinators throughout: the inference dialog is rendered inside
+   * a card's Inference cell, so a descendant selector here would lay the
+   * dialog's own table out as a card too. */
+  .picker-form table.screen,
+  .picker-form table.screen > tbody {
+    display: block;
+  }
+
+  .picker-form table.screen {
+    margin-top: 0;
+    border-top: 1px solid var(--rule);
+  }
+
+  .picker-form table.screen > tbody > tr {
+    grid-template-columns: 3px repeat(4, minmax(0, 1fr));
+    grid-template-areas:
+      "rail tick  tick  inf  inf"
+      "rail sig   sig   sig  sig"
+      "rail boll  boll  boll fired"
+      "rail stoch stoch vol  live"
+      "rail open  high  low  close"
+      "rail cell  cell  cell cell";
+    gap: 0 10px;
+    /* 6px above, so the ticker link clears the sort control over the
+     * first card by more than the 6px two targets need. */
+    padding: 6px 0 8px;
+  }
+
+  /* `body` breaks anywhere under 720px, which would split a price across
+   * two lines before it let a column overflow. A number stays whole. */
+  .picker-form table.screen > tbody > tr > td {
+    min-width: 0;
+    padding: 3px 0;
+    font-size: 12px;
+    text-align: left;
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+
+  /* The desktop rule that closes the gap between Signal and the Bollinger
+   * triple. On a card they are on different lines. */
+  .picker-form table.screen > tbody > tr > td.sig + td.r {
+    padding-left: 0;
+  }
+
+  /* The label above its value, not beside it: four fields share a line,
+   * and a label in front of each would leave no room for the number. */
+  .picker-form table.screen > tbody > tr > td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-family: var(--sans);
+    line-height: 1.4;
+  }
+
+  /* The header's own wording for the two cells that hold more than one
+   * number. `data-label` alone says "Bollinger" over three figures. */
+  .picker-form table.screen > tbody > tr > td[data-label="Bollinger"]::before {
+    content: "Bollinger lower / mid / upper";
+  }
+
+  .picker-form table.screen > tbody > tr > td[data-label="Stochastic"]::before {
+    content: "Stoch fast / slow";
+  }
+
+  .picker-form table.screen > tbody > tr > td.rail {
+    grid-area: rail;
+    padding: 0;
+  }
+
+  /* No label: a ticker symbol and a signal name say what they are. */
+  .picker-form table.screen > tbody > tr > td.ticker[data-label]::before,
+  .picker-form table.screen > tbody > tr > td.sig[data-label]::before {
+    display: none;
+  }
+
+  .picker-form table.screen > tbody > tr > td.ticker {
+    grid-area: tick;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0;
+    font-size: 14px;
+  }
+
+  /* The way to the ticker page, and the card's main control. */
+  .picker-form table.screen > tbody > tr > td.ticker a {
+    display: inline-flex;
+    align-items: center;
+    min-width: 36px;
+    min-height: 36px;
+    font-weight: 600;
+  }
+
+  .picker-form table.screen > tbody > tr > td.ticker .watch-mark {
+    margin-left: 0;
+    padding: 2px 5px;
+    font-size: 10px;
+    vertical-align: baseline;
+  }
+
+  /* The side, in words. Desktop keeps it in the rail's `title`, and a 3px
+   * rail cannot be tapped. Same colours as the rail, so this is the rail
+   * read aloud rather than a second encoding. */
+  .picker-form table.screen > tbody > tr:has(> td.rail span[data-side]) > td.ticker::after {
+    font-family: var(--sans);
+    font-size: 10.5px;
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .picker-form table.screen > tbody > tr:has(> td.rail span[data-side="long"]) > td.ticker::after {
+    content: "long";
+    color: var(--long);
+  }
+
+  .picker-form table.screen > tbody > tr:has(> td.rail span[data-side="short"]) > td.ticker::after {
+    content: "short";
+    color: var(--short);
+  }
+
+  .picker-form table.screen > tbody > tr > td.sig {
+    grid-area: sig;
+    padding: 0 0 5px;
+    line-height: 1.5;
+    white-space: normal;
+  }
+
+  .picker-form table.screen > tbody > tr > td[data-label="Bollinger"] {
+    grid-area: boll;
+    /* Three four-figure prices are wider than three tracks once the
+     * checkbox column is showing. They wrap at a slash, never mid-number. */
+    white-space: normal;
+  }
+
+  .picker-form table.screen > tbody > tr > td[data-label="Stochastic"] {
+    grid-area: stoch;
+  }
+
+  .picker-form table.screen > tbody > tr > td[data-label="Open"] {
+    grid-area: open;
+  }
+
+  .picker-form table.screen > tbody > tr > td[data-label="High"] {
+    grid-area: high;
+  }
+
+  .picker-form table.screen > tbody > tr > td[data-label="Low"] {
+    grid-area: low;
+  }
+
+  .picker-form table.screen > tbody > tr > td[data-label="Close"] {
+    grid-area: close;
+  }
+
+  .picker-form table.screen > tbody > tr > td[data-label="Vol"] {
+    grid-area: vol;
+  }
+
+  .picker-form table.screen > tbody > tr > td[data-label="Live"] {
+    grid-area: live;
+  }
+
+  .picker-form table.screen > tbody > tr > td[data-label="Fired"] {
+    grid-area: fired;
+  }
+
+  /* Opposite the ticker, with its label in front: a bare ellipsis button
+   * at the edge of a card does not say what it opens. */
+  .picker-form table.screen > tbody > tr > td[data-label="Inference"] {
+    grid-area: inf;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 0;
+  }
+
+  .picker-form table.screen > tbody > tr > td[data-label="Inference"]::before {
+    display: inline;
+  }
+
+  /* 22 by 18 on desktop, where it is sized to a 26px row. */
+  .picker-form table.screen > tbody > tr > td > .infer {
+    width: 44px;
+    height: 36px;
+    font-size: 16px;
+  }
+
+  /* The hit rate, its baseline, the interval and `n` do not fit one line
+   * beside anything else, and a suppressed cell is a sentence. */
+  .picker-form table.screen > tbody > tr > td[data-label="Cell"] {
+    grid-area: cell;
+    padding-top: 5px;
+    white-space: normal;
+  }
+
+  /* ---- selecting rows -------------------------------------------------- */
+
+  /* Armed, the card gains a first column for its checkbox. 36px, because
+   * that is the box a finger needs. */
+  .picker-form.armed table.screen > tbody > tr {
+    grid-template-columns: 36px 3px repeat(4, minmax(0, 1fr));
+    grid-template-areas:
+      "pick rail tick  tick  inf  inf"
+      "pick rail sig   sig   sig  sig"
+      "pick rail boll  boll  boll fired"
+      "pick rail stoch stoch vol  live"
+      "pick rail open  high  low  close"
+      "pick rail cell  cell  cell cell";
+  }
+
+  .picker-form.armed table.screen > tbody > tr > td.pick {
+    display: block;
+    grid-area: pick;
+    width: auto;
+    padding: 0;
+  }
+
+  /* Still the native control: focus, the space key and the form's `change`
+   * event are the browser's. Only the paint is replaced, because a native
+   * box is 13px and scaling it to 36px draws a checkbox the size of the
+   * ticker. The transparent 10px border is hit area; the 16px square
+   * inside it is what shows. */
+  .picker-form.armed table.screen > tbody > tr > td.pick input {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 36px;
+    height: 36px;
+    border: 10px solid transparent;
+    border-radius: 12px;
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--muted);
+  }
+
+  /* Filled, inside a ring, in the selection accent desktop tints with. */
+  .picker-form.armed table.screen > tbody > tr > td.pick input:checked {
+    background: var(--long) padding-box;
+    box-shadow:
+      inset 0 0 0 1px var(--long),
+      inset 0 0 0 4px var(--ground);
+  }
+
+  .picker-form > .picker {
+    gap: 6px 14px;
+  }
+
+  .picker-link {
+    min-width: 36px;
+    min-height: 36px;
+  }
+
+  .picker-open {
+    min-height: 40px;
+    font-size: 13px;
+  }
+
+  /* The bar sits under the last card, which on a phone is several thousand
+   * pixels below the first. Once selection is armed it stays at the foot of
+   * the screen, so the count and the button that acts on it are in reach
+   * while the reader scrolls and ticks. Unarmed it is where it always was
+   * and costs no screen. */
+  .picker-form.armed > .picker {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    margin: 0 -16px;
+    padding: 6px 16px calc(8px + env(safe-area-inset-bottom));
+    background: var(--ground);
+    border-top: 1px solid var(--rule);
+  }
+
+  .picker-links {
+    gap: 6px 12px;
+  }
+
+  .picker-links a {
+    display: inline-flex;
+    align-items: center;
+    min-width: 36px;
+    min-height: 36px;
+  }
+
+  /* ---- the line under the table ---------------------------------------- */
+
+  /* The count and the three toggles (statistics, every signal, clear
+   * sort). Links in a sentence are 15px tall; as flex items each gets its
+   * own 36px box, and the underline says they are links where no pointer
+   * can hover to find out. */
+  .picker-form + p.dim {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+  }
+
+  .picker-form + p.dim a {
+    display: inline-flex;
+    align-items: center;
+    min-width: 36px;
+    min-height: 36px;
+    text-decoration: underline;
+    text-decoration-color: var(--rule);
+    text-underline-offset: 3px;
+  }
+
+  /* ---- loading --------------------------------------------------------- */
+
+  /* §11.6: a skeleton matching the final layout. `app/loading.tsx` draws
+   * eight desktop rows, which the older card rule turns into eight 50px
+   * strips, and the page then jumps when 188px cards replace them. The
+   * skeleton keeps its markup and takes the card's height and the strip's,
+   * so what arrives lands where the placeholder was. `.strip + .wrap` is
+   * this route's skeleton only: the ticker page's has no strip. */
+  .strip:has(> .skel) {
+    min-height: 150px;
+    align-content: flex-start;
+  }
+
+  .strip + .wrap > table.screen > tbody > tr:has(> td > .skel) {
+    min-height: 188px;
+    align-content: start;
+  }
+
+  /* ---- empty state ----------------------------------------------------- */
+
+  /* The last-fire ticker is the only way forward from an empty day, and
+   * as a word in a sentence it is 15px tall. */
+  .empty .last a {
+    display: inline-flex;
+    align-items: center;
+    min-width: 36px;
+    min-height: 36px;
+    text-decoration: underline;
+    text-decoration-color: var(--rule);
+    text-underline-offset: 3px;
+  }
+
+  /* ---- notes ----------------------------------------------------------- */
+
+  /* `TouchNotes`: a `title` read out on tap. iOS Safari does not send a
+   * click from an element it considers inert unless the cursor says it is
+   * clickable, so the declaration below is what makes the tap arrive. */
+  .strip [title],
+  .wrap [title],
+  .modal [title] {
+    cursor: pointer;
+  }
+
+  .note-hint {
+    margin: 4px 0 0;
+    font-size: 11px;
+  }
+
+  /* Above the dialog's scrim (50): the notes that matter most are inside
+   * the dialog. */
+  .note-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 60;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    background: var(--panel);
+    border-top: 1px solid var(--muted);
+    box-shadow: 0 -8px 24px rgb(0 0 0 / 50%);
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--text);
+  }
+
+  .note-bar span {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .note-bar button {
+    flex: none;
+    width: 36px;
+    height: 36px;
+    margin: -8px -8px -8px 0;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    color: var(--muted);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  /* ---- inference dialog ------------------------------------------------ */
+
+  /* `min-width: 340px` is wider than a 360px screen less the scrim's
+   * padding, so the dialog pushed the page sideways. `dvh` because the
+   * browser's own bars come and go, and 88vh of the larger viewport is
+   * taller than what is showing. */
+  .modal {
+    min-width: 0;
+    max-height: calc(100vh - 32px);
+    max-height: calc(100dvh - 32px);
+    /* Reaching the end of the dialog must not start scrolling the page
+     * behind it. */
+    overscroll-behavior: contain;
+  }
+
+  .modal-head {
+    align-items: center;
+    margin-bottom: 4px;
+  }
+
+  .modal-x {
+    min-width: 36px;
+    min-height: 36px;
+    margin: -6px -8px -6px 0;
+    font-size: 22px;
+  }
+
+  /* **The dialog opened from a card is a descendant of `table.screen`**,
+   * because `InferenceCell` renders it beside its button, inside the cell.
+   * The older `--- mobile ---` block's card rules are descendant selectors,
+   * so they reached the dialog's table as well: `thead` hidden, which took
+   * the Outcome / Chance / Error headings and their notes, and every row a
+   * three-track grid with the label wrapped a word to a line. These put
+   * the table back, and restore the row rule the same block strips. */
+  table.screen .modal-table thead {
+    display: table-header-group;
+  }
+
+  table.screen .modal-table tr {
+    display: table-row;
+    padding: 0;
+    border-bottom: 0;
+  }
+
+  table.screen .modal-table td {
+    border-bottom: 1px solid var(--rule);
+  }
+
+  /* Taller rows: each label and each margin of error is a thing to tap
+   * for its note. Scoped to the dialog, because `/model` reuses
+   * `.modal-table` for the calibration table. */
+  .modal .modal-table td {
+    padding: 6px 0 6px 10px;
+  }
+
+  .modal .modal-table tbody th {
+    padding-top: 6px;
+    padding-bottom: 6px;
+    white-space: normal;
+  }
+
+  .modal .modal-table .modal-group th {
+    padding-top: 10px;
+    padding-bottom: 4px;
+  }
+
+  /* A sentence, and `nowrap` from the screener's cell rule would set the
+   * dialog's width by it. */
+  .modal .modal-table .modal-span td {
+    padding-left: 0;
+    white-space: normal;
+  }
+
+  /* Invariant 8: a probability travels with its interval and its
+   * effective sample. Desktop keeps the sample in this cell's `title`;
+   * here it is printed, in the `n=` form the statistics column uses. */
+  .modal .modal-table td[data-n]::after {
+    content: "\00a0\00a0n=" attr(data-n);
+  }
+
+  .modal-note > summary {
+    align-items: center;
+    min-height: 36px;
+  }
 }
 
 /* --- shared mobile base (2026-10-05) ------------------------------------ */
