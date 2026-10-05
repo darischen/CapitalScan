@@ -3413,6 +3413,432 @@ table.screen th.r .sortlink {
   }
 }
 
+/* --- ticker page on a phone (2026-10-05) -------------------------------- */
+
+/* DESIGN §11.9. Everything `/ticker/[sym]` needs under 720px, after the
+ * sections it adjusts and after the screener's block, whose dialog and
+ * note-bar rules this page reuses unchanged. Nothing here applies above
+ * 720px.
+ *
+ * The page reads top to bottom as: identity and price, the chart, the
+ * state readouts, the history. The chart moves above the state rail
+ * because on a phone the two no longer share a screen, and the price panel
+ * is what the page is opened for. */
+@media (max-width: 720px) {
+  /* ---- order ----------------------------------------------------------- */
+
+  /* A column, so `order` can lift the chart over the rail without the
+   * markup moving. Nothing in `.tk-top` takes focus, so the tab order is
+   * the same as the reading order either way. */
+  .tk {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .tk > .tk-chart {
+    order: 1;
+  }
+
+  .tk > .tk-top {
+    order: 2;
+  }
+
+  .tk > .history {
+    order: 3;
+  }
+
+  /* `TouchNotes` is the last thing in `main`, and without an order of its
+   * own its hint would sit beside the header, ahead of everything above. */
+  .tk > .note-hint {
+    order: 4;
+  }
+
+  /* ---- header ---------------------------------------------------------- */
+
+  .tk-head {
+    gap: 4px 14px;
+  }
+
+  /* A long company name and its sector do not fit beside the symbol. They
+   * wrap under it instead of pushing the page sideways. */
+  .tk-id {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 0 12px;
+    min-width: 0;
+  }
+
+  /* Live, close and the 200-day distance are five items when a session is
+   * open, wider than a 360px screen. */
+  .tk-price {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 2px 10px;
+  }
+
+  /* The live price carries its poll time in a `title` (`TouchNotes`), so
+   * it is a thing to tap. Padding grows the box to 36px and leaves the
+   * figure where the baseline puts it. */
+  .tk-price .big[title] {
+    padding-block: 5px;
+  }
+
+  .tk-tags {
+    gap: 6px 8px;
+  }
+
+  /* The watch-universe tag explains itself in a `title`. A bordered tag
+   * cannot take padding without the border growing with it, so the margin
+   * reserves the room and the pseudo-element fills it with something to
+   * hit: the pattern the screener's stale badge uses. The drawn tag stays
+   * 19px and its target reaches no control. */
+  .tk-tags .tag[title] {
+    position: relative;
+    margin-block: 8.5px;
+  }
+
+  .tk-tags .tag[title]::after {
+    content: "";
+    position: absolute;
+    inset: -9.5px -1px;
+  }
+
+  /* ---- ticker search --------------------------------------------------- */
+
+  /* The same sizes the screener's strip gives this component. The type is
+   * the shared base's 16px, which this does not restate. */
+  .tk-head .search input {
+    min-height: 36px;
+    padding: 6px 0;
+  }
+
+  .tk-head .search-menu {
+    padding: 4px 0;
+  }
+
+  .tk-head .search-menu li {
+    align-items: center;
+    min-height: 36px;
+    padding: 0 10px;
+    font-size: 13px;
+  }
+
+  .tk-head .search-menu li + li {
+    margin-top: 6px;
+  }
+
+  /* ---- chart ----------------------------------------------------------- */
+
+  /* Seven ranges across the full width: each at least 36px square with 6px
+   * between, where desktop draws them 31 by 20 in a corner. */
+  .ranges {
+    width: 100%;
+    gap: 6px;
+    margin-bottom: 0;
+  }
+
+  .ranges a {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 36px;
+    min-height: 36px;
+    padding: 0;
+    font-size: 12px;
+  }
+
+  /* The library's attribution mark is a link, 35 by 19, drawn inside the
+   * chart. Its own stylesheet positions it, so a pseudo-element can pad
+   * the target to 36px without moving the mark. */
+  .chart #tv-attr-logo::after {
+    content: "";
+    position: absolute;
+    inset: -9px -1px;
+  }
+
+  /* ---- state rail and gauge ------------------------------------------- */
+
+  /* Three columns that line up, instead of eleven readouts wrapping
+   * wherever their widths happen to break. The widest label, `fast
+   * stochastic`, fits a third of a 360px screen on one line. */
+  .rail-strip {
+    flex: 1 1 100%;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px 14px;
+  }
+
+  .stat {
+    min-width: 0;
+  }
+
+  /* `body` breaks anywhere under 720px, which would split a label
+   * mid-word before it let a column overflow. A label breaks at a space. */
+  .stat .k {
+    overflow-wrap: normal;
+  }
+
+  /* The gauge takes the full width: the track is a position, and a longer
+   * track is a finer reading. 240px was a floor for a desktop column. */
+  .gauge {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  /* ---- history head ---------------------------------------------------- */
+
+  /* The heading, the model button and the two toggles are 356px in one
+   * row. The controls drop to their own line when they have to and stay
+   * at the right edge, where desktop has them. Scoped to this page:
+   * `/model` has a `.history-head` of its own. */
+  .history > .history-head {
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0 16px;
+  }
+
+  .history > .history-head .toggles {
+    margin-left: auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px 14px;
+  }
+
+  /* Child combinators: the model dialog is rendered inside this `nav`,
+   * beside its button, and has links and buttons of its own. */
+  .history > .history-head .toggles > a {
+    display: inline-flex;
+    align-items: center;
+    min-width: 36px;
+    min-height: 36px;
+    white-space: nowrap;
+  }
+
+  /* Drawn by the text rather than the box's bottom border, which at 36px
+   * tall would sit well under the word. */
+  .history > .history-head .toggles > a.on {
+    border-bottom: 0;
+    text-decoration: underline;
+    text-decoration-color: var(--long);
+    text-underline-offset: 4px;
+  }
+
+  .history > .history-head .toggles > .predict-btn {
+    min-height: 36px;
+    white-space: nowrap;
+  }
+
+  /* ---- history cards --------------------------------------------------- */
+
+  /* A row is a card (§11.9), as on the screener, with this table's own
+   * fields. The older `--- mobile ---` block makes each `tr` a three-track
+   * grid and lets the cells place themselves; the `nowrap` cells then set
+   * the table's width at 592px on a 390px screen. Placed by name instead:
+   *
+   *   date     side              $10k
+   *   signal types, reversal, flags
+   *   entry    exit     reason   hold
+   *   net               MFE      MAE
+   *
+   * Net takes two tracks because it is a sentence when there is no number
+   * (`N/A: awaiting next open`). */
+  .history table.screen,
+  .history table.screen > tbody {
+    display: block;
+  }
+
+  .history table.screen {
+    border-top: 1px solid var(--rule);
+  }
+
+  .history table.screen > tbody > tr {
+    grid-template-columns: 3px repeat(4, minmax(0, 1fr));
+    grid-template-areas:
+      "rail date  side  eq     eq"
+      "rail sig   sig   sig    sig"
+      "rail entry exit  reason hold"
+      "rail net   net   mfe    mae";
+    gap: 0 8px;
+    padding: 6px 0 8px;
+  }
+
+  /* A number stays whole: `body` would otherwise split a price across two
+   * lines before it let a track overflow. */
+  .history table.screen > tbody > tr > td {
+    min-width: 0;
+    padding: 3px 0;
+    font-size: 12px;
+    text-align: left;
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+
+  /* The label above its value. Four fields share a line, and a label in
+   * front of each would leave no room for the number. */
+  .history table.screen > tbody > tr > td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-family: var(--sans);
+    line-height: 1.4;
+  }
+
+  .history table.screen > tbody > tr > td.rail {
+    grid-area: rail;
+    padding: 0;
+  }
+
+  /* No label on the first two lines: a date, a side and a signal name say
+   * what they are. */
+  .history table.screen > tbody > tr > td[data-label="Date"]::before,
+  .history table.screen > tbody > tr > td[data-label="Side"]::before,
+  .history table.screen > tbody > tr > td.sig[data-label]::before {
+    display: none;
+  }
+
+  .history table.screen > tbody > tr > td[data-label="Date"] {
+    grid-area: date;
+    color: var(--text);
+  }
+
+  .history table.screen > tbody > tr > td[data-label="Side"] {
+    grid-area: side;
+    align-self: center;
+  }
+
+  /* The running equity, at the right of the first line with its label in
+   * front. Most rows hold a dash here, and a labelled dash on a line of
+   * its own would cost every card a row. */
+  .history table.screen > tbody > tr > td[data-label="$10k"] {
+    grid-area: eq;
+    text-align: right;
+  }
+
+  .history table.screen > tbody > tr > td[data-label="$10k"]::before {
+    display: inline;
+    margin-right: 6px;
+  }
+
+  .history table.screen > tbody > tr > td.sig {
+    grid-area: sig;
+    padding: 0 0 4px;
+    line-height: 1.5;
+    white-space: normal;
+  }
+
+  /* 14px tall, and it answers a tap with which close it was
+   * (`TouchNotes`). Eleven above and below make the target 36px; the lines
+   * it reaches hold no control. */
+  .history table.screen > tbody > tr > td.sig .reversal {
+    position: relative;
+  }
+
+  .history table.screen > tbody > tr > td.sig .reversal::after {
+    content: "";
+    position: absolute;
+    inset: -12px -1px;
+  }
+
+  .history table.screen > tbody > tr > td[data-label="Entry"] {
+    grid-area: entry;
+  }
+
+  .history table.screen > tbody > tr > td[data-label="Exit"] {
+    grid-area: exit;
+  }
+
+  .history table.screen > tbody > tr > td[data-label="Reason"] {
+    grid-area: reason;
+  }
+
+  .history table.screen > tbody > tr > td[data-label="Hold"] {
+    grid-area: hold;
+  }
+
+  .history table.screen > tbody > tr > td[data-label="Net"] {
+    grid-area: net;
+    white-space: normal;
+  }
+
+  .history table.screen > tbody > tr > td[data-label="MFE"] {
+    grid-area: mfe;
+  }
+
+  .history table.screen > tbody > tr > td[data-label="MAE"] {
+    grid-area: mae;
+  }
+
+  /* The row the scroll observer watches. As a card it would be 15px of
+   * padding and a rule under the last event. */
+  .history table.screen > tbody > tr.sentinel {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+
+  .rows-foot .retry {
+    min-width: 44px;
+    min-height: 36px;
+    margin-left: 6px;
+  }
+
+  /* The `$10k` header's hover text. The header row is not drawn here, so
+   * `EventRows` prints the note once under the cards; `hidden` keeps it
+   * off the desktop page and this is the one place it is shown. */
+  .eq-note[hidden] {
+    display: block;
+    margin: 6px 0 0;
+    font-size: 11.5px;
+  }
+
+  /* ---- loading --------------------------------------------------------- */
+
+  /* §11.6: a skeleton matching the final layout. `loading.tsx` draws the
+   * desktop page: a one-line header, a rail of bars, the chart, six table
+   * rows. The order rules above already put its chart over its rail. These
+   * give each block the height its content arrives at on a phone, measured
+   * on NVDA and QQQ at 390px, so the page does not jump by several hundred
+   * pixels when the data lands. The markup is untouched, and `:has(.skel)`
+   * matches nothing once the page has loaded. */
+  .tk-head:has(.skel) {
+    min-height: 196px;
+    align-content: flex-start;
+  }
+
+  /* 118px above the chart for the legend and the range row, 37px under it
+   * for the caption. */
+  .tk-chart:has(> .skel) {
+    padding-top: 118px;
+    padding-bottom: 37px;
+  }
+
+  .tk-top:has(.skel) {
+    min-height: 284px;
+  }
+
+  /* A label over a value, where the two bars would otherwise touch. */
+  .stat:has(> .skel) {
+    gap: 8px;
+    min-height: 36px;
+  }
+
+  /* The room the heading and its toggles take. */
+  .history:has(.skel) > table.screen {
+    margin-top: 50px;
+  }
+
+  .history table.screen > tbody > tr:has(> td > .skel) {
+    min-height: 137px;
+    align-content: start;
+  }
+
+  /* The desktop bars are sized to desktop columns, and the widest is
+   * broader than a card's track. */
+  .history table.screen > tbody > tr > td > .skel {
+    max-width: 100%;
+  }
+}
+
 /* --- shared mobile base (2026-10-05) ------------------------------------ */
 
 /* Rules every route needs on a phone, and nothing page-specific: each page

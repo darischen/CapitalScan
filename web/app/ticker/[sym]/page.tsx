@@ -11,6 +11,7 @@ import {
   TickerHeader,
 } from "@/components/Ticker";
 import TickerChart from "@/components/TickerChart";
+import TouchNotes from "@/components/TouchNotes";
 import { normalizeSymbol } from "@/lib/format";
 import { readMeta } from "@/lib/screen";
 import {
@@ -134,6 +135,12 @@ export default async function TickerPage({
           inTrade={current.inTrade}
           prediction={prediction}
         />
+        {/* Reads a `title` out on tap, under 720px only, and renders
+            nothing on a wide viewport: the same mount as the screener's.
+            Here the notes are the reversal badge's, the watch tag's, the
+            live price's poll time, and everything in the model dialog.
+            Inside `main` so its hint shares the page gutter. */}
+        <TouchNotes />
       </main>
     );
   } catch (error) {

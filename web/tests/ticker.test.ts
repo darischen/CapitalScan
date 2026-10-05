@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { markers, prepend } from "@/components/TickerChart";
+import { markers, prepend, vertTouchDrag } from "@/components/TickerChart";
 import { fmt, normalizeSymbol, pct, signedPct, vol } from "@/lib/format";
 import { sideFor } from "@/lib/screen";
 import {
@@ -335,5 +335,28 @@ describe("the live row is one source for two shapes", () => {
     for (const field of ["bbLower", "bbMid", "bbUpper", "kFast", "kFull", "sma200"] as const) {
       expect(bar[field], `${field} must be null on a partial bar`).toBeNull();
     }
+  });
+});
+
+/**
+ * Who a vertical finger drag on the chart belongs to (DESIGN §11.9).
+ *
+ * The chart is 520px tall. With the library's default it claims every
+ * vertical drag that starts on it, so on a phone most of the screen stops
+ * scrolling the page. The property worth pinning is the first row: a wide
+ * viewport with a fine pointer gets the library's default, untouched.
+ */
+describe("vertical touch drag on the chart", () => {
+  it("is the library default off a touch layout, wherever the drag starts", () => {
+    expect(vertTouchDrag(false, false)).toBe(true);
+    expect(vertTouchDrag(false, true)).toBe(true);
+  });
+
+  it("scrolls the page from the panes on a touch layout", () => {
+    expect(vertTouchDrag(true, false)).toBe(false);
+  });
+
+  it("still scales the price axis on a touch layout, the way a mouse drag does", () => {
+    expect(vertTouchDrag(true, true)).toBe(true);
   });
 });
