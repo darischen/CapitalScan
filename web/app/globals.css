@@ -1472,10 +1472,9 @@ table.screen td.rail span[data-side="short"] {
 
 /* --- research page ------------------------------------------------------ */
 
-/* Desktop-only (DESIGN §11.9) and it says so rather than reflowing into
- * something unreadable. The page is a set of wide tables whose columns
- * carry meaning by position; stacking them into cards loses the comparison
- * that is the point. */
+/* The page is a set of wide tables whose columns carry meaning by position;
+ * stacking them into cards loses the comparison that is the point, so on a
+ * narrow screen they scroll sideways inside their own box (DESIGN §11.9). */
 
 .research-page {
   max-width: 1180px;
@@ -1645,22 +1644,167 @@ table.research tr.dimmed td {
   border-top: 1px solid var(--rule);
 }
 
+/* Narrow desktop and tablet. The tables are wider than the column below
+ * about 900px, so each scrolls inside its own box (`ScrollRegion`) and the page
+ * does not. The box scrolls rather than the table, so it can take focus. */
 @media (max-width: 900px) {
-  /* §11.9: desktop-only, and it says so. */
-  .research-page::before {
-    content: "This page is designed for a desktop screen. Tables below scroll horizontally.";
-    display: block;
-    padding: 8px 10px;
-    margin-bottom: 12px;
-    border: 1px solid var(--flag);
-    border-radius: 2px;
-    color: var(--flag);
-    font-size: 11.5px;
+  .research-page .table-scroll {
+    overflow-x: auto;
+  }
+}
+
+/* Phone. The base `@media (max-width: 720px)` block near the top turns every
+ * `table.screen` into cards and hides its header, which suits the screener
+ * and is unreadable here: these columns carry meaning by position, and the
+ * rows have no `data-label`s. So the research tables are put back to real
+ * tables and scroll sideways inside `.table-scroll`. */
+@media (max-width: 720px) {
+  /* A thin scrollbar in a visible colour, plus a shadow on each edge with
+   * more to scroll to. The shadows are the usual two-layer trick: a cover in
+   * the ground colour that scrolls with the content hides the shadow when
+   * the box is at that edge. iOS draws its own scrollbar only while
+   * scrolling, so the shadow is the resting cue. */
+  .research-page .table-scroll {
+    margin-top: 14px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--muted) var(--panel);
+    background:
+      linear-gradient(to right, var(--ground) 30%, transparent) left center / 24px 100% no-repeat local,
+      linear-gradient(to left, var(--ground) 30%, transparent) right center / 24px 100% no-repeat local,
+      linear-gradient(to right, var(--rule), transparent) left center / 10px 100% no-repeat scroll,
+      linear-gradient(to left, var(--rule), transparent) right center / 10px 100% no-repeat scroll;
   }
 
-  .research-page table {
-    display: block;
-    overflow-x: auto;
+  .research-page .table-scroll:focus-visible {
+    outline: 1px solid var(--muted);
+    outline-offset: 2px;
+  }
+
+  .research-page .table-scroll > table.research {
+    margin-top: 0;
+    /* `body` sets `overflow-wrap: anywhere`, which lowers min-content and
+     * lets the columns crush. Auto layout keeps each column at its
+     * `nowrap` content width, and the box scrolls. */
+    overflow-wrap: normal;
+    min-width: max-content;
+  }
+
+  .research-page .table-scroll > table.research thead {
+    display: table-header-group;
+  }
+
+  .research-page .table-scroll > table.research tr {
+    display: table-row;
+    padding: 0;
+    border-bottom: 0;
+  }
+
+  /* 44px rows: a cell or a bar that carries a note is something to tap, so
+   * it needs a 36px target with room between its neighbours. */
+  .research-page .table-scroll > table.research td {
+    display: table-cell;
+    height: 44px;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .research-page .table-scroll > table.research td.rail {
+    padding: 0;
+    position: sticky;
+    left: 0;
+  }
+
+  .research-page .table-scroll > table.research td.rail span {
+    height: 44px;
+  }
+
+  /* The first readable column stays put while the rest scrolls under it. The
+   * rail is 3px, so the signal column sticks at 3px. A ground fill stops the
+   * numbers showing through. */
+  .research-page .table-scroll > table.research td.sig,
+  .research-page .table-scroll > table.research th.sig,
+  .research-page .table-scroll > table.research tbody td:first-child:not(.rail),
+  .research-page .table-scroll > table.research td.rail + td {
+    position: sticky;
+    background: var(--ground);
+  }
+
+  .research-page .table-scroll > table.research td.rail + td,
+  .research-page .table-scroll > table.research th.rail + th {
+    left: 3px;
+  }
+
+  .research-page .table-scroll > table.research tbody td:first-child:not(.rail) {
+    left: 0;
+  }
+
+  .research-page .table-scroll > table.research th.rail,
+  .research-page .table-scroll > table.research th.rail + th,
+  .research-page .table-scroll > table.research th:first-child:not(.rail) {
+    position: sticky;
+    background: var(--ground);
+  }
+
+  .research-page .table-scroll > table.research th.rail,
+  .research-page .table-scroll > table.research th:first-child:not(.rail) {
+    left: 0;
+  }
+
+  .research-page .table-scroll > table.research tr:hover td.rail + td,
+  .research-page .table-scroll > table.research tr:hover td.sig {
+    background: var(--ground);
+  }
+
+  /* A header with a note behind it is 20px tall as drawn. Padding to 36px
+   * makes the tap target without moving the label off the top of the row. */
+  .research-page .table-scroll > table.research th[title] {
+    height: 36px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    cursor: pointer;
+  }
+
+  /* The interval bar is 12px tall. An empty `::after` extends the tap area
+   * to 36px without changing what is drawn; the row is 44px, so it stays
+   * inside its own row. */
+  .research-page .edgebar::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -12px;
+    bottom: -12px;
+  }
+
+  /* The histogram's bars are 12px wide and there are 28 across a 343px
+   * box, so 36px wide is not possible without dropping bars. A low bar is
+   * only a few px tall, so its tap area is stretched to the full 84px height
+   * of the plot. The marker is 2px wide, so it gets a 14px area, the pitch
+   * of one bar, which leaves the bars beside it tappable. */
+  .research-page .nulldist .bars i {
+    position: relative;
+  }
+
+  .research-page .nulldist .bars i::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 84px;
+  }
+
+  .research-page .nulldist .marker::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -6px;
+    right: -6px;
+  }
+
+  .research-page .nulldist .scale {
+    gap: 12px;
   }
 }
 

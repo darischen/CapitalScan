@@ -254,6 +254,10 @@ describe("the client boundary", () => {
     // sample behind every margin of error in one. It needs a document
     // click listener and one string of state, imports nothing from `lib/`,
     // and renders nothing above 720px.
+    //
+    // `ScrollRegion` joined with it for `/research`: a table that scrolls
+    // sideways on a phone must be keyboard-focusable, and only while it
+    // overflows, which takes a measurement. It imports nothing from `lib/`.
     expect(clients).toEqual([
       "components/Chat.tsx",
       "components/DatePicker.tsx",
@@ -263,6 +267,7 @@ describe("the client boundary", () => {
       "components/LivePrice.tsx",
       "components/OpenSelected.tsx",
       "components/PredictButton.tsx",
+      "components/ScrollRegion.tsx",
       "components/TickerChart.tsx",
       "components/TickerSearch.tsx",
       "components/TouchNotes.tsx",
