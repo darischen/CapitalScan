@@ -2594,10 +2594,26 @@ table.screen th.r .sortlink {
     justify-content: flex-end;
   }
 
-  /* A readout with a note behind it (`TouchNotes`) gets a taller box to
-   * tap. The bordered badges keep their own. */
+  /* A readout with a note behind it (`TouchNotes`) is a thing to tap, so
+   * it gets the 36px a control gets. Padding does it for plain text: the
+   * type stays 12px and the box around it grows. */
   .strip > span[title]:not(.stale-badge) {
-    padding-block: 4px;
+    padding-block: 9.5px;
+  }
+
+  /* A bordered badge cannot take padding without the border growing with
+   * it. The margin reserves the room in the layout and the pseudo-element
+   * fills that room with something to hit, so the drawn badge stays 19px
+   * and no other line's target overlaps it. */
+  .strip > .stale-badge[title] {
+    position: relative;
+    margin-block: 8.5px;
+  }
+
+  .strip > .stale-badge[title]::after {
+    content: "";
+    position: absolute;
+    inset: -9.5px -1px;
   }
 
   /* ---- date navigation ------------------------------------------------- */
@@ -2605,9 +2621,13 @@ table.screen th.r .sortlink {
   /* The arrows are one glyph in 13px type, 13px square to a finger. Each
    * becomes a 36px box with the glyph centred, and the disabled arrow
    * keeps the same box so the date does not shift at either end of the
-   * history. */
-  .datenav a,
-  .datenav .off {
+   * history.
+   *
+   * Direct children only. The calendar opens inside `.datenav`, and a
+   * descendant selector here also matched every linked day in it, which
+   * drew those at 16px beside empty days at 13px. */
+  .datenav > a,
+  .datenav > .off {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -2618,7 +2638,7 @@ table.screen th.r .sortlink {
 
   /* An underline drawn by the text rather than by the box's bottom border,
    * which at 36px tall would sit well below the word. */
-  .datenav .latest {
+  .datenav > .latest {
     padding: 0 4px;
     font-size: 12px;
     border-bottom: 0;
@@ -2926,10 +2946,83 @@ table.screen th.r .sortlink {
   }
 
   .picker-form table.screen > tbody > tr > td.ticker .watch-mark {
-    margin-left: 0;
+    position: relative;
+    /* Room for the hit area below, on top of the cell's 8px gap, so it
+     * stops 8px short of the ticker link on one side and of the side on
+     * the other. */
+    margin: 0 9px;
     padding: 2px 5px;
     font-size: 10px;
     vertical-align: baseline;
+  }
+
+  /* **Hit areas for the things a tap reads a note from.** Each of these is
+   * drawn small on purpose and stays that size. A transparent
+   * pseudo-element, positioned over and around it, is what a finger
+   * lands on: 36px tall, and 36px wide where the mark itself is narrower.
+   * A click on a pseudo-element is a click on its element, so
+   * `TouchNotes` reads the same `title`.
+   *
+   * The mark is 18 by 20 with its border. Nine either side and eight
+   * above and below, measured from that border, make it 36 square, which
+   * is the height of the ticker row exactly. */
+  .picker-form table.screen > tbody > tr > td.ticker .watch-mark::after {
+    content: "";
+    position: absolute;
+    inset: -9px -10px;
+  }
+
+  /* The two controls on a card sit above any hit area that reaches their
+   * row. The reversal badge's can: it is on the line under them and
+   * extends 11px upward. Where the two meet, the control is what is hit. */
+  .picker-form table.screen > tbody > tr > td.ticker a,
+  .picker-form table.screen > tbody > tr > td > .infer {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* 14px tall. Eleven above and below. */
+  .picker-form table.screen > tbody > tr > td.sig .reversal {
+    position: relative;
+  }
+
+  .picker-form table.screen > tbody > tr > td.sig .reversal::after {
+    content: "";
+    position: absolute;
+    inset: -12px -1px;
+  }
+
+  /* A provisional or missing open carries its note on a span the size of
+   * the number. Its hit area is the whole cell, which is the size the
+   * Bollinger and Live cells already offer for theirs. */
+  .picker-form table.screen > tbody > tr > td[data-label="Open"] {
+    position: relative;
+  }
+
+  .picker-form table.screen > tbody > tr > td[data-label="Open"] > span[title]::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+  }
+
+  /* The did-not-survive-correction marker, 11px type at the end of the
+   * statistics line. */
+  .picker-form table.screen > tbody > tr > td[data-label="Cell"] .flag[title] {
+    position: relative;
+  }
+
+  .picker-form table.screen > tbody > tr > td[data-label="Cell"] .flag[title]::after {
+    content: "";
+    position: absolute;
+    inset: -11px -4px;
+  }
+
+  /* The rail's `title` is the side, which the card prints beside the
+   * ticker. A 3px strip cannot be given a 36px target without covering
+   * the card, so it is taken out of reach instead of left as a target
+   * nobody can hit. */
+  .picker-form table.screen > tbody > tr > td.rail span[title] {
+    pointer-events: none;
   }
 
   /* The side, in words. Desktop keeps it in the rail's `title`, and a 3px
@@ -3147,7 +3240,7 @@ table.screen th.r .sortlink {
    * so what arrives lands where the placeholder was. `.strip + .wrap` is
    * this route's skeleton only: the ticker page's has no strip. */
   .strip:has(> .skel) {
-    min-height: 150px;
+    min-height: 161px;
     align-content: flex-start;
   }
 
@@ -3286,6 +3379,14 @@ table.screen th.r .sortlink {
     white-space: normal;
   }
 
+  /* 36px, the height a control gets: the headings, each label and each
+   * margin of error answer a tap with a note. On a table cell `height` is
+   * a minimum, so a label that wraps still grows its row. */
+  .modal .modal-table th,
+  .modal .modal-table td {
+    height: 36px;
+  }
+
   .modal .modal-table .modal-group th {
     padding-top: 10px;
     padding-bottom: 4px;
@@ -3294,6 +3395,7 @@ table.screen th.r .sortlink {
   /* A sentence, and `nowrap` from the screener's cell rule would set the
    * dialog's width by it. */
   .modal .modal-table .modal-span td {
+    height: auto;
     padding-left: 0;
     white-space: normal;
   }
