@@ -2546,3 +2546,88 @@ table.screen th.r .sortlink {
 .modal-note.cosmetic {
   border-top-color: var(--short);
 }
+
+/* --- shared mobile base (2026-10-05) ------------------------------------ */
+
+/* Rules every route needs on a phone, and nothing page-specific: each page
+ * has its own block above or below. Every rule sits inside the 720px query,
+ * so the desktop layout above it is untouched (DESIGN §11.9). */
+@media (max-width: 720px) {
+  /* A phone's browser may enlarge text it thinks is too small after a
+   * rotation, which reflows a dense page on its own. 100% turns that off and
+   * leaves pinch zoom, which `viewport` in `layout.tsx` does not disable. */
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  /* The 16px page gutter stays; `max()` adds the notch or rounded-corner
+   * inset in landscape, where it is non-zero, and is a no-op in portrait. */
+  .wrap {
+    padding-left: max(16px, env(safe-area-inset-left));
+    padding-right: max(16px, env(safe-area-inset-right));
+    padding-bottom: max(32px, env(safe-area-inset-bottom));
+  }
+
+  .strip {
+    padding-left: max(16px, env(safe-area-inset-left));
+    padding-right: max(16px, env(safe-area-inset-right));
+  }
+
+  /* A ticker symbol, URL or model-written token with no break opportunity
+   * would otherwise push the page wider than the screen. `anywhere` also
+   * lowers min-content, so a flex or grid child can shrink to fit. */
+  body {
+    overflow-wrap: anywhere;
+  }
+
+  /* Removes the double-tap-to-zoom delay and the accidental zoom on a
+   * quick second tap of a control. Pinch zoom is untouched. */
+  a,
+  button,
+  select,
+  summary,
+  label,
+  input,
+  textarea,
+  [role="button"],
+  [tabindex] {
+    touch-action: manipulation;
+  }
+
+  /* iOS Safari zooms the page when a field under 16px takes focus, and does
+   * not zoom back. Checkboxes and radios have no text to zoom. */
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  /* The page header shared by /research and /chat: back link, title and a
+   * descriptor line. Three items in one row do not fit at 360px, so the
+   * descriptor drops to its own full-width line instead of squeezing the
+   * title. */
+  .rs-head {
+    flex-wrap: wrap;
+    gap: 4px 14px;
+  }
+
+  .rs-head .dim {
+    flex-basis: 100%;
+  }
+
+  /* Header links are the only way off a page and sit in 12px text. 36px is
+   * the minimum hit area; `inline-flex` grows the box without moving the
+   * text, and the 6px gap keeps neighbours apart. */
+  .back,
+  .strip-nav a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 36px;
+    min-width: 36px;
+  }
+
+  .strip-nav {
+    gap: 6px 14px;
+  }
+}
