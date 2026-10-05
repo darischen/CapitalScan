@@ -4115,3 +4115,56 @@ table.screen th.r .sortlink {
     inset: -11px -4px;
   }
 }
+
+/* The chat page (`/chat`). Every selector is scoped to `.chat-page`, so no
+ * other route reads these. The transcript already scrolls with the document
+ * and the composer is `position: sticky` at its foot, so the layout depends
+ * on no viewport-height unit (a `100vh` shell is the thing a soft keyboard
+ * breaks); what is left is hit areas, the 16px field and the end-of-log
+ * scroll target. */
+@media (max-width: 720px) {
+  /* The base rule's `textarea` selector has specificity (0,0,1) and loses to
+   * `.chat-compose textarea` above, which left the composer at 13px, the size
+   * at which iOS Safari zooms the page on focus. This restates 16px at
+   * (0,2,1), and the box grows to 44px so a thumb finds the line. */
+  .chat-page .chat-compose textarea {
+    font-size: 16px;
+    min-height: 44px;
+    padding: 9px 10px;
+  }
+
+  /* A soft keyboard's Enter key may insert a newline instead of sending, so
+   * the button is the guaranteed path. It stretches to the box's height and
+   * keeps a 56px width, clear of the 36px minimum. The bottom padding adds
+   * the home-indicator inset where one exists. */
+  .chat-page .chat-compose {
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+
+  .chat-page .chat-compose button {
+    min-width: 56px;
+    min-height: 44px;
+    font-size: 14px;
+  }
+
+  /* The example questions are the empty state's only controls. 29px rows
+   * become 36px, with the 6px column gap kept between them. */
+  .chat-page .chat-empty button {
+    min-height: 36px;
+    padding: 8px 10px;
+  }
+
+  /* The tool-call row opens the raw payload and is a `<summary>`, 25px tall
+   * at rest. The flex row already centres its three spans, so a minimum
+   * height grows the target without moving the text. */
+  .chat-page .tool > summary {
+    min-height: 36px;
+  }
+
+  /* `scrollIntoView` aligns the end marker with the bottom of the screen,
+   * which is where the sticky composer sits, so the newest line would land
+   * underneath it. The margin leaves the composer's height clear. */
+  .chat-page .chat-log > :last-child {
+    scroll-margin-bottom: 84px;
+  }
+}
