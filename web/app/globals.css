@@ -4074,3 +4074,44 @@ table.screen th.r .sortlink {
     gap: 6px 14px;
   }
 }
+
+/* The calibration page (`/model`). */
+@media (max-width: 720px) {
+  /* The shared base sets `overflow-wrap: anywhere`, which lowers the
+   * heading's min-content to one letter, so flex shrank "Calibration" to
+   * nine characters and broke it mid-word. The heading keeps its word and
+   * the count beside it wraps onto its own line instead. */
+  .rel > .history-head {
+    flex-wrap: wrap;
+    gap: 2px 16px;
+  }
+
+  .rel > .history-head h2 {
+    overflow-wrap: normal;
+  }
+
+  /* The "understates" / "overstates" flag carries its explanation in a
+   * `title` (`TouchNotes` reads it on tap). The word is 14px tall, so the
+   * rows grow to 36px and the target is the whole row height: neighbouring
+   * flags then touch without overlapping, and the drawn type is unchanged. */
+  .rel-table th,
+  .rel-table td {
+    padding-top: 11px;
+    padding-bottom: 11px;
+  }
+
+  .rel-table thead th {
+    padding-top: 0;
+    padding-bottom: 6px;
+  }
+
+  .rel-flag > span[title] {
+    position: relative;
+  }
+
+  .rel-flag > span[title]::after {
+    content: "";
+    position: absolute;
+    inset: -11px -4px;
+  }
+}

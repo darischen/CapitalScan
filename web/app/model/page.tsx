@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 
 import Reliability from "@/components/Reliability";
 import { ErrorState } from "@/components/Screener";
+import TouchNotes from "@/components/TouchNotes";
 import { reliability } from "@/lib/reliability";
 
 export const metadata: Metadata = {
@@ -25,6 +26,8 @@ export default async function ModelPage() {
     return (
       <main className="wrap">
         <Reliability data={data} />
+        {/* The "understates" flag keeps its reason in a `title`. */}
+        <TouchNotes />
       </main>
     );
   } catch (error) {
