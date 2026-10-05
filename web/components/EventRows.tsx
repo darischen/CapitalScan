@@ -190,6 +190,19 @@ export default function EventRows({
 
   return (
     <>
+      {/* The `$10k` header's hover text, for a screen with no header row.
+          `hidden` keeps it out of the desktop page with no rule to do so;
+          the 720px block in `globals.css` is the one place it is shown.
+
+          **Above the table, where the header is.** Under it, the note sat
+          below a list that pages in fifty more rows whenever the reader
+          gets within 400px of its end, so on a ticker with 2,377 events
+          it moved away about 47 times before it could be read. Desktop
+          reads the same text with one hover at the top. */}
+      <p className="eq-note dim" hidden>
+        <span className="num">$10k</span>: {EQUITY_NOTE}
+      </p>
+
       <table className="screen">
         <thead>
           <tr>
@@ -322,13 +335,6 @@ export default function EventRows({
             </button>
           </>
         )}
-      </p>
-
-      {/* The `$10k` header's hover text, for a screen with no header row.
-          `hidden` keeps it out of the desktop page with no rule to do so;
-          the 720px block in `globals.css` is the one place it is shown. */}
-      <p className="eq-note dim" hidden>
-        <span className="num">$10k</span>: {EQUITY_NOTE}
       </p>
     </>
   );

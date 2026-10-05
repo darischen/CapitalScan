@@ -152,10 +152,13 @@ const PREFETCH_BARS = 0;
 const LIVE_POLL_MS = 45_000;
 
 /**
- * Where a finger is the pointer (DESIGN §11.9): the phone layout, or any
- * width whose primary pointer is coarse, which is a phone turned sideways.
- * A desktop with a mouse matches neither half, at any window width above
- * 720px.
+ * Where a finger is the pointer (DESIGN §11.9): the phone layout, or a
+ * device of any width whose primary pointer is coarse. The second half
+ * covers a phone turned sideways and also a tablet well above 720px, and
+ * that reach is intended: a chart that traps the page's scroll is a touch
+ * problem, not a width problem, and a 520px chart traps a finger on a
+ * 1024px tablet exactly as it does on a phone. A desktop with a mouse
+ * matches neither half, at any window width above 720px.
  */
 const TOUCH_LAYOUT = "(max-width: 720px), (pointer: coarse)";
 

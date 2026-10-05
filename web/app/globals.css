@@ -3783,12 +3783,19 @@ table.screen th.r .sortlink {
   }
 
   /* The `$10k` header's hover text. The header row is not drawn here, so
-   * `EventRows` prints the note once under the cards; `hidden` keeps it
-   * off the desktop page and this is the one place it is shown. */
+   * `EventRows` prints the note once over the cards, where the header
+   * would be: under them it would sit below a list that keeps growing as
+   * it is scrolled. `hidden` keeps it off the desktop page and this is
+   * the one place it is shown. */
   .eq-note[hidden] {
     display: block;
-    margin: 6px 0 0;
+    margin: 8px 0 0;
     font-size: 11.5px;
+  }
+
+  /* The note already separates the heading from the first card. */
+  .history .eq-note + table.screen {
+    margin-top: 8px;
   }
 
   /* ---- loading --------------------------------------------------------- */
