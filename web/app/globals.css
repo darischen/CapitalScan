@@ -4112,12 +4112,16 @@ table.screen th.r .sortlink {
   }
 
   /* Every cell is `nowrap`, and the `n` column gains a digit as predictions
-   * resolve, so the table can outgrow a narrow phone. As a block it scrolls
-   * inside itself; the heading and the notes above and below stay put. It
-   * fits today, so this changes nothing until it has to. */
-  .rel-table {
-    display: block;
+   * resolve, so the table can outgrow a narrow phone. The wrapper
+   * (`ScrollRegion`) scrolls rather than the table, which stays a table for
+   * layout and for screen readers; the heading and notes stay put. */
+  .rel .table-scroll {
     overflow-x: auto;
+  }
+
+  .rel .table-scroll:focus-visible {
+    outline: 1px solid var(--muted);
+    outline-offset: 2px;
   }
 
   .rel-flag > span[title] {
