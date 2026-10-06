@@ -16,7 +16,10 @@ import { useEffect, useState } from "react";
  * markup.** Printing every note inline would put a sentence under most
  * numbers on a card, and the notes exist precisely because they are not
  * worth that room. So a tap on anything carrying a `title` shows that text
- * in a bar at the foot of the screen, and the next tap elsewhere clears it.
+ * in a bar at the foot of the screen. The bar has a dismiss button, and a tap
+ * on a control or another titled element replaces or clears it; a tap on blank
+ * space clears it only where the browser sends a click from it (iOS Safari
+ * sends none from a non-interactive element without `cursor: pointer`).
  * The `title` stays the single source, so a note edited for desktop is
  * edited for touch.
  *

@@ -2681,10 +2681,13 @@ table.screen th.r .sortlink {
 
 /* --- screener on a phone (2026-10-05) ----------------------------------- */
 
-/* DESIGN §11.9. Everything `/` needs under 720px, in one block and after
- * the sections it adjusts, because a later rule of equal weight wins and
- * several of those sections (`.modal`, `.datenav`, `.cal`) sit below the
- * older `--- mobile ---` block. Nothing here applies above 720px.
+/* DESIGN §11.9. The phone rules for `/`, in one block and after the sections
+ * it adjusts, because a later rule of equal weight wins and several of those
+ * sections (`.modal`, `.datenav`, `.cal`) sit below the older `--- mobile ---`
+ * block. It also holds `.note-bar`, `.note-hint`, the `[title]` cursor rule
+ * and the `.modal` rules, which `/ticker`, `/research` and `/model` depend on
+ * too, so those four routes share them; the shared base further down the file
+ * follows this block. Nothing here applies above 720px.
  *
  * The card rules are scoped to `.picker-form`, the form `OpenSelected`
  * wraps the screener table in. `table.screen` is also the ticker page's
@@ -4004,8 +4007,11 @@ table.screen th.r .sortlink {
     text-size-adjust: 100%;
   }
 
-  /* The 16px page gutter stays; `max()` adds the notch or rounded-corner
-   * inset in landscape, where it is non-zero, and is a no-op in portrait. */
+  /* The 16px page gutter stays; `max()` is meant to add the notch or
+   * rounded-corner inset in landscape. It is inert today: `viewport` in
+   * `layout.tsx` has no `viewportFit: "cover"`, so iOS reports every
+   * `env(safe-area-inset-*)` as 0 and `max()` returns the 16px. It starts
+   * working if that is added, which needs a device test first. */
   .wrap {
     padding-left: max(16px, env(safe-area-inset-left));
     padding-right: max(16px, env(safe-area-inset-right));
@@ -4103,6 +4109,15 @@ table.screen th.r .sortlink {
   .rel-table thead th {
     padding-top: 0;
     padding-bottom: 6px;
+  }
+
+  /* Every cell is `nowrap`, and the `n` column gains a digit as predictions
+   * resolve, so the table can outgrow a narrow phone. As a block it scrolls
+   * inside itself; the heading and the notes above and below stay put. It
+   * fits today, so this changes nothing until it has to. */
+  .rel-table {
+    display: block;
+    overflow-x: auto;
   }
 
   .rel-flag > span[title] {

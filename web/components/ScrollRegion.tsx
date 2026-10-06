@@ -16,6 +16,16 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
  * neither `tabindex` nor `role`, so the desktop markup is the markup that
  * existed before this file; the effect adds them only on a measured overflow.
  */
+/**
+ * Whether the box has something to scroll. Wider content alone is not enough:
+ * above 900px `.table-scroll` is `overflow: visible`, so a table can be wider
+ * than its column with nothing to scroll, and a tab stop there would be empty.
+ * The 1px slack absorbs sub-pixel rounding.
+ */
+export function overflows(scrollWidth: number, clientWidth: number, overflowX: string): boolean {
+  return overflowX !== "visible" && scrollWidth > clientWidth + 1;
+}
+
 export default function ScrollRegion({
   label,
   children,
@@ -29,7 +39,7 @@ export default function ScrollRegion({
   useEffect(() => {
     const el = box.current;
     if (!el) return;
-    const measure = () => setScrolls(el.scrollWidth > el.clientWidth + 1);
+    const measure = () => setScrolls(overflows(el.scrollWidth, el.clientWidth, getComputedStyle(el).overflowX));
     measure();
     // The box changes size on rotation, the table when fonts load.
     const observer = new ResizeObserver(measure);

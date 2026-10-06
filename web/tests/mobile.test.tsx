@@ -6,6 +6,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 import { MobileSort, ScreenerTable, type SortContext } from "@/components/Screener";
+import { overflows } from "@/components/ScrollRegion";
 import { noteFor } from "@/components/TouchNotes";
 import type { ScreenRow } from "@/lib/screen";
 
@@ -181,5 +182,21 @@ describe("a tap reads the note a hover would have shown", () => {
     expect(noteFor(el({ tag: "td" }))).toBeNull();
     expect(noteFor(el({ tag: "td", title: "" }))).toBeNull();
     expect(noteFor(el({ tag: "td", title: "   " }))).toBeNull();
+  });
+});
+
+describe("a scroll region is focusable only when its box can scroll", () => {
+  it("is not when the content fits", () => {
+    expect(overflows(300, 300, "auto")).toBe(false);
+    expect(overflows(301, 300, "auto")).toBe(false); // sub-pixel rounding
+  });
+
+  it("is when the content is wider and the box scrolls", () => {
+    expect(overflows(500, 300, "auto")).toBe(true);
+    expect(overflows(500, 300, "scroll")).toBe(true);
+  });
+
+  it("is not when the content is wider but the box is overflow visible", () => {
+    expect(overflows(500, 300, "visible")).toBe(false);
   });
 });
