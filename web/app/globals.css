@@ -4128,10 +4128,12 @@ table.screen th.r .sortlink {
     position: relative;
   }
 
+  /* No reach to the right: the word ends within a pixel of the wrapper's
+   * edge at 360px, so a halo past it made the wrapper scroll by 3px. */
   .rel-flag > span[title]::after {
     content: "";
     position: absolute;
-    inset: -11px -4px;
+    inset: -11px 0 -11px -4px;
   }
 }
 
