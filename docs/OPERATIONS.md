@@ -1773,3 +1773,80 @@ Google font.
 `gh run rerun` covers the GitHub Actions jobs only, so the Vercel row can
 stay red against a deployment that failed for the same reason. On a
 docs-only branch that is cosmetic; the Pi serves the site, not Vercel.
+
+## Adding a ticker by hand: VGT (2026-10-01)
+
+The owner asked for VGT, the Vanguard Information Technology ETF. Nothing
+in `nightly`, `weekly` or the poller needs editing to add a ticker: every
+job reads `tickers` and `universe`, so a ticker with rows in both is picked
+up by the next run of each. What a new ticker needs is its history, built
+once, by hand.
+
+### The procedure, as it should be run
+
+On the research machine (`wivie`), outside the 13:15 nightly window:
+
+1. **An ETF only:** add it to `core/training.py::ETF_TICKERS` and
+   `jobs/ingest.py::SEC_NON_FILER_TICKERS` in one PR (ADR 147, ADR 154).
+   An ETF in one list and not the other trains the model on a fund. Merge
+   and pull every machine first; neither list moves `config_hash`.
+2. Insert the `tickers` row: `INSERT INTO tickers (ticker, name, is_active)
+   VALUES ('VGT', '...', true)`. An ETF has no CIK and no sector.
+3. Per-ticker ingest and compute, each with `--tickers VGT`:
+   `bars --daily --lookback 8500`, `bars --hourly --backfill`,
+   `actions --lookback 8500`, `shares --no-since-last`,
+   `indicators --lookback 8500`, then `universe --quarter Q --tickers VGT`
+   for every quarter the live generation holds (66, 2010Q1 to 2026Q2),
+   `events --lookback 8500`, `backtest --tickers VGT`.
+4. Paths for this ticker only. **There is no `--tickers` on
+   `path backfill`**; it was run through
+   `research.path_backfill._run_path_job(engine, ["VGT"], ...)` inside an
+   `ingest.run_job` (44,416 rows, 21 s). Then `path peak-labels`
+   (whole generation, ~6 min, idempotent).
+5. **Let the nightly ship it, plus one hand copy.** See below.
+
+Measured: steps 2 to 3 took 19 minutes, most of it the 66 universe
+quarters at ~12 s each. VGT came out with 5,692 daily bars from
+2004-01-30, `in_trade` in all 66 quarters, 2,586 touch signals.
+
+### Three things that went wrong
+
+**`bars --hourly` with one ticker raised `KeyError: 'Open'`.** Every
+single-ticker hourly call did, not just VGT's: `group_by="ticker"` returns
+`(ticker, field)` columns even for a one-symbol list, and the batch path
+skipped its column extractor when it held one ticker. The nightly never hit
+it because its batches hold fifty. Worked around on the day with
+`--tickers VGT,VOO`; fixed 2026-10-12 (`_fetch_hourly_window_batch`, test
+`test_a_batch_of_one_is_separated_like_any_other`).
+
+**Bare `cscan path backfill` recomputes the whole generation, serially.**
+Started by mistake for one ticker, killed after 7 minutes, `runs` row
+marked failed. It would have run into the nightly.
+
+**Bare `cscan sync` is the full copy: 3 to 4.5 hours** (`runs`, 2026-09-20
+to 09-26). Started by mistake at 12:18, killed at 12:33. It had copied
+`tickers`, `universe` and `bars` and died inside `indicators`; the killed
+client's backend on the Pi kept inserting for a few minutes and held row
+locks a hand copy waited on. `serving_config` is written last, so serving
+never moved generation and the poller logged nothing.
+
+### Why the nightly is not enough on its own
+
+`nightly` syncs with `incremental=True`. `events` ship by `modified_at`, so
+a new ticker's whole signal history goes across. **`bars` and `indicators`
+do not:** their bound is the target's newest row minus the overlap
+(`sync._incremental_bounds`), so a new ticker's history older than about a
+week is never shipped. For VGT the killed full sync happened to have copied
+`bars`, and `indicators` were copied by hand:
+
+```
+psql <research> -c "\copy (SELECT * FROM indicators WHERE ticker='VGT' AND interval='1d') TO STDOUT" |
+psql <serving> -c "CREATE TEMP TABLE t (LIKE indicators)" -c "\copy t FROM pstdin" \
+  -c "INSERT INTO indicators SELECT * FROM t ON CONFLICT DO NOTHING"
+```
+
+Do the same for `bars` (`interval = '1d'`) when adding the next ticker.
+Both tables key on `(ticker, ts, interval)`, so the copy is safe during a
+live session for a ticker the poller does not yet poll. The nightly at
+13:15 then shipped the events; verified 2026-10-03, 2,587 touch and 2,545
+`next_open` rows on serving, and the ticker page rendering them.

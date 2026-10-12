@@ -1427,6 +1427,13 @@ regime feature such as the ADR 176 breadth reading, which is already
 computed and already known to separate. Publishing the trailing realised
 rate beside the model's number so a reader can see the gap themselves.
 
+**DONE 2026-10-01: VGT added** (owner). The procedure, and the three
+things that went wrong, are in OPERATIONS.md, "Adding a ticker by hand".
+**Open:** `path backfill` has no `--tickers`, and an incremental sync never
+ships a new ticker's older `bars`/`indicators`, so the next ticker still
+needs a hand step for each. A `cscan add-ticker` command would fold all of
+it into one.
+
 **BUILT 2026-09-30: the forward log resolves nightly (ADR 205).**
 `outcomes` had resolved 0 predictions on eight runs because `fwd_ret_5d`
 came only from the weekly backtest. `nightly` now fills it from the daily

@@ -93,6 +93,24 @@ def test_a_ticker_missing_from_the_batch_is_retried_alone(monkeypatch):
     assert set(got["ticker"]) == {"AAA", "BBB"}
 
 
+def test_a_batch_of_one_is_separated_like_any_other(monkeypatch):
+    """`cscan bars --hourly --tickers VGT` raised `KeyError: 'Open'` (2026-10-01).
+
+    `group_by="ticker"` makes yfinance return `(ticker, field)` columns even
+    for a one-symbol list. The batch path skipped the extractor when it had
+    one ticker, so `_shape_hourly` flattened to the ticker level and found
+    no `Open`. Every single-ticker hourly call failed; the nightly never hit
+    it because its batches hold fifty.
+    """
+    monkeypatch.setattr(yahoo, "_download_hourly_batch", lambda t, s, e: _raw(list(t)))
+    monkeypatch.setattr(yahoo, "_download_hourly", lambda *a, **k: pd.DataFrame())
+    end = date(2026, 8, 20)
+    got = yahoo._fetch_hourly_window_batch.__wrapped__(["VGT"], end - timedelta(days=5), end)
+    assert set(got["ticker"]) == {"VGT"}
+    assert len(got) == 3
+    assert list(got["open"]) == [1.0, 2.0, 3.0]
+
+
 # ---------------------------------------------------------------------------
 # The cache key, which is where the last two of these went wrong
 # ---------------------------------------------------------------------------

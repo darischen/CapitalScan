@@ -472,7 +472,11 @@ def _fetch_hourly_window_batch(tickers: list[str], start: date, end: date) -> pd
     missing: list[str] = []
 
     for ticker in tickers:
-        sub = _extract_ticker_frame(raw, ticker) if len(tickers) > 1 else raw
+        # Always through the extractor, even for one ticker: `group_by="ticker"`
+        # returns `(ticker, field)` columns for a one-symbol list too, and
+        # passing `raw` straight through raised `KeyError: 'Open'` on every
+        # single-ticker call (2026-10-01). The extractor handles flat columns.
+        sub = _extract_ticker_frame(raw, ticker)
         shaped = _shape_hourly(sub, ticker)
         if shaped.empty:
             missing.append(ticker)
