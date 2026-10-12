@@ -1086,6 +1086,36 @@ and rendered on the screener. The coverage-decay figures it carried
 
 ### Operational, small
 
+**The ticker range links hang on a local production build, and it is not
+our bug (found 2026-10-12, not fixed, no fix planned).** On `next start`
+against localhost, a click on `5d`/`1m`/`3m`/... on `/ticker/[sym]` does
+nothing 4 to 6 times in 12: no URL change, no error, no reload, the browser
+idle. It does not reproduce under `next dev`, on the Pi (8 of 8) or on the
+public site, and the owner's phone is clean. Measured on Next 15.5.23:
+
+- The server answers in ~25 ms and the payload is complete; every row in it
+  resolves. The hang is in the client router.
+- It is a race on how fast the **body** arrives. Throttled to 40 KB/s, 12
+  of 12 clicks work. Unthrottled, the whole body lands inside ~35 ms and
+  about half hang. A 300 ms delay *before* the request leaves changes
+  nothing (6 of 12 still hang).
+- Only the range links do it. `?all=1` and the back link never hang. The
+  range request carries the `refetch` marker: the router reuses the cached
+  `/ticker/SYM` entry and fetches the page lazily during render
+  (`layout-router.js`), then suspends until a server patch lands.
+  `server-patch-reducer.js` drops a patch whose tree does not match and
+  returns the old state, which would leave the segment suspended forever.
+  **That last step is inferred, not proven** -- the bundle is minified.
+
+Nothing to fix in `RangeSwitch`: it is a plain `<Link>`. A plain `<a>`
+would trade the race for a full reload on every click on the real site.
+**It starts to matter if serving gets fast enough** to deliver a ticker
+page in a few tens of milliseconds (a faster box, a cache in front of the
+route). **Re-test after any Next upgrade:** local `next build` and
+`next start`, 12 fresh loads of `/ticker/NVDA`, one range click each, all
+12 must change the URL. The first guess, slow home-page queries holding
+the pool, was wrong: one home render does not slow the ticker route.
+
 **`actions` and `shares` stop repeating per-ticker fetches -- BUILT
 2026-09-27 (`fetch_ledger`, migration `c3e7a9d15f40`).** The two steps were
 13.7 and 10.1 of a ~55-minute nightly and had never been profiled.
