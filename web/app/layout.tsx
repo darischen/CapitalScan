@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 
 import "./globals.css";
@@ -61,6 +61,18 @@ export const metadata: Metadata = {
     template: "%s | CapitalScan",
   },
   description: "Bollinger Band and Stochastic Oscillator event study. Advisory only.",
+};
+
+/**
+ * Explicit rather than Next's injected default, so the mobile contract is
+ * written down where it can be read. User zoom stays enabled: no
+ * `maximumScale`, no `userScalable: false`. `themeColor` is the `--ground`
+ * token in `globals.css`, so the browser chrome matches the page ground.
+ */
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  themeColor: "#14171a",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

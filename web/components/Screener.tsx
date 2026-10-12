@@ -485,7 +485,6 @@ function SortHeader({
   title?: string;
 }) {
   const active = ctx.sort === sortKey;
-  const dir = nextDir(sortKey, ctx.sort, ctx.dir);
   return (
     <th
       className={className}
@@ -496,12 +495,7 @@ function SortHeader({
     >
       <a
         className={active ? "sortlink on" : "sortlink"}
-        href={screenHref(ctx.date, {
-          withStats: ctx.withStats,
-          confluenceOnly: ctx.confluenceOnly,
-          sort: sortKey,
-          dir,
-        })}
+        href={sortHref(sortKey, ctx)}
       >
         {label}
         {/* Reserved whether or not it is showing, so switching columns does
@@ -527,6 +521,163 @@ export interface SortContext {
   confluenceOnly: boolean;
 }
 
+/**
+ * Where a sort control for `sortKey` points.
+ *
+ * One function because there are two controls: the column header, and the
+ * list a phone gets in its place (`MobileSort`). Both ask `nextDir` for the
+ * direction and `screenHref` for the URL through here, so a tap on the list
+ * is a click on the header and the two cannot come to disagree.
+ */
+function sortHref(sortKey: SortKey, ctx: SortContext): string {
+  return screenHref(ctx.date, {
+    withStats: ctx.withStats,
+    confluenceOnly: ctx.confluenceOnly,
+    sort: sortKey,
+    dir: nextDir(sortKey, ctx.sort, ctx.dir),
+  });
+}
+
+/**
+ * The sortable columns, in header order.
+ *
+ * A list rather than eleven JSX elements since 2026-10-05, when the phone
+ * layout needed the same columns a second time. `title` is the header's
+ * hover text, and the mobile list prints it because nothing there can be
+ * hovered.
+ */
+const SORT_HEADERS: {
+  label: string;
+  sortKey: SortKey;
+  className?: string;
+  title?: string;
+}[] = [
+  { label: "Ticker", sortKey: "ticker" },
+  {
+    label: "Signal",
+    sortKey: "signal",
+    title: "Confluence first, then band, then stochastic; short side above long within each",
+    className: "sig",
+  },
+  {
+    label: "Bollinger Lower / Mid / Upper",
+    sortKey: "bollinger",
+    className: "r",
+    title:
+      "Bollinger bands at t-1, the row the signal compared against. Mid is the 20-day SMA. Sorts on the lower band.",
+  },
+  {
+    label: "fast / slow Stochastic",
+    sortKey: "stochastic",
+    className: "r",
+    title: "Raw %K is the trigger (ADR 110); smoothed must agree within tolerance. Sorts on the raw %K.",
+  },
+  {
+    label: "Open",
+    sortKey: "open",
+    className: "r",
+    title: "The signal date's own bar; the live session's open (bars_live) until that night's ingest.",
+  },
+  { label: "High", sortKey: "high", className: "r" },
+  { label: "Low", sortKey: "low", className: "r" },
+  {
+    label: "Close",
+    sortKey: "close",
+    className: "r",
+    title: "Coloured against the open: cool closed up, warm closed down",
+  },
+  { label: "Vol", sortKey: "volume", className: "r" },
+  { label: "Live", sortKey: "live", className: "r", title: "Newest price the poller saw" },
+  { label: "Fired", sortKey: "fired", className: "r" },
+];
+
+/**
+ * The header row's sorting, for a phone (DESIGN §11.9).
+ *
+ * Under 720px each row is a card and `thead` is `display: none`, which
+ * takes all eleven sort links with it. This is the same eleven links as a
+ * list: same `href`, same flip on a second tap, same caret, cool for
+ * ascending and warm for descending.
+ *
+ * **`hidden`, and only the 720px query shows it.** Every rule added for the
+ * phone layout lives inside that query so the desktop stylesheet is
+ * untouched, which leaves no rule that could hide this above it. The
+ * attribute does that instead: the browser's own `[hidden]` rule keeps the
+ * block out of the layout, the tab order and the accessibility tree until
+ * the query overrides `display`.
+ *
+ * **`<details>`, closed.** Sorting is occasional and the list is eleven
+ * rows. Open, it would stand between the status strip and the first signal
+ * on every visit. Closed, it is one line that says what the order is.
+ * It needs no script, so it is a server component like the table.
+ *
+ * Rendered by the page as the table's sibling rather than from inside
+ * `ScreenerTable`, because a `<table>` cannot hold it and the table's own
+ * markup then stays exactly what it was.
+ */
+export function MobileSort({ ctx }: { ctx: SortContext }) {
+  const current = SORT_HEADERS.find((h) => h.sortKey === ctx.sort);
+  const caret = ctx.dir === "asc" ? "▲" : "▼";
+  return (
+    <div className="msort" hidden>
+      <details>
+        <summary>
+          <span className="msort-k">sort</span>
+          {current ? (
+            <>
+              {current.label}
+              <span className="caret" data-dir={ctx.dir} aria-hidden="true">
+                {caret}
+              </span>
+            </>
+          ) : (
+            "default order"
+          )}
+        </summary>
+        <ul>
+          {/* The footer's `clear sort`, which on a phone sits below every
+              card on the page. */}
+          {ctx.sort !== null && (
+            <li>
+              <a
+                className="msort-clear"
+                href={screenHref(ctx.date, {
+                  withStats: ctx.withStats,
+                  confluenceOnly: ctx.confluenceOnly,
+                })}
+              >
+                default order
+              </a>
+            </li>
+          )}
+          {SORT_HEADERS.map((h) => {
+            const active = ctx.sort === h.sortKey;
+            return (
+              <li key={h.sortKey}>
+                <a
+                  className={active ? "msort-opt on" : "msort-opt"}
+                  href={sortHref(h.sortKey, ctx)}
+                  aria-current={active ? "true" : undefined}
+                >
+                  <span className="msort-label">
+                    {h.label}
+                    {active && (
+                      <span className="caret" data-dir={ctx.dir} aria-hidden="true">
+                        {caret}
+                      </span>
+                    )}
+                  </span>
+                  {h.title && <span className="msort-why">{h.title}</span>}
+                </a>
+              </li>
+            );
+          })}
+        </ul>
+      </details>
+    </div>
+  );
+}
+
 export function ScreenerTable({
   rows,
   withStats,
@@ -545,63 +696,16 @@ export function ScreenerTable({
               Select-all lives in the bar below, so this header stays empty. */}
           <th className="pick" aria-label="select" />
           <th className="rail" aria-label="side" />
-          <SortHeader label="Ticker" sortKey="ticker" ctx={sortCtx} />
-          <SortHeader
-            label="Signal"
-            sortKey="signal"
-            ctx={sortCtx}
-            title="Confluence first, then band, then stochastic; short side above long within each"
-            className="sig"
-          />
-          <SortHeader
-            label="Bollinger Lower / Mid / Upper"
-            sortKey="bollinger"
-            ctx={sortCtx}
-            className="r"
-            title="Bollinger bands at t-1, the row the signal compared against. Mid is the 20-day SMA. Sorts on the lower band."
-          />
-          <SortHeader
-            label="fast / slow Stochastic"
-            sortKey="stochastic"
-            ctx={sortCtx}
-            className="r"
-            title="Raw %K is the trigger (ADR 110); smoothed must agree within tolerance. Sorts on the raw %K."
-          />
-          <SortHeader
-            label="Open"
-            sortKey="open"
-            ctx={sortCtx}
-            className="r"
-            title="The signal date's own bar; the live session's open (bars_live) until that night's ingest."
-          />
-          <SortHeader label="High" sortKey="high" ctx={sortCtx} className="r" />
-          <SortHeader label="Low" sortKey="low" ctx={sortCtx} className="r" />
-          <SortHeader
-            label="Close"
-            sortKey="close"
-            ctx={sortCtx}
-            className="r"
-            title="Coloured against the open: cool closed up, warm closed down"
-          />
-          <SortHeader
-            label="Vol"
-            sortKey="volume"
-            ctx={sortCtx}
-            className="r"
-          />
-          <SortHeader
-            label="Live"
-            sortKey="live"
-            ctx={sortCtx}
-            className="r"
-            title="Newest price the poller saw"
-          />
-          <SortHeader
-            label="Fired"
-            sortKey="fired"
-            ctx={sortCtx}
-            className="r"
-          />
+          {SORT_HEADERS.map((h) => (
+            <SortHeader
+              key={h.sortKey}
+              label={h.label}
+              sortKey={h.sortKey}
+              ctx={sortCtx}
+              className={h.className}
+              title={h.title}
+            />
+          ))}
           <th className="c">Inference</th>
           {withStats && <th>Cell</th>}
         </tr>

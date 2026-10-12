@@ -1,5 +1,13 @@
 import OpenSelected from "@/components/OpenSelected";
-import { EmptyState, ErrorState, ScreenerTable, StatusStrip } from "@/components/Screener";
+import {
+  EmptyState,
+  ErrorState,
+  MobileSort,
+  ScreenerTable,
+  type SortContext,
+  StatusStrip,
+} from "@/components/Screener";
+import TouchNotes from "@/components/TouchNotes";
 import { isSortKey, lastFire, screen } from "@/lib/screen";
 
 /**
@@ -85,6 +93,15 @@ export default async function ScreenerPage({
 
     const empty = result.rows.length === 0;
     const last = empty ? await lastFire() : null;
+    // One object for the two sort controls: the header row, and the list a
+    // phone gets in its place.
+    const sortCtx: SortContext = {
+      sort: result.sort,
+      dir: result.dir,
+      date: params.date || null,
+      withStats,
+      confluenceOnly,
+    };
 
     return (
       <>
@@ -106,16 +123,14 @@ export default async function ScreenerPage({
                   children; `OpenSelected` only wraps it in a form and reads
                   the checkboxes it rendered (ADR 139). */}
               <OpenSelected>
+                {/* The sortable headers, as a list: `thead` is hidden under
+                    720px. Carries `hidden`, so it is out of the desktop
+                    render entirely (DESIGN §11.9). */}
+                <MobileSort ctx={sortCtx} />
                 <ScreenerTable
                   rows={result.rows}
                   withStats={result.withStats}
-                  sortCtx={{
-                    sort: result.sort,
-                    dir: result.dir,
-                    date: params.date || null,
-                    withStats,
-                    confluenceOnly,
-                  }}
+                  sortCtx={sortCtx}
                 />
               </OpenSelected>
               <p className="dim" style={{ marginTop: 12, fontSize: 12 }}>
@@ -181,6 +196,10 @@ export default async function ScreenerPage({
               </p>
             </>
           )}
+          {/* Reads a `title` out on tap, under 720px only. Renders nothing
+              on a wide viewport. Inside `main` so its one line of hint
+              shares the page gutter. */}
+          <TouchNotes />
         </main>
       </>
     );

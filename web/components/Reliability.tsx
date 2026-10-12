@@ -1,3 +1,4 @@
+import ScrollRegion from "@/components/ScrollRegion";
 import type { Reliability as ReliabilityData } from "@/lib/reliability";
 
 /**
@@ -59,42 +60,44 @@ export function Reliability({ data }: { data: ReliabilityData }) {
         )}
       </p>
 
-      <table className="modal-table rel-table">
-        <thead>
-          <tr>
-            <th>Band</th>
-            <th className="r">Stated</th>
-            <th className="r">Observed</th>
-            <th className="r">95% range</th>
-            <th className="r">n</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {data.buckets.map((b) => (
-            <tr key={b.index} className={b.inside ? undefined : "rel-miss"}>
-              <th scope="row" className="num">
-                {(b.lo * 100).toFixed(0)}–{(b.hi * 100).toFixed(0)}%
-              </th>
-              <td className="r num">{(b.predicted * 100).toFixed(1)}%</td>
-              <td className="r num">{(b.actual * 100).toFixed(1)}%</td>
-              <td className="r num dim">
-                {(b.ciLow * 100).toFixed(1)}–{(b.ciHigh * 100).toFixed(1)}
-              </td>
-              <td className="r num dim">{b.n.toLocaleString()}</td>
-              <td className="rel-flag">
-                {b.inside ? (
-                  <span className="dim">ok</span>
-                ) : (
-                  <span title="The stated chance lies outside the range actually observed for this band.">
-                    {b.predicted < b.ciLow ? "understates" : "overstates"}
-                  </span>
-                )}
-              </td>
+      <ScrollRegion label="Calibration by band">
+        <table className="modal-table rel-table">
+          <thead>
+            <tr>
+              <th>Band</th>
+              <th className="r">Stated</th>
+              <th className="r">Observed</th>
+              <th className="r">95% range</th>
+              <th className="r">n</th>
+              <th />
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {data.buckets.map((b) => (
+              <tr key={b.index} className={b.inside ? undefined : "rel-miss"}>
+                <th scope="row" className="num">
+                  {(b.lo * 100).toFixed(0)}–{(b.hi * 100).toFixed(0)}%
+                </th>
+                <td className="r num">{(b.predicted * 100).toFixed(1)}%</td>
+                <td className="r num">{(b.actual * 100).toFixed(1)}%</td>
+                <td className="r num dim">
+                  {(b.ciLow * 100).toFixed(1)}–{(b.ciHigh * 100).toFixed(1)}
+                </td>
+                <td className="r num dim">{b.n.toLocaleString()}</td>
+                <td className="rel-flag">
+                  {b.inside ? (
+                    <span className="dim">ok</span>
+                  ) : (
+                    <span title="The stated chance lies outside the range actually observed for this band.">
+                      {b.predicted < b.ciLow ? "understates" : "overstates"}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </ScrollRegion>
 
       <p className="modal-note">
         Bands hold equal numbers of predictions, not equal widths: an

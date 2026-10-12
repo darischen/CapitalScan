@@ -151,6 +151,42 @@ const PREFETCH_BARS = 0;
  */
 const LIVE_POLL_MS = 45_000;
 
+/**
+ * Where a finger is the pointer (DESIGN §11.9): the phone layout, or a
+ * device of any width whose primary pointer is coarse. The second half
+ * covers a phone turned sideways and also a tablet well above 720px, and
+ * that reach is intended: a chart that traps the page's scroll is a touch
+ * problem, not a width problem, and a 520px chart traps a finger on a
+ * 1024px tablet exactly as it does on a phone. A desktop with a mouse
+ * matches neither half, at any window width above 720px.
+ */
+const TOUCH_LAYOUT = "(max-width: 720px), (pointer: coarse)";
+
+/**
+ * `handleScroll.vertTouchDrag` for a touch that is about to start.
+ *
+ * `true` is the library's default and means the chart keeps a vertical
+ * finger drag for itself. The chart is 520px tall, so on a phone a swipe
+ * that started anywhere on it, which is most of the screen, did not scroll
+ * the page, and in landscape, where the chart is taller than the screen,
+ * nothing below it could be reached at all.
+ *
+ * On a touch layout the panes give the vertical drag back to the page.
+ * Horizontal drag, pinch and the long-press crosshair are other options and
+ * stay on. **The price axis keeps its drag**, because dragging it is how
+ * the price scale is stretched and a mouse can do that; the axis is a
+ * narrow strip at the right edge, so the page stays scrollable from the
+ * rest of the chart.
+ *
+ * The library reads this option for touch events only (`isTouch` guards
+ * every use), so a mouse behaves the same whichever value is set. It is
+ * still left at the default off a touch layout, so that nothing about the
+ * desktop chart depends on that reading of its source.
+ */
+export function vertTouchDrag(touchLayout: boolean, onPriceAxis: boolean): boolean {
+  return !touchLayout || onPriceAxis;
+}
+
 
 /**
  * The top of each pane, in pixels from the top of the chart container.
@@ -567,6 +603,30 @@ export default function TickerChart({
     el.addEventListener("pointerdown", onInteract, { capture: true });
     el.addEventListener("wheel", onInteract, { capture: true, passive: true });
 
+    // Who gets a vertical finger drag: see `vertTouchDrag`. Decided as each
+    // touch starts, in the capture phase, which runs before the library's
+    // own handler on the canvas reads the option. Written only when the
+    // answer changes, because `applyOptions` repaints.
+    const touchLayout = window.matchMedia(TOUCH_LAYOUT);
+    let vertDrag = true;
+    const setVertDrag = (next: boolean) => {
+      if (next === vertDrag) return;
+      vertDrag = next;
+      chart.applyOptions({ handleScroll: { vertTouchDrag: next } });
+    };
+    const onTouchStart = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      if (!touch) return;
+      const box = el.getBoundingClientRect();
+      const axis = chart.priceScale("right").width();
+      setVertDrag(vertTouchDrag(touchLayout.matches, touch.clientX >= box.right - axis));
+    };
+    // A rotation or a resize across the breakpoint, with no touch since.
+    const onLayout = () => setVertDrag(vertTouchDrag(touchLayout.matches, false));
+    onLayout();
+    el.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
+    touchLayout.addEventListener("change", onLayout);
+
     // The crosshair readouts (user's request, 2026-08-19). One handler for
     // both, because they describe the same bar and must never disagree
     // about which one the cursor is on.
@@ -628,6 +688,8 @@ export default function TickerChart({
     return () => {
       el.removeEventListener("pointerdown", onInteract, { capture: true });
       el.removeEventListener("wheel", onInteract, { capture: true });
+      el.removeEventListener("touchstart", onTouchStart, { capture: true });
+      touchLayout.removeEventListener("change", onLayout);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRange);
       chart.unsubscribeCrosshairMove(onCrosshair);
       chart.remove();

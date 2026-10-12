@@ -1,4 +1,5 @@
 import { NONE, SIGNAL_LABELS, fmt, pct, signedPct } from "@/lib/format";
+import ScrollRegion from "@/components/ScrollRegion";
 import type { Arm, Cell, EraCell } from "@/lib/research";
 import { GRID, percentileOf } from "@/lib/research";
 
@@ -109,10 +110,19 @@ function RateBar({ cell }: { cell: Cell }) {
   );
 }
 
-export function CellGrid({ cells, split }: { cells: Cell[]; split: string }) {
+export function CellGrid({
+  cells,
+  split,
+  label,
+}: {
+  cells: Cell[];
+  split: string;
+  label?: string;
+}) {
   const rows = cells.filter((c) => c.splitKey === split);
 
   return (
+    <ScrollRegion label={label ?? `Cell grid, ${split} split`}>
     <table className="screen research">
       <thead>
         <tr>
@@ -166,6 +176,7 @@ export function CellGrid({ cells, split }: { cells: Cell[]; split: string }) {
         ))}
       </tbody>
     </table>
+    </ScrollRegion>
   );
 }
 
@@ -186,6 +197,7 @@ export function EraGrid({ cells }: { cells: EraCell[] }) {
   const keys = [...new Set(cells.map((c) => `${c.side}|${c.signalType}|${c.ddBucket}`))];
 
   return (
+    <ScrollRegion label="Hit rate by era">
     <table className="screen research">
       <thead>
         <tr>
@@ -242,6 +254,7 @@ export function EraGrid({ cells }: { cells: EraCell[] }) {
         })}
       </tbody>
     </table>
+    </ScrollRegion>
   );
 }
 
@@ -331,6 +344,7 @@ export function NullDistribution({
 
 export function ArmsTable({ arms }: { arms: Arm[] }) {
   return (
+    <ScrollRegion label="Arms against the null">
     <table className="screen research">
       <thead>
         <tr>
@@ -363,6 +377,7 @@ export function ArmsTable({ arms }: { arms: Arm[] }) {
         ))}
       </tbody>
     </table>
+    </ScrollRegion>
   );
 }
 
@@ -397,7 +412,11 @@ export function DrawdownSlice({ cells }: { cells: Cell[] }) {
       {buckets.map((b) => (
         <div className="ddgroup" key={b}>
           <h3>{b}% drawdown</h3>
-          <CellGrid cells={cells.filter((c) => c.ddBucket === b)} split="validate" />
+          <CellGrid
+            cells={cells.filter((c) => c.ddBucket === b)}
+            split="validate"
+            label={`Cells in the ${b}% drawdown bucket`}
+          />
         </div>
       ))}
     </>

@@ -178,7 +178,12 @@ export default function DatePicker({
                 );
               }
               return (
-                <a className={cls} key={i} href={screenHref(key, { withStats, confluenceOnly })} title={`${n} row${n === 1 ? "" : "s"}`}>
+                // `data-n` is the count as a bare number, for a phone: the
+                // `title` cannot be hovered there, and "12 rows" does not
+                // fit a 39px cell. The stylesheet prints it in the corner
+                // under 720px, where the cell is tall enough to hold a
+                // second figure. Nothing reads it above that.
+                <a className={cls} key={i} href={screenHref(key, { withStats, confluenceOnly })} title={`${n} row${n === 1 ? "" : "s"}`} data-n={n}>
                   {d.getUTCDate()}
                   {/* The count as a bar rather than a number: at this size a
                       two-digit figure competes with the date it belongs to,

@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { ErrorState } from "@/components/Screener";
+import TouchNotes from "@/components/TouchNotes";
 import {
   ArmsTable,
   CellGrid,
@@ -22,8 +23,9 @@ import { arms, cells, eraCells, nullDistribution } from "@/lib/research";
  * holdout is unreachable because nothing on this route can express it. The
  * splits are constants in `lib/research.ts`.
  *
- * Desktop-only per DESIGN §11.9, and it says so rather than reflowing into
- * something unreadable.
+ * Phone layout per DESIGN §11.9: the tables scroll sideways inside their own
+ * box, because their columns carry meaning by position, and `TouchNotes`
+ * reads the `title` on a header, a bar or an era cell on tap.
  */
 
 export const dynamic = "force-dynamic";
@@ -109,6 +111,7 @@ export default async function ResearchPage() {
           Holdout is not on this page and cannot be requested from it. It is
           evaluated once, at the end, and published whatever it says.
         </p>
+        <TouchNotes />
       </main>
     );
   } catch (error) {

@@ -2805,7 +2805,18 @@ Both ship in v1; cut one later if it proves redundant.
 
 The screener and notifications are the mobile case: a push says TSM fired, you open it on a phone.
 
-Mobile scope: screener as cards, ticker page with the price panel plus state rail below, positions list. `/research` and `/forward` are desktop-only and should **say so** rather than degrading badly.
+**Every route is in mobile scope as of 2026-10-05, by owner request:** `/`, `/ticker/[sym]`, `/research`, `/model` and `/chat`. This replaces the earlier scope, which gave `/research` and `/forward` a desktop-only notice, and the reason for the change is that the owner reads all of them on a phone.
+
+Rules, written inside `@media (max-width: 720px)` so the desktop layout above 720px is unchanged. Three exceptions, each deliberate:
+
+- The research tables scroll inside their own box below 900px (`ScrollRegion` and a 900px rule), because they are wider than the column before they reach a phone.
+- The ticker chart's touch handling in `TickerChart.tsx` matches `(max-width: 720px), (pointer: coarse)`, so it also reaches tablets at any width.
+- The "designed for a desktop screen" banner on `/research` is gone at 721-900px as well, the one change to a desktop-width layout, made because the page is now usable there.
+
+- The page never scrolls sideways. A wide table scrolls inside its own container.
+- Every function reachable on desktop stays reachable on a touch screen, including the ones desktop reaches by hover or through a header that mobile hides.
+- Controls have a hit area of at least 36px, and text fields use 16px type so iOS Safari does not zoom on focus.
+- The shared base lives in one labelled block in `globals.css`; page-specific rules stay with their page.
 
 ---
 
