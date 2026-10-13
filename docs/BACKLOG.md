@@ -1086,6 +1086,47 @@ and rendered on the screener. The coverage-decay figures it carried
 
 ### Operational, small
 
+**The screener's "newest date" query seq-scans `events` on research (found
+2026-10-13, not fixed, needs a decision).** `web/lib/screen.ts`
+`LATEST_DATE_SQL` is `max(signal_date)` over `FEED_DOMAIN`. Measured the
+same day with `EXPLAIN ANALYZE`:
+
+| store | plan | time |
+|---|---|---|
+| Pi serving | `events_feed_watch` | 1.5 ms |
+| workstation research | `Seq Scan on events` | 11.8 s (14.2 s with `jit = off`) |
+| `wivie` research | `Parallel Seq Scan on events`, 19.1M rows | 27.9 s |
+
+**The indexes are missing on research on purpose.** ADR 159 (2026-08-31)
+dropped `events_feed_latest`, `events_feed_watch` and `events_cluster`
+there as unused (`idx_scan = 0`), "recreatable from their migrations"
+(`b41f8ac9027e`, `e7b3f052c19a`). Serving kept them. So both research
+stores report the migrations applied and neither has the index, and
+nothing compares the two.
+
+The public site is unaffected: it reads serving. What it costs:
+
+- `web/tests/live.test.ts > attaches cell statistics` runs **23-24 s of a
+  30 s budget** on the workstation and times out when anything else
+  contends (twice on 2026-10-13). Its own comment still quotes 4,280 ms
+  from 2026-09-02. CI skips the block, so nothing red ever shows.
+- Any `next dev` or `next start` pointed at research waits 12-28 s for
+  `/` before the feed query starts.
+- `SPAN_SQL` and `NEIGHBOURS_SQL` share `FEED_DOMAIN` and were not timed
+  on research. Expect the same plan.
+
+Not measured: whether an MCP handler on `wivie` reaches the same
+predicate.
+
+**Recreating `events_feed_watch` on research reverses part of ADR 159**,
+so it is a decision and not a cleanup. The cost side is a partial index
+on a 19M-row table that every backtest write maintains. The alternative
+is to leave research as is and point the local test at a store that has
+the index.
+
+Found while profiling the Pi home page (7.2 s to 0.47 s, migration
+`f2a6c84d1b39`). That fix is unrelated: it indexed `signal_reports`.
+
 **The ticker range links hang on a local production build, and it is not
 our bug (found 2026-10-12, not fixed, no fix planned).** On `next start`
 against localhost, a click on `5d`/`1m`/`3m`/... on `/ticker/[sym]` does
