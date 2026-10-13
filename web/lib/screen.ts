@@ -863,7 +863,14 @@ export async function screen(
       confluenceOnly,
       headsOnly,
     ]),
-    query<{ n: number }>(COUNT_SQL, [date, confluenceOnly, headsOnly]),
+    // Counted only when a `?limit=` could have truncated the feed. With no
+    // limit the feed IS every matching row, and `COUNT_SQL` reads the same
+    // view under the same filters, so it paid for every lateral a second
+    // time to return `rows.length` (5.9 s of duplicate work on the Pi before
+    // the `signal_reports` index, 2026-10-13).
+    limit === null
+      ? Promise.resolve(null)
+      : query<{ n: number }>(COUNT_SQL, [date, confluenceOnly, headsOnly]),
     query<{ prev: Date | null; next: Date | null }>(NEIGHBOURS_SQL, [
       date,
       confluenceOnly,
@@ -967,7 +974,7 @@ export async function screen(
 
   return {
     rows,
-    totalMatched: countRows[0]?.n ?? 0,
+    totalMatched: countRows === null ? rows.length : (countRows[0]?.n ?? 0),
     withStats: Boolean(options.withStats),
     confluenceOnly,
     sort,
