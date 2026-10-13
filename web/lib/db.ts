@@ -86,10 +86,25 @@ export function readOnlyRole(env: Env = process.env): boolean {
  * before the connection is handed to a caller, and a second round trip
  * would be a second chance to race it.
  */
+/**
+ * **And `jit = off`, in the same round trip.**
+ *
+ * ADR 070 makes every query here an indexed SELECT returning a page of
+ * rows, which is the shape JIT cannot pay for itself on: compiling costs
+ * a fixed few hundred milliseconds and saves time per row. It fires on
+ * the planner's *cost estimate*, not on rows returned, so one mis-costed
+ * plan turns it on. Measured on the Pi, 2026-10-13: the screener feed
+ * compiled 71 functions in 473 ms to return 70 rows.
+ *
+ * Set per connection rather than with `ALTER ROLE`, so it deploys with
+ * the code and the batch jobs sharing this role keep JIT for the scans
+ * that do benefit.
+ */
 const PIN_CONFIG_HASH =
   "SELECT set_config('capitalscan.default_config_hash', " +
   "(SELECT config_hash FROM serving_config LIMIT 1), false), " +
-  "set_config('TimeZone', 'UTC', false)";
+  "set_config('TimeZone', 'UTC', false), " +
+  "set_config('jit', 'off', false)";
 
 export function getPool(): Pool {
   if (!pool) {
