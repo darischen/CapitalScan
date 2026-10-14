@@ -194,6 +194,18 @@ describe("symbol normalisation", () => {
   });
 
   /**
+   * Indexes carry Yahoo's caret (`^GSPC`), stored as-is. A leading caret
+   * survives, whether typed or arriving URL-encoded; a caret anywhere else
+   * is noise and goes.
+   */
+  it("keeps an index's leading caret and nothing past it", () => {
+    expect(normalizeSymbol("^gspc")).toBe("^GSPC");
+    expect(normalizeSymbol(decodeURIComponent("%5EIXIC"))).toBe("^IXIC");
+    expect(normalizeSymbol("DJ^I")).toBe("DJI");
+    expect(normalizeSymbol("^^NYA")).toBe("^NYA");
+  });
+
+  /**
    * Not SQL escaping — every query here is parameterised and the boundary
    * test asserts it. This is so a pasted URL with a stray character
    * resolves to the ticker rather than to the not-found state.

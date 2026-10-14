@@ -25,7 +25,13 @@ from capitalscan.core.sectors import is_canonical
 # agree today and need not: a foreign private issuer can file nothing useful
 # and still be a company, and an ETF sponsor could in principle file. Sharing
 # one list would silently couple a training decision to an ingest detail.
-ETF_TICKERS: frozenset[str] = frozenset({"QQQ", "SPY", "VOO", "IBIT", "VGT"})
+ETF_TICKERS: frozenset[str] = frozenset(
+    {"QQQ", "SPY", "VOO", "IBIT", "VGT", "^GSPC", "^IXIC", "^DJI", "^NYA"}
+)
+# The four indexes added 2026-10-14 (owner): S&P 500, Nasdaq Composite, Dow,
+# NYSE Composite, under Yahoo's own caret symbols. Treated as ETFs on purpose:
+# no shares, no sector, no CIK, an instrument rather than a company. Their
+# returns are price returns, since an index pays no dividend to adjust for.
 # `VGT` added 2026-10-01 (owner), with its `SEC_NON_FILER_TICKERS` entry.
 # `SPY` added 2026-08-25 alongside its `SEC_NON_FILER_TICKERS` entry.
 # BACKLOG named this the step that would be forgotten: an ETF added to one
