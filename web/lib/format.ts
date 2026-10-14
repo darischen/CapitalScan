@@ -410,12 +410,16 @@ export function sessionsBetween(
  * not SQL escaping -- every query in this app is parameterised and nothing
  * interpolates -- it is so `/ticker/tsm`, `/ticker/TSM` and a pasted
  * `/ticker/TSM?` all resolve to the same page rather than to an empty one.
+ *
+ * An index keeps Yahoo's leading caret (`^GSPC`), because that is how its
+ * `tickers` row is keyed; a caret anywhere else is stripped like any other
+ * stray character.
  */
 export function normalizeSymbol(raw: string): string {
-  return raw
-    .toUpperCase()
-    .replace(/[^A-Z0-9.\-]/g, "")
-    .slice(0, 12);
+  const upper = raw.toUpperCase();
+  const caret = upper.startsWith("^") ? "^" : "";
+  const body = upper.replace(/[^A-Z0-9.\-]/g, "");
+  return (caret + body).slice(0, 12);
 }
 
 /**
