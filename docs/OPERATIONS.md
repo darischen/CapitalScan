@@ -1850,3 +1850,42 @@ Both tables key on `(ticker, ts, interval)`, so the copy is safe during a
 live session for a ticker the poller does not yet poll. The nightly at
 13:15 then shipped the events; verified 2026-10-03, 2,587 touch and 2,545
 `next_open` rows on serving, and the ticker page rendering them.
+
+## Adding the market indexes: ^GSPC, ^IXIC, ^DJI, ^NYA (2026-10-14)
+
+The owner asked for the S&P 500, Nasdaq Composite, Dow and NYSE Composite
+as tickers in their own right, treated as ETFs. PR #139 put all four in
+`ETF_TICKERS` and `SEC_NON_FILER_TICKERS`, so they skip training and are
+`in_trade` unconditionally (ADR 147, ADR 154), and taught
+`web/lib/format.ts::normalizeSymbol` to keep a leading caret.
+
+**The symbols are Yahoo's, caret included, and stored as-is.** Before #139
+`normalizeSymbol` stripped the `^`, so `/ticker/^GSPC` resolved to `GSPC`
+and rendered `NoTicker`. Nothing on the Python side validates symbols.
+
+**Index returns are price returns.** Yahoo serves `adj_close == close` for
+every index row, because an index pays no dividend to adjust for. Outcomes
+on `^GSPC` therefore run below SPY's by roughly its yield. Cross-check on
+the day: mean `peak_ret_5d` 0.0147 for `^GSPC` against 0.0149 for SPY.
+
+The VGT procedure ran unchanged for all four at once (`--tickers` takes the
+comma list, quoted),
+on `wivie`, after the 13:15 nightly. **29 minutes** end to end,
+13:58 to 14:27 PT: 23,428 daily bars from 2003-07-07, `in_trade` 66/66 for
+each, ~10,000 events each, harness passed, 178,346 path rows. The 66
+universe quarters were 8.5 of those minutes and `path peak-labels` 7.
+
+**Not on the workstation.** Its database stopped at 2026-09-09 and its
+`events.id` sequence diverged from `wivie`'s at the cutover, so events
+built there collide on the primary key when copied across.
+
+**Serving needs the `tickers` rows before `bars`.** The hand copy above
+fails `bars_ticker_fkey` for a ticker the incremental sync has not yet
+shipped. Copy `tickers` for the new symbols first, then `bars` and
+`indicators` (`interval = '1d'`), then `cscan sync --incremental`.
+
+**Serving holds half the events, by design.** Research writes four
+`entry_kind` rows per signal (`touch`, `touch_5m`, `touch_30m`,
+`next_open`); serving gets `touch` and `next_open`. Verified 2026-10-14:
+`^GSPC` 10,595 events on research, 5,321 on serving (2,684 + 2,637), and
+all four `/ticker/^...` pages rendering.
