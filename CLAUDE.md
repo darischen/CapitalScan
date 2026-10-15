@@ -12,7 +12,7 @@ criteria in `UniverseParams.required_criteria` read price, SMA200, slope and
 relative return, and market cap resolves from SEC XBRL by CIK **with a Yahoo
 fallback for names that have none** (68 tickers today, `shares_outstanding.source`).
 
-**The seed is refreshed by hand** — `run_tickers_refresh` is not in `nightly`. Until 2026-09-01 it could not refresh at all: the Wikipedia and SEC fetchers keyed their cache on a constant string, so the constituent list was frozen at 2026-07-31. Keys now carry the date. → `BACKLOG.md`
+**The seed refreshes in every `nightly`, twice a day, since 2026-09-01** (`64d2a08`; this line said "by hand" until 2026-10-15). Until then the Wikipedia and SEC fetchers keyed their cache on a constant string, so the constituent list was frozen at 2026-07-31. Keys now carry the date. **Until 2026-10-15 every refresh also blanked `exchange`, `first_bar`, `last_bar` and `delisted_on` for ~500 constituents**: an unscoped `db_io.upsert` writes NULL into every column its rows do not carry. Any writer to a shared table passes `update_columns` or inserts with `DO NOTHING`. → `OPERATIONS.md`
 
 **`is_active = false` with `delisted_on = NULL` is not a bug** — it means "not a current constituent". Verified 2026-09-01 against a live scrape: **zero** such rows are in the index. Investigated twice; do not re-raise. → `BACKLOG.md`
 

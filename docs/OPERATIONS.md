@@ -1929,3 +1929,40 @@ by id.
    dump does not carry.
 
 The backup files from step 1 are in `C:\Users\daris\capitalscan_ws_backup_20261014`.
+
+## The nightly ticker refresh blanked `tickers` metadata (2026-09-01 to 2026-10-15)
+
+**Symptom.** Found comparing the old workstation copy against a refresh:
+BE, P and TWLO had lost `exchange` (`NYSE`) and carried `first_bar =
+2026-10-09` over bars back to 2015-2018. On `wivie`, **503 tickers** had a
+`first_bar` after 2026-09-01 despite years of daily bars.
+
+**Root cause.** `64d2a08` (2026-09-01) put `run_tickers_refresh` in the
+nightly chain, which ADR 203 runs twice a day. It upserts every S&P
+constituent through `db_io.upsert` with `update_columns=None`, and that
+writes `EXCLUDED` into **every** non-key column. Columns its row dicts do
+not carry arrive as NULL, so each run erased `exchange`, `first_bar`,
+`last_bar` and `delisted_on` for ~500 rows. `_update_ticker_coverage` then
+set `first_bar = LEAST(COALESCE(NULL, x), x)` from that night's short
+lookback window. `ensure_tickers` had the same shape with two columns and
+would have blanked CIK, name and sector on any backfill naming an existing
+ticker. `run_exchange_expansion` already documented the hazard and used
+`DO NOTHING`; the other two writers never got the guard.
+
+**What it touched.** Reference metadata only. Nothing computes signals,
+backtests, outcomes or the site from `first_bar`, `last_bar` or
+`exchange`. `delisted_on` gates `_drop_delisted_before` and the survivorship
+benchmark, but the refresh only touches current constituents and no stamp
+was lost (checked against `capitalscan_hist`, 18 stamps, all intact).
+Only 3 exchanges were lost: the rest of the constituents never had one,
+because the NYSE seeding inserts with `DO NOTHING` and they already existed.
+
+**Fix.** The refresh updates only `REFRESH_COLUMNS` (`cik`, `name`,
+`sector`, `industry`, `is_active`); `ensure_tickers` inserts with
+`db_io.insert_new`. Tests: `test_tickers_writers_preserve_columns.py`.
+Data: `first_bar`/`last_bar` rebuilt from `bars` (`interval = '1d'`) for
+every ticker, `exchange` restored for the three from `capitalscan_hist`.
+
+**The rule.** A writer to a table other jobs also write passes
+`update_columns` or inserts with `DO NOTHING`. `update_columns=None` is
+only right when the row dicts carry every column.
