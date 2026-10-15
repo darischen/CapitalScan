@@ -72,6 +72,8 @@ All three addresses are DHCP-reserved. **The app is also public** at `https://ca
 
 **Versions differ deliberately and must not be "fixed"** (ADR 164). A dump taken on `wivie` **does** restore onto the container when `pg_restore` 18 does the restore: the only errors are the harmless `SET transaction_timeout` lines 16 does not know. Measured 2026-10-15, all 30 tables row for row. This line said the reverse until then. The workstation's database is a fork, not a replica, and its `events.id` diverges from `wivie`'s; refresh it rather than copy rows between them. → `OPERATIONS.md`, "Refreshing the workstation from `wivie`"
 
+**Refresh the workstation copy before any heavy research run** (backtest, sweep, ablation arm, rebuild). Nothing feeds it after the cutover, so it falls behind by a day per nightly: on 2026-10-14 it was five weeks stale at bars of 2026-09-09, and every arm run there measured a market that had moved on. Check `SELECT max(ts) FROM bars WHERE interval='1d'` against `wivie` first; if they differ, run the refresh (~35 min, mostly the copy) before starting. Export workstation-only generations first, per the procedure.
+
 **The two places they cannot be identical**, and the only labels that carry weight below: **Docker vs native Postgres** — the container does not restart after a reboot and failed the 2026-08-30 nightly — and **Task Scheduler vs systemd**, which needs an interactive logon and records success for a failed job unless the wrapper propagates `$LASTEXITCODE`.
 
 Cutover is `docs/SETUP.md` Part C1. Where a rule applies to one machine it says so; where it says nothing, it applies everywhere.
