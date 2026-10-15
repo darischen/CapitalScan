@@ -7464,6 +7464,16 @@ decision this ADR actually made is unchanged:** the workstation and
 `wivie` still run different Pythons deliberately, and are still required
 to be functionally interchangeable rather than identical.
 
+**Addendum 2026-10-15: the restore direction was never tested, and it
+works.** "The reverse does not" above was stated, not measured. A `wivie`
+dump (`pg_dump` 17.11, `-Fd -j 4 -O -x`, 3.5 GB) restored into the 16.14
+container with the workstation's `pg_restore` 18 in 7m43s. Two ignored
+errors, both `SET transaction_timeout = 0`, a 17-only setting with no effect
+on the data. All 30 tables matched `wivie` row for row, and so did index,
+constraint, view, function, trigger and sequence counts. **The decision
+stands**: the versions still differ deliberately. What changes is that the
+workstation can be refreshed from `wivie` without aligning them.
+
 ---
 
 ## 165. Returns count every fire; `cell_stats` keeps the cluster-head filter

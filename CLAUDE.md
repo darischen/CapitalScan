@@ -70,7 +70,7 @@ All three addresses are DHCP-reserved. **The app is also public** at `https://ca
 
 **The cutover completed 2026-09-10 18:09 PT.** `wivie` holds a full copy of the research database (restored in 13m26s, verified row for row) and runs the three timers; the workstation's `CapitalScan nightly` task is `Disabled`. Wherever this file says "after cutover" or "today", read it as done. → `TIMINGS.md` for the measured steps.
 
-**Versions differ deliberately and must not be "fixed"** (ADR 164). One consequence binds: 16.14 restores into 17.11 and the reverse does not, so a dump taken on `wivie` cannot go back onto the container.
+**Versions differ deliberately and must not be "fixed"** (ADR 164). A dump taken on `wivie` **does** restore onto the container when `pg_restore` 18 does the restore: the only errors are the harmless `SET transaction_timeout` lines 16 does not know. Measured 2026-10-15, all 30 tables row for row. This line said the reverse until then. The workstation's database is a fork, not a replica, and its `events.id` diverges from `wivie`'s; refresh it rather than copy rows between them. → `OPERATIONS.md`, "Refreshing the workstation from `wivie`"
 
 **The two places they cannot be identical**, and the only labels that carry weight below: **Docker vs native Postgres** — the container does not restart after a reboot and failed the 2026-08-30 nightly — and **Task Scheduler vs systemd**, which needs an interactive logon and records success for a failed job unless the wrapper propagates `$LASTEXITCODE`.
 

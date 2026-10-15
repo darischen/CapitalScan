@@ -1889,3 +1889,43 @@ shipped. Copy `tickers` for the new symbols first, then `bars` and
 `next_open`); serving gets `touch` and `next_open`. Verified 2026-10-14:
 `^GSPC` 10,595 events on research, 5,321 on serving (2,684 + 2,637), and
 all four `/ticker/^...` pages rendering.
+
+## Refreshing the workstation from `wivie` (2026-10-15)
+
+**Why it was needed.** After the 2026-09-10 cutover the workstation's
+database stopped receiving the nightly and kept only what was run on it by
+hand. By 2026-10-14 its bars ended at 2026-09-09 and it held two
+generations `wivie` never had (arms `47beeecbd6d41696` and
+`a90d4561f883c4a5`, 1.9M events each, 2026-10-01). **Each database has its
+own `events_id_seq`**, and every upsert consumes an id even when it inserts
+nothing, so `wivie` reached id 209M holding 21.8M events while the
+workstation sat at 104M. Ids are local; 909 of the arm events' ids already
+belonged to different events on `wivie`. Never copy events between the two
+by id.
+
+**The procedure, as run** (35 min of machine time, half of it the copy):
+
+1. Export what exists only on the workstation. Find it by `config_hash`
+   across every table with that column, then `\copy` it out. Here:
+   `events` and `universe` for the two arms, plus `runs` since the cutover
+   (events reference `runs`). Nothing else depended on those events.
+2. On `wivie`, outside a job: `pg_dump -Fd -j 4 -Z 1 -O -x` (4 min,
+   3.5 GB). Copy it over (`scp -r`, 27 min on this LAN).
+3. `CREATE DATABASE capitalscan_refresh` in the container, then restore
+   with **the native 18 client**, not anything inside the container:
+   `PGOPTIONS="-c max_parallel_maintenance_workers=0" pg_restore -j 4 -O -x`
+   (7m43s). Expect exactly the `transaction_timeout` errors and nothing
+   else. The `PGOPTIONS` avoids the 64 MB `/dev/shm` limit on index builds.
+4. Verify against `wivie` before going further: exact `count(*)` per
+   table, schema object counts, sequence values.
+5. Reload step 1's rows: `runs` with `ON CONFLICT DO NOTHING`, `universe`
+   as-is, `events` with **`id = nextval('events_id_seq')`** on the staged
+   rows. `cluster_id` is a grouping label, not an event id, so re-keying
+   breaks nothing.
+6. Check no table in the old database has more rows than the new one.
+7. `VACUUM (PARALLEL 0, ANALYZE)`, then swap by rename, **not drop**:
+   `capitalscan` -> `capitalscan_ws_old`, `capitalscan_refresh` ->
+   `capitalscan`, and re-set `capitalscan.default_config_hash`, which a
+   dump does not carry.
+
+The backup files from step 1 are in `C:\Users\daris\capitalscan_ws_backup_20261014`.
