@@ -227,13 +227,22 @@ def ensure_tickers(tickers: list[str], engine: Engine | None = None) -> IngestRe
     """Minimal stub rows so `bars` / `corporate_actions` FKs are satisfiable
     for an ad-hoc `--tickers` backfill, independent of the curated Wikipedia
     refresh below.
+
+    **Insert-only.** An existing row is left exactly as it is: an upsert from
+    these two-column dicts blanked every other column on conflict (CIK, name,
+    sector, exchange, coverage), the same defect `run_tickers_refresh` had.
     """
     engine = engine or db_io.get_engine()
     with run_job(engine, "tickers_ensure", {"tickers": tickers}) as report:
         rows = [{"ticker": t.upper(), "is_active": True} for t in tickers]
-        report.rows_written = db_io.upsert(engine, "tickers", rows, ["ticker"])
+        report.rows_written = db_io.insert_new(engine, "tickers", rows, ["ticker"])
         report.tickers = [str(r["ticker"]) for r in rows]
     return report
+
+
+# The columns `run_tickers_refresh` derives from Wikipedia and SEC. Everything
+# else on `tickers` belongs to another writer and must survive a refresh.
+REFRESH_COLUMNS = ["cik", "name", "sector", "industry", "is_active"]
 
 
 def run_tickers_refresh(engine: Engine | None = None) -> IngestReport:
@@ -255,7 +264,14 @@ def run_tickers_refresh(engine: Engine | None = None) -> IngestReport:
                     "is_active": True,
                 }
             )
-        report.rows_written = db_io.upsert(engine, "tickers", rows, ["ticker"])
+        # **Scoped to the columns this job computes** (2026-10-15). With
+        # `update_columns=None` the upsert wrote EXCLUDED into every non-key
+        # column, and the ones these dicts do not carry arrive as NULL: twice
+        # a day since 2026-09-01 this erased `exchange`, `first_bar`,
+        # `last_bar` and `delisted_on` for every constituent.
+        report.rows_written = db_io.upsert(
+            engine, "tickers", rows, ["ticker"], update_columns=REFRESH_COLUMNS
+        )
         report.tickers = [str(r["ticker"]) for r in rows]
     return report
 
