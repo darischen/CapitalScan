@@ -1694,8 +1694,9 @@ def _implausible_shares_reason(shares: int, bounds: SharesPlausibility) -> str |
 # `jobs/fetch/sec.py`, because which tickers to skip is ingest policy, not
 # a fact about how to talk to SEC.
 SEC_NON_FILER_TICKERS = frozenset(
-    {"QQQ", "SPY", "VOO", "IBIT", "VGT", "^GSPC", "^IXIC", "^DJI", "^NYA"}
+    {"QQQ", "SPY", "VOO", "IBIT", "VGT", "SOXX", "SOXL", "^GSPC", "^IXIC", "^DJI", "^NYA"}
 )
+# `SOXX`, `SOXL` added 2026-10-28 (owner), with their `ETF_TICKERS` entries.
 # `^GSPC`, `^IXIC`, `^DJI`, `^NYA` added 2026-10-14 (owner), with their
 # `ETF_TICKERS` entries. An index files nothing with SEC.
 # `VGT` added 2026-10-01 (owner), with its `ETF_TICKERS` entry.
