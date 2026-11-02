@@ -284,28 +284,63 @@ export async function recentRealised(): Promise<Record<"long" | "short", RecentR
   return { long: summariseRecent(shaped, "long"), short: summariseRecent(shaped, "short") };
 }
 
+type Recent = Record<"long" | "short", RecentRate | null>;
+
 /**
  * For page loaders: a failure hides the comparison and never the page. The
  * modal renders nothing for a side with no figures, which is the honest
  * empty state for a comparison that could not be made.
+ *
+ * **Stale while revalidating (2026-11-01).** Only the first call in a
+ * process waits for the query. After that every call returns the cached
+ * figures at once, and a call that finds them older than
+ * `RECENT_CACHE_MS` starts one refresh in the background for the calls
+ * after it. Until then an expired cache made the next page wait for the
+ * whole query: 1.5 s on a warm Pi page on 2026-11-01, against ~0.2 s for
+ * the same page with the cache fresh.
+ *
+ * The cost is one load per expiry served figures up to one refresh old.
+ * They name their own window (`firstDate`, `lastDate`), so a stale
+ * comparison says which sessions it covers rather than passing for today's.
  */
-export async function recentRealisedOrNone(): Promise<Record<"long" | "short", RecentRate | null>> {
-  const now = Date.now();
-  if (cache && now - cache.at < RECENT_CACHE_MS) return cache.value;
-  try {
-    const value = await recentRealised();
-    cache = { at: now, value };
-    return value;
-  } catch {
-    return { long: null, short: null };
+export async function recentRealisedOrNone(): Promise<Recent> {
+  if (cache) {
+    if (Date.now() - cache.at >= RECENT_CACHE_MS) void revalidate();
+    return cache.value;
   }
+  return (await revalidate()) ?? { long: null, short: null };
 }
 
 /**
- * **Cached per server process for ten minutes.** The figures change only
+ * One refresh at a time, shared by every caller that arrives while it
+ * runs. A failure leaves the old figures in place and resolves `null`, so
+ * the next expired call tries again and nothing failed is ever cached.
+ */
+function revalidate(): Promise<Recent | null> {
+  inflight ??= recentRealised()
+    .then((value) => {
+      cache = { at: Date.now(), value };
+      return value;
+    })
+    .catch(() => null)
+    .finally(() => {
+      inflight = null;
+    });
+  return inflight;
+}
+
+/**
+ * **Fresh for ten minutes per server process.** The figures change only
  * when a nightly resolves outcomes, twice a day at most, and the query took
  * ~1.2 s on the Pi (2026-09-29) -- too much to add to every screener and
- * ticker load. A failure is not cached, so the next load retries.
+ * ticker load.
  */
 const RECENT_CACHE_MS = 10 * 60 * 1000;
-let cache: { at: number; value: Record<"long" | "short", RecentRate | null> } | null = null;
+let cache: { at: number; value: Recent } | null = null;
+let inflight: Promise<Recent | null> | null = null;
+
+/** Test hook: forget the cache, as a fresh server process would. */
+export function resetRecentCache(): void {
+  cache = null;
+  inflight = null;
+}
