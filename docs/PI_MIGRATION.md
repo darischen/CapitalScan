@@ -428,6 +428,35 @@ there.
 **Applies to new sessions.** `ALTER DATABASE ... SET` does not touch
 connections that are already open, so a running job keeps the old value.
 
+**`shared_buffers` 128MB -> 512MB (2026-11-01).** Also not in a migration,
+and unlike the two above it needs a server restart, not a reload:
+
+```sql
+ALTER SYSTEM SET shared_buffers = '512MB';   -- then restart postgresql
+```
+
+Measured on `/ticker/X` with the same protocol at each size: ten cold
+tickers, fifteen more to churn the buffer pool, then the first ten again.
+
+| | 128MB | 512MB |
+|---|---|---|
+| cold, chart arrives (median) | 382 ms | 377 ms |
+| revisit after the churn (median, whole page) | 308 ms | 187 ms |
+| SD reads per revisit | 31-142 | 0 |
+| `/` warm, five loads | 0.48-0.69 s | 0.48-0.58 s |
+
+A cold ticker gains nothing: its pages are on the card either way, and
+that cost is the event read, not the buffer pool. What the larger pool buys
+is a reader's second look at a ticker, which now never leaves Postgres.
+The Pi has 3.8 GB, so this is about 13% of it, and the OS page cache keeps
+~2.5 GB.
+
+**Stop `capitalscan-web` before restarting Postgres, start it after.**
+`web/lib/db.ts` attaches no `error` listener to its pool, and node-postgres
+documents that an idle client's error is then emitted unhandled, which
+ends the process. Not tested here. The unit is `Restart=always`, so it
+would come back after 5 s rather than stay down.
+
 **Considered and not applied:** `wal_compression = on`, which trades CPU
 for less WAL written. Plausible here -- the Pi sat at 24% CPU during a
 sync -- but unmeasured, so it stays a suggestion rather than a change.
