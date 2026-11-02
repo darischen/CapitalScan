@@ -215,6 +215,11 @@ def _capture(monkeypatch) -> list[dict]:
         return iter([empty]) if chunksize else empty
 
     monkeypatch.setattr(sync_mod.pd, "read_sql", _read_sql)
+    # The stub engines answer scalars only. Tests of the backfill set it
+    # themselves; everywhere else nothing is missing on the target.
+    monkeypatch.setattr(
+        sync_mod, "_backfill_tickers", lambda s, t: dict.fromkeys(sync_mod.BACKFILL_TABLES, [])
+    )
     monkeypatch.setattr(sync_mod.db_io, "upsert", lambda *a, **k: 0)
     monkeypatch.setattr(sync_mod, "_refuse_self_sync", lambda s, t: None)
     monkeypatch.setattr(sync_mod, "_pin_config_hash", lambda t, c: None)
@@ -349,3 +354,111 @@ def test_the_events_arms_are_disjoint_and_not_an_or():
     assert f"signal_date < {bound}" in second
     assert ":events_modified_since" in second and ":events_modified_since" not in first
     assert " OR " not in sql
+
+
+# ---------------------------------------------------------------------------
+# Tickers the target lacks (2026-11-01)
+# ---------------------------------------------------------------------------
+#
+# `bars_from` is one date for the whole table. A ticker serving holds no bars
+# for -- one that enters the sync's scope, or reaches research after the
+# target's newest bar -- would get the overlap window and nothing older, and
+# no later run would notice. Widening the chart tables to every ticker put
+# 688 names in exactly that position.
+
+
+class _Rows:
+    """Answers each query with the rows of the first needle it contains."""
+
+    def __init__(self, answers: dict[str, list[str]], raises: bool = False):
+        self._answers = answers
+        self._raises = raises
+
+    def connect(self):
+        if self._raises:
+            raise OperationalError("select 1", {}, Exception("unreachable"))
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, statement, params=None):
+        sql = str(statement)
+        for needle, tickers in self._answers.items():
+            if needle in sql:
+                return [(t,) for t in tickers]
+        return []
+
+
+def test_a_ticker_with_no_rows_on_the_target_is_backfilled():
+    source = _Rows({"FROM tickers": ["AAPL", "DVA", "GXO"]})
+    target = _Rows({"FROM bars": ["AAPL"], "FROM indicators": ["AAPL", "GXO"]})
+    got = sync_mod._backfill_tickers(source, target)
+    assert got == {"bars": ["DVA", "GXO"], "indicators": ["DVA"]}
+
+
+def test_nothing_is_backfilled_when_the_target_has_every_ticker():
+    source = _Rows({"FROM tickers": ["AAPL", "MSFT"]})
+    target = _Rows({"FROM bars": ["AAPL", "MSFT"], "FROM indicators": ["AAPL", "MSFT"]})
+    assert sync_mod._backfill_tickers(source, target) == {"bars": [], "indicators": []}
+
+
+def test_an_unreadable_target_means_unknown_not_empty():
+    """`[]` would mean "nothing missing" and ship the overlap window only,
+    which is the bug. `None` makes the caller ship the table whole."""
+    source = _Rows({"FROM tickers": ["AAPL"]})
+    assert sync_mod._backfill_tickers(source, _Rows({}, raises=True)) == {
+        "bars": None,
+        "indicators": None,
+    }
+    assert sync_mod._backfill_tickers(_Rows({}, raises=True), source) == {
+        "bars": None,
+        "indicators": None,
+    }
+
+
+def test_the_backfill_lists_reach_the_query(monkeypatch):
+    seen = _capture(monkeypatch)
+    monkeypatch.setattr(
+        sync_mod,
+        "_incremental_bounds",
+        lambda t, c, **k: {k2: date(2026, 10, 24) for k2 in BOUND_KEYS},
+    )
+    monkeypatch.setattr(
+        sync_mod, "_backfill_tickers", lambda s, t: {"bars": ["DVA"], "indicators": ["DVA", "GXO"]}
+    )
+    sync_mod.run_sync(source=_Engine(), target=_Engine(), config_hash=CONFIG, incremental=True)
+    assert seen and all(p["bars_backfill"] == ["DVA"] for p in seen)
+    assert all(p["indicators_backfill"] == ["DVA", "GXO"] for p in seen)
+    assert all(p["bars_from"] == date(2026, 10, 24) for p in seen)
+
+
+def test_an_unknown_backfill_ships_that_table_whole(monkeypatch):
+    seen = _capture(monkeypatch)
+    monkeypatch.setattr(
+        sync_mod,
+        "_incremental_bounds",
+        lambda t, c, **k: {k2: date(2026, 10, 24) for k2 in BOUND_KEYS},
+    )
+    monkeypatch.setattr(
+        sync_mod, "_backfill_tickers", lambda s, t: {"bars": None, "indicators": []}
+    )
+    sync_mod.run_sync(source=_Engine(), target=_Engine(), config_hash=CONFIG, incremental=True)
+    assert seen and all(p["bars_from"] is None for p in seen)
+    assert all(p["indicators_from"] == date(2026, 10, 24) for p in seen)
+    assert all(p["bars_backfill"] == [] for p in seen)
+
+
+def test_a_full_sync_does_not_consult_the_backfill(monkeypatch):
+    """A full pass ships every ticker from `:cutoff` already."""
+    seen = _capture(monkeypatch)
+    monkeypatch.setattr(
+        sync_mod,
+        "_backfill_tickers",
+        lambda s, t: pytest.fail("a full sync must not consult the target's tickers"),
+    )
+    sync_mod.run_sync(source=_Engine(), target=_Engine(), config_hash=CONFIG)
+    assert seen and all(p["bars_backfill"] == [] and p["bars_from"] is None for p in seen)

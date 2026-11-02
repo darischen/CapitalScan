@@ -74,30 +74,41 @@ class TestTheUnscopedTablesAreDeliberate:
         assert ":cutoff" in sql
         assert "i.config_hash" not in sql
 
-    def test_their_universe_predicate_IS_scoped_by_hash(self):
-        """The rows are not hash-scoped; the membership test inside them is.
+    def test_bars_and_indicators_ship_every_ticker(self):
+        """No universe filter at all (2026-11-01).
 
-        `universe` gained `config_hash` in d4a17c93f60b, so
-        `EXISTS (... u.in_trade)` unscoped would match *any* arm's
-        membership and ship chart data for names the served generation does
-        not consider tradeable. These assertions read `u.config_hash`
-        specifically -- the pair above pins that the bar rows themselves
-        stay generation-agnostic, which is the property this class is about.
-        """
-        for name in ("bars", "indicators"):
-            assert "u.config_hash = :config_hash" in _sql_for(name)
-
-    def test_bars_and_indicators_ship_trade_and_watch_names(self):
-        """Narrow, but not to `in_trade` alone (widened 2026-09-03).
-
-        `in_trade OR in_watch` -- excluding a fully out-of-universe name,
-        but not a watch one. `in_trade`-only made every watch ticker's
-        chart blank on the site (ELPC, ULS: real bars and indicators on
-        research, zero on serving), which contradicts the ticker page's
-        own search including non-`in_trade` names and ADR 149's "everything
-        is computed" for a watch row.
+        The history of this predicate is two widenings for one finding: a
+        ticker with events on serving and no price series to draw them on.
+        `in_trade` alone blanked every watch chart (ELPC, ULS), so on
+        2026-09-03 it became `in_trade OR in_watch`. That still left
+        **688 active tickers** with no bars and no indicators on serving
+        on 2026-11-01, every one rendering "No indicator history" on
+        `/ticker/X`, 651 of them with live-config events already there.
+        ADR 178 priced those out-of-universe events so a ticker page would
+        not be blank. Membership decides what enters a statistic, not
+        which charts can be drawn.
         """
         for name in ("bars", "indicators"):
             sql = _sql_for(name)
-            assert "in_trade" in sql
-            assert "in_watch" in sql
+            assert "universe" not in sql
+            assert "in_trade" not in sql
+
+    def test_a_ticker_missing_on_serving_ships_its_whole_history(self):
+        """The incremental bound is one date for the whole table, so each
+        chart table also takes the list of tickers the target lacks, and
+        those ship from `:cutoff` (`_backfill_tickers`)."""
+        assert ":bars_backfill" in _sql_for("bars")
+        assert ":indicators_backfill" in _sql_for("indicators")
+
+    def test_the_chart_arms_are_disjoint_and_not_an_or(self):
+        """Same shape as `events` and for the same reasons: an `OR` of a
+        date range and a ticker list can plan as a scan of the whole table,
+        and a key in both arms would appear twice in one `COPY` chunk."""
+        for name, bound in (("bars", "bars_from"), ("indicators", "indicators_from")):
+            sql = _sql_for(name)
+            window = f"GREATEST(:cutoff, COALESCE(CAST(:{bound} AS date), :cutoff))"
+            first, second = sql.split("UNION ALL")
+            assert f"ts >= {window}" in first
+            assert f"ts < {window}" in second and ":cutoff" in second
+            assert "_backfill" in second and "_backfill" not in first
+            assert " OR " not in sql
