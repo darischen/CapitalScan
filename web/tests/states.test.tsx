@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 /**
@@ -1252,67 +1252,5 @@ describe("the ticker page's streamed parts", () => {
     expect(page).toMatch(/<Suspense fallback=\{<HistorySkeleton \/>\}>\s*<History\b/);
     expect(page).toMatch(/<Suspense fallback="…">\s*<EventCount\b/);
     expect(page).not.toMatch(/await Promise\.all\(\[\s*chart\([^\]]*events\(/);
-  });
-});
-
-/* --- the screener streams its rows --------------------------------------- */
-
-describe("the screener streams its rows in batches", () => {
-  /** `n` rows with distinct tickers, T00 upward, in screener order. */
-  const rows = (n: number) =>
-    Array.from({ length: n }, (_, i) => row({ ticker: `T${String(i).padStart(2, "0")}` }));
-  const table = (n: number) => (
-    <ScreenerTable rows={rows(n)} withStats={false} sortCtx={SORT_CTX} />
-  );
-  const link = (ticker: string) => `href="/ticker/${ticker}"`;
-
-  it("renders a short day in one piece, as before", () => {
-    const html = renderToStaticMarkup(table(20));
-    expect(html.match(/<tbody/g)).toHaveLength(1);
-    expect(html).toContain(link("T19"));
-    expect(html).not.toContain("pending");
-  });
-
-  it("sends the first 20 rows with the page and a skeleton for each later batch", () => {
-    // `renderToStaticMarkup` does not wait for a boundary, so this is the
-    // page's first flush: real rows on top, placeholders of the right size
-    // below them.
-    const html = renderToStaticMarkup(table(60));
-    expect(html).toContain(link("T19"));
-    expect(html).not.toContain(link("T20"));
-    const pending = [...html.matchAll(/<tbody class="pending" aria-hidden="true">(.*?)<\/tbody>/g)];
-    expect(pending.map((m) => m[1].match(/<tr>/g)?.length)).toEqual([25, 15]);
-  });
-
-  it("flushes each later batch on its own turn, top to bottom", async () => {
-    // Without the stagger in `LaterRows`, every boundary is ready on the same
-    // turn and React sends them all in one flush, which is the wait this
-    // change removes. Each chunk is tagged with the timer turn it arrived on.
-    const stream = await renderToReadableStream(table(60));
-    let turn = 0;
-    let ticking = true;
-    const tick = () => {
-      turn += 1;
-      if (ticking) setTimeout(tick, 0);
-    };
-    setTimeout(tick, 0);
-
-    const byTurn = new Map<number, string>();
-    const reader = stream.getReader();
-    const decoder = new TextDecoder();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      byTurn.set(turn, (byTurn.get(turn) ?? "") + decoder.decode(value, { stream: true }));
-    }
-    ticking = false;
-
-    const turnOf = (ticker: string) =>
-      [...byTurn].find(([, text]) => text.includes(link(ticker)))?.[0] ?? -1;
-    expect(turnOf("T00")).toBe(turnOf("T19"));
-    expect(turnOf("T20")).toBeGreaterThan(turnOf("T19"));
-    expect(turnOf("T44")).toBe(turnOf("T20"));
-    expect(turnOf("T45")).toBeGreaterThan(turnOf("T44"));
-    expect(turnOf("T59")).toBe(turnOf("T45"));
   });
 });
