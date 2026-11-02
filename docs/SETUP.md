@@ -459,8 +459,23 @@ LAN — the subnet route makes this transparent:
 |---|---|---|
 | SSH to wivie | `ssh daris@192.168.1.12` | |
 | SSH to the Pi | `ssh darischen@192.168.1.30` | user is `darischen`, not `daris` |
+| SSH wivie → Pi (Regicide backups only) | wivie's `~/.ssh/id_ed25519` | added 2026-11-02, see below |
 | Postgres on wivie | `psql -h 192.168.1.12 -p 5432 -U capscan -d capitalscan` | see D3 |
 | CapitalScan web app | `http://192.168.1.30:3000` | served by the Pi, already listens on all interfaces |
+
+**The wivie → Pi key is for Regicide, not CapitalScan.** Regicide's nightly
+`backup_db` job on wivie copies its encrypted dump to the Pi at
+`/home/darischen/backups/regicide`. The line in the Pi's
+`~/.ssh/authorized_keys` ends in `regicide-backup` and carries
+`from="192.168.1.12,100.65.212.123"`, `restrict`, and
+`command="/home/darischen/.local/bin/regicide-backup-gate"`. The gate runs
+three fixed commands (make the folder, `scp -O` a file in, prune dumps older
+than 30 days) and refuses everything else, including a shell and SFTP.
+Refusals go to `journalctl -t regicide-backup-gate` on the Pi. The Pi's
+`authorized_keys` before this change is saved as
+`authorized_keys.bak-regicide-2026-11-02`. To revoke, delete that one line.
+Nothing in CapitalScan uses this key, and ADR 185 still holds: CapitalScan's
+model artifact travels in the database, not over ssh.
 
 `wivie`'s own tailnet IP (`100.65.212.123`) works as an alternative host
 for the SSH and Postgres rows above — it bypasses the subnet route and
