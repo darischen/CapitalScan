@@ -1,5 +1,3 @@
-import Link from "next/link";
-
 import { ErrorState } from "@/components/Screener";
 import TouchNotes from "@/components/TouchNotes";
 import {
@@ -46,9 +44,9 @@ export default async function ResearchPage() {
     return (
       <main className="wrap research-page">
         <header className="rs-head">
-          <Link href="/" className="back">
+          <a href="/" className="back">
             ‹ screener
-          </Link>
+          </a>
           <h1>Research</h1>
           <span className="dim">
             validate split · {5}-session horizon · 3% target · next_open entry

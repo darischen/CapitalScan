@@ -105,6 +105,17 @@ export function getPool(): Pool {
       // updated; a request that never returns reports nothing at all.
       connectionTimeoutMillis: 5_000,
     });
+    // **An idle connection whose server goes away** (a Postgres restart, a
+    // dropped link) makes the pool emit `error`. The pool has already
+    // discarded that client and the next query opens a fresh one, so there
+    // is nothing to recover. But an `error` event with no listener is
+    // thrown, and measured on 2026-11-02 against a container restart,
+    // `next start` caught it as `⨯ uncaughtException`: the site stayed up
+    // and the log reported a crash that never happened. Anything running
+    // this module outside Next would have exited instead.
+    pool.on("error", (err) => {
+      console.warn(`[db] idle connection closed by the server: ${err.message}`);
+    });
   }
   return pool;
 }

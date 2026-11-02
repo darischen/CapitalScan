@@ -1,9 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
-
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: () => {}, replace: () => {}, prefetch: () => {} }),
-}));
+import { describe, expect, it } from "vitest";
 
 import { MobileSort, ScreenerTable, type SortContext } from "@/components/Screener";
 import { overflows } from "@/components/ScrollRegion";
