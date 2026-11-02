@@ -1086,10 +1086,28 @@ and rendered on the screener. The coverage-decay figures it carried
 
 ### Operational, small
 
-**`/ticker/X` renders "No indicator history" for 688 active tickers (found
-2026-11-01, not fixed).** Serving holds no daily bars and no indicators for
-them, and `v_ticker_state` needs both, so `state()` returns nothing and the
-page falls through to `NoTicker`. Measured on the Pi the same day, every
+**~~`/ticker/X` renders "No indicator history" for 688 active tickers~~ --
+FIXED 2026-11-01 (`25f48c8`).** `cscan sync` now ships `bars` and
+`indicators` for every ticker, and an incremental pass ships the whole
+history of any ticker the target has no rows for (`_backfill_tickers`):
+the incremental bound is one date per table, so without that a name
+entering scope gets the overlap window and nothing older. The first run
+after the change shipped 2,484,669 bars and 2,491,457 indicator rows in
+~19 minutes. Afterwards, on serving: **1,435 active tickers with a state
+row, up from 784**, and DVA, GXO, HLI, LEG, LGN, CART, LAMR, IREN and GVA
+all render a chart and a history. Serving grew to 14.8 GB, 22 GB free on
+the card.
+
+**37 active tickers still show the empty state, correctly.** All are
+recent listings with 21 to 259 daily bars (SOLS, NAVN, BETA, ...), under
+`MIN_BARS_FOR_INDICATORS = 280`, so research holds no indicators for them
+either. They render once they pass 280 sessions and the nightly computes
+them. Two look odd and were not chased: HUBB and FISV have 57 and 49 bars
+from 2026-08-12, which reads like a symbol change splitting their history.
+
+Original entry: serving held no daily bars and no indicators for them, and
+`v_ticker_state` needs both, so `state()` returned nothing and the page
+fell through to `NoTicker`. Measured on the Pi the same day, every
 `is_active` ticker:
 
 | page | bars | indicators | state row | live-config events | tickers |
@@ -1102,9 +1120,10 @@ Examples: DVA, GXO, HLI, LEG, LGN, CART, LAMR, IREN, GVA. Nine of twelve
 active tickers drawn at random while profiling the page rendered the empty
 state.
 
-**Leading cause, not yet confirmed against research.** `jobs/sync.py::_tables`
-ships `bars` and `indicators` only for tickers with a live-config `universe`
-row where `in_trade OR in_watch`. None of the 688 has one: 643 have universe
+**The cause, confirmed against research.** `jobs/sync.py::_tables`
+shipped `bars` and `indicators` only for tickers with a live-config `universe`
+row where `in_trade OR in_watch`. Research held bars for all 692 active
+tickers outside that scope and indicators for 655. None of the 688 has one: 643 have universe
 rows and every row fails both flags. `events` is not scoped that way, so
 serving carries 651 tickers' event history with no price series to draw it
 on. The page was built to show such names: `TickerHeader` has an "outside
@@ -1113,8 +1132,8 @@ ticker page is where you go to look at a name you are not trading". The
 2026-09-03 widening in the same function fixed this for watch names and
 left the third state behind.
 
-Open before fixing: whether research holds bars for all 688, and what the
-extra rows cost the Pi's store.
+Both questions this entry left open are answered above: research held the
+rows, and they cost the Pi about 2.5M rows in each chart table.
 
 **The screener's "newest date" query seq-scans `events` on research (found
 2026-10-13, not fixed, needs a decision).** `web/lib/screen.ts`

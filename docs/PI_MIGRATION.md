@@ -451,6 +451,26 @@ is a reader's second look at a ticker, which now never leaves Postgres.
 The Pi has 3.8 GB, so this is about 13% of it, and the OS page cache keeps
 ~2.5 GB.
 
+**`events` vacuums every 100,000 dead rows (2026-11-01).** Also by hand,
+also not in a migration:
+
+```sql
+ALTER TABLE events SET (autovacuum_vacuum_scale_factor = 0,
+                        autovacuum_vacuum_threshold = 100000);
+```
+
+The default waits for 20% of the table, 2.2M dead rows on 11M. Each sync
+upserts the recent window and every row the research jobs touched, so
+between vacuums the table sat at 1.88M dead rows and **44.8%
+all-visible** on 2026-11-01, its last vacuum on 2026-10-19. Migration
+`c5d9e2a7b384` moved the ticker page's count and `$10k` replay onto
+index-only scans, and an index-only scan visits the heap for every page
+the visibility map does not mark all-visible: on a stale map those reads
+come back. A manual `VACUUM (ANALYZE, PARALLEL 0) events` took 21 minutes
+on the card and left it 100% all-visible with 0 dead rows. 100,000 is
+about one sync's worth, so autovacuum now runs after most syncs rather
+than once a fortnight.
+
 **Stop `capitalscan-web` before restarting Postgres, start it after.**
 `web/lib/db.ts` attaches no `error` listener to its pool, and node-postgres
 documents that an idle client's error is then emitted unhandled, which
