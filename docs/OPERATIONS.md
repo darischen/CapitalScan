@@ -1927,6 +1927,12 @@ by id.
    `capitalscan` -> `capitalscan_ws_old`, `capitalscan_refresh` ->
    `capitalscan`, and re-set `capitalscan.default_config_hash`, which a
    dump does not carry.
+8. Re-run `cscan db grant-readonly --password <capscan_ro's password>`.
+   `-x` restores no GRANTs and no default privileges, so `capscan_ro`
+   comes back unable to read anything. Missed in the 2026-10-15 run and
+   found 2026-11-02: the role could not SELECT `events` or
+   `serving_config`, and 26 web tests failed with `permission denied for
+   table serving_config`.
 
 The backup files from step 1 are in `C:\Users\daris\capitalscan_ws_backup_20261014`.
 

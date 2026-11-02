@@ -1086,6 +1086,34 @@ and rendered on the screener. The coverage-decay figures it carried
 
 ### Operational, small
 
+**`/` waits on 3.75 KB of server-components payload per screener row, not on
+its queries (measured 2026-11-02).** The queries take ~60 ms. Rendering
+costs ~4.3 ms a row on the Pi (loopback: 10 rows 0.14-0.16 s, 40 rows
+0.27-0.35 s, 95 rows 0.48-0.62 s). Of the 380 KB raw payload on a 95-row
+day, the rows are 357 KB:
+
+- `InferenceCell` receives the whole `ScreenRow`, 1,713 B a row, though
+  `InferenceSubject` declares four fields (`ticker`, `signalDate`, `side`,
+  `prediction`) and the dialog reads no others. Passing only those saves
+  ~856 B a row, ~79 KB a day. Within `prediction`, `bands` is 566 B a row:
+  seven horizons the dialog shows only after a click.
+- The other ~1.9 KB is the payload's copy of the row's own markup: Signal
+  593 B, Bollinger 241 B, Ticker 168 B, Stochastic 145 B, each price cell
+  75-95 B.
+
+**Streaming the rows in Suspense batches does not help here, and was
+reverted (`53776f5`, `3b19151`).** With gzip on, `pipeToNodeResponse`
+waits for `drain` after any write that fills zlib's 16 KB buffer
+(`next/dist/server/pipe-readable.js`). The HTML render pauses with it,
+while `createFlightDataInjectionTransformStream` keeps queueing payload
+scripts. So all 180 payload scripts reached the browser before the first
+row's HTML (37 without gzip), and every batch landed in one burst. On the
+Pi, row 1 arrived at 924-1,470 ms against 608-695 ms before, and the page
+grew from 593 KB to 783 KB. Without gzip the batches do stream (the first
+20 rows ~40 ms after row 1, the last 105-131 ms after), but `compress:
+false` would send four times the bytes over the Funnel. The lever is a
+smaller payload.
+
 **~~`/ticker/X` renders "No indicator history" for 688 active tickers~~ --
 FIXED 2026-11-01 (`25f48c8`).** `cscan sync` now ships `bars` and
 `indicators` for every ticker, and an incremental pass ships the whole

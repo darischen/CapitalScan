@@ -471,19 +471,26 @@ on the card and left it 100% all-visible with 0 dead rows. 100,000 is
 about one sync's worth, so autovacuum now runs after most syncs rather
 than once a fortnight.
 
-**Stop `capitalscan-web` before restarting Postgres, start it after.**
-`web/lib/db.ts` attaches no `error` listener to its pool, and node-postgres
-documents that an idle client's error is then emitted unhandled, which
-ends the process. Not tested here. The unit is `Restart=always`, so it
-would come back after 5 s rather than stay down.
+**A Postgres restart no longer needs `capitalscan-web` stopped
+(2026-11-02).** `web/lib/db.ts` had no `error` listener on its pool, so an
+idle connection closed by the restart was emitted unhandled. node-postgres
+documents that as ending the process, and this paragraph repeated it
+untested. Measured against a container restart, `next start` caught it as
+`⨯ uncaughtException` and kept serving: a false alarm in the log, not a
+crash. The pool now logs `[db] idle connection closed by the server: ...`
+instead. Requests made during the restart itself still fail.
 
 **Considered and not applied:** `wal_compression = on`, which trades CPU
 for less WAL written. Plausible here -- the Pi sat at 24% CPU during a
 sync -- but unmeasured, so it stays a suggestion rather than a change.
 
-**Not doing:** moving the Pi to Ethernet. It runs on `wlan0` with power
-save enabled (`eth0` has never carried a byte), and that is what killed a
-53-minute sync on 2026-08-26. User's decision, 2026-08-26: the machine is
+**Not doing:** moving the Pi to Ethernet. It runs on `wlan0` (`eth0` has
+never carried a byte), with power save enabled until 2026-11-02, and that
+is what killed a 53-minute sync on 2026-08-26. Power save is off now
+(`powersave=2` in the NetworkManager profile `CMDA-5G`, and `iw dev wlan0
+set power_save off` for the running link). Alternating it on and off from
+`wivie` measured no difference: ping averaged 10.2-11.0 ms and HTTP p50
+26-29 ms either way. User's decision, 2026-08-26: the machine is
 not going to be handled often, and the incremental sync cut the exposure
 window from 114 minutes to ~2.
 
