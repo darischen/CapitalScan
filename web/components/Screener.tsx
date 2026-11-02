@@ -1,5 +1,6 @@
 import DatePicker from "./DatePicker";
 import { InferenceCell } from "./InferenceCell";
+import type { InferenceSubject } from "./InferenceModal";
 import TickerSearch from "./TickerSearch";
 import {
   DISPLAY_TZ_LABEL,
@@ -300,7 +301,18 @@ function InferenceButton({ row }: { row: ScreenRow }) {
   if (!has) {
     return <span className="dim" aria-label="no inference for this signal">—</span>;
   }
-  return <InferenceCell row={row} />;
+  // Only the four fields the dialog reads. A client component's props are
+  // serialized into the page for every row, and handing it the whole
+  // `ScreenRow` cost ~856 B a row (~79 KB on a 95-row day, measured
+  // 2026-11-02) that nothing on the client reads. TypeScript accepts the
+  // wider object, so the narrow type alone did not prevent it.
+  const subject: InferenceSubject = {
+    ticker: row.ticker,
+    signalDate: row.signalDate,
+    side: row.side,
+    prediction: row.prediction,
+  };
+  return <InferenceCell row={subject} />;
 }
 
 
