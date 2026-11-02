@@ -1,3 +1,5 @@
+import { Suspense } from "react";
+
 import DatePicker from "./DatePicker";
 import { InferenceCell } from "./InferenceCell";
 import TickerSearch from "./TickerSearch";
@@ -678,6 +680,37 @@ export function MobileSort({ ctx }: { ctx: SortContext }) {
   );
 }
 
+/**
+ * Rows in the page's first flush, and in each flush after it.
+ *
+ * **Streamed in batches (2026-11-02).** The screener's queries take ~60 ms.
+ * Turning rows into HTML is the cost: about 4.3 ms a row on the Pi, measured
+ * on loopback at 0.14-0.16 s for 10 rows, 0.27-0.35 s for 40 and
+ * 0.48-0.62 s for 95. Until this, no row reached the browser before the
+ * last one had rendered. Now the first batch goes out with the page and
+ * each later batch follows as soon as it renders, top to bottom.
+ *
+ * Nothing is cached or fetched twice. It is one query and one result, cut
+ * into pieces for the stream, and the page stays uncached by design.
+ *
+ * Twenty is about what a desktop viewport shows under the status strip.
+ */
+const FIRST_BATCH = 20;
+const LATER_BATCH = 25;
+
+/** `rows` cut for the stream: the first batch, then the rest, in order. */
+function rowBatches(rows: ScreenRow[]): [ScreenRow[], ...ScreenRow[][]] {
+  const later: ScreenRow[][] = [];
+  for (let i = FIRST_BATCH; i < rows.length; i += LATER_BATCH) {
+    later.push(rows.slice(i, i + LATER_BATCH));
+  }
+  return [rows.slice(0, FIRST_BATCH), ...later];
+}
+
+function rowKey(row: ScreenRow): string {
+  return `${row.ticker}-${row.signalDate}-${row.signalType}`;
+}
+
 export function ScreenerTable({
   rows,
   withStats,
@@ -687,6 +720,7 @@ export function ScreenerTable({
   withStats: boolean;
   sortCtx: SortContext;
 }) {
+  const [first, ...later] = rowBatches(rows);
   return (
     <table className="screen">
       <thead>
@@ -711,175 +745,284 @@ export function ScreenerTable({
         </tr>
       </thead>
       <tbody>
-        {rows.map((row) => (
-          <tr key={`${row.ticker}-${row.signalDate}-${row.signalType}`}>
-            {/* An uncontrolled checkbox, read by `OpenSelected` on demand
-                (ADR 139). Keeping it uncontrolled is what lets this table
-                stay a server component -- a `checked` prop would need state,
-                and state would pull the whole screener into the bundle.
-
-                The label is the ticker alone: a row-selection checkbox is
-                announced with its row context already, so "Select ROST"
-                would read as "Select ROST checkbox" in a row that just said
-                ROST. */}
-            <td className="pick">
-              <input
-                type="checkbox"
-                name="ticker"
-                value={row.ticker}
-                aria-label={row.ticker}
-              />
-            </td>
-            <td className="rail">
-              {/* The signature element. `title` rather than visible text so
-                  the rail stays 3px, with the side still reachable by
-                  assistive tech and on hover. */}
-              <span data-side={row.side} title={row.side} />
-            </td>
-            <td className="ticker" data-label="Ticker">
-              <a href={`/ticker/${row.ticker}`}>{row.ticker}</a>
-              {/* A mark, not a colour and not a column. These rows are a
-                  minority (27 of 164 on 2026-08-26) and the reader's
-                  question is "why has this no statistics", which the title
-                  answers on hover. A separate column would cost every row
-                  width to annotate a sixth of them. */}
-              {row.inWatch && (
-                <abbr
-                  className="watch-mark"
-                  title={watchLabel(row.watchReason)}
-                >
-                  W
-                </abbr>
-              )}
-            </td>
-            {/* Every type, spelled out (user's request, 2026-08-19). The
-                previous `+2` made the reader hover to learn what a
-                confluence was made of, and left the column narrow enough
-                that a gap opened before Str.
-
-                `signal_types_all` is already in ADR 057's specificity
-                order, with `signal_type` first -- verified against the live
-                data rather than assumed -- so the leading label is the one
-                that names the row and the rest are dimmed as context. */}
-            <td className="sig" data-label="Signal">
-              {typeList(row)
-                .filter((t) => !REVERSAL_TYPES.includes(t))
-                .map((t, i) => (
-                  <span key={t}>
-                    {i > 0 && <span className="sep-dot"> · </span>}
-                    <span className={i === 0 ? undefined : "dim"}>
-                      {SIGNAL_LABELS[t] ?? t}
-                    </span>
-                  </span>
-                ))}
-              {/* Pulled out of the list and badged (user's request,
-                  2026-08-19). ADR 111 makes a short actionable only with a
-                  confirming reversal, so this is the one label that changes
-                  what a reader does rather than describing what fired — and
-                  as the fourth word in a list of four it read like the
-                  least important of them.
-
-                  Rare enough to earn the treatment: 116 of 4,306
-                  confluences. */}
-              <ReversalBadge row={row} />
-            </td>
-            {/* The t-1 bands, which is the row the signal compared against
-                (invariant 3). `bb_mid` is the 20-day SMA as
-                `core/indicators.py` computed it; nothing is recomputed
-                here. `title` carries the session so a reader can confirm
-                which one it is without a column for it. */}
-            <td
-              className="r num"
-              data-label="Bollinger"
-              title={row.bandTs ? `bands at ${row.bandTs}` : undefined}
-            >
-              {fmt(row.bbLower)}
-              <span className="dim"> / </span>
-              {fmt(row.bbMid)}
-              <span className="dim"> / </span>
-              {fmt(row.bbUpper)}
-            </td>
-            {/* Both %K series. ADR 110 made the agreement between them part
-                of the signal definition: the raw one is the trigger and the
-                smoothed one must agree within `fast_agreement_tol`, so
-                showing one is showing half the rule. */}
-            <td className="r num" data-label="Stochastic">
-              {fmt(row.kFast, 1)}
-              <span className="dim"> / {fmt(row.kSlow, 1)}</span>
-            </td>
-            {/* Four columns rather than one slash-separated cell (user's
-                request, 2026-08-19). Separate columns let the eye scan one
-                series down the page, which a joined cell does not.
-
-                The nightly `bars` row wins when it exists. Intraday, before
-                that night's ingest, this falls back to `bars_live` (ADR
-                128) -- a real tracked session bar, not a single quote
-                mislabelled -- dimmed to mark it provisional. Only a name
-                the poller does not cover, or a date with neither table
-                populated, falls through to the dash. */}
-            <td className="r num" data-label="Open">
-              {row.open !== null ? (
-                fmt(row.open)
-              ) : row.liveOpen !== null ? (
-                <span className="dim" title="today's session, from the live poller -- not yet the settled bar">
-                  {fmt(row.liveOpen)}
-                </span>
-              ) : (
-                <span className="dim" title="no bar yet; ingested tonight">
-                  —
-                </span>
-              )}
-            </td>
-            <td className="r num dim" data-label="High">
-              {row.high !== null ? fmt(row.high) : fmt(row.liveHigh)}
-            </td>
-            <td className="r num dim" data-label="Low">
-              {row.low !== null ? fmt(row.low) : fmt(row.liveLow)}
-            </td>
-            {/* The one coloured number in the bar. Cool closed above its
-                open, warm closed below -- the same cool/warm the side rail
-                uses, so one palette carries direction everywhere rather
-                than two conventions competing. Green/red is avoided for the
-                reason §11.7 gives: it fails for a red-green deficiency and
-                separates on hue alone. */}
-            <td className={`r num ${dayClass(row)}`} data-label="Close">
-              {fmt(row.close)}
-            </td>
-            <td className="r num" data-label="Vol">
-              {vol(row.volume)}
-            </td>
-            {/* Coloured against today's own open, from `bars_live` --
-                the same cool/warm rule the Close column applies against
-                the nightly open, just evaluated live instead of after
-                the session settles. */}
-            <td
-              className={`r num ${liveClass(row)}`}
-              data-label="Live"
-              title={
-                row.livePriceTs ? `as of ${clock(row.livePriceTs)}` : undefined
-              }
-            >
-              {fmt(row.livePrice)}
-            </td>
-            <td className="r num" data-label="Fired">
-              {row.firedAt ? (
-                clock(row.firedAt)
-              ) : (
-                <span className="dim">—</span>
-              )}
-            </td>
-            <td data-label="Inference" className="c">
-              <InferenceButton row={row} />
-            </td>
-            {withStats && (
-              <td data-label="Cell">
-                <StatsCell stats={row.stats} />
-              </td>
-            )}
-          </tr>
+        {first.map((row) => (
+          <SignalRow key={rowKey(row)} row={row} withStats={withStats} />
         ))}
       </tbody>
+      {/* One boundary per later batch, each its own `tbody`, which a table
+          may hold any number of. React streams each into place when it has
+          rendered. Until then the boundary holds skeleton rows of the same
+          count, so the rows above it and the footer below stay put
+          (DESIGN §11.6). */}
+      {later.map((batch, i) => (
+        <Suspense
+          key={rowKey(batch[0])}
+          fallback={<PendingRows count={batch.length} withStats={withStats} />}
+        >
+          <LaterRows rows={batch} turn={i + 1} withStats={withStats} />
+        </Suspense>
+      ))}
     </table>
+  );
+}
+
+/**
+ * One signal's row. The first batch and every streamed batch render it,
+ * so a row comes out the same whichever flush carries it.
+ */
+function SignalRow({ row, withStats }: { row: ScreenRow; withStats: boolean }) {
+  return (
+    <tr>
+      {/* An uncontrolled checkbox, read by `OpenSelected` on demand
+          (ADR 139). Keeping it uncontrolled is what lets this table
+          stay a server component -- a `checked` prop would need state,
+          and state would pull the whole screener into the bundle.
+
+          The label is the ticker alone: a row-selection checkbox is
+          announced with its row context already, so "Select ROST"
+          would read as "Select ROST checkbox" in a row that just said
+          ROST. */}
+      <td className="pick">
+        <input
+          type="checkbox"
+          name="ticker"
+          value={row.ticker}
+          aria-label={row.ticker}
+        />
+      </td>
+      <td className="rail">
+        {/* The signature element. `title` rather than visible text so
+            the rail stays 3px, with the side still reachable by
+            assistive tech and on hover. */}
+        <span data-side={row.side} title={row.side} />
+      </td>
+      <td className="ticker" data-label="Ticker">
+        <a href={`/ticker/${row.ticker}`}>{row.ticker}</a>
+        {/* A mark, not a colour and not a column. These rows are a
+            minority (27 of 164 on 2026-08-26) and the reader's
+            question is "why has this no statistics", which the title
+            answers on hover. A separate column would cost every row
+            width to annotate a sixth of them. */}
+        {row.inWatch && (
+          <abbr
+            className="watch-mark"
+            title={watchLabel(row.watchReason)}
+          >
+            W
+          </abbr>
+        )}
+      </td>
+      {/* Every type, spelled out (user's request, 2026-08-19). The
+          previous `+2` made the reader hover to learn what a
+          confluence was made of, and left the column narrow enough
+          that a gap opened before Str.
+
+          `signal_types_all` is already in ADR 057's specificity
+          order, with `signal_type` first -- verified against the live
+          data rather than assumed -- so the leading label is the one
+          that names the row and the rest are dimmed as context. */}
+      <td className="sig" data-label="Signal">
+        {typeList(row)
+          .filter((t) => !REVERSAL_TYPES.includes(t))
+          .map((t, i) => (
+            <span key={t}>
+              {i > 0 && <span className="sep-dot"> · </span>}
+              <span className={i === 0 ? undefined : "dim"}>
+                {SIGNAL_LABELS[t] ?? t}
+              </span>
+            </span>
+          ))}
+        {/* Pulled out of the list and badged (user's request,
+            2026-08-19). ADR 111 makes a short actionable only with a
+            confirming reversal, so this is the one label that changes
+            what a reader does rather than describing what fired — and
+            as the fourth word in a list of four it read like the
+            least important of them.
+
+            Rare enough to earn the treatment: 116 of 4,306
+            confluences. */}
+        <ReversalBadge row={row} />
+      </td>
+      {/* The t-1 bands, which is the row the signal compared against
+          (invariant 3). `bb_mid` is the 20-day SMA as
+          `core/indicators.py` computed it; nothing is recomputed
+          here. `title` carries the session so a reader can confirm
+          which one it is without a column for it. */}
+      <td
+        className="r num"
+        data-label="Bollinger"
+        title={row.bandTs ? `bands at ${row.bandTs}` : undefined}
+      >
+        {fmt(row.bbLower)}
+        <span className="dim"> / </span>
+        {fmt(row.bbMid)}
+        <span className="dim"> / </span>
+        {fmt(row.bbUpper)}
+      </td>
+      {/* Both %K series. ADR 110 made the agreement between them part
+          of the signal definition: the raw one is the trigger and the
+          smoothed one must agree within `fast_agreement_tol`, so
+          showing one is showing half the rule. */}
+      <td className="r num" data-label="Stochastic">
+        {fmt(row.kFast, 1)}
+        <span className="dim"> / {fmt(row.kSlow, 1)}</span>
+      </td>
+      {/* Four columns rather than one slash-separated cell (user's
+          request, 2026-08-19). Separate columns let the eye scan one
+          series down the page, which a joined cell does not.
+
+          The nightly `bars` row wins when it exists. Intraday, before
+          that night's ingest, this falls back to `bars_live` (ADR
+          128) -- a real tracked session bar, not a single quote
+          mislabelled -- dimmed to mark it provisional. Only a name
+          the poller does not cover, or a date with neither table
+          populated, falls through to the dash. */}
+      <td className="r num" data-label="Open">
+        {row.open !== null ? (
+          fmt(row.open)
+        ) : row.liveOpen !== null ? (
+          <span className="dim" title="today's session, from the live poller -- not yet the settled bar">
+            {fmt(row.liveOpen)}
+          </span>
+        ) : (
+          <span className="dim" title="no bar yet; ingested tonight">
+            —
+          </span>
+        )}
+      </td>
+      <td className="r num dim" data-label="High">
+        {row.high !== null ? fmt(row.high) : fmt(row.liveHigh)}
+      </td>
+      <td className="r num dim" data-label="Low">
+        {row.low !== null ? fmt(row.low) : fmt(row.liveLow)}
+      </td>
+      {/* The one coloured number in the bar. Cool closed above its
+          open, warm closed below -- the same cool/warm the side rail
+          uses, so one palette carries direction everywhere rather
+          than two conventions competing. Green/red is avoided for the
+          reason §11.7 gives: it fails for a red-green deficiency and
+          separates on hue alone. */}
+      <td className={`r num ${dayClass(row)}`} data-label="Close">
+        {fmt(row.close)}
+      </td>
+      <td className="r num" data-label="Vol">
+        {vol(row.volume)}
+      </td>
+      {/* Coloured against today's own open, from `bars_live` --
+          the same cool/warm rule the Close column applies against
+          the nightly open, just evaluated live instead of after
+          the session settles. */}
+      <td
+        className={`r num ${liveClass(row)}`}
+        data-label="Live"
+        title={
+          row.livePriceTs ? `as of ${clock(row.livePriceTs)}` : undefined
+        }
+      >
+        {fmt(row.livePrice)}
+      </td>
+      <td className="r num" data-label="Fired">
+        {row.firedAt ? (
+          clock(row.firedAt)
+        ) : (
+          <span className="dim">—</span>
+        )}
+      </td>
+      <td data-label="Inference" className="c">
+        <InferenceButton row={row} />
+      </td>
+      {withStats && (
+        <td data-label="Cell">
+          <StatsCell stats={row.stats} />
+        </td>
+      )}
+    </tr>
+  );
+}
+
+/**
+ * A batch after the first. It waits `turn` turns of the event loop before
+ * rendering, so batch two renders and flushes before batch three starts.
+ * Without the wait every boundary is ready at once, React renders them in
+ * one pass and sends them together, and the table arrives in one piece
+ * again.
+ */
+async function LaterRows({
+  rows,
+  turn,
+  withStats,
+}: {
+  rows: ScreenRow[];
+  turn: number;
+  withStats: boolean;
+}) {
+  await afterTurns(turn);
+  return (
+    <tbody>
+      {rows.map((row) => (
+        <SignalRow key={rowKey(row)} row={row} withStats={withStats} />
+      ))}
+    </tbody>
+  );
+}
+
+/**
+ * Resolves after `turns` timer turns. A timer and not a microtask: every
+ * microtask runs before React's next pass, which would put the batches
+ * back into one flush.
+ */
+function afterTurns(turns: number): Promise<void> {
+  return new Promise((resolve) => {
+    let left = turns;
+    const step = () => {
+      left -= 1;
+      if (left <= 0) resolve();
+      else setTimeout(step, 0);
+    };
+    setTimeout(step, 0);
+  });
+}
+
+/** Skeleton bar widths in px, near each column's usual content. */
+const PENDING_WIDTH: Partial<Record<SortKey, number>> = {
+  ticker: 40,
+  signal: 120,
+  bollinger: 150,
+  stochastic: 64,
+  volume: 36,
+  fired: 38,
+};
+
+/**
+ * A batch still in flight: the same number of rows and the same cells as
+ * the rows it stands for, with `.skel` bars where the values go.
+ * `aria-hidden` because a skeleton has nothing to announce.
+ */
+function PendingRows({ count, withStats }: { count: number; withStats: boolean }) {
+  return (
+    <tbody className="pending" aria-hidden="true">
+      {Array.from({ length: count }, (_, i) => (
+        <tr key={i}>
+          <td className="pick" />
+          <td className="rail">
+            <span />
+          </td>
+          {SORT_HEADERS.map((h) => (
+            <td key={h.sortKey} className={h.className}>
+              <span className="skel" style={{ width: PENDING_WIDTH[h.sortKey] ?? 46 }} />
+            </td>
+          ))}
+          <td className="c">
+            <span className="skel" style={{ width: 54 }} />
+          </td>
+          {withStats && (
+            <td>
+              <span className="skel" style={{ width: 70 }} />
+            </td>
+          )}
+        </tr>
+      ))}
+    </tbody>
   );
 }
 

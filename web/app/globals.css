@@ -3396,6 +3396,14 @@ table.screen th.r .sortlink {
     align-content: start;
   }
 
+  /* The same height for a batch of rows still streaming in
+   * (`ScreenerTable`, 2026-11-02), so the cards above it stay put and the
+   * batch lands where its placeholder was. */
+  table.screen > tbody.pending > tr {
+    min-height: 188px;
+    align-content: start;
+  }
+
   /* ---- empty state ----------------------------------------------------- */
 
   /* The last-fire ticker is the only way forward from an empty day, and
