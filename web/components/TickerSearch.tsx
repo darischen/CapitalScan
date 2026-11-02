@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 
 import { mcap } from "@/lib/format";
@@ -28,7 +27,6 @@ import type { TickerHit } from "@/lib/ticker";
 const DEBOUNCE_MS = 130;
 
 export default function TickerSearch() {
-  const router = useRouter();
   const listId = useId();
   const box = useRef<HTMLDivElement>(null);
 
@@ -85,7 +83,7 @@ export default function TickerSearch() {
   const go = (sym: string) => {
     setOpen(false);
     setTerm("");
-    router.push(`/ticker/${sym}`);
+    window.location.assign(`/ticker/${sym}`);
   };
 
   const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => {

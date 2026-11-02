@@ -1,4 +1,3 @@
-import Link from "next/link";
 import type { ReactNode } from "react";
 
 import EventRows from "./EventRows";
@@ -79,9 +78,9 @@ export function TickerHeader({
   return (
     <header className="tk-head">
       <div className="tk-id">
-        <Link href="/" className="back">
+        <a href="/" className="back">
           ‹ screener
-        </Link>
+        </a>
         <h1 className="num">{state.ticker}</h1>
         {/* 210 of 712 tickers have no `name` (measured 2026-08-19). An
             em-dash where a company name goes reads as a missing value the
@@ -369,14 +368,14 @@ export function RangeSwitch({ sym, range }: { sym: string; range: Range }) {
   return (
     <nav className="ranges">
       {(Object.keys(RANGES) as Range[]).map((r) => (
-        <Link
+        <a
           key={r}
           href={`/ticker/${sym}?range=${r}`}
           className={r === range ? "on" : undefined}
           aria-current={r === range ? "true" : undefined}
         >
           {r}
-        </Link>
+        </a>
       ))}
     </nav>
   );
@@ -499,15 +498,15 @@ export function EventHistory({
             side={prediction?.side ?? null}
             prediction={prediction ?? null}
           />
-          <Link href={`/ticker/${sym}`} className={all ? undefined : "on"}>
+          <a href={`/ticker/${sym}`} className={all ? undefined : "on"}>
             confluence
-          </Link>
-          <Link
+          </a>
+          <a
             href={`/ticker/${sym}?all=1`}
             className={all ? "on" : undefined}
           >
             every fire
-          </Link>
+          </a>
         </nav>
       </div>
 
@@ -557,7 +556,7 @@ export function NoTicker({ sym }: { sym: string }) {
         </p>
         <p className="last">
           Either the symbol is not in this database, or it has bars but no
-          computed indicators. <Link href="/">Back to the screener</Link>.
+          computed indicators. <a href="/">Back to the screener</a>.
         </p>
       </div>
     </div>

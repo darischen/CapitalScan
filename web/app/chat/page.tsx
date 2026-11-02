@@ -1,5 +1,3 @@
-import Link from "next/link";
-
 import Chat from "@/components/Chat";
 
 /**
@@ -33,9 +31,9 @@ export default function ChatPage() {
   return (
     <main className="wrap chat-page">
       <header className="rs-head">
-        <Link href="/" className="back">
+        <a href="/" className="back">
           ‹ screener
-        </Link>
+        </a>
         <h1>Chat</h1>
         <span className="dim">
           seven tools · every number from a tool result · no arithmetic
@@ -47,8 +45,8 @@ export default function ChatPage() {
         q-value was <span className="num">0.849</span> on train and{" "}
         <span className="num">0.706</span> on validate, and every edge interval spans
         zero. A hit rate from these tools describes a past sample. It is not an edge,
-        and this page will not present it as one. <Link href="/research">See the
-        measurement</Link>.
+        and this page will not present it as one. <a href="/research">See the
+        measurement</a>.
       </p>
 
       <Chat />

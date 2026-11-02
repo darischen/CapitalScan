@@ -2,17 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
-
-/**
- * `TickerHeader` renders the search box, which calls `useRouter`. Outside a
- * Next request there is no router mounted and the hook throws, so it is
- * stubbed — this file tests the server-rendered markup, and navigation is
- * the one thing on this page that is not part of it.
- */
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: () => {}, replace: () => {}, prefetch: () => {} }),
-}));
+import { describe, expect, it } from "vitest";
 
 import { EmptyState, ScreenerTable, StatusStrip } from "@/components/Screener";
 import {

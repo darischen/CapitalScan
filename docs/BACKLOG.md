@@ -1204,8 +1204,12 @@ the index.
 Found while profiling the Pi home page (7.2 s to 0.47 s, migration
 `f2a6c84d1b39`). That fix is unrelated: it indexed `signal_reports`.
 
-**The ticker range links hang on a local production build, and it is not
-our bug (found 2026-10-12, not fixed, no fix planned).** On `next start`
+**~~The ticker range links hang on a local production build~~ -- MOOT
+2026-11-02.** Every in-app link is a plain `<a>` now (user's rule: a page
+loads the same way however you reach it, guarded by
+`web/tests/navigation.test.ts`), so the client router this race lived in is
+off the path. The original finding, kept for the record: it is not
+our bug (found 2026-10-12, not fixed, no fix planned). On `next start`
 against localhost, a click on `5d`/`1m`/`3m`/... on `/ticker/[sym]` does
 nothing 4 to 6 times in 12: no URL change, no error, no reload, the browser
 idle. It does not reproduce under `next dev`, on the Pi (8 of 8) or on the
