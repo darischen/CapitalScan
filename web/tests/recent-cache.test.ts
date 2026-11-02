@@ -5,8 +5,8 @@ import { recentRealisedOrNone, resetRecentCache } from "@/lib/reliability";
 /**
  * `recentRealisedOrNone` serves its cache stale while one refresh runs
  * (2026-11-01). Before, an expired cache made the next page load wait for
- * the whole query, 1.5 s on a warm Pi page. The query itself is mocked:
- * what is pinned here is when a caller waits and when it does not.
+ * the whole query, ~1.2 s on the Pi. The query itself is mocked: what is
+ * pinned here is when a caller waits and when it does not.
  */
 
 const { query } = vi.hoisted(() => ({ query: vi.fn() }));

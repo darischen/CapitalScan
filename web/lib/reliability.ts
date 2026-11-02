@@ -296,8 +296,9 @@ type Recent = Record<"long" | "short", RecentRate | null>;
  * figures at once, and a call that finds them older than
  * `RECENT_CACHE_MS` starts one refresh in the background for the calls
  * after it. Until then an expired cache made the next page wait for the
- * whole query: 1.5 s on a warm Pi page on 2026-11-01, against ~0.2 s for
- * the same page with the cache fresh.
+ * whole query, ~1.2 s on the Pi (2026-09-29). On 2026-11-01 one warm
+ * ticker page took 1.5 s where the pages around it took ~0.2 s, which is
+ * what an expired cache looks like; that one was not traced further.
  *
  * The cost is one load per expiry served figures up to one refresh old.
  * They name their own window (`firstDate`, `lastDate`), so a stale
