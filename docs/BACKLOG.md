@@ -1086,6 +1086,36 @@ and rendered on the screener. The coverage-decay figures it carried
 
 ### Operational, small
 
+**`/ticker/X` renders "No indicator history" for 688 active tickers (found
+2026-11-01, not fixed).** Serving holds no daily bars and no indicators for
+them, and `v_ticker_state` needs both, so `state()` returns nothing and the
+page falls through to `NoTicker`. Measured on the Pi the same day, every
+`is_active` ticker:
+
+| page | bars | indicators | state row | live-config events | tickers |
+|---|---|---|---|---|---|
+| renders | yes | yes | yes | yes | 784 |
+| `NoTicker` | none | none | none | yes | 651 |
+| `NoTicker` | none | none | none | none | 37 |
+
+Examples: DVA, GXO, HLI, LEG, LGN, CART, LAMR, IREN, GVA. Nine of twelve
+active tickers drawn at random while profiling the page rendered the empty
+state.
+
+**Leading cause, not yet confirmed against research.** `jobs/sync.py::_tables`
+ships `bars` and `indicators` only for tickers with a live-config `universe`
+row where `in_trade OR in_watch`. None of the 688 has one: 643 have universe
+rows and every row fails both flags. `events` is not scoped that way, so
+serving carries 651 tickers' event history with no price series to draw it
+on. The page was built to show such names: `TickerHeader` has an "outside
+both universes" tag (ADR 149's third state) and `SEARCH_SQL` says "the
+ticker page is where you go to look at a name you are not trading". The
+2026-09-03 widening in the same function fixed this for watch names and
+left the third state behind.
+
+Open before fixing: whether research holds bars for all 688, and what the
+extra rows cost the Pi's store.
+
 **The screener's "newest date" query seq-scans `events` on research (found
 2026-10-13, not fixed, needs a decision).** `web/lib/screen.ts`
 `LATEST_DATE_SQL` is `max(signal_date)` over `FEED_DOMAIN`. Measured the
