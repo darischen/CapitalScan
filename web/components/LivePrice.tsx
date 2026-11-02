@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { DISPLAY_TZ_LABEL, clock, fmt } from "@/lib/format";
+import { subscribeLive } from "@/lib/liveFeed";
 import type { LiveQuote } from "@/lib/ticker";
 
 /**
@@ -14,15 +15,12 @@ import type { LiveQuote } from "@/lib/ticker";
  * runs. The quote is the one thing that moves, so it is the one thing that
  * is a client component.
  *
- * It polls the same endpoint and on the same schedule as the chart's
- * candle, deliberately. Two timers would let the two numbers on this screen
- * disagree by up to a poll interval, and "the chart says 467.70 and the
- * header says 465.10" reads as a bug in the data rather than as a race
- * between two fetches.
+ * It reads the same poll as the chart's candle, deliberately, and since
+ * 2026-11-01 the same response: both subscribe to `lib/liveFeed.ts`. Two
+ * timers would let the two numbers on this screen disagree by up to a poll
+ * interval, and "the chart says 467.70 and the header says 465.10" reads as
+ * a bug in the data rather than as a race between two fetches.
  */
-
-/** Matches `TickerChart`'s `LIVE_POLL_MS`. See the note above. */
-const POLL_MS = 45_000;
 
 export default function LivePrice({
   ticker,
@@ -38,45 +36,18 @@ export default function LivePrice({
 }) {
   const [quote, setQuote] = useState<LiveQuote | null>(initial);
 
-  useEffect(() => {
-    let cancelled = false;
-    // Stops the timer once the session ends. Same reasoning as the chart's.
-    const closed = { current: false };
-
-    const refresh = async () => {
-      if (document.visibilityState !== "visible" || closed.current) return;
-      try {
-        const url = `/api/live?sym=${encodeURIComponent(ticker)}&bar=${encodeURIComponent(barDate)}`;
-        const response = await fetch(url);
-        if (!response.ok) return;
-        const { quote: next, bar } = (await response.json()) as {
-          quote: LiveQuote | null;
-          bar: { marketOpen?: boolean } | null;
-        };
-        if (cancelled) return;
-        // **Null means the session is over, and the price goes away.**
-        // After the close the poller's last tick ages in place — TSLA read
-        // 349.58 at 15:25 PT against a 351.12 close — so keeping it on
-        // screen would show a stale number under a "live" label. The close
-        // beside it is the answer once trading ends, and it takes over the
-        // large size on its own.
-        setQuote(next);
-        if (bar?.marketOpen === false) closed.current = true;
-      } catch {
-        // Same reasoning as the chart: the visible timestamp stops
-        // advancing, and that is the honest report of a failed poll.
-      }
-    };
-
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), POLL_MS);
-    document.addEventListener("visibilitychange", refresh);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", refresh);
-    };
-  }, [ticker, barDate]);
+  // **Null means the session is over, and the price goes away.** After the
+  // close the poller's last tick ages in place — TSLA read 349.58 at 15:25
+  // PT against a 351.12 close — so keeping it on screen would show a stale
+  // number under a "live" label. The close beside it is the answer once
+  // trading ends, and it takes over the large size on its own.
+  //
+  // The feed owns the timer, the visibility rule, the end-of-session stop
+  // and the failure handling, for this and the chart alike.
+  useEffect(
+    () => subscribeLive(ticker, (snapshot) => setQuote(snapshot.quote), barDate),
+    [ticker, barDate],
+  );
 
   if (!quote) return null;
 

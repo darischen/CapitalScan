@@ -963,6 +963,26 @@ def _drop_surrogate_id(frame: pd.DataFrame, key: tuple[str, ...]) -> pd.DataFram
     return frame.drop(columns=["id"])
 
 
+_CHART_KEY = ("ticker", "ts", "interval")
+
+
+def _chart_select(table: str, alias: str, bound: str, backfill: str) -> str:
+    """`bars` or `indicators` for the serving subset: the incremental window
+    for every ticker, then the older rows of the tickers the target lacks.
+
+    Built from four constants in `_tables`, never from caller input.
+    """
+    window = f"GREATEST(:cutoff, COALESCE(CAST(:{bound} AS date), :cutoff))"
+    return (
+        f"SELECT {alias}.* FROM {table} {alias} WHERE {alias}.interval = '1d' "
+        f"AND {alias}.ts >= {window} "
+        f"UNION ALL "
+        f"SELECT {alias}.* FROM {table} {alias} WHERE {alias}.interval = '1d' "
+        f"AND {alias}.ts >= :cutoff AND {alias}.ts < {window} "
+        f"AND {alias}.ticker = ANY(CAST(:{backfill} AS text[]))"
+    )
+
+
 def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
     """The serving subset, in foreign-key order.
 
@@ -989,44 +1009,47 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
         # see the comment above it at the end of this tuple. Moving it is
         # the fix for a repeat outage, not a tidy-up.
         #
-        # Scoped by trade-*or-watch*-universe membership rather than by
-        # ticker list. **Widened 2026-09-03** (user's finding): this used
-        # to read `u.in_trade` alone, on the stated theory that "the
-        # deployed chart only ever draws a name the screener can show" --
-        # false since before this line was written. The ticker page's own
-        # search explicitly includes names outside the trade universe
-        # (`screen.ts`'s `SEARCH_SQL`: "the ticker page is where you go to
-        # look at a name you are not trading"), and ADR 149 says a watch
-        # row gets "everything computed -- events, indicators, entries,
-        # exits", which is a claim about what serving shows, not just what
-        # research holds. `in_trade`-only sync made every watch name a
-        # blank chart on the site regardless -- found via ELPC and ULS,
-        # both real bars and indicators on research (671 and 600 daily
-        # rows respectively), zero on serving, both `in_watch` and never
-        # `in_trade`. ADR 168's `near_trade` route widened who qualifies
-        # for `in_watch`, which is what surfaced this, not what caused it.
+        # **Every ticker, not a universe (2026-11-01).** These two tables
+        # were scoped by universe membership, first `in_trade` alone and
+        # from 2026-09-03 `in_trade OR in_watch`, on the theory that the
+        # deployed chart only draws names the generation trades or
+        # watches. Both widenings came from the same finding: a name with
+        # events on serving and no price series to draw them on. ELPC and
+        # ULS were the watch case. On 2026-11-01 it was **688 active
+        # tickers** (DVA, GXO, HLI, LEG, LAMR ...), every one rendering
+        # "No indicator history" on `/ticker/X`: never `in_trade` or
+        # `in_watch`, so no bars and no indicators reached serving, while
+        # 651 of them had live-config events there. ADR 178 priced those
+        # out-of-universe events "so a ticker page would not be blank",
+        # and ADR 122 records them so the page stays complete, so a
+        # membership filter here undid both. The rows are inputs, the same
+        # whatever config reads them; `:cutoff` bounds them and nothing
+        # else does. Measured cost on 2026-11-01: 2.5M more rows in each
+        # table, against 6.07M bars on research.
         #
         # `GREATEST(:cutoff, :bars_from)` -- the cutoff is the history
         # boundary and `bars_from` is the incremental one. Whichever is
         # later wins, so a NULL `bars_from` (an empty or unknown target)
         # degrades to the full cutoff pass rather than to nothing.
-        SyncTable(
-            "bars",
-            "SELECT b.* FROM bars b WHERE b.interval = '1d' "
-            "AND b.ts >= GREATEST(:cutoff, COALESCE(CAST(:bars_from AS date), :cutoff)) "
-            "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = b.ticker "
-            "AND (u.in_trade OR u.in_watch) "
-            "AND u.config_hash = :config_hash)",
-            ("ticker", "ts", "interval"),
-        ),
+        #
+        # `:bars_backfill` is the other half of the incremental bound: the
+        # tickers serving holds no daily rows for. `bars_from` is one
+        # date for the whole table, so a ticker entering scope after the
+        # target's newest bar would get the overlap window and nothing
+        # older, forever. Those tickers ship whole. See `_backfill_tickers`.
+        #
+        # **Two disjoint arms, not an `OR`**, for the reason `events`
+        # gives below: each arm keeps its own index (`ts` for the window,
+        # the key's `ticker` prefix for the backfill), and an `OR` of the
+        # two can plan as a scan of the whole table. The second arm stops
+        # where the first starts, so no key appears twice in a `COPY`. On
+        # a full pass the window starts at `:cutoff` and the second arm is
+        # empty.
+        SyncTable("bars", _chart_select("bars", "b", "bars_from", "bars_backfill"), _CHART_KEY),
         SyncTable(
             "indicators",
-            "SELECT i.* FROM indicators i WHERE i.interval = '1d' "
-            "AND i.ts >= GREATEST(:cutoff, COALESCE(CAST(:indicators_from AS date), :cutoff)) "
-            "AND EXISTS (SELECT 1 FROM universe u WHERE u.ticker = i.ticker "
-            "AND (u.in_trade OR u.in_watch) "
-            "AND u.config_hash = :config_hash)",
-            ("ticker", "ts", "interval"),
+            _chart_select("indicators", "i", "indicators_from", "indicators_backfill"),
+            _CHART_KEY,
         ),
         # **`runs`, narrowed to what the foreign key needs.** ADR 053 keeps
         # this table local and that is still right: 1,057 rows of job
@@ -1327,6 +1350,52 @@ def _incremental_bounds(
             logger.warning("could not read the %s watermark; falling back to a full pass", name)
             got = None
         out[name] = (got - timedelta(days=overlap_days)) if got is not None else None
+    return out
+
+
+# The two chart tables, and the parameter each one's backfill list binds to.
+BACKFILL_TABLES = {"bars": "bars_backfill", "indicators": "indicators_backfill"}
+
+
+def _backfill_tickers(source: Engine, target: Engine) -> dict[str, list[str] | None]:
+    """The tickers each chart table holds no daily rows for on the target.
+
+    **Why.** `_incremental_bounds` gives `bars` one watermark for the whole
+    table, the target's newest bar minus the overlap. That is right for a
+    ticker already on serving and wrong for one that is not: a name that
+    enters scope, or reaches the source after the target's newest bar,
+    gets the overlap window and nothing older, and no later run notices.
+    Found 2026-11-01, when widening the scope to every ticker would have
+    shipped seven days of bars for each of 688 names. These ship whole.
+
+    Every source ticker missing on the target is listed, including ones
+    with no bars on the source. They match no rows, which costs nothing.
+
+    `None` for a table means the target could not be read: the caller drops
+    that table's incremental bound and ships it in full. Being slow is
+    recoverable; a ticker left with a week of history is not.
+    """
+    try:
+        with source.connect() as conn:
+            known = {r[0] for r in conn.execute(text("SELECT ticker FROM tickers"))}
+    except SQLAlchemyError:
+        logger.warning("could not read source tickers; chart tables fall back to a full pass")
+        return dict.fromkeys(BACKFILL_TABLES)
+
+    out: dict[str, list[str] | None] = {}
+    for table in BACKFILL_TABLES:
+        present_sql = (
+            f"SELECT t.ticker FROM tickers t WHERE EXISTS "
+            f"(SELECT 1 FROM {table} x WHERE x.ticker = t.ticker AND x.interval = '1d')"
+        )
+        try:
+            with target.connect() as conn:
+                present = {r[0] for r in conn.execute(text(present_sql))}
+        except SQLAlchemyError:
+            logger.warning("could not read %s tickers on the target; full pass", table)
+            out[table] = None
+            continue
+        out[table] = sorted(known - present)
     return out
 
 
@@ -1794,10 +1863,23 @@ def run_sync(
         bounds["events_modified_since"] = _events_modified_since(source) if incremental else None
         if bounds["events_modified_since"] is None:
             bounds["events_from"] = None
+        # The tickers each chart table ships whole despite its watermark.
+        # A full pass ships everything already, so it has none. A table
+        # whose target could not be read loses its bound and ships whole.
+        backfill: dict[str, list[str] | None] = (
+            _backfill_tickers(source, target)
+            if incremental
+            else {chart: [] for chart in BACKFILL_TABLES}
+        )
+        for chart, missing in backfill.items():
+            if missing is None:
+                bounds[f"{chart}_from"] = None
+        backfill_params = {param: backfill[chart] or [] for chart, param in BACKFILL_TABLES.items()}
         logger.info(
-            "sync mode=%s bounds=%s",
+            "sync mode=%s bounds=%s backfill=%s",
             "incremental" if incremental else "full",
             {k: str(v) for k, v in bounds.items()},
+            {k: len(v) for k, v in backfill_params.items()},
         )
 
         rows: dict[str, int] = {}
@@ -1871,7 +1953,12 @@ def run_sync(
                 chunks = pd.read_sql(
                     text(table.sql),
                     snapshot,
-                    params={"cutoff": cutoff, "config_hash": config_hash, **bounds},  # type: ignore[arg-type]
+                    params={  # type: ignore[arg-type]
+                        "cutoff": cutoff,
+                        "config_hash": config_hash,
+                        **bounds,
+                        **backfill_params,
+                    },
                     chunksize=_CHUNK_ROWS,
                 )
                 # **`COPY` into a staging table, not row dicts.** Profiled

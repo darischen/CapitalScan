@@ -16,6 +16,7 @@ import {
 } from "lightweight-charts";
 
 import { fmt, vol } from "@/lib/format";
+import { subscribeLive } from "@/lib/liveFeed";
 import type { ChartBar } from "@/lib/ticker";
 
 /**
@@ -139,17 +140,6 @@ export function prepend(older: ChartBar[], loaded: ChartBar[]): ChartBar[] {
  * the page lands, and the query is ~10 ms.
  */
 const PREFETCH_BARS = 0;
-
-/**
- * How often the open session's candle is re-read, in milliseconds.
- *
- * The poller writes `bars_live` on a five-minute cycle, so anything under
- * that returns the same row. 45 seconds is deliberately faster than the
- * write: it bounds how long a fresh price sits in the database unseen to
- * well under a minute, at the cost of a bounded SELECT against a primary
- * key. Matching the five minutes exactly would put the worst case at ten.
- */
-const LIVE_POLL_MS = 45_000;
 
 /**
  * Where a finger is the pointer (DESIGN §11.9): the phone layout, or a
@@ -729,30 +719,22 @@ export default function TickerChart({
    * scale on every tick, and the reader is usually mid-drag somewhere else
    * on the chart.
    *
-   * **Only while the tab is visible.** A backgrounded tab that keeps
-   * polling is a request every 45 seconds forever against a database that
-   * `cscan backtest` also wants (ADR 039). `visibilitychange` fires an
-   * immediate refresh on return, so coming back to the tab is current
-   * rather than up to 45 seconds behind.
+   * **One poll for the page (2026-11-01).** The header's live price used to
+   * run a second, identical one. Both now subscribe to `lib/liveFeed.ts`,
+   * which owns the timer and its rules: only while the tab is visible (a
+   * backgrounded tab polling every 45 seconds forever is load on a database
+   * the jobs also want, ADR 039), an immediate refresh on return to the
+   * tab, and silence once the database says the session is over, because
+   * nothing rewrites `bars_live` until the next one.
+   *
+   * A failed poll delivers nothing, so the last good candle stays. The
+   * timestamp beside it stops advancing, which is the honest signal: this
+   * is what we last heard, and when.
    */
-  useEffect(() => {
-    let cancelled = false;
-    // Set once the database says the session is over. A ref rather than
-    // state: nothing renders differently, and a state write here would
-    // re-run this effect and rearm the timer it just disarmed.
-    const closed = { current: false };
-
-    const refresh = async () => {
-      if (document.visibilityState !== "visible" || closed.current) return;
-      try {
-        const response = await fetch(`/api/live?sym=${encodeURIComponent(ticker)}`);
-        if (!response.ok) return;
-        const { bar } = (await response.json()) as { bar: ChartBar | null };
-        if (cancelled || !bar || bar.close === null) return;
-        // The session ended. Nothing rewrites `bars_live` until tomorrow,
-        // so the timer is cleared rather than left querying a row that
-        // cannot change for the next seventeen hours.
-        if (bar.marketOpen === false) closed.current = true;
+  useEffect(
+    () =>
+      subscribeLive(ticker, ({ bar }) => {
+        if (!bar || bar.close === null) return;
 
         const bars = barsRef.current;
         const index = bars.findIndex((b) => b.ts === bar.ts);
@@ -783,22 +765,9 @@ export default function TickerChart({
           });
         }
         setLiveAt(new Date());
-      } catch {
-        // A failed poll leaves the last good candle on the chart. The
-        // timestamp beside it stops advancing, which is the honest signal:
-        // this is what we last heard, and when.
-      }
-    };
-
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), LIVE_POLL_MS);
-    document.addEventListener("visibilitychange", refresh);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", refresh);
-    };
-  }, [ticker]);
+      }),
+    [ticker],
+  );
 
   if (initial.length === 0) {
     return (

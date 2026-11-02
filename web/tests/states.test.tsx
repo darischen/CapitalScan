@@ -1205,3 +1205,52 @@ describe("the inference column", () => {
     expect(html).toContain('class="infer"');
   });
 });
+
+/**
+ * The ticker page streams its history behind the chart (2026-11-01). The
+ * page's async boundaries need a request to run, so what is pinned here is
+ * the markup each phase draws: the header with its count still pending,
+ * and the history skeleton both phases share.
+ */
+describe("the ticker page's streamed parts", () => {
+  it("draws the count tag before the count arrives", () => {
+    const pending = renderToStaticMarkup(
+      <TickerHeader state={state()} meta={meta()} fired={<>…</>} />,
+    );
+    expect(pending).toContain('<span class="tag">… events</span>');
+
+    const landed = renderToStaticMarkup(
+      <TickerHeader state={state()} meta={meta()} fired={4554} />,
+    );
+    expect(landed).toContain('<span class="tag">4554 events</span>');
+  });
+
+  it("puts no skeleton inside the header", () => {
+    // `globals.css` sizes `.tk-head:has(.skel)` to the loading header's
+    // phone height. A skeleton bar in the streamed count would hold the
+    // real header at that height, so the pending count is text.
+    const html = renderToStaticMarkup(
+      <TickerHeader state={state()} meta={meta()} fired={<>…</>} />,
+    );
+    expect(html).not.toContain("skel");
+  });
+
+  it("shares one history skeleton between loading.tsx and the boundary", async () => {
+    const { default: HistorySkeleton } = await import("@/components/HistorySkeleton");
+    const { default: Loading } = await import("@/app/ticker/[sym]/loading");
+    const rows = renderToStaticMarkup(<HistorySkeleton />);
+    expect(rows.match(/<tr>/g)).toHaveLength(6);
+    expect(rows).toContain('aria-busy="true"');
+    expect(renderToStaticMarkup(<Loading />)).toContain(rows);
+  });
+
+  it("wraps the history and the count in Suspense on the page", () => {
+    // A source check, because an async server component cannot render
+    // here. Losing either boundary puts the history's reads back in front
+    // of the chart, which is the regression this guards.
+    const page = readFileSync(join(__dirname, "..", "app", "ticker", "[sym]", "page.tsx"), "utf8");
+    expect(page).toMatch(/<Suspense fallback=\{<HistorySkeleton \/>\}>\s*<History\b/);
+    expect(page).toMatch(/<Suspense fallback="…">\s*<EventCount\b/);
+    expect(page).not.toMatch(/await Promise\.all\(\[\s*chart\([^\]]*events\(/);
+  });
+});

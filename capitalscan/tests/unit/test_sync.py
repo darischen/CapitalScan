@@ -217,12 +217,15 @@ def test_tickers_ships_before_everything_that_references_it():
         assert NAMES.index("tickers") < NAMES.index(dependent)
 
 
-def test_universe_ships_before_the_tables_scoped_by_it():
-    """`bars` and `indicators` are scoped by trade-universe membership, so
-    a target with no `universe` rows would sync them as empty."""
-    for scoped in ("bars", "indicators"):
-        assert NAMES.index("universe") < NAMES.index(scoped)
-        assert "universe" in next(t for t in TABLES if t.name == scoped).sql
+def test_the_chart_tables_no_longer_wait_on_universe():
+    """`bars` and `indicators` were scoped by universe membership until
+    2026-11-01, which is why `universe` had to ship ahead of them: a target
+    with no `universe` rows would have synced them empty. They ship every
+    ticker now (`test_sync_scope.py`). `tickers` still precedes both,
+    because both reference it."""
+    for chart in ("bars", "indicators"):
+        assert "universe" not in next(t for t in TABLES if t.name == chart).sql
+        assert NAMES.index("tickers") < NAMES.index(chart)
 
 
 def test_every_table_has_a_conflict_key():

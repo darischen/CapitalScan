@@ -4257,6 +4257,8 @@ Corrected in `a4b8f2e619c3` twenty minutes after `a8d3e5c17f92` applied. `pendin
 
 78 in-trade rows still settle with no entry. 77 are the last-backtest boundary — the entry is the *next* open, which had not happened when the backtest ran — and self-heal. The one historical is AET 2018-11-29, acquired by CVS days later, where no next open ever existed. Both are correct and neither is worth a fourth state.
 
+**Amended 2026-11-01: same rows, one scan (migration `c5d9e2a7b384`).** The decision above, `next_open` rows plus the `touch` rows with no `next_open` sibling, is unchanged. The view no longer spells it as a `UNION ALL`. The two branches never overlap, so the view is one scan filtered on `entry_kind = 'next_open' OR (entry_kind = 'touch' AND NOT EXISTS (sibling))`, with `pending` as a `CASE` on the same condition. The reason is the planner: Postgres does not carry an outer `ORDER BY ... LIMIT` into `UNION ALL` branches with their own `WHERE`, so the ticker page read every event a ticker had to show 40. Verified identical on research across the whole live generation (2,758,552 rows, id sum, 14 `pending`, 99 `touch`) before the migration was written. A full read of the view is slower for it (5 min 36 s on research), and nothing reads it without a ticker.
+
 ---
 
 ## 134. A live price exists only during the session

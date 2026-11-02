@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 
 import EventRows from "./EventRows";
 import LivePrice from "./LivePrice";
@@ -45,7 +46,13 @@ export function TickerHeader({
 }: {
   state: TickerState;
   meta: Meta;
-  fired: number;
+  /**
+   * The ticker's event count. A node rather than a number because the page
+   * streams it: the count reads the same rows as the history, which arrive
+   * after the chart, so the page passes a Suspense boundary that shows `…`
+   * until the count lands. A plain number still renders as before.
+   */
+  fired: ReactNode;
   /** The poller's newest price, when there is one for the current session
    * (user's request, 2026-08-19). The screener already showed this and the
    * ticker page did not, so during a session the same ticker read as two

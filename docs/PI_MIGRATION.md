@@ -428,6 +428,55 @@ there.
 **Applies to new sessions.** `ALTER DATABASE ... SET` does not touch
 connections that are already open, so a running job keeps the old value.
 
+**`shared_buffers` 128MB -> 512MB (2026-11-01).** Also not in a migration,
+and unlike the two above it needs a server restart, not a reload:
+
+```sql
+ALTER SYSTEM SET shared_buffers = '512MB';   -- then restart postgresql
+```
+
+Measured on `/ticker/X` with the same protocol at each size: ten cold
+tickers, fifteen more to churn the buffer pool, then the first ten again.
+
+| | 128MB | 512MB |
+|---|---|---|
+| cold, chart arrives (median) | 382 ms | 377 ms |
+| revisit after the churn (median, whole page) | 308 ms | 187 ms |
+| SD reads per revisit | 31-142 | 0 |
+| `/` warm, five loads | 0.48-0.69 s | 0.48-0.58 s |
+
+A cold ticker gains nothing: its pages are on the card either way, and
+that cost is the event read, not the buffer pool. What the larger pool buys
+is a reader's second look at a ticker, which now never leaves Postgres.
+The Pi has 3.8 GB, so this is about 13% of it, and the OS page cache keeps
+~2.5 GB.
+
+**`events` vacuums every 100,000 dead rows (2026-11-01).** Also by hand,
+also not in a migration:
+
+```sql
+ALTER TABLE events SET (autovacuum_vacuum_scale_factor = 0,
+                        autovacuum_vacuum_threshold = 100000);
+```
+
+The default waits for 20% of the table, 2.2M dead rows on 11M. Each sync
+upserts the recent window and every row the research jobs touched, so
+between vacuums the table sat at 1.88M dead rows and **44.8%
+all-visible** on 2026-11-01, its last vacuum on 2026-10-19. Migration
+`c5d9e2a7b384` moved the ticker page's count and `$10k` replay onto
+index-only scans, and an index-only scan visits the heap for every page
+the visibility map does not mark all-visible: on a stale map those reads
+come back. A manual `VACUUM (ANALYZE, PARALLEL 0) events` took 21 minutes
+on the card and left it 100% all-visible with 0 dead rows. 100,000 is
+about one sync's worth, so autovacuum now runs after most syncs rather
+than once a fortnight.
+
+**Stop `capitalscan-web` before restarting Postgres, start it after.**
+`web/lib/db.ts` attaches no `error` listener to its pool, and node-postgres
+documents that an idle client's error is then emitted unhandled, which
+ends the process. Not tested here. The unit is `Restart=always`, so it
+would come back after 5 s rather than stay down.
+
 **Considered and not applied:** `wal_compression = on`, which trades CPU
 for less WAL written. Plausible here -- the Pi sat at 24% CPU during a
 sync -- but unmeasured, so it stays a suggestion rather than a change.
