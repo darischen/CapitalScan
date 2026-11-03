@@ -1776,6 +1776,19 @@ docs-only branch that is cosmetic; the Pi serves the site, not Vercel.
 
 ## Adding a ticker by hand: VGT (2026-10-01)
 
+**Since 2026-11-03 this is one command:** `cscan add-ticker VGT --etf`, on
+`wivie`. `--etf` marks funds and indexes, which must already be in both
+lists (step 1 below); a company needs no flag and gets its CIK and earnings
+history as well. It runs steps 2 to 4 for the named tickers only, refuses
+while `runs` shows another job in progress (ADR 060), and leaves peak
+labels, forward returns, predictions and the sync to the next nightly. Run
+it outside the nightly windows (05:30 and 13:15 PT) and not during a
+Saturday weekly. **The hand copies to serving below are no longer needed:**
+since 2026-11-01 the incremental sync ships whole `bars` and `indicators`
+for any ticker serving lacks (`sync._backfill_tickers`), after `tickers`.
+`cscan path backfill --tickers` exists too. The rest of this section is
+the record of the procedure the command replaced.
+
 The owner asked for VGT, the Vanguard Information Technology ETF. Nothing
 in `nightly`, `weekly` or the poller needs editing to add a ticker: every
 job reads `tickers` and `universe`, so a ticker with rows in both is picked

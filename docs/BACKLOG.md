@@ -1583,10 +1583,10 @@ rate beside the model's number so a reader can see the gap themselves.
 
 **DONE 2026-10-01: VGT added** (owner). The procedure, and the three
 things that went wrong, are in OPERATIONS.md, "Adding a ticker by hand".
-**Open:** `path backfill` has no `--tickers`, and an incremental sync never
-ships a new ticker's older `bars`/`indicators`, so the next ticker still
-needs a hand step for each. A `cscan add-ticker` command would fold all of
-it into one.
+**DONE 2026-11-03: `cscan add-ticker`** runs the whole procedure for the
+named tickers, and `cscan path backfill --tickers` exists. The incremental
+sync has shipped a new ticker's full `bars`/`indicators` since 2026-11-01,
+so no hand step is left. OPERATIONS.md, "Adding a ticker".
 
 **BUILT 2026-09-30: the forward log resolves nightly (ADR 205).**
 `outcomes` had resolved 0 predictions on eight runs because `fwd_ret_5d`

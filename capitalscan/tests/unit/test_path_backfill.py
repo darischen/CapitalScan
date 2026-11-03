@@ -294,6 +294,39 @@ def test_run_path_backfill_serial_aggregates_across_tickers(monkeypatch):
     assert "fwd_window_days" not in fake_engine.ticker_query_calls[0][0]
 
 
+def test_run_path_backfill_narrows_to_the_tickers_given(monkeypatch):
+    # `tickers` adds one predicate to the selection and nothing else: same
+    # generation, same population. Without it the query is unchanged.
+    def fake_compute_ticker_path(
+        ticker, window_days, database_url, incomplete_only=False, config_hash=None
+    ):
+        return (
+            ticker,
+            pd.DataFrame(columns=["event_id", "day_offset", "favorable", "adverse", "terminal"]),
+            [],
+            0,
+            0,
+            0,
+        )
+
+    monkeypatch.setattr(path_backfill_mod, "_compute_ticker_path", fake_compute_ticker_path)
+
+    narrowed = _FakeEngine(ticker_rows=["VGT"])
+    run_path_backfill(
+        narrowed, DEFAULT_CONFIG, "run-test", quiet=True, config_hash="h", tickers=["VGT"]
+    )
+    query, params = narrowed.ticker_query_calls[0]
+    assert "ticker = ANY(:tickers)" in query
+    assert "(in_trade OR in_watch)" in query and "config_hash = :chash" in query
+    assert params == {"chash": "h", "tickers": ["VGT"]}
+
+    whole = _FakeEngine(ticker_rows=["AAA"])
+    run_path_backfill(whole, DEFAULT_CONFIG, "run-test", quiet=True, config_hash="h")
+    query, params = whole.ticker_query_calls[0]
+    assert "ANY(:tickers)" not in query
+    assert params == {"chash": "h"}
+
+
 def test_run_path_capture_scopes_ticker_query_to_incomplete_windows(monkeypatch):
     # Task 10.6: `run_path_capture` must select only tickers with at least
     # one event whose forward window is still incomplete — the SQL text

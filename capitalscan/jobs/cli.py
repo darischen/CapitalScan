@@ -2123,6 +2123,254 @@ def backfill(
         )
 
 
+def _quarter_label(as_of: date) -> str:
+    """`universe.as_of` (a quarter's last day) as the `2026Q2` form
+    `compute.run_universe` takes."""
+    return f"{as_of.year}Q{(as_of.month - 1) // 3 + 1}"
+
+
+def _live_quarters(engine, chash: str) -> list[str]:
+    """Every quarter the generation holds `universe` rows for, oldest first."""
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        dates = (
+            conn.execute(
+                text(
+                    "SELECT DISTINCT as_of FROM universe WHERE config_hash = :chash ORDER BY as_of"
+                ),
+                {"chash": chash},
+            )
+            .scalars()
+            .all()
+        )
+    return [_quarter_label(d) for d in dates]
+
+
+def _jobs_running(engine) -> list[tuple[str, str, datetime]]:
+    """`runs` rows still `running` that started within the last day.
+
+    The Pi's poller is left out: it writes serving, not this database. The
+    one-day bound is there because a crash leaves a `running` row behind
+    as well (CLAUDE.md, "Reading `runs`"); an older one is a stale marker,
+    not a job.
+    """
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT run_id, job, started_at FROM runs WHERE status = 'running' "
+                "AND job <> 'poll' AND started_at > now() - interval '1 day' "
+                "ORDER BY started_at"
+            )
+        ).fetchall()
+    return [(r[0], r[1], r[2]) for r in rows]
+
+
+def _fill_missing_cik(engine, tickers: list[str]) -> int:
+    """Set `tickers.cik` from SEC's ticker map where it is NULL.
+
+    The nightly seed refresh fills CIKs for S&P constituents only, so a
+    company added by hand would otherwise reach `shares` and `earnings`
+    with none: market cap falls back to Yahoo and earnings dates, which
+    `days_to_earnings` reads, never arrive.
+    """
+    from sqlalchemy import text
+
+    from capitalscan.jobs.fetch import sec
+
+    lookup = sec.fetch_cik_lookup().set_index("ticker")["cik"]
+    filled = 0
+    with engine.begin() as conn:
+        for t in tickers:
+            if t in lookup.index:
+                filled += conn.execute(
+                    text("UPDATE tickers SET cik = :cik WHERE ticker = :t AND cik IS NULL"),
+                    {"cik": str(lookup[t]), "t": t},
+                ).rowcount
+    return filled
+
+
+def _print_add_ticker_summary(engine, tickers: list[str], chash: str) -> None:
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT t.ticker, "
+                "  (SELECT count(*) FROM bars b WHERE b.ticker = t.ticker AND b.interval = '1d'), "
+                "  (SELECT min(b.ts)::date FROM bars b "
+                "    WHERE b.ticker = t.ticker AND b.interval = '1d'), "
+                "  (SELECT count(*) FILTER (WHERE u.in_trade) || '/' || count(*) FROM universe u "
+                "    WHERE u.ticker = t.ticker AND u.config_hash = :chash), "
+                "  (SELECT count(*) FROM events e "
+                "    WHERE e.ticker = t.ticker AND e.config_hash = :chash "
+                "    AND e.entry_kind = 'touch') "
+                "FROM tickers t WHERE t.ticker = ANY(:tickers) ORDER BY t.ticker"
+            ),
+            {"chash": chash, "tickers": tickers},
+        ).fetchall()
+    for ticker, n_bars, first_bar, in_trade, n_touch in rows:
+        console.print(
+            f"  {ticker}: {n_bars:,} daily bars from {first_bar}, in trade {in_trade} "
+            f"quarters, {n_touch:,} touch signals"
+        )
+
+
+@app.command(name="add-ticker")
+def add_ticker(
+    symbols: str = typer.Argument(
+        ..., help="Comma-separated symbols as Yahoo spells them, e.g. VGT or ^GSPC"
+    ),
+    etf: bool = typer.Option(
+        False,
+        "--etf",
+        help="The symbols are funds or indexes. Each must already be in ETF_TICKERS "
+        "and SEC_NON_FILER_TICKERS (ADR 147, ADR 154)",
+    ),
+    lookback: int = typer.Option(8500, help="Days of daily history to fetch"),
+    force: bool = typer.Option(
+        False, "--force", help="Run even though `runs` shows another job in progress"
+    ),
+) -> None:
+    """Build a new ticker's whole history on the research machine.
+
+    Every scheduled job reads `tickers` and `universe`, so a ticker with
+    rows in both is picked up by the next run of each. What a new one
+    needs is its history, built once. This is the procedure first run by
+    hand for VGT on 2026-10-01 (OPERATIONS.md, "Adding a ticker"), where
+    two steps were started by mistake for the whole generation and killed.
+
+    In order: the `tickers` row (and, for a company, its CIK), daily and
+    hourly bars, actions, shares, earnings for a company, indicators, the
+    universe for every quarter the generation holds, events, the backtest
+    with its harness, and paths. All for these tickers only, and each step
+    idempotent, so a rerun after a failure is safe.
+
+    **The next nightly does the rest.** It fills peak labels, forward
+    returns and predictions, and its sync ships the ticker to serving, full
+    history included: since 2026-11-01 the incremental sync ships whole
+    `bars` and `indicators` for any ticker the target lacks.
+
+    **Refuses while another job runs**, because `universe` must not change
+    under a running backtest (ADR 060). Run it outside the nightly windows
+    (05:30 and 13:15 PT) and not during a Saturday weekly.
+    """
+    from capitalscan.core import training
+    from capitalscan.jobs import compute, db_io, ingest
+    from capitalscan.jobs.config import config_hash as compute_config_hash
+    from capitalscan.jobs.progress import track
+    from capitalscan.research.path_backfill import run_path_backfill
+
+    tickers = [t.strip().upper() for t in symbols.split(",") if t.strip()]
+    if not tickers:
+        console.print("[red]error[/red]: no symbols given")
+        raise typer.Exit(code=1)
+
+    # ADR 147 and 154: a fund must be in both lists, or the model trains on it.
+    half_listed = [
+        t for t in tickers if (t in training.ETF_TICKERS) != (t in ingest.SEC_NON_FILER_TICKERS)
+    ]
+    if half_listed:
+        console.print(
+            f"[red]error[/red]: {', '.join(half_listed)} in only one of "
+            "`core/training.py::ETF_TICKERS` and `jobs/ingest.py::SEC_NON_FILER_TICKERS`. "
+            "A fund belongs in both (ADR 147, ADR 154)."
+        )
+        raise typer.Exit(code=1)
+    funds = [t for t in tickers if t in training.ETF_TICKERS]
+    companies = [t for t in tickers if t not in training.ETF_TICKERS]
+    if etf and companies:
+        console.print(
+            f"[red]error[/red]: --etf, but {', '.join(companies)} not in `ETF_TICKERS`. "
+            "Add each to `ETF_TICKERS` and `SEC_NON_FILER_TICKERS` in one PR, merge, and "
+            "pull this machine first; neither list moves `config_hash`."
+        )
+        raise typer.Exit(code=1)
+
+    config = _resolve_config_or_exit()
+    chash = compute_config_hash(config)
+    engine = db_io.get_engine()
+
+    running = _jobs_running(engine)
+    if running and not force:
+        console.print("[red]error[/red]: another job is running on this database:")
+        for run_id, job, started in running:
+            console.print(f"  {job} {run_id} since {started}")
+        console.print("Wait for it, or pass --force if `pg_stat_activity` shows it is a stale row.")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"add-ticker: funds [{', '.join(funds) or '-'}], "
+        f"companies [{', '.join(companies) or '-'}], config_hash={chash}"
+    )
+    end = date.today()
+    start = end - timedelta(days=lookback)
+
+    ingest.ensure_tickers(tickers, engine)
+    if companies:
+        console.print(f"cik: filled {_fill_missing_cik(engine, companies)} row(s)")
+    report = ingest.run_bars_daily(tickers, start, end)
+    console.print(f"bars --daily: {report.rows_written:,} written")
+    # Yahoo serves 730 days of hourly bars at most, the window `bars --hourly
+    # --backfill` asks for (DESIGN §4.4).
+    report = ingest.run_bars_hourly(tickers, end - timedelta(days=730), end)
+    console.print(f"bars --hourly: {report.rows_written:,} written")
+    report = ingest.run_actions(tickers, start=start, end=end)
+    console.print(f"actions: {report.rows_written:,} written")
+    report = ingest.run_shares(tickers)
+    console.print(f"shares: {report.rows_written:,} written")
+    if companies:
+        report = ingest.run_earnings(companies, historical=True, forward_days=0)
+        console.print(f"earnings: {report.rows_written:,} written")
+    report = compute.run_indicators(
+        tickers,
+        start,
+        end,
+        params=config.indicators,
+        max_workers=1,
+        chunk_size=compute.INDICATOR_CHUNK_SIZE,
+    )
+    console.print(f"indicators: {report.rows_written:,} written")
+
+    quarters = _live_quarters(engine, chash)
+    for quarter in track(quarters, description="universe", label="quarter"):
+        compute.run_universe(quarter, tickers=tickers, config=config)
+    console.print(f"universe: {len(quarters)} quarter(s)")
+
+    event_start = date.fromisoformat(config.splits.event_start)
+    report = compute.run_events(tickers, max(start, event_start), end, config=config, max_workers=1)
+    console.print(f"events: {report.rows_written:,} written")
+
+    backtest(
+        tickers=",".join(tickers),
+        workers=1,
+        sweep=False,
+        config_name=None,
+        phase="all",
+        chunk_size=25,
+        cosmetic=False,
+        quiet=False,
+    )
+
+    with ingest.run_job(
+        engine, "path_backfill", {"workers": 1, "config_hash": chash, "tickers": tickers}
+    ) as job_report:
+        path_report = run_path_backfill(
+            engine, config, job_report.run_id, max_workers=1, config_hash=chash, tickers=tickers
+        )
+        job_report.rows_written = path_report.rows_written
+    console.print(f"path backfill: {path_report.rows_written:,} rows")
+
+    console.print("add-ticker: done")
+    _print_add_ticker_summary(engine, tickers, chash)
+    console.print(
+        "The next nightly fills peak labels, forward returns and predictions, and its "
+        "sync ships these tickers to serving with their full history."
+    )
+
+
 db_app = typer.Typer(help="Database operations")
 app.add_typer(db_app, name="db")
 
@@ -2460,9 +2708,14 @@ def path_backfill_cmd(
     config_hash: Optional[str] = typer.Option(
         None, "--config-hash", help="Default: the resolved config's own hash"
     ),
+    tickers: Optional[str] = typer.Option(
+        None,
+        "--tickers",
+        help="Comma-separated tickers; default every ticker in the generation",
+    ),
 ) -> None:
     """Populate `path` and `events.fwd_window_days` for every filled entry
-    of one `config_hash`.
+    of one `config_hash`, or of the `--tickers` named.
 
     Scoped to a single generation since 2026-08-17, matching
     `cscan path peak-labels`. Unscoped, this walked every event of every
@@ -2481,9 +2734,10 @@ def path_backfill_cmd(
 
     config = _resolve_config_or_exit()
     chash = config_hash or compute_config_hash(config)
+    only = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers else None
     engine = db_io.get_engine()
     with ingest.run_job(
-        engine, "path_backfill", {"workers": workers, "config_hash": chash}
+        engine, "path_backfill", {"workers": workers, "config_hash": chash, "tickers": only}
     ) as job_report:
         report = run_path_backfill(
             engine,
@@ -2492,6 +2746,7 @@ def path_backfill_cmd(
             quiet=quiet,
             max_workers=workers,
             config_hash=chash,
+            tickers=only,
         )
         job_report.rows_written = report.rows_written
     console.print(

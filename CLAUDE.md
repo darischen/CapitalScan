@@ -21,6 +21,11 @@ bars, 66 universe evaluations, `in_trade` true at $289B, and 29,343 events.
 A ticker outside the S&P 500 participates fully once its rows exist. Planned
 expansion to other markets and more ETFs is in `BACKLOG.md`.
 
+**Add a ticker with `cscan add-ticker SYM` on `wivie`** (since 2026-11-03).
+A fund or index takes `--etf` and must first be in both `ETF_TICKERS` and
+`SEC_NON_FILER_TICKERS` (ADR 147, ADR 154). The next nightly finishes the
+job and ships it to serving. → `OPERATIONS.md`
+
 ---
 
 ## Before writing any code
