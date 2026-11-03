@@ -48,7 +48,7 @@ def test_path_backfill_cmd_routes_through_resolve_config_or_exit(monkeypatch):
         return sentinel_config
 
     def fake_run_path_backfill(
-        engine, config, run_id, quiet=False, max_workers=1, config_hash=None
+        engine, config, run_id, quiet=False, max_workers=1, config_hash=None, tickers=None
     ):
         seen["config"] = config
         seen["max_workers"] = max_workers
@@ -57,7 +57,7 @@ def test_path_backfill_cmd_routes_through_resolve_config_or_exit(monkeypatch):
     monkeypatch.setattr(cli, "_resolve_config_or_exit", fake_resolve)
     monkeypatch.setattr(path_backfill_mod, "run_path_backfill", fake_run_path_backfill)
 
-    cli.path_backfill_cmd(quiet=False, workers=1)
+    cli.path_backfill_cmd(quiet=False, workers=1, config_hash=None, tickers=None)
 
     assert seen["called"] is True
     assert seen["config"] is sentinel_config
@@ -71,7 +71,7 @@ def test_path_backfill_cmd_passes_workers_through(monkeypatch):
     seen: dict = {}
 
     def fake_run_path_backfill(
-        engine, config, run_id, quiet=False, max_workers=1, config_hash=None
+        engine, config, run_id, quiet=False, max_workers=1, config_hash=None, tickers=None
     ):
         seen["max_workers"] = max_workers
         return PathBackfillReport()
@@ -79,9 +79,30 @@ def test_path_backfill_cmd_passes_workers_through(monkeypatch):
     monkeypatch.setattr(cli, "_resolve_config_or_exit", lambda cli_overrides=None: Config())
     monkeypatch.setattr(path_backfill_mod, "run_path_backfill", fake_run_path_backfill)
 
-    cli.path_backfill_cmd(quiet=False, workers=8)
+    cli.path_backfill_cmd(quiet=False, workers=8, config_hash=None, tickers=None)
 
     assert seen["max_workers"] == 8
+
+
+def test_path_backfill_cmd_passes_tickers_through(monkeypatch):
+    # `--tickers` (2026-11-03, for `cscan add-ticker`) narrows the pass to
+    # the names given, upper-cased and stripped, without it every ticker in
+    # the generation is walked.
+    seen: dict = {}
+
+    def fake_run_path_backfill(
+        engine, config, run_id, quiet=False, max_workers=1, config_hash=None, tickers=None
+    ):
+        seen.setdefault("tickers", []).append(tickers)
+        return PathBackfillReport()
+
+    monkeypatch.setattr(cli, "_resolve_config_or_exit", lambda cli_overrides=None: Config())
+    monkeypatch.setattr(path_backfill_mod, "run_path_backfill", fake_run_path_backfill)
+
+    cli.path_backfill_cmd(quiet=False, workers=1, config_hash=None, tickers=" vgt, ^gspc ,")
+    cli.path_backfill_cmd(quiet=False, workers=1, config_hash=None, tickers=None)
+
+    assert seen["tickers"] == [["VGT", "^GSPC"], None]
 
 
 def test_path_capture_cmd_routes_through_resolve_config_or_exit(monkeypatch):

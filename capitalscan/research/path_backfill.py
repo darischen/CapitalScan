@@ -405,10 +405,17 @@ def run_path_backfill(
     quiet: bool = False,
     max_workers: int = 1,
     config_hash: str | None = None,
+    tickers: list[str] | None = None,
 ) -> PathBackfillReport:
     """Backfills `path` and `events.fwd_window_days` for every event with a
     filled entry, one ticker at a time (each ticker's `bars` loaded once
     and reused across all of that ticker's events).
+
+    `tickers` narrows the pass to those names, inside the same generation
+    and population. Added 2026-11-03 for `cscan add-ticker`: without it a
+    new ticker's paths came from either a whole-generation pass (started by
+    mistake for VGT on 2026-10-01 and killed, since it would have run into
+    the nightly) or a hand call to `_run_path_job`.
 
     `max_workers > 1` dispatches `_compute_ticker_path` across a spawn-mode
     `ProcessPoolExecutor` — the same parallelization shape
@@ -439,21 +446,20 @@ def run_path_backfill(
     # events — 5,568,263 rows and 2h56m on the last unscoped run, for
     # populations nothing reads. See that function's docstring.
     chash = config_hash if config_hash is not None else compute_config_hash(config)
+    sql = (
+        "SELECT DISTINCT ticker FROM events "
+        "WHERE entry_price IS NOT NULL AND (in_trade OR in_watch) "
+        "AND config_hash = :chash"
+    )
+    params: dict[str, object] = {"chash": chash}
+    if tickers is not None:
+        sql += " AND ticker = ANY(:tickers)"
+        params["tickers"] = list(tickers)
     with engine.connect() as conn:
-        tickers = [
-            r[0]
-            for r in conn.execute(
-                text(
-                    "SELECT DISTINCT ticker FROM events "
-                    "WHERE entry_price IS NOT NULL AND (in_trade OR in_watch) "
-                    "AND config_hash = :chash ORDER BY ticker"
-                ),
-                {"chash": chash},
-            )
-        ]
+        selected = [r[0] for r in conn.execute(text(sql + " ORDER BY ticker"), params)]
     return _run_path_job(
         engine,
-        tickers,
+        selected,
         window_days,
         quiet,
         max_workers,
