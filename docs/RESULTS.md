@@ -9083,3 +9083,49 @@ Both periods agree for longs: pre-2019 +0.299, +0.397, +0.579; from 2019
 by `config_hash` and an exit-only arm has none. `seed_universe.sql` copies
 the live generation's rows, which are what a recompute would produce since
 the arms change `ExitParams` only.
+
+## 2026-11-03 — beta and the Nasdaq do not explain the rest of the transition bias
+
+Follow-up to 2026-09-29 (BACKLOG 3c). Handed the S&P's actual forward move,
+a recalibration layer removed about half of the long-side bias in the
+transition cell (2022, S&P above its 200-day). This tests two explanations
+for the other half: each stock's beta, since a high-beta long falls further
+than the index, and a growth sell-off the S&P understates, read from the
+Nasdaq Composite (`^IXIC`, on file since 2026-10-14).
+
+`scripts/hist/beta-oracle-2026-11-03/` reuses the 2026-09-29 W1 scores
+(19,164 events, six fields), so no model is refitted. Every arm is a
+logistic layer on `logit(p)` plus its inputs, fitted on W1 outside the cell
+and applied to the cell. Beta is each stock's 252-session beta to the S&P
+from daily returns through t-1. Every arm but RAW reads the market's future
+move, so each is an upper bound, not a proposal.
+
+**Check first.** ORACLE_W1 reproduces the 2026-09-29 run to four decimals in
+all twelve field-by-side cells. (A first pass took the number in a field's
+name as its horizon; `p_touch_3` is "+3% within 5 sessions". The check
+caught it.)
+
+Transition cell, mean |bias| over the six fields, and Brier for longs:
+
+| arm | input | longs | shorts | Brier, longs |
+|---|---|---:|---:|---:|
+| RAW | none | 0.293 | 0.063 | 0.266 |
+| ORACLE_W1 | S&P move | 0.155 | 0.057 | 0.189 |
+| BETA_W1 | beta × S&P move | 0.146 | 0.050 | 0.186 |
+| BOTH_W1 | both of the above | 0.143 | 0.055 | 0.184 |
+| IXIC_W1 | Nasdaq move | 0.162 | 0.051 | 0.191 |
+| SPX_IXIC | S&P and Nasdaq moves | 0.165 | 0.057 | 0.195 |
+
+Outside the cell every layer is unbiased by construction, since it is
+fitted there.
+
+**Beta adds 0.009 to 0.012, and the Nasdaq does worse than the S&P.**
+Transition longs average a beta of 1.01 (median 0.96) against 0.89 for
+longs elsewhere: slightly higher, not enough to matter.
+
+**So the market explains half of the transition bias and only through the
+S&P's own move.** The other half is stock-specific: in this one episode
+the names that fired long fell short of +3% and hit −3% more often than
+any market input tested accounts for, even with hindsight. For the display
+proposal in DECISIONS.md Open items (option B), scenario probabilities
+conditioned on the S&P alone capture what any market scenario can.

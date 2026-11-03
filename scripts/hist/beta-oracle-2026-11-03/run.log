@@ -1,0 +1,58 @@
+scores 114,984 rows, 19,164 events; matched 19,164 on wivie
+beta missing on 0 of 114,984 rows (short history)
+
+reproduction of ORACLE_W1 (bias now vs 2026-09-29)
+      field             cell    n    bias  bias_0929
+p_adverse_3  transition long 1321 -0.2960    -0.2960
+p_adverse_3 transition short 1151 -0.0981    -0.0981
+p_adverse_5  transition long 1321 -0.2672    -0.2672
+p_adverse_5 transition short 1151 -0.0471    -0.0471
+ p_touch_10  transition long 1321  0.0337     0.0337
+ p_touch_10 transition short 1151 -0.0314    -0.0314
+  p_touch_2  transition long 1321  0.1283     0.1283
+  p_touch_2 transition short 1151  0.0835     0.0835
+  p_touch_3  transition long 1321  0.1260     0.1260
+  p_touch_3 transition short 1151  0.0772     0.0772
+  p_touch_5  transition long 1321  0.0759     0.0759
+  p_touch_5 transition short 1151  0.0024     0.0024
+Nasdaq move missing on 0 rows
+
+bias (mean p - realised), fitted on W1 outside the cell
+arm                              RAW  ORACLE_W1  BETA_W1  BOTH_W1  IXIC_W1  SPX_IXIC
+field       cell                                                                    
+p_adverse_3 rest              0.0037     0.0000  -0.0000  -0.0000   0.0000    0.0000
+            transition long  -0.4209    -0.2960  -0.2908  -0.2862  -0.3029   -0.3085
+            transition short -0.0536    -0.0981  -0.0945  -0.0989  -0.0946   -0.0937
+p_adverse_5 rest              0.0044    -0.0000   0.0000  -0.0000   0.0000    0.0000
+            transition long  -0.3481    -0.2672  -0.2558  -0.2556  -0.2650   -0.2638
+            transition short -0.0315    -0.0471  -0.0454  -0.0477  -0.0455   -0.0466
+p_touch_10  rest             -0.0075    -0.0000  -0.0001   0.0000   0.0000   -0.0001
+            transition long   0.1222     0.0337   0.0258   0.0247   0.0359    0.0441
+            transition short -0.1245    -0.0314  -0.0124  -0.0126  -0.0188   -0.0615
+p_touch_2   rest             -0.0099     0.0000  -0.0000  -0.0001  -0.0000   -0.0001
+            transition long   0.3034     0.1283   0.1209   0.1149   0.1462    0.1495
+            transition short -0.0351     0.0835   0.0722   0.0836   0.0723    0.0718
+p_touch_3   rest             -0.0092    -0.0000  -0.0000  -0.0000   0.0000   -0.0000
+            transition long   0.3208     0.1260   0.1165   0.1118   0.1412    0.1432
+            transition short -0.0522     0.0772   0.0679   0.0783   0.0692    0.0643
+p_touch_5   rest              0.0035    -0.0001  -0.0000  -0.0000  -0.0000    0.0000
+            transition long   0.2426     0.0759   0.0649   0.0634   0.0814    0.0829
+            transition short -0.0789     0.0024   0.0057   0.0079   0.0046   -0.0057
+
+mean over six fields
+                 abs_bias                                              brier                                           
+arm               BETA_W1 BOTH_W1 IXIC_W1 ORACLE_W1     RAW SPX_IXIC BETA_W1 BOTH_W1 IXIC_W1 ORACLE_W1     RAW SPX_IXIC
+cell                                                                                                                   
+rest               0.0000  0.0000  0.0000    0.0000  0.0064   0.0000  0.1584  0.1581  0.1618    0.1593  0.1729   0.1585
+transition long    0.1458  0.1428  0.1621    0.1545  0.2930   0.1653  0.1858  0.1835  0.1905    0.1891  0.2663   0.1946
+transition short   0.0497  0.0548  0.0508    0.0566  0.0626   0.0572  0.1732  0.1764  0.1862    0.1817  0.1876   0.1780
+
+beta by cell and side (one row per event)
+                   count   mean    50%
+cell       side                       
+rest       long   8957.0  0.890  0.828
+           short  7735.0  0.913  0.864
+transition long   1321.0  1.008  0.956
+           short  1151.0  0.820  0.745
+
+=== BETA ORACLE DONE ===
