@@ -1972,3 +1972,38 @@ every ticker, `exchange` restored for the three from `capitalscan_hist`.
 **The rule.** A writer to a table other jobs also write passes
 `update_columns` or inserts with `DO NOTHING`. `update_columns=None` is
 only right when the row dicts carry every column.
+
+## The post-weekly sync was killed and the retry skipped it (2026-10-18)
+
+**What happened.** The Sunday nightly follows the Saturday weekly, so its
+incremental sync re-ships every event the weekly relabelled. On 2026-10-18
+that sync started at 13:42 PT and was still running at 17:15, when the
+unit's `RuntimeMaxSec=4h` killed it. systemd restarted the unit at 17:30
+(`Restart=on-failure`), and `resume-check` answered "completed 13:15 this
+period, nothing to do". The next morning's premarket inherited the whole
+backlog, was still writing to serving at 06:45 while the poller started,
+and was killed by its own 105-minute limit at 07:15. The 13:15 nightly
+caught up in 148 minutes, finishing 16:19 PT on 2026-10-19.
+
+**Root cause.** `nightly` closed its `scheduled_runs` slot `ok` *before*
+the sync. The order was meant to stop a sync exception from marking a good
+ingest failed, but it also meant a kill during the sync looked like a
+finished run.
+
+**What it cost.** Serving was about 26 hours behind the weekly's relabels.
+Nothing was lost: `_events_modified_since` counts only `ok` syncs, so the
+next sync re-shipped everything since the last one that finished. Checked
+2026-11-03: every live-generation `events` row on serving matches research
+on exit date, exit reason, `net_ret`, `mfe`, `fwd_ret_5d` and `in_trade`,
+compared as per-year hash sums over all 17 years. The poller ran its whole
+2026-10-19 session (73 of 78 ticks against its usual 74).
+
+**Fix.** The slot now closes after the sync and the serving sweep. A sync
+that raises is still caught and the chain still closes `ok`; only a kill
+leaves `'started'`, which `resume-check` reads as "run". Test:
+`test_nightly_completion_order.py`. The two `runs` rows the kills left at
+`running` were marked `failed` by hand.
+
+**Still open.** The post-weekly sync is the longest step the schedule runs:
+124, 42, 148 and 188 minutes after the weeklies of 2026-10-03, 10-10, 10-17
+and 10-31. The 2026-11-01 run finished with 24 minutes left under the cap.

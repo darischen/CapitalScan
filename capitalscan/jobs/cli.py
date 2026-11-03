@@ -3632,14 +3632,6 @@ def nightly(
     except Exception as exc:  # noqa: BLE001 - reported; the resolver is idempotent
         console.print(f"[yellow]warn[/yellow] outcomes skipped: {exc}")
 
-    # Closes the slot `record` opened above. Without it the row stays
-    # `'started'` forever and `cscan system-status` cannot tell a chain that
-    # finished from one that died halfway (ADR 080 lists `status` and
-    # `run_id` as part of this table's contract; both went unwritten until
-    # 2026-08-09). `run_id` is the path-capture job's, the last link in the
-    # chain, so a reader landing here can follow it into `runs`.
-    scheduled_runs.complete(engine, slot, "ok", run_id=path_job.run_id)
-
     # ADR 053's last link: "a nightly export builds the subset locally and
     # upserts to cloud". Skipped visibly rather than silently when the
     # serving store is not configured, matching `cscan db migrate`'s
@@ -3721,6 +3713,23 @@ def nightly(
             "provisional rows are left in place rather than deleted with nothing "
             "to replace them"
         )
+
+    # Closes the slot `record` opened above. Without it the row stays
+    # `'started'` forever and `cscan system-status` cannot tell a chain that
+    # finished from one that died halfway (ADR 080 lists `status` and
+    # `run_id` as part of this table's contract; both went unwritten until
+    # 2026-08-09). `run_id` is the path-capture job's, so a reader landing
+    # here can follow it into `runs`.
+    #
+    # **Last, after the sync and the sweep (2026-11-03).** It sat above the
+    # sync until then. On 2026-10-18 the post-weekly sync ran into the
+    # unit's `RuntimeMaxSec=4h` and was killed; the slot already read `ok`,
+    # so the restart 15 minutes later asked `resume-check`, was told the
+    # period was done, and skipped. Serving stayed a day behind until the
+    # next afternoon's run. A sync that *raises* is still caught above and
+    # the chain still closes `ok`; only a kill now leaves `'started'`, which
+    # is what lets the restart pick the work back up.
+    scheduled_runs.complete(engine, slot, "ok", run_id=path_job.run_id)
 
     console.print("nightly: chain complete")
 
