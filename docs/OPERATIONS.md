@@ -2021,3 +2021,42 @@ leaves `'started'`, which `resume-check` reads as "run". Test:
 **Still open.** The post-weekly sync is the longest step the schedule runs:
 124, 42, 148 and 188 minutes after the weeklies of 2026-10-03, 10-10, 10-17
 and 10-31. The 2026-11-01 run finished with 24 minutes left under the cap.
+
+## 2026Q3's universe was evaluated 33 days late (2026-11-03)
+
+**What happened.** ADR 014 says trade membership is re-evaluated every
+quarter, on its own. No timer runs it: `monthly` is a no-op, and every
+quarter in `universe` was evaluated by hand, the last full passes on
+2026-08-01/02. Nobody ran 2026Q3 after it ended on 2026-09-30. From
+2026-10-01 to 2026-11-03, every new event and the Pi's poll list used
+2026-06-30 membership, because both read the latest evaluation on or before
+the date.
+
+**What it changed.** `cscan universe --quarter 2026Q3` on `wivie`, 08:22
+PST, 20 s, 1,431 tickers. The trade universe went from 254 names to 198:
+94 left and 38 entered. Watch went from 133 to 141. 91 of the 94 that left
+failed the 200-day rule, and the raw bars agree: all 91 closed below their
+own 200-session mean on 2026-09-30, by 9% on average. The S&P stayed 6%
+above its own line, but only 41.6% of evaluated names were above theirs,
+against 61.6% at 2026-06-30.
+
+Inside the window, 1,915 of 20,365 `touch` events carried a stale
+`in_trade` (1,396 true that are now false, 519 the reverse), and 1,820 of
+19,319 for each backtest-written kind (`next_open`, `touch_30m`,
+`touch_5m`).
+
+**Fix.** `cscan events --lookback 35 --workers 3` re-stamped the `touch`
+window: 3m26s, 21,168 rows written, 3,502 changed. Predictions are
+unaffected, because the nightly scores every event whatever its membership
+(`ANY_UNIVERSE`). The 2026-11-07 weekly backtest re-stamps the other three
+kinds and 10 `touch` rows the re-run did not reproduce (BACKLOG, "Some
+debounce slots hold two `touch` events"). The 13:15 nightly sync ships the
+new `universe` rows and the changed events, and the poller reads 2026Q3
+from its next session.
+
+**Check after every quarter end** until a timer runs it (BACKLOG, "No timer
+evaluates a new quarter's universe"):
+
+```sql
+SELECT max(as_of) FROM universe WHERE config_hash = '<live hash>';
+```

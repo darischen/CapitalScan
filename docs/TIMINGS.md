@@ -271,6 +271,10 @@ One quarter: **~18 seconds** on the 1,563-ticker universe, so a full
 66-quarter backfill is **~20 minutes** (measured 2026-08-26, all 66 quarters
 `ok`, zero failures).
 
+**On `wivie`, 2026-11-03: 20 s** for one quarter (2026Q3, 1,431 tickers,
+`runs` 08:22:49 to 08:23:09 PST). The re-stamp that followed,
+`cscan events --lookback 35 --workers 3`, took **3m26s** for 21,168 rows.
+
 - This line has been wrong twice. It said ~10s, true at an earlier universe
   size. It was then "corrected" to ~2.6 min on 2026-08-25 -- a figure taken
   while every `localhost` connect cost 130 seconds, so it measured the IPv6

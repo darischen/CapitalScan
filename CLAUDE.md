@@ -452,6 +452,13 @@ schedule; the false claim was quoted back as fact in a session before anyone
 ran `Get-ScheduledTask`. Run it, or `systemctl list-timers`, rather than
 trusting this table.
 
+**No timer evaluates a new quarter's universe** (found 2026-11-03). ADR 014
+makes membership quarterly and automatic, but `monthly` is a no-op and no
+other job runs it, so 2026Q3 went 33 days late. Until it is wired, after
+each quarter ends run `cscan universe --quarter <q>` on `wivie` outside the
+nightly and weekly windows, then `cscan events --lookback <days since the
+quarter ended, plus 5>`. → `OPERATIONS.md`
+
 **The poller moved to the Pi on 2026-08-28 (ADR 158), and this changes what
 you may run during market hours.** It is the one genuinely scheduled thing
 in the system now: `capitalscan-poller.timer` fires at 00:00 PT and
