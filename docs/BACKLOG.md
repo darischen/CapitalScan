@@ -274,7 +274,9 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    the S&P's next 3-10 days worse than a flat mean out of sample (R^2
    −0.005 to −0.020, 2012-2026). **So capacity and sample are the wrong
    questions: the input that would fix it does not exist at t-1.** The
-   other half is untested; a beta-scaled oracle is the next cheap check.
+   other half is not beta and not the Nasdaq (RESULTS 2026-11-03): a
+   beta-scaled oracle takes the long bias from 0.155 to 0.146, the Nasdaq's
+   move does worse than the S&P's (0.162), so the rest is stock-specific.
    The live long gap in the modal (61.5% stated, 39.0% realised) is not
    this: the S&P sat 5-9% above its 200-day through those 20 sessions.
    A proposal for the display is in DECISIONS.md Open items.

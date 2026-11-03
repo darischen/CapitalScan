@@ -1896,7 +1896,8 @@ all four `/ticker/^...` pages rendering.
 database stopped receiving the nightly and kept only what was run on it by
 hand. By 2026-10-14 its bars ended at 2026-09-09 and it held two
 generations `wivie` never had (arms `47beeecbd6d41696` and
-`a90d4561f883c4a5`, 1.9M events each, 2026-10-01). **Each database has its
+`a90d4561f883c4a5`, 1.9M events each, 2026-10-01; dropped 2026-11-03 once
+the owner kept the current exit). **Each database has its
 own `events_id_seq`**, and every upsert consumes an id even when it inserts
 nothing, so `wivie` reached id 209M holding 21.8M events while the
 workstation sat at 104M. Ids are local; 909 of the arm events' ids already

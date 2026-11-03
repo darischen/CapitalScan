@@ -896,3 +896,37 @@ ledger; do not read it as the new baseline.
 **Refit on `wivie`, second measurement:** 27 min for `cscan predict
 --publish` (ADR 204, 2026-09-28, 21:34 to 22:01 PT, 149,380 training rows),
 against 30m54s inside the 2026-09-26 weekly.
+
+## `cscan nightly` on `wivie`, the weekly rhythm (2026-10-03 to 2026-11-02)
+
+Two steps follow the week, not the day. Measured from `runs`.
+
+**The `next_open` backtest peaks on Fridays.** The 13:15 run's backtest step
+resolves `next_open` positions that have reached their hold limit, capped at
+`_NEXT_OPEN_BACKTEST_TICKER_CAP = 40` tickers (OPERATIONS 2026-09-15). Only
+`cscan backtest` writes those rows, so the positions the Saturday weekly
+leaves open all reach their limit the following Thursday and Friday:
+
+| day | tickers | minutes | rows |
+|---|---:|---:|---:|
+| Friday (10-02, 10-09, 10-16, 10-23, 10-30) | 40, the cap | 24 to 26 | 116,508 to 132,208 |
+| Thursday (10-08, 10-15, 10-22, 10-29) | 5 to 10 | 5 to 7 | 16,516 to 27,288 |
+| other days | 1 or 2 | 3 | ~5,000 |
+
+Each selected ticker's whole history is re-backtested, about 2,900 rows and
+36 s per ticker. The 23-minute step on 2026-10-02 that looked like a fault
+was the first of these. Tickers past the cap wait one more night or for the
+weekly.
+
+**The Sunday sync carries the weekly.** The weekly relabels most of the
+generation and does not sync, so the next 13:15 nightly ships it:
+
+| weekly | Sunday sync | rows |
+|---|---:|---:|
+| 2026-10-03 | 124 min | 1,440,167 |
+| 2026-10-10 | 42 min | 528,000 |
+| 2026-10-17 | killed at the 4 h cap, then 148 min on Monday | 2,449,227 |
+| 2026-10-31 | 188 min | 1,482,213 |
+
+On 2026-11-01 the whole chain took 3h36m against `RuntimeMaxSec=4h`. The
+2026-10-18 kill and why its retry was skipped are in OPERATIONS.md.
