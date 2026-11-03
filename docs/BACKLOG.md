@@ -79,6 +79,43 @@ pull to "keep it in sync" is the mistake.
 
 ## Open
 
+### No timer evaluates a new quarter's universe (found 2026-11-03)
+
+ADR 014 makes trade membership quarterly and automatic ("membership changes
+on its own with no manual review"), and DESIGN §4.12 lists the `universe`
+evaluation as quarterly. No timer ever ran it. ADR 080 planned `monthly` for
+retrain, calibrate and promote, which moved to `weekly` (ADR 184/185), so
+`monthly` is a no-op and every quarter in `universe` was evaluated by hand.
+2026Q3 ended on 2026-09-30 and was evaluated on 2026-11-03, 33 days late
+(OPERATIONS.md). The next quarter ends 2026-12-31.
+
+Two places to wire it, **owner's call** (DECISIONS.md Open items):
+
+- **A step in the nightly chain.** After `indicators`, evaluate the latest
+  completed quarter when the live generation has no rows for it. The first
+  premarket after a quarter ends runs it on freshly fetched bars, and the
+  same chain's `events` step stamps the new membership. A failed night
+  retries the next night.
+- **`monthly` on the 1st.** Matches the original slot. It runs at 03:00,
+  before the premarket re-fetches the quarter's last bar, and a failure
+  waits a month.
+
+Either way the step must not run while a backtest runs (ADR 060). Until it
+is wired, run it by hand after each quarter end (CLAUDE.md, Scheduling).
+
+### Some debounce slots hold two `touch` events (found 2026-11-03)
+
+DESIGN §4.7 allows one event per ticker, per band, per day
+(`core.signals.debounce_key`). On the live generation, 168 slots in 2026
+hold two `touch` rows with different `signal_type`, 35 to 60 a year in
+2019-2025, and none before. Example: HWM on 2026-10-08 holds
+`bull_close_below_lower`, written by that day's nightly, and
+`bb_lower_touch`, written when `cscan events --lookback 35` re-ran the
+window on 2026-11-03. Neither writer deletes, so a row the detector stops
+producing stays. Cause not traced. Candidates: a bar revised after the
+13:15 fetch, or the backtest keeping a slot `run_events` no longer fills.
+Check what the site shows for one of these slots before deciding on a sweep.
+
 ### Where Session 30 left off (2026-09-22/23) — read this first
 
 Four things shipped, three of them measured rather than reasoned. All three
@@ -279,7 +316,9 @@ Items 1 and 2 closed 2026-09-17: the arm comparisons each ran on a single label 
    move does worse than the S&P's (0.162), so the rest is stock-specific.
    The live long gap in the modal (61.5% stated, 39.0% realised) is not
    this: the S&P sat 5-9% above its 200-day through those 20 sessions.
-   A proposal for the display is in DECISIONS.md Open items.
+   **Closed 2026-11-03: the owner chose A, so nothing ships** (DECISIONS.md
+   Open items). Nobody knows the market's next move, and a better model
+   will not supply it.
 
    Earlier text, kept: **The transition is still unexplained, and the calibration fix is now
    refuted too.** The model can be told what the market is doing and does
@@ -1275,6 +1314,11 @@ name, so they have been running whenever research ran. Both will be
 `systemctl enable`d on `wivie` at the cutover, where the units already
 exist. `scripts/install_schedule.ps1` would register them here and
 deliberately has not been run.
+
+**Corrected 2026-11-03:** `monthly` was never a universe pass. ADR 080
+planned it for retrain, calibrate and promote, which moved to `weekly`
+(ADR 184/185), and no slot ever ran the quarterly evaluation. See "No timer
+evaluates a new quarter's universe" under Open.
 
 
 ~~**`core.exits.resolve_exit` builds three pandas Series per forward bar**~~
