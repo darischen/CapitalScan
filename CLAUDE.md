@@ -242,7 +242,7 @@ Budgets, so nobody starts one blind. Per-step tables, regimes, and the history o
 | `cscan universe --quarter` x 66 | ~20 min |
 | `cscan predict` (ADR 174/175), bare (refit) | **~11 min** on the workstation at six heads; **30m54s on `wivie`** (2026-09-26 weekly, 2.87x); **27m on `wivie`** for the ADR 204 refit and publish (2026-09-28, 21:34 to 22:01 PT) — refit only, needs the `neural` extra, stays on whichever box runs `weekly` |
 | `cscan predict --from-artifact` / `--serving` | milliseconds — numpy forward pass, no `neural` extra, runs on the Pi via `wait_and_poll.sh` |
-| `cscan monthly` | none — no-op stub, `retrain/calibrate are Phase 6 scope` (`cli.py`); nothing runs so there is nothing to time |
+| `cscan monthly` | **~20 s of evaluation plus ~2 min of `events`** on the 1st of Jan/Apr/Jul/Oct (the evaluation timed by hand on `wivie` 2026-11-03, the events step from the nightly's 128 s average). Seconds in the other months, which find the quarter already there. A no-op stub until 2026-11-03 |
 
 - **Use `--phase` for anything long.** `compute` is resumable, checkpointed per `--chunk-size` (default 25); `_chunk_already_done` keys on `(config_hash, chunk, of)`, so **keep `--chunk-size` identical across restarts** or every chunk re-runs. Each phase writes its own `runs` row (`backtest_compute` per chunk, `backtest_finalize`, `backtest_harness`); `notes` carries `harness passed` or the failing check.
 - **`compute`'s `cofire_count` is only correct within a chunk** and is excluded from that write. `finalize` is the whole-universe pass that corrects it, and only if `compute` finished for the config.
@@ -452,12 +452,12 @@ schedule; the false claim was quoted back as fact in a session before anyone
 ran `Get-ScheduledTask`. Run it, or `systemctl list-timers`, rather than
 trusting this table.
 
-**No timer evaluates a new quarter's universe** (found 2026-11-03). ADR 014
-makes membership quarterly and automatic, but `monthly` is a no-op and no
-other job runs it, so 2026Q3 went 33 days late. Until it is wired, after
-each quarter ends run `cscan universe --quarter <q>` on `wivie` outside the
-nightly and weekly windows, then `cscan events --lookback <days since the
-quarter ended, plus 5>`. → `OPERATIONS.md`
+**`monthly` evaluates each new quarter's universe** (since 2026-11-03, the
+owner's choice). ADR 014 makes membership quarterly and automatic, and no
+timer ran it before, so 2026Q3 went 33 days late. On the 1st, `cscan
+monthly` evaluates the latest completed quarter if the live generation
+lacks it, then re-runs `events` from the quarter's last day. It refuses
+while another job runs (ADR 060), and its unit retries hourly. → `OPERATIONS.md`
 
 **The poller moved to the Pi on 2026-08-28 (ADR 158), and this changes what
 you may run during market hours.** It is the one genuinely scheduled thing

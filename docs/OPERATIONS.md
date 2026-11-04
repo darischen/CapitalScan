@@ -2054,8 +2054,9 @@ debounce slots hold two `touch` events"). The 13:15 nightly sync ships the
 new `universe` rows and the changed events, and the poller reads 2026Q3
 from its next session.
 
-**Check after every quarter end** until a timer runs it (BACKLOG, "No timer
-evaluates a new quarter's universe"):
+**Fixed the same day.** `cscan monthly` now runs the evaluation on the 1st
+and re-stamps the events since the quarter's last day (owner's choice,
+DECISIONS.md Open items). If a quarter is ever missing, this finds it:
 
 ```sql
 SELECT max(as_of) FROM universe WHERE config_hash = '<live hash>';

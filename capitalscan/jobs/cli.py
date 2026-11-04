@@ -2129,6 +2129,23 @@ def _quarter_label(as_of: date) -> str:
     return f"{as_of.year}Q{(as_of.month - 1) // 3 + 1}"
 
 
+def _today() -> date:
+    """The wall-clock date, read in one place so a test can pin it."""
+    return date.today()
+
+
+def _latest_completed_quarter(today: date) -> date:
+    """The last day of the newest quarter that ended before `today`.
+
+    The day before the current quarter's first day. On a quarter's own last
+    day this is still the quarter before: the evaluation reads that day's
+    close (`compute._latest_indicator_row` takes `ts <= as_of`), and the
+    session has not made it yet.
+    """
+    first_of_quarter = date(today.year, 3 * ((today.month - 1) // 3) + 1, 1)
+    return first_of_quarter - timedelta(days=1)
+
+
 def _live_quarters(engine, chash: str) -> list[str]:
     """Every quarter the generation holds `universe` rows for, oldest first."""
     from sqlalchemy import text
@@ -4183,19 +4200,66 @@ def weekly(
 
 @app.command()
 def monthly() -> None:
-    """Orchestrates the monthly chain (DESIGN §4.12). Retrain/calibrate are
-    Phase 6 scope and stay unimplemented — see `weekly`.
+    """The quarterly universe evaluation (ADR 014), checked on the 1st.
+
+    **The owner's choice, 2026-11-03** (DECISIONS.md Open items). Until
+    then this was a no-op: ADR 080 planned it for retrain and calibrate,
+    which moved to `weekly`, and no timer ran the quarterly evaluation ADR
+    014 makes automatic. 2026Q3 was evaluated by hand 33 days late
+    (OPERATIONS.md).
+
+    Every month it asks whether the live generation holds the latest
+    completed quarter. On the 1st of January, April, July and October the
+    answer is no, and it evaluates that quarter. The other eight months it
+    finds the rows and stops, which is also how a quarter missed one month
+    is caught the next. Any row counts: a partial hand run
+    (`cscan universe --quarter Q --tickers X`) on a quarter's last day would
+    hide the quarter, so run the whole quarter by hand after one.
+
+    **Then `run_events` from the quarter's last day to today.** An event
+    takes the latest evaluation on or before its date
+    (`core.universe.TickerMembership`), so every event since then was
+    stamped with the previous quarter. On the 1st that is one session, and a
+    late run re-stamps the whole gap. Only the `touch` rows `run_events`
+    writes: the weekly backtest re-stamps the kinds it owns.
+
+    **Refuses while another job runs** (ADR 060): a backtest resolving
+    eligibility against a `universe` that changes mid-run is not
+    deterministic. The 1st falls on a Saturday, inside the weekly, about one
+    month in seven. Exit 1 leaves the slot `failed`, and the unit's
+    `Restart=on-failure` tries again an hour later.
     """
-    from capitalscan.jobs import db_io, scheduled_runs
+    from capitalscan.jobs import compute, db_io, scheduled_runs
+    from capitalscan.jobs.config import config_hash
 
     engine = db_io.get_engine()
     scheduled_runs.record(engine, "monthly")
-    # Closed immediately and honestly: the slot fired and the chain has
-    # nothing wired into it yet, which is a completed no-op rather than an
-    # unfinished run. Leaving it `'started'` would make `system-status`
-    # report a monthly job perpetually in flight.
+    config = _resolve_config_or_exit()
+    chash = config_hash(config)
+    today = _today()
+    as_of = _latest_completed_quarter(today)
+    quarter = _quarter_label(as_of)
+    if quarter in _live_quarters(engine, chash):
+        scheduled_runs.complete(engine, "monthly", "ok")
+        console.print(f"monthly: {quarter} already evaluated for {chash}, nothing to do")
+        return
+
+    busy = _jobs_running(engine)
+    if busy:
+        scheduled_runs.complete(engine, "monthly", "failed")
+        for run_id, job, started in busy:
+            console.print(f"  running: {job} {run_id}, started {started:%Y-%m-%d %H:%M} UTC")
+        console.print(
+            f"[red]monthly[/red]: not evaluating {quarter} while another job runs "
+            "(ADR 060). The unit retries in an hour."
+        )
+        raise typer.Exit(code=1)
+
+    report = compute.run_universe(quarter, tickers=None, config=config, engine=engine)
+    console.print(f"monthly: evaluated {len(report.tickers)} tickers as of {quarter}")
+    compute.run_events(_resolve_tickers(None), as_of, today, config=config, engine=engine)
     scheduled_runs.complete(engine, "monthly", "ok")
-    console.print("monthly: no jobs wired yet (retrain/calibrate are Phase 6 scope)")
+    console.print(f"monthly: re-stamped events from {as_of} to {today}")
 
 
 @app.command(name="resume-check")

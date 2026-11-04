@@ -376,7 +376,7 @@ which machine *holds* research and *pushes* to it. `wivie`'s
 | `premarket` | 05:30 Mon-Fri | the nightly chain again, data catch-up for bars Yahoo corrects late (ADR 203) | as nightly |
 | `nightly` | 13:15 Sun-Fri, 19:00 retry (no Saturday) | `pull_live_records` from the Pi, ingest chain, indicators, breadth, events, backtest, path capture, peak labels, predict, outcomes, `sync` to serving | expected ~35 min since `fetch_ledger` (was ~55; not yet measured end to end) |
 | `weekly` | Sat 00:00 + up to 2 h | chunked backtest + finalize, refit and publish the model | **12h22m** on 2026-09-26 |
-| `monthly` | 1st, 03:00 | maintenance | short |
+| `monthly` | 1st, 03:00 + up to 1 h | the quarterly universe evaluation when the latest completed quarter is missing, then `events` since its last day. Refuses during another job and retries hourly | ~3 min in Jan/Apr/Jul/Oct, seconds otherwise |
 
 Deadlines are loose — `weekly` only has to land within ~2.5 days, and
 every job self-heals on the next run (7-day lookback).
