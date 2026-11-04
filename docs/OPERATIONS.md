@@ -2103,3 +2103,49 @@ SELECT md5(payload) FROM model_artifact WHERE config_hash = '<live hash>';
 ```
 
 All three copies matched on 2026-11-04 (`1aecd33f`), the 2026-10-31 refit.
+
+## Three companies held three months of history: HUBB, FISV, Q (repaired 2026-11-04)
+
+**What happened.** HUBB, FISV and Q are in the committed seed from
+2026-08-01, and each held daily bars only from 2026-08-12: 58, 51 and 59.
+Yahoo serves 8,013 for HUBB and FISV, from 1995, and 257 for Q, from
+2025-10-27. Why the first backfill missed them is not known. The nightly's
+5-day window kept them current from 2026-08-12 and never reached further
+back, and with under 280 bars none had indicators or events.
+
+**Repair.** `cscan add-ticker HUBB,FISV,Q` on `wivie`, 02:09:30 to 02:18:49
+PST, every step `ok` and the harness passing all five checks:
+
+| ticker | daily bars | from | in trade | touch signals |
+|---|---|---|---|---|
+| FISV | 5,856 | 2003-07-28 | 22 of 67 quarters | 2,391 |
+| HUBB | 5,854 | 2003-07-28 | 6 of 67 quarters | 2,388 |
+| Q | 257 | 2025-10-27 | none | 0 |
+
+Q stays without indicators until it reaches 280 sessions, about
+2026-12-07. The 2026-11-07 weekly's finalize corrects `cofire_count`,
+which a three-ticker backtest cannot.
+
+**A second gap on the way to serving.** The incremental sync shipped whole
+histories only for tickers serving held no rows for, and serving held
+these three months of each. So it would have shipped events back to 2003
+and kept three months of chart. `_backfill_tickers` now also ships a
+ticker whose first daily row on serving is later than on research, both
+read from the cutoff (0.2 s on research, 0.7 s on the Pi). On 2026-11-04
+that listed only these three.
+
+**Audit, the same day.** Every active ticker (1,472) against Yahoo's
+daily history from 2005-10-01: apart from these three, only SKYD starts
+more than 30 days late, and that is the symbol change in BACKLOG. 40 more
+hold over 30 bars fewer than Yahoo from the same start, and `bar_rejects`
+accounts for them: 28,244 `flat_zero_volume_bar` rejects, mostly the OTC
+years before a US listing (FLUT, FER, FERG, AMCR, SW). The count matches
+the gap to the bar for FER (2,472), FERG (2,078), AMCR (1,370) and ALM
+(1,164). That is the reject rule working, not a gap.
+
+To spot the next one, compare first rows across the two stores:
+
+```sql
+SELECT t.ticker, (SELECT min(x.ts)::date FROM bars x WHERE x.ticker = t.ticker
+       AND x.interval = '1d' AND x.ts >= '1996-11-04') FROM tickers t;
+```

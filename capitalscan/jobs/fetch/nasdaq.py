@@ -79,8 +79,15 @@ INGEST_MIN_MCAP_USD = 5e9
 # "depositary" alone would have dropped all 16 -- it did, on the first
 # attempt, which is why the pattern names what makes a security *preferred*
 # rather than what makes it depositary.
+#
+# **Notes, debentures and exchangeables are the same shape** (2026-11-04).
+# The pattern named only preferreds, warrants and units, and 21 exchange-
+# traded notes reached `tickers` as companies: Southern's SOJC, AT&T's TBB,
+# Comcast's ZONES (CCZ) and 18 more, each with its issuer's cap (CCZ read
+# $137.1B on a $63 price). Matched as whole words, so "Notable" survives.
 _NOT_COMMON = re.compile(
-    r"preferred|warrant|\bunits?\b|representing a 1/|% series|fixed-rate|fixed/float",
+    r"preferred|warrant|\bunits?\b|representing a 1/|% series|fixed-rate|fixed/float"
+    r"|\bnotes?\b|\bdebentures?\b|\bzones\b",
     re.I,
 )
 

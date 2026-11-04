@@ -78,6 +78,68 @@ deleted the same day: on 2026-09-29 both nightlies ran every step `ok`,
 took 3m35s and 2m54s and `shares` 18 s and 17 s, and the Pi wrote 260
 predictions that week under the new model.
 
+### A symbol change splits or doubles a company's history (found 2026-11-04)
+
+No ADR covers a symbol change, and the store handled two of them two
+different wrong ways:
+
+- **EQR became VMRK** (Equity Residential, now Vivmark Residential) on
+  2026-08-17. VMRK holds the full history Yahoo serves under the new
+  symbol, identical to EQR's to the bar (2015-06-01 closes 75.02 on both).
+  Both rows are `is_active`, so the live generation counts the company
+  twice: 9,036 events each through 2026-08-17, 95 `in_trade` and 619
+  `in_watch` on `touch` alone. EQR was still evaluated for 2026Q3, on its
+  last bar from 2026-08-17, and is on the watch list.
+- **PSKY became SKYD** (Paramount Skydance) in October. PSKY holds
+  2005-12-05 to 2026-10-16. SKYD holds 23 bars and no indicators, which
+  need 280 sessions, so the company has fired nothing since 2026-10-16.
+  Yahoo serves SKYD from 2005-12-05, so a plain backfill would double it
+  the way VMRK doubles EQR.
+
+**How a new symbol gets its bars.** The seed refresh adds the row, and the
+nightly fetches a 5-day window for every ticker (`cli.py`, `start = end -
+timedelta(days=5)`). Nothing fetches the history of a ticker that has none;
+`cscan add-ticker` does, by hand. Options in DECISIONS.md Open items. After
+the decision, the refresh should flag a new symbol that shares a CIK with
+one whose bars stopped (share classes share a CIK too, with current bars on
+both).
+
+### Notes and debentures were ingested as companies (found 2026-11-04)
+
+`nasdaq._NOT_COMMON` excluded preferreds, warrants and units by name, and
+named nothing about notes. 21 exchange-traded notes, debentures and
+exchangeables of large issuers reached `tickers` through
+`run_exchange_expansion`: SOJC, SOJD and SOJE (Southern), DUKB (Duke), TBB
+(AT&T), CCZ (Comcast ZONES), CMSA, CMSC and CMSD (CMS), PRS, PFH and PRH
+(Prudential), KKRS, BNH, BNJ, BEPJ, BIPH, BIPJ (Brookfield and KKR), SREA
+(Sempra), AQNB (Algonquin) and CGABL (Carlyle). `crit_mcap` resolves by
+CIK, so each carries its issuer's share count times a ~$25 note price: CCZ
+read $137.1B and TBB $129.0B on 2026-09-30. None was ever `in_trade`;
+8,110 events reached `in_watch`, and CCZ is on the 2026Q3 watch list.
+**The filter is fixed** (2026-11-04, `test_nasdaq_fetch.py`): it now drops
+`notes`, `debentures` and `zones` as whole words, which removes 24 rows
+from the cached 2026-11-04 listings and no common stock. **The 21 rows
+already in `tickers` remain**, with 145,296 events across all generations
+and no predictions. Deleting them is the owner's call (DECISIONS.md Open
+items). `run_exchange_expansion` has no caller, so nothing re-adds them.
+
+### ~~Three companies held three months of history~~ REPAIRED 2026-11-04
+
+HUBB, FISV and Q are in the committed seed (`data/universe_union.csv`,
+2026-08-01), and each held daily bars only from 2026-08-12: 58, 51 and 59.
+Yahoo serves 8,013 for HUBB and FISV, from 1995, and 257 for Q, from
+2025-10-27. Why the first backfill missed them is not known. `cscan
+add-ticker HUBB,FISV,Q` rebuilt them on `wivie` (OPERATIONS.md). Q stays
+without indicators until it reaches 280 sessions, about 2026-12-07.
+The incremental sync would have shipped their events and kept serving's
+three months of chart, because it shipped whole histories only for
+tickers serving held no rows for. It now also ships a ticker whose first
+row on serving is later than on research (`sync._backfill_tickers`).
+An audit of all 1,472 active tickers against Yahoo the same day found no
+other late start except SKYD (above). Do not re-audit the 40 with fewer
+bars than Yahoo: `flat_zero_volume_bar` rejects account for them
+(OPERATIONS.md).
+
 ### ~~No timer evaluates a new quarter's universe~~ DONE 2026-11-03: `monthly` runs it
 
 The owner chose `monthly` (DECISIONS.md Open items): four evaluations a
