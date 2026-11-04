@@ -242,6 +242,7 @@ Budgets, so nobody starts one blind. Per-step tables, regimes, and the history o
 | `cscan universe --quarter` x 66 | ~20 min |
 | `cscan predict` (ADR 174/175), bare (refit) | **~11 min** on the workstation at six heads; **30m54s on `wivie`** (2026-09-26 weekly, 2.87x); **27m on `wivie`** for the ADR 204 refit and publish (2026-09-28, 21:34 to 22:01 PT) — refit only, needs the `neural` extra, stays on whichever box runs `weekly` |
 | `cscan predict --from-artifact` / `--serving` | milliseconds — numpy forward pass, no `neural` extra, runs on the Pi via `wait_and_poll.sh` |
+| `cscan backup` | **1m20s on `wivie`**, the first run (2026-11-04): a 27 MB dump and 54 MB of hourly bars to the Pi. Daily at 16:30 PT, read-only on research |
 | `cscan monthly` | **~20 s of evaluation plus ~2 min of `events`** on the 1st of Jan/Apr/Jul/Oct (the evaluation timed by hand on `wivie` 2026-11-03, the events step from the nightly's 128 s average). Seconds in the other months, which find the quarter already there. A no-op stub until 2026-11-03 |
 
 - **Use `--phase` for anything long.** `compute` is resumable, checkpointed per `--chunk-size` (default 25); `_chunk_already_done` keys on `(config_hash, chunk, of)`, so **keep `--chunk-size` identical across restarts** or every chunk re-runs. Each phase writes its own `runs` row (`backtest_compute` per chunk, `backtest_finalize`, `backtest_harness`); `notes` carries `harness passed` or the failing check.
