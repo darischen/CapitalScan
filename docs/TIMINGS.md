@@ -934,3 +934,10 @@ generation and does not sync, so the next 13:15 nightly ships it:
 
 On 2026-11-01 the whole chain took 3h36m against `RuntimeMaxSec=4h`. The
 2026-10-18 kill and why its retry was skipped are in OPERATIONS.md.
+
+## `cscan backup` (ADR 206)
+
+**On `wivie`, 2026-11-04: 1m20s**, the first run, started by hand at 03:24
+PST: a 27.0 MB dump of the seven tables and 54.1 MB of hourly bars
+(2,696,165 rows), both copied to the Pi over the LAN and checked by size.
+The scheduled slot is 16:30 PT daily.

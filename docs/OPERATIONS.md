@@ -2204,6 +2204,13 @@ first and copy across what is missing: `pg_restore --data-only` into a
 populated table fails that table at the first duplicate key. Advance each table's
 sequence past its max id afterwards (CLAUDE.md, ADR 158).
 
+**Drilled on the first copy, 2026-11-04.** Restored on the Pi into a scratch
+database (`createdb`, `pg_restore --no-owner --no-privileges`, `dropdb`
+afterwards): all seven tables matched research row for row (52,948
+predictions, 14,496 outcomes, 14,193 signal reports, 65 poller sessions,
+6,606 runs, 1,926 order intents), and the hourly file held all 2,696,165
+bars. Repeat the drill after any change to `jobs/backup.py`.
+
 Check the latest copy: `cscan system-status` shows the `backup` job's last
 run, and `SELECT notes FROM runs WHERE job = 'backup' ORDER BY started_at DESC
 LIMIT 1` names the sizes that arrived.
