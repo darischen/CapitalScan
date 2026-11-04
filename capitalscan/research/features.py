@@ -46,7 +46,7 @@ import numpy as np
 import pandas as pd
 from sqlalchemy import Engine, text
 
-from capitalscan.core.training import partition_for_training
+from capitalscan.core.training import partition_for_serving, partition_for_training
 
 # ---------------------------------------------------------------------------
 # The feature set
@@ -567,14 +567,18 @@ def build_serving_frame(
             params=params,
         )
 
-    trainable, etf, missing = partition_for_training(
+    # **Funds are scored here and never trained (ADR 208, amending 147).**
+    # `partition_for_serving` keeps them; `build_rows` flags every fund row
+    # cosmetic, because the model has never seen one. A blank-sector equity
+    # is still dropped: that is a defect to repair, not a row to extrapolate.
+    scorable, missing = partition_for_serving(
         list(zip(frame["ticker"], frame["sector"], strict=True))
     )
     if missing and require_sector:
         sample = sorted({frame["ticker"].iloc[i] for i in missing})[:10]
         raise ValueError(f"{len(missing)} event(s) carry a blank sector, e.g. {sample}")
 
-    kept = frame.iloc[trainable].reset_index(drop=True)
+    kept = frame.iloc[scorable].reset_index(drop=True)
     kept = _coerce_boolean_features(kept)
     kept = _add_derived(kept)
     kept = kept.drop(columns=[c for c in LABEL_COLS if c in kept.columns])
@@ -599,7 +603,7 @@ def build_serving_frame(
 
     return kept, FrameReport(
         rows=len(kept),
-        dropped_etf=len(etf),
+        dropped_etf=0,
         dropped_missing_sector=len(missing),
         dropped_no_label=0,
         dropped_untrained_type=dropped_untrained,

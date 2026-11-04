@@ -756,7 +756,16 @@ const feedSql = (order: string) => `
          s.bull_rev_open_gap_atr, s.bull_rev_ts,
          s.in_watch, s.watch_reason,
          s.p_touch_3, s.pred_ci_low, s.pred_ci_high, s.pred_n_eff,
-         s.model_version, s.calibration_json
+         s.model_version, s.calibration_json,
+         -- The view does not carry cosmetic (ADR 183), and without it a
+         -- fund's extrapolated number (ADR 208) would open with the normal
+         -- caveat. Same natural key and generation the view joins on.
+         (SELECT bool_or(p.cosmetic)
+            FROM predictions p
+           WHERE p.config_hash = current_setting('capitalscan.default_config_hash', true)
+             AND p.model_scored
+             AND p.ticker = s.ticker AND p.as_of = s.signal_date
+             AND p.signal_type = s.signal_type) AS pred_cosmetic
     FROM v_screen_live s
    WHERE s.signal_date = $1::date
      AND ($4::boolean IS NOT TRUE OR s.is_cluster_head IS NOT FALSE)
@@ -820,6 +829,7 @@ interface FeedRowRaw {
   pred_n_eff: string | null;
   model_version: string | null;
   calibration_json: Record<string, unknown> | null;
+  pred_cosmetic: boolean | null;
 }
 
 export async function screen(
@@ -957,6 +967,7 @@ export async function screen(
             modelVersion: r.model_version,
             adverse3: band(r.calibration_json, "p_adverse_3"),
             bands: allBands(r.calibration_json),
+            cosmetic: r.pred_cosmetic === true,
           },
   }));
 

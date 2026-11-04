@@ -26,6 +26,7 @@ from capitalscan.core.training import (
     ETF_TICKERS,
     is_etf,
     may_train,
+    partition_for_serving,
     partition_for_training,
     training_exclusion_reason,
 )
@@ -179,6 +180,47 @@ class TestTheTrainingFrameGate:
         """
         with pytest.raises(ValueError, match="ASML"):
             self._build([("QQQ", "ETF"), ("ASML", None)])
+
+
+class TestFundsAreScoredButNeverTrained:
+    """ADR 208 amends ADR 147: a fund is scored, flagged cosmetic, and never trains.
+
+    The serving partition differs from the training one in exactly one way.
+    A fund moves from "excluded" to "scorable"; an equity with a blank or
+    non-canonical sector stays excluded, because that is a data defect and
+    scoring it would hide the defect behind a number.
+    """
+
+    def test_a_fund_is_scorable(self) -> None:
+        scorable, missing = partition_for_serving([("SOXL", None), ("^IXIC", None)])
+        assert scorable == [0, 1]
+        assert missing == []
+
+    def test_a_blank_equity_is_still_excluded(self) -> None:
+        scorable, missing = partition_for_serving(
+            [("ASML", None), ("AAPL", "Information Technology")]
+        )
+        assert scorable == [1]
+        assert missing == [0]
+
+    def test_a_non_canonical_sector_is_still_excluded(self) -> None:
+        scorable, missing = partition_for_serving([("XYZ", "Technology")])
+        assert scorable == []
+        assert missing == [0]
+
+    def test_a_fund_still_never_trains(self) -> None:
+        trainable, etf, _ = partition_for_training([("SOXL", None), ("QQQ", None)])
+        assert trainable == []
+        assert etf == [0, 1]
+
+    def test_positions_keep_input_order(self) -> None:
+        rows = [
+            ("AAPL", "Information Technology"),
+            ("QQQ", None),
+            ("MSFT", "Information Technology"),
+        ]
+        scorable, _ = partition_for_serving(rows)
+        assert scorable == [0, 1, 2]
 
 
 class TestPurity:

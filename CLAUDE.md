@@ -30,7 +30,7 @@ job and ships it to serving. → `OPERATIONS.md`
 
 ## Before writing any code
 
-Read `docs/DECISIONS.md`. It holds 207 ADRs. They are decisions, not suggestions.
+Read `docs/DECISIONS.md`. It holds 208 ADRs. They are decisions, not suggestions.
 
 **An entry in `BACKLOG.md` can be older than the ADR it describes.** On
 2026-09-10 a backlog item read "ADR 179 is decided but not built" two days

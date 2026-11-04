@@ -266,6 +266,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 205 | `nightly` fills `fwd_ret_*d` so the forward log resolves daily | **Decided 2026-09-30 (owner).** `outcomes` needs `fwd_ret_5d`, which only the backtest wrote, so the forward log resolved once a week (0 predictions on eight runs to 2026-09-30). `research/fwd_labels.py` fills it from daily bars inside the `peak_labels` step, NULL-only, for `(in_trade OR in_watch)` events. Reproduces 99.97% of the backtest's stored values to six decimals. No migration, no `config_hash` change |
 | 206 | The irreplaceable tables are copied daily to a folder on the Pi | **Decided 2026-11-04 (owner).** Supersedes ADR 083's tiers, whose GitHub Release half would publish a 30 GB database on a public repo and whose serving half named Neon. `cscan backup` runs on `wivie` at 16:30 PT: a `pg_dump` of `predictions`, `outcomes`, `signal_reports`, `poller_sessions`, `runs`, `positions` and `order_intents`, plus every hourly bar, copied to `~/backups/capitalscan` on the Pi through a key whose forced command reaches that folder only. A week of dailies, four weeks of Sundays. Nothing else reads the folder |
 | 207 | A company keeps one symbol, and the new one carries the history | **Decided 2026-11-04 (owner).** A symbol change reached the store as two companies: EQR and VMRK held identical bars back to 2010, and SKYD held 23 bars beside PSKY's twenty years. The new symbol carries the full history; the old one goes inactive, delisted at its last bar, and loses its events, universe rows and paths, except events the forward log or the poller's records reference. Its bars and indicators stay. Applied the same day to both pairs |
+| 208 | Funds and indexes are scored, always cosmetic, and still never train | **Decided 2026-11-04 (owner).** Amends ADR 147's serving clause only. `build_serving_frame` keeps `ETF_TICKERS` rows (`core.training.partition_for_serving`); `build_rows` writes `cosmetic = true` for every fund, in trade or not. Sector encodes all-zero. Training is unchanged, and a blank-sector equity is still dropped. No migration, no `config_hash` move |
 
 ---
 
@@ -5227,6 +5228,8 @@ Holdout evaluation runs once, at the end, and gets published whatever it says.
 ## 147. ETFs do not train; a missing sector stops the build
 
 **Date:** 2026-08-23. **Status:** Pinned. Implements ADR 068's granularity rule for Phase 6's training population. Blocks Session 22. No `config_hash` move.
+
+**Amended 2026-11-04 by ADR 208:** the clause "`predict()` returns not-available for them" is withdrawn. Funds are scored and flagged cosmetic. They still never train.
 
 **Context.**
 
@@ -11097,3 +11100,59 @@ What remains. The seed refresh should flag a new symbol that shares a CIK
 with one whose bars stopped, rather than add a second company (BACKLOG).
 Share classes (GOOG and GOOGL) share a CIK too, with current bars on both,
 and are not this case.
+
+---
+
+## 208. Funds and indexes are scored, always cosmetic, and still never train
+
+Status: Decided 2026-11-04 (owner). Amends ADR 147's serving clause. No
+migration. No `config_hash` move.
+
+The problem. The "predict movement" button renders only for a ticker with a
+scored prediction, and ADR 147 said `predict()` returns not-available for a
+fund. So the button never appeared on any of the eleven `ETF_TICKERS`. On
+`wivie` that day SOXL held 9,354 live-generation events, ^IXIC 10,587 and
+QQQ 10,446, and every one had zero predictions. The owner wants the button
+on every ticker.
+
+The options put to the owner:
+
+- A. Score funds and flag every fund row cosmetic, as ADR 183 does for rows
+  outside the trade universe.
+- B. Always show the button, and have the dialog say the model does not
+  cover funds.
+- C. Fit a separate fund model with no sector feature.
+
+The owner chose A.
+
+Decision.
+
+1. `build_serving_frame` keeps fund rows. `core.training.partition_for_serving`
+   differs from `partition_for_training` in one way: a fund is scorable. An
+   equity with a blank or non-canonical sector is still dropped, because
+   that is a data defect with a fix (ADR 147 rule 2, ADR 148).
+2. `build_rows` writes `cosmetic = true` for every fund, inside the trade
+   universe or not. ADR 154 puts funds in `in_trade`, so ADR 183's
+   `not in_trade` alone would publish a fund's number with the normal caveat.
+3. A fund's sector stays NULL and encodes as all-zero, the encoding
+   `neural.Standardiser.transform` already gives any level unseen in train.
+   Nothing writes a sector for a fund. ADR 147's argument against a
+   one-member level still holds, and it binds training, which is unchanged.
+4. The cosmetic caveat names both causes, the trade universe and a fund,
+   since no column records which one applies. The screener reads
+   `predictions.cosmetic` beside `v_screen_live`, which does not carry it.
+
+Why this does not reopen ADR 147. That ADR's harm was a fund *training* the
+model through a one-member category. Nothing here trains on a fund. The
+remaining risk is a reader taking a fund's number as a measurement, and the
+cosmetic flag answers it: the caveat opens by default and the realised-rate
+rows are hidden, as for any ADR 183 row.
+
+Measured before merge, read-only on `wivie` with the published artifact and
+the serving frame from 2026-10-20: 21 fund rows scored across QQQ, SOXL,
+SPY, ^GSPC and ^IXIC, all cosmetic. AAPL's rows stayed non-cosmetic. The
+frame dropped 29 blank-sector equity rows, as before.
+
+What remains. A fund gets a prediction only when it fires a signal type the
+model was fitted on, like any equity. A fund that fired only stochastic
+signals in the lookback still shows no button.

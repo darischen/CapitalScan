@@ -130,3 +130,28 @@ def partition_for_training(
             # repaired by re-resolving from the source of record (ADR 148).
             missing.append(i)
     return trainable, etf, missing
+
+
+def partition_for_serving(
+    rows: Sequence[tuple[str | None, str | None]],
+) -> tuple[list[int], list[int]]:
+    """Split row positions into (scorable, missing_sector) for inference.
+
+    **ADR 208 amends ADR 147 on the serving side only.** A fund is scored,
+    and the writer flags its row cosmetic: the model never trained on a fund,
+    and a fund's sector encodes as all-zero, the level the model has never
+    seen. A fund still never trains (`partition_for_training` is unchanged).
+
+    An equity with a blank or non-canonical sector stays excluded. That is a
+    data defect with a fix, and scoring it would hide the defect behind a
+    number that looks like any other.
+    """
+    scorable: list[int] = []
+    missing: list[int] = []
+    for i, (ticker, sector) in enumerate(rows):
+        reason = training_exclusion_reason(ticker, sector)
+        if reason is None or reason == "etf":
+            scorable.append(i)
+        else:
+            missing.append(i)
+    return scorable, missing

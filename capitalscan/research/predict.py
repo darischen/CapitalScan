@@ -50,6 +50,7 @@ from sqlalchemy import Engine, text
 from capitalscan.core import calibration as calib
 from capitalscan.core import distributions as dist
 from capitalscan.core import folds as core_folds
+from capitalscan.core.training import is_etf
 from capitalscan.research import features as feat
 from capitalscan.research import neural, train
 
@@ -433,7 +434,12 @@ def build_rows(
             # this signal *type* fitted"; a cosmetic row can be a fitted
             # type on an unfitted population, and both must be visible
             # separately or the reader cannot tell which caveat applies.
-            "cosmetic": not bool(in_trade[i]),
+            #
+            # **And always cosmetic for a fund (ADR 208).** ADR 154 puts
+            # funds in `in_trade`, while ADR 147 keeps them out of training,
+            # so `in_trade` alone would publish a fund's number with the
+            # normal caveat.
+            "cosmetic": (not bool(in_trade[i])) or is_etf(tickers[i]),
             "calib_bucket": buckets[i],
             "calib_n_eff": float(probs["calib_n_eff"][i]),
             "ci_low": float(probs["ci_low"][i]),

@@ -59,12 +59,20 @@ export const PREDICTION_CAVEAT_DETAIL =
  * the usual text would let it read as a footnote on a working number.
  */
 export const COSMETIC_CAVEAT_SUMMARY =
-  "Reference only. This name is outside the trade universe.";
+  "Reference only. The model was never fitted on names like this one.";
 
-/** The rest of the cosmetic caveat, shown when the disclosure is opened. */
+/**
+ * The rest of the cosmetic caveat, shown when the disclosure is opened.
+ *
+ * Names both causes (ADR 183 and ADR 208) rather than branching on one:
+ * no column records which applies, and the consequence for the reader is
+ * the same either way.
+ */
 export const COSMETIC_CAVEAT_DETAIL =
-  "The model is fitted only on names inside the trade universe, so it has " +
-  "never seen signals like this one and these figures are an " +
+  "The model is fitted only on companies inside the trade universe. This " +
+  "name is outside that universe, or it is a fund or index, which never " +
+  "trains the model because it has no sector. So the model has never seen " +
+  "signals like this one and these figures are an " +
   "extrapolation. They are shown so every ticker has something to look " +
   "at, not because they have been checked. Nothing here has been measured " +
   "against what actually happened to names in this state. Treat it as a " +
