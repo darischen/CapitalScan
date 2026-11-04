@@ -134,20 +134,6 @@ would publish it. What no rerun rebuilds is small: the forward log and
 poller records (under 200 MB) and hourly bars older than Yahoo's 730-day
 window (262,359 rows, growing daily). Options in DECISIONS.md Open items.
 
-### Quarter-end signals read their own day's close for membership (found 2026-11-03)
-
-ADR 014 evaluates membership on information available at t-1. But
-`compute._latest_indicator_row` takes `ts <= as_of`, so a quarter's
-evaluation uses its last day's close, and `core.universe.TickerMembership`
-applies it to events on that same day. An intraday touch on 2026-09-30 is
-stamped with membership decided by that day's close. 28,768 live-generation
-`touch` events fall on a quarter's last day, and 1,966 of them would flip
-under the previous evaluation, against 305,858 in-trade `touch` events in
-all. A `next_open` entry decides after the close, so the same-day close is
-known in time for it. Applying each evaluation from the next session fixes
-the touch case, moves the backtest population slightly, and is the
-owner's call.
-
 ### Where Session 30 left off (2026-09-22/23) — read this first
 
 Four things shipped, three of them measured rather than reasoned. All three
@@ -1795,6 +1781,24 @@ in the measured population, where clusters cap at 6. It was computed on a
 population mixing entry kinds. Re-run through `research/returns.py`.
 
 ## Closed, refuted or answered — do not reopen
+
+## LEFT AS IS 2026-11-03 (owner): quarter-end signals read that day's close for membership
+
+ADR 014 evaluates membership on information available at t-1. But
+`compute._latest_indicator_row` takes `ts <= as_of`, so a quarter's
+evaluation uses its last day's close, and `core.universe.TickerMembership`
+applies it to events on that same day. An intraday touch on 2026-09-30 is
+stamped with membership decided by that day's close. 28,768 live-generation
+`touch` events fall on a quarter's last day, and 1,966 of them would flip
+under the previous evaluation, against 305,858 in-trade `touch` events in
+all. A `next_open` entry decides after the close, so the same-day close is
+known in time for it.
+
+**The owner left it** ("it's only one day"). The live path is causal
+regardless: `monthly` evaluates on the 1st, so on a quarter's last day the
+poller still holds the previous quarter's lists, and only the stored
+history of that one session carries the new ones. Recorded in DECISIONS.md
+Open items as a knowing exception to ADR 014. Do not re-raise.
 
 ## DONE 2026-09-26: serving's `events.cluster_id` is exact
 
