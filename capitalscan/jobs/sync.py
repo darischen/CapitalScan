@@ -1357,8 +1357,8 @@ def _incremental_bounds(
 BACKFILL_TABLES = {"bars": "bars_backfill", "indicators": "indicators_backfill"}
 
 
-def _backfill_tickers(source: Engine, target: Engine) -> dict[str, list[str] | None]:
-    """The tickers each chart table holds no daily rows for on the target.
+def _backfill_tickers(source: Engine, target: Engine, cutoff: date) -> dict[str, list[str] | None]:
+    """The tickers each chart table must ship whole, past its watermark.
 
     **Why.** `_incremental_bounds` gives `bars` one watermark for the whole
     table, the target's newest bar minus the overlap. That is right for a
@@ -1368,34 +1368,49 @@ def _backfill_tickers(source: Engine, target: Engine) -> dict[str, list[str] | N
     Found 2026-11-01, when widening the scope to every ticker would have
     shipped seven days of bars for each of 688 names. These ship whole.
 
+    **A ticker whose history starts later on the target ships whole too**
+    (2026-11-04). HUBB and FISV held three months of bars on both stores
+    until `add-ticker` rebuilt research from 2003. Serving had rows, so a
+    test for "no rows" never fired, and the chart would have stayed three
+    months long beside events back to 2003. Both stores are read from
+    `cutoff`: the target can hold rows older than today's cutoff, and the
+    source can hold rows no sync ships. Serving never prunes, so once a
+    ticker has shipped, the two first dates agree and it drops off the list.
+
     Every source ticker missing on the target is listed, including ones
     with no bars on the source. They match no rows, which costs nothing.
 
-    `None` for a table means the target could not be read: the caller drops
+    `None` for a table means a store could not be read: the caller drops
     that table's incremental bound and ships it in full. Being slow is
     recoverable; a ticker left with a week of history is not.
     """
-    try:
-        with source.connect() as conn:
-            known = {r[0] for r in conn.execute(text("SELECT ticker FROM tickers"))}
-    except SQLAlchemyError:
-        logger.warning("could not read source tickers; chart tables fall back to a full pass")
-        return dict.fromkeys(BACKFILL_TABLES)
-
     out: dict[str, list[str] | None] = {}
     for table in BACKFILL_TABLES:
-        present_sql = (
-            f"SELECT t.ticker FROM tickers t WHERE EXISTS "
-            f"(SELECT 1 FROM {table} x WHERE x.ticker = t.ticker AND x.interval = '1d')"
+        # One index probe per ticker on `(ticker, ts, interval)`, the same
+        # shape as the `EXISTS` this replaced, rather than a GROUP BY over
+        # the whole table.
+        first_sql = (
+            f"SELECT t.ticker, (SELECT min(x.ts) FROM {table} x WHERE x.ticker = t.ticker "
+            f"AND x.interval = '1d' AND x.ts >= :cutoff) FROM tickers t"
         )
-        try:
-            with target.connect() as conn:
-                present = {r[0] for r in conn.execute(text(present_sql))}
-        except SQLAlchemyError:
-            logger.warning("could not read %s tickers on the target; full pass", table)
+        firsts: list[dict[str, Any]] = []
+        for engine, side in ((source, "source"), (target, "target")):
+            try:
+                with engine.connect() as conn:
+                    rows = conn.execute(text(first_sql), {"cutoff": cutoff})
+                    firsts.append({r[0]: r[1] for r in rows})
+            except SQLAlchemyError:
+                logger.warning("could not read %s first rows on the %s; full pass", table, side)
+                break
+        if len(firsts) < 2:
             out[table] = None
             continue
-        out[table] = sorted(known - present)
+        on_source, on_target = firsts
+        out[table] = sorted(
+            t
+            for t, first in on_source.items()
+            if on_target.get(t) is None or (first is not None and first < on_target[t])
+        )
     return out
 
 
@@ -1867,7 +1882,7 @@ def run_sync(
         # A full pass ships everything already, so it has none. A table
         # whose target could not be read loses its bound and ships whole.
         backfill: dict[str, list[str] | None] = (
-            _backfill_tickers(source, target)
+            _backfill_tickers(source, target, cutoff)
             if incremental
             else {chart: [] for chart in BACKFILL_TABLES}
         )

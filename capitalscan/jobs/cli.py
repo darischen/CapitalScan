@@ -2268,7 +2268,9 @@ def add_ticker(
     **The next nightly does the rest.** It fills peak labels, forward
     returns and predictions, and its sync ships the ticker to serving, full
     history included: since 2026-11-01 the incremental sync ships whole
-    `bars` and `indicators` for any ticker the target lacks.
+    `bars` and `indicators` for any ticker the target lacks, and since
+    2026-11-04 for any whose history starts later there. So a rerun that
+    repairs a short history (HUBB and FISV, 2026-11-04) ships as well.
 
     **Refuses while another job runs**, because `universe` must not change
     under a running backtest (ADR 060). Run it outside the nightly windows

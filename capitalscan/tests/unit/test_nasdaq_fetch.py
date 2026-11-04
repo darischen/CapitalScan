@@ -143,6 +143,37 @@ class TestOnlyCommonStockAndOrdinaryADRs:
         )
         assert nasdaq.tickers_above(1e9) == ["ARM"]
 
+    #: Every note, debenture and exchangeable the 2026-11-04 snapshots
+    #: listed at $5B or more, verbatim. 21 of them had been ingested as
+    #: companies (BACKLOG, "Notes and debentures were ingested as
+    #: companies"): each gets its issuer's cap, so CCZ read $137.1B.
+    NOTES = (
+        "Southern Company (The) Series 2017B 5.25% Junior Subordinated Notes due December 1 2077",
+        "Duke Energy Corporation 5.625% Junior Subordinated Debentures due 2078",
+        "AT&T Inc. 5.350% Global Notes due 2066",
+        "Comcast Holdings ZONES",
+        "Brookfield Finance Inc. 4.50% Perpetual Subordinated Notes",
+        "Algonquin Power & Utilities Corp. 6.20% Fixed-to-Floating Subordinated Notes "
+        "Series 2019-A due July 1 2079",
+        "The Carlyle Group Inc. 4.625% Subordinated Notes due 2061",
+    )
+
+    @pytest.mark.parametrize("name", NOTES)
+    def test_drops_notes_debentures_and_exchangeables(self, name: str) -> None:
+        assert not nasdaq._is_common({"name": name})
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Banco Bradesco Sa American Depositary Shares (each representing one Common Share)",
+            "Notable Labs Ltd. Common Stock",
+            "Noted Holdings Inc. Class A Common Stock",
+        ],
+    )
+    def test_the_note_words_are_word_bounded(self, name: str) -> None:
+        """An ordinary ADR survives, and so does a name that starts with "Note"."""
+        assert nasdaq._is_common({"name": name})
+
     def test_unit_is_word_bounded_so_unitedhealth_survives(self):
         """**The bug this test exists for.**
 
