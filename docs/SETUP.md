@@ -143,7 +143,8 @@ Fills `User` and `WorkingDirectory` into the unit templates in
 `capitalscan-nightly.timer` (13:15 and a 19:00 retry, **Sunday through Friday** -- not Saturday, when `weekly` is running),
 `capitalscan-weekly.timer` (Saturday 00:00 plus up to 2 h random delay; it
 said "Sun 02:00" here until 2026-09-29), `capitalscan-premarket.timer`
-(05:30 Mon-Fri, ADR 203), `capitalscan-monthly.timer` (1st, 03:00).
+(05:30 Mon-Fri, ADR 203), `capitalscan-monthly.timer` (1st, 03:00),
+`capitalscan-backup.timer` (daily 16:30, ADR 206; needs A10 first).
 
 ```
 systemctl list-timers 'capitalscan-*'
@@ -164,6 +165,35 @@ first, so a boot or retry that finds the period's run already `ok` in
 `scheduled_runs` logs `skip` and exits 0 without redoing it.
 
 Uninstall: `sudo scripts/systemd/install.sh --remove`.
+
+### A10. The backup key and gate (ADR 206)
+
+`cscan backup` copies the irreplaceable tables to `~/backups/capitalscan` on
+the Pi with its own key, which the Pi binds to a forced command. Regicide's
+backup key on the same machine is separate; leave its line alone.
+
+On the research machine:
+
+```
+ssh-keygen -t ed25519 -N '' -C 'capitalscan backup' -f ~/.ssh/capitalscan_backup
+cat ~/.ssh/capitalscan_backup.pub
+```
+
+On the Pi, from its own checkout (pulled first):
+
+```
+install -m 755 scripts/pi/capitalscan-backup-gate ~/.local/bin/capitalscan-backup-gate
+# one line in ~/.ssh/authorized_keys, the public key pasted after `restrict `:
+from="192.168.1.12,100.65.212.123",command="/home/darischen/.local/bin/capitalscan-backup-gate",restrict ssh-ed25519 AAAA... capitalscan backup
+```
+
+Back on the research machine, check the gate answers and refuses:
+
+```
+ssh -i ~/.ssh/capitalscan_backup -o IdentitiesOnly=yes darischen@192.168.1.30 "ls -ln '/home/darischen/backups/capitalscan'"
+ssh -i ~/.ssh/capitalscan_backup -o IdentitiesOnly=yes darischen@192.168.1.30 id   # must print "command not allowed"
+sudo systemctl start capitalscan-backup.service && journalctl -fu capitalscan-backup
+```
 
 ---
 

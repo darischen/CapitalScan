@@ -1,0 +1,26 @@
+[Unit]
+Description=CapitalScan backup (forward log and hourly bars to the Pi, ADR 206)
+After=network-online.target postgresql.service
+Wants=network-online.target
+# Bounded retry: a Pi that is down at 16:30 gets an hourly retry, six a day.
+StartLimitIntervalSec=1d
+StartLimitBurst=6
+
+[Service]
+# Type=simple, not oneshot: Restart= is only honoured for a non-oneshot
+# service (the nightly unit's note). Not through run_job.sh: the job only
+# reads research, so the config-hash guard and the lock have nothing to do.
+Type=simple
+User={{USER}}
+WorkingDirectory={{REPO}}
+ExecStart={{REPO}}/.venv/bin/cscan backup
+Restart=on-failure
+RestartSec=1h
+# A normal run is under a minute: a 26 MB dump, ~55 MB of hourly bars, LAN copy.
+RuntimeMaxSec=30min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=capscan-backup
+
+[Install]
+WantedBy=multi-user.target

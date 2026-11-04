@@ -6,4 +6,5 @@ capitalscan/models/**/*.parquet filter=lfs diff=lfs merge=lfs -text
 # of the committer's platform (the research machine may be Linux).
 *.sh              text eol=lf
 scripts/systemd/* text eol=lf
+scripts/pi/*      text eol=lf
 *.ps1             text eol=crlf

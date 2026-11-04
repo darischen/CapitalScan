@@ -264,6 +264,8 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 203 | A second nightly at 05:30 PT recovers the bars Yahoo corrects after the close | **Decided 2026-09-28 (user).** Yahoo's session bar at 13:15 PT often has an open outside its own high/low; `open_outside_range` rejects it, 49 to 101 tickers a session. Off-schedule runs show Yahoo corrects about 97% by 17:30-19:00 PT with the open unchanged (871 of 871). `capitalscan-premarket.timer` runs the same chain Mon-Fri 05:30 under its own `scheduled_runs` key, sharing nightly's lock, never after 06:30, no catch-up firing. Nightly's `end` becomes the last closed session, so a pre-market run neither fetches an unopened session nor sweeps that morning's poller rows. The rejection rule is unchanged |
 | 204 | Market breadth enters the model as previous-session features | **Decided 2026-09-28 (owner).** `breadth_ma_above` and `breadth_chg_60d`, read for exactly the previous trading session (t-1, never forward-filled; rows without it dropped and counted). Two seed triples: every `p_touch` field gains Brier skill, level gap 1-1.5 pts smaller, AUC flat, `p_adverse` flat to slightly worse. The published artifact goes stale on deploy by design: refit and publish before pulling the Pi |
 | 205 | `nightly` fills `fwd_ret_*d` so the forward log resolves daily | **Decided 2026-09-30 (owner).** `outcomes` needs `fwd_ret_5d`, which only the backtest wrote, so the forward log resolved once a week (0 predictions on eight runs to 2026-09-30). `research/fwd_labels.py` fills it from daily bars inside the `peak_labels` step, NULL-only, for `(in_trade OR in_watch)` events. Reproduces 99.97% of the backtest's stored values to six decimals. No migration, no `config_hash` change |
+| 206 | The irreplaceable tables are copied daily to a folder on the Pi | **Decided 2026-11-04 (owner).** Supersedes ADR 083's tiers, whose GitHub Release half would publish a 30 GB database on a public repo and whose serving half named Neon. `cscan backup` runs on `wivie` at 16:30 PT: a `pg_dump` of `predictions`, `outcomes`, `signal_reports`, `poller_sessions`, `runs`, `positions` and `order_intents`, plus every hourly bar, copied to `~/backups/capitalscan` on the Pi through a key whose forced command reaches that folder only. A week of dailies, four weeks of Sundays. Nothing else reads the folder |
+| 207 | A company keeps one symbol, and the new one carries the history | **Decided 2026-11-04 (owner).** A symbol change reached the store as two companies: EQR and VMRK held identical bars back to 2010, and SKYD held 23 bars beside PSKY's twenty years. The new symbol carries the full history; the old one goes inactive, delisted at its last bar, and loses its events, universe rows and paths, except events the forward log or the poller's records reference. Its bars and indicators stay. Applied the same day to both pairs |
 
 ---
 
@@ -4937,9 +4939,9 @@ that one logs whatever still gets through.
 |---|---|---|
 | ~~**Show `p_touch` conditional on the market's move**~~ (2026-09-29, BACKLOG 3c) | A: nothing; the transition error stays documented and unfixed. B: publish two or three scenario probabilities beside each long's `p_touch_3` ("S&P flat", "S&P −3% over the hold"), from a logistic layer on `logit(p)` plus the S&P's signed move, fitted on the calibration window. C: B, and suppress the unconditional number on longs | **Resolved: A, owner 2026-11-03.** Nothing ships and the transition error stays documented. The owner's reasons: nobody knows the market's next move, a better model cannot supply it (RESULTS 2026-09-29), and a trader already reads a long's odds as depending on the market. The lean had been B. No t-1 input forecasts the market (RESULTS 2026-09-29), so a better point estimate is not on offer; a conditional one is, and it is sourced, since the layer is fitted on history. Fitted on 2024-26 and applied to 2022, that layer halves the long-side transition bias. The evidence is one episode, 38 days, so B needs its own reliability check before it ships. Condition on the S&P only: scaling its move by each stock's beta or adding the Nasdaq's gains nothing (RESULTS 2026-11-03). Moves no `config_hash` |
 | ~~**Where the quarterly universe evaluation runs**~~ (2026-11-03, BACKLOG "No timer evaluates a new quarter's universe") | A: a step in the nightly chain, after `indicators`, that evaluates the latest completed quarter when the live generation has no rows for it. B: `monthly`, on the 1st at 03:00, evaluating the quarter that just ended | **Resolved: B, owner 2026-11-03.** Four evaluations a year belong in the monthly slot, and membership does not wait on earnings: the four rules read prices plus a share count, which moves 0.46% per filing at the median. Built the same day: `cscan monthly` evaluates the latest completed quarter when the live generation has no rows for it, then re-stamps `touch` events since the quarter's last day. It refuses while another job runs (ADR 060), and the unit retries hourly. The lean had been A. It runs at the first premarket after a quarter ends, on bars that run just re-fetched, and the same chain's `events` step stamps the new membership. A failed night retries the next night, where B waits a month. ADR 014 already makes the evaluation automatic, so only the slot is open. Moves no `config_hash` |
-| **ADR 083's backups were never built, and its GitHub half no longer fits** (2026-11-03, BACKLOG "Backups were never built") | A: ADR 083 as written: a nightly full dump to a second disk, 7 daily and 4 weekly, plus a monthly copy to a GitHub Release. B: a nightly dump of only what no rerun rebuilds, to a second machine: `predictions`, `signal_reports`, `runs`, `outcomes`, `poller_sessions`, `positions`, and hourly bars older than Yahoo's 730-day window. C: no backup, accepting the forward log is lost with the machine | **Lean B.** The research database is 30 GB on 2026-11-03, 21 GB of it `events`, and all of that rebuilds from bars and code. A Release asset caps at 2 GiB a file and the repo is public, so A's monthly copy would publish the database. B is under 200 MB of table data today (`predictions` 115 MB, `signal_reports` 32 MB, `runs` 12 MB, `outcomes` 2 MB) plus 262,359 hourly bars Yahoo no longer serves, a count that grows every day. ADR 083 also leaned on Neon's point-in-time restore for serving, and serving has since moved to the Pi. No job backs up either database today. ADR 083 is pinned, so B needs an ADR of its own |
-| **A symbol change splits or doubles a company's history** (2026-11-04, BACKLOG "A symbol change splits or doubles a company's history") | A: one symbol per company: the new symbol keeps or gets the full history, and the old one is marked inactive and delisted at its last bar, with its events, universe rows and paths deleted except the rows the forward log references. B: the old symbol keeps its history, and the new one keeps full bars and indicators but its events and universe rows start after the old one's last bar. C: leave both | **Lean A.** EQR became VMRK on 2026-08-17 and both hold the same bars back to 2010, so the live generation counts Equity Residential twice: 9,036 events each through that day, 95 of them `in_trade`. PSKY became SKYD in October, and SKYD holds 23 bars, so Paramount Skydance has fired nothing since 2026-10-16 and stays silent until SKYD reaches 280 sessions, about November 2027. A puts each company's whole chart and history under the symbol the site shows today, as Yahoo does. It keeps the forward log whole: EQR's 22 predictions and PSKY's 30 stay with their events. SKYD first needs `cscan add-ticker SKYD` (Yahoo serves it from 2005-12-05). B splits the ticker page at the change. Either way, the seed refresh should then flag a new symbol that shares a CIK with one whose bars stopped, rather than add a second company. Share classes (GOOG and GOOGL) share a CIK too and are not this case. Moves no `config_hash` |
-| **21 exchange-traded notes sit in `tickers` as companies** (2026-11-04, BACKLOG "Notes and debentures were ingested as companies") | A: delete the 21 rows and every row derived from them, on both stores: the state the listing filter intends. B: mark them `is_active = false`, which stops new bars, evaluations and events and keeps their history. C: leave them | **Lean A.** The filter that let them in is fixed (2026-11-04), and nothing the forward log needs references them: 0 predictions, 0 outcomes. They hold 145,296 events across all generations, none ever `in_trade`, so training never read one. 8,110 reached `in_watch`, which the site shows, and CCZ (Comcast's ZONES, read as $137.1B) is on the 2026Q3 watch list. B leaves all of that in place until the next evaluation and in every past quarter. A is hard to reverse, which is why it waits for the owner. Moves no `config_hash` |
+| ~~**ADR 083's backups were never built, and its GitHub half no longer fits**~~ (2026-11-03, BACKLOG "Backups were never built") | A: ADR 083 as written: a nightly full dump to a second disk, 7 daily and 4 weekly, plus a monthly copy to a GitHub Release. B: a nightly dump of only what no rerun rebuilds, to a second machine: `predictions`, `signal_reports`, `runs`, `outcomes`, `poller_sessions`, `positions`, and hourly bars older than Yahoo's 730-day window. C: no backup, accepting the forward log is lost with the machine | **Resolved: B, to a folder on the Pi, owner 2026-11-04 (ADR 206).** Built the same day: `cscan backup`, daily at 16:30 PT, through a key whose forced command reaches only `~/backups/capitalscan`. The owner asked whether the three existing copies suffice: they cover losing one machine, and none is a snapshot. The lean had been B. The research database is 30 GB on 2026-11-03, 21 GB of it `events`, and all of that rebuilds from bars and code. A Release asset caps at 2 GiB a file and the repo is public, so A's monthly copy would publish the database. B is under 200 MB of table data today (`predictions` 115 MB, `signal_reports` 32 MB, `runs` 12 MB, `outcomes` 2 MB) plus 262,359 hourly bars Yahoo no longer serves, a count that grows every day. ADR 083 also leaned on Neon's point-in-time restore for serving, and serving has since moved to the Pi. No job backs up either database today. ADR 083 is pinned, so B needs an ADR of its own |
+| ~~**A symbol change splits or doubles a company's history**~~ (2026-11-04, BACKLOG "A symbol change splits or doubles a company's history") | A: one symbol per company: the new symbol keeps or gets the full history, and the old one is marked inactive and delisted at its last bar, with its events, universe rows and paths deleted except the rows the forward log references. B: the old symbol keeps its history, and the new one keeps full bars and indicators but its events and universe rows start after the old one's last bar. C: leave both | **Resolved: A, owner 2026-11-04 (ADR 207).** Applied the same day: SKYD built from 2005, EQR and PSKY retired on all three stores, their 22 and 30 predicted events kept. The lean had been A. EQR became VMRK on 2026-08-17 and both hold the same bars back to 2010, so the live generation counts Equity Residential twice: 9,036 events each through that day, 95 of them `in_trade`. PSKY became SKYD in October, and SKYD holds 23 bars, so Paramount Skydance has fired nothing since 2026-10-16 and stays silent until SKYD reaches 280 sessions, about November 2027. A puts each company's whole chart and history under the symbol the site shows today, as Yahoo does. It keeps the forward log whole: EQR's 22 predictions and PSKY's 30 stay with their events. SKYD first needs `cscan add-ticker SKYD` (Yahoo serves it from 2005-12-05). B splits the ticker page at the change. Either way, the seed refresh should then flag a new symbol that shares a CIK with one whose bars stopped, rather than add a second company. Share classes (GOOG and GOOGL) share a CIK too and are not this case. Moves no `config_hash` |
+| ~~**21 exchange-traded notes sit in `tickers` as companies**~~ (2026-11-04, BACKLOG "Notes and debentures were ingested as companies") | A: delete the 21 rows and every row derived from them, on both stores: the state the listing filter intends. B: mark them `is_active = false`, which stops new bars, evaluations and events and keeps their history. C: leave them | **Resolved: A, owner 2026-11-04.** Deleted the same day on research, serving and the workstation copy, every row saved first (`~/backups/notes-deletion-2026-11-04/` on `wivie` and the Pi). Two rows stay: CCZ's signal report and order intent from the 2026-09-09 session, permanent poller records with no key to `tickers`. The lean had been A. The filter that let them in is fixed (2026-11-04), and nothing the forward log needs references them: 0 predictions, 0 outcomes. They hold 145,296 events across all generations, none ever `in_trade`, so training never read one. 8,110 reached `in_watch`, which the site shows, and CCZ (Comcast's ZONES, read as $137.1B) is on the 2026Q3 watch list. B leaves all of that in place until the next evaluation and in every past quarter. A is hard to reverse, which is why it waits for the owner. Moves no `config_hash` |
 | ~~**Quarter-end signals take that day's close for membership**~~ (2026-11-03, BACKLOG Closed) | A: leave it. B: apply each evaluation from the session after the quarter's last day | **Resolved: A, owner 2026-11-03.** One session a quarter: 1,966 `touch` events would flip, against 305,858 in-trade `touch` events. The live path is causal regardless, because `monthly` evaluates on the 1st, so on a quarter's last day the poller still holds the previous quarter's lists. Only the stored history of that one session carries the new ones. A knowing exception to ADR 014's t-1 rule. Moves no `config_hash` |
 | ~~**Hold longs longer**~~ (2026-09-30) | A: leave `max_hold_days` 5, `target_pct` 0.05, `stop_atr_k` 2.0. B: `max_hold_days` 10 with the same target and stop. C: `max_hold_days` 10, 3 ATR stop, no target. Either change applies to shorts too unless `ExitParams` gains per-side fields, and a longer hold costs shorts about 0.03% a day | **Resolved: A, owner 2026-11-03.** The exit stays at 5 days, 2 ATR stop, 5% target. Measured 2026-10-01: both arms raise the long return per trade (+0.270% now, +0.411% for B, +0.581% for C) and all three earn the same **0.070% per day held**: the gain is time in the trade, not a better exit. Shorts lose more under both (−0.150% to −0.200% and −0.260%). A longer hold pays only if capital would otherwise sit idle, and it moves `config_hash` and the forward log's basis. RESULTS 2026-10-01, `scripts/hist/long-hold-2026-09-30/` |
 | ~~**What to do about the short book**~~ (2026-09-29, BACKLOG item 10) | A: enable only the close-confirmed short, `bear_close_above_upper` (+0.471% net), and disable `bb_upper_touch` and `confluence_high` as short entries. B: gate every short on the S&P below its 200-day (+0.126% net there, interval spans zero, n=6,162). C: keep the book, and show a hedged or relative return beside `net_ret` for shorts. D: leave it and document the drift | **Resolved: D, owner 2026-09-30.** Shorts keep firing as they are and the drift is documented. An exit change was tested first and does not rescue them: across 180 simulated exits the best is break-even (RESULTS 2026-09-30). The lean recorded on 2026-09-29 was A with C on the display; the owner chose otherwise |
@@ -11005,3 +11007,93 @@ Consequences.
   `brier_3pct` and the touch flags read `peak_ret_5d`.
 - No migration, no `config_hash` change, no new `runs` step: the count
   joins `peak_labels`' `rows_written`.
+
+---
+## 206. The irreplaceable tables are copied daily to a folder on the Pi
+
+Status: Decided 2026-11-04 (owner). Supersedes the backup tiers of ADR 083,
+which stays as the record of the plan it was.
+
+`jobs/backup.py`, `cscan backup`, `capitalscan-backup.timer` on `wivie`.
+
+The problem. ADR 083 planned a nightly dump to a second disk and a monthly
+copy to a GitHub Release, and relied on Neon's point-in-time restore for
+serving. None of it was built, and two halves no longer fit: the research
+database is 30 GB (21 GB of it `events`), a Release asset caps at 2 GiB,
+the repository is public, and serving moved from Neon to the Pi.
+
+What a loss costs. Almost everything in research rebuilds from public data
+and code. Three things do not: the forward log (ADR 029), the poller's
+records, and hourly bars, which Yahoo serves for 730 days. The three
+machines already hold live copies of most of it (measured 2026-11-04:
+serving matches research row for row on `predictions`, `outcomes` and
+`signal_reports`, and the workstation copy holds every hourly bar to
+2026-10-27). None is a snapshot. A mistake reaches serving at the next
+sync, and `cscan predict --clear` clears both stores by design.
+
+The decision. Once a day, `cscan backup` dumps `predictions`, `outcomes`,
+`signal_reports`, `poller_sessions`, `runs`, `positions` and
+`order_intents` with `pg_dump --format=custom`, and every hourly bar as
+gzipped CSV, and copies them to `~/backups/capitalscan` on the Pi.
+
+- **Every hourly bar, not only the ones past Yahoo's window.** A restore
+  can come weeks after the last copy, and any bar can age out by then.
+- **The key reaches one folder.** A dedicated key on `wivie`, authorized
+  on the Pi with a forced command (`scripts/pi/capitalscan-backup-gate`)
+  that runs fixed versions of five commands and refuses the rest:
+  create the folder, receive a file, list it, prune dailies, prune
+  weeklies. Regicide's backup key and gate are separate and untouched.
+  `test_backup.py` reads the gate and checks every command the job sends.
+- **Sizes are checked before anything is pruned**, so a short copy fails
+  the run and leaves the old copies in place.
+- **A week of dailies and four weeks of Sundays**, pruned by file age on
+  the Pi.
+- **No encryption.** Serving on the same Pi already holds these tables in
+  plain form.
+- **16:30 PT**, after the 13:15 nightly has pulled the session's poller
+  records. Read-only on research, so it needs neither `run_job.sh`'s
+  config-hash guard nor its lock. The unit retries hourly, six times a day.
+
+Measured 2026-11-04 before building: the dump 26 MB in 4 s, hourly bars
+older than 730 days 5 MB.
+
+Consequences. The forward log survives a mistake that spreads to serving,
+for a week of dailies and a month of Sundays. The Pi's card now holds the
+only off-`wivie` snapshot, so a lost card loses the snapshots and serving
+together; research and the workstation copy still hold the live tables.
+A restore is by hand (OPERATIONS.md, "Restoring from the Pi backup").
+
+---
+## 207. A company keeps one symbol, and the new one carries the history
+
+Status: Decided 2026-11-04 (owner), option A of that day's open item.
+
+The problem. No ADR covered a symbol change, and two reached the store two
+different wrong ways. EQR became VMRK (Equity Residential, now Vivmark
+Residential) on 2026-08-17. Yahoo serves the whole history under the new
+symbol, so both rows held the same bars back to 2010 and the live
+generation counted the company twice: 9,036 events each through that day.
+PSKY became SKYD (Paramount Skydance) in October, and the seed refresh
+added SKYD with the nightly's 5-day window: 23 bars, no indicators, no
+signals.
+
+The decision. The new symbol carries the company's full history. The old
+symbol is marked `is_active = false` with `delisted_on` at its last bar,
+and its events, universe rows and paths are deleted, except events a
+prediction, signal report or order intent references: those stay as
+written (ADR 029). Its bars and indicators stay, so its own ticker page
+still draws.
+
+Applied 2026-11-04. `cscan add-ticker SKYD` built SKYD from 2005-12-05
+(5,261 bars, 2,345 touch signals, in trade in none of 67 quarters, like
+PSKY at $11.6B). EQR and PSKY were retired on research, serving and the
+workstation copy, keeping 22 and 30 predicted events. Every deleted row
+was saved first (`~/backups/renames-2026-11-04/` on `wivie` and the Pi).
+
+Why a rebuild does not undo it. `cscan universe` and `cscan events` select
+`is_active` tickers, so neither writes rows for a retired symbol again.
+
+What remains. The seed refresh should flag a new symbol that shares a CIK
+with one whose bars stopped, rather than add a second company (BACKLOG).
+Share classes (GOOG and GOOGL) share a CIK too, with current bars on both,
+and are not this case.

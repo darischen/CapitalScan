@@ -1,0 +1,25 @@
+#!/bin/sh
+# Forced command for wivie's CapitalScan backup key (ADR 206). Installed on
+# the Pi as ~/.local/bin/capitalscan-backup-gate and named in its line of
+# ~/.ssh/authorized_keys. `cscan backup` (jobs/backup.py) sends exactly the
+# commands below. This runs fixed versions of them and refuses anything
+# else, so the key reaches only $dir. Regicide's gate is separate.
+# test_backup.py reads this file and checks every command the job sends.
+dir=/home/darischen/backups/capitalscan
+case "$SSH_ORIGINAL_COMMAND" in
+  "mkdir -p '$dir' && chmod 700 '$dir'")
+    mkdir -p "$dir" && chmod 700 "$dir" ;;
+  "scp -t $dir/" | "scp -t -- $dir/")
+    # scp's sink refuses file names holding a slash, so nothing lands outside $dir.
+    exec scp -t -- "$dir/" ;;
+  "ls -ln '$dir'")
+    exec ls -ln "$dir" ;;
+  "find '$dir' -name 'capitalscan-daily-*' -mtime +7 -delete")
+    find "$dir" -name 'capitalscan-daily-*' -mtime +7 -delete ;;
+  "find '$dir' -name 'capitalscan-weekly-*' -mtime +28 -delete")
+    find "$dir" -name 'capitalscan-weekly-*' -mtime +28 -delete ;;
+  *)
+    logger -t capitalscan-backup-gate "refused: $SSH_ORIGINAL_COMMAND"
+    echo "capitalscan-backup-gate: command not allowed" >&2
+    exit 1 ;;
+esac
