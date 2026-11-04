@@ -40,7 +40,7 @@ architectures. That caveat travels into every row through `MODEL_CAVEAT`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any, Sequence
 
 import numpy as np
@@ -149,6 +149,9 @@ class FittedPredictor:
     #: is extrapolation wearing a calibrated number, and until 2026-09-08
     #: 48% of predictions were exactly that.
     trained_signal_types: tuple[str, ...] = ()
+    #: When the fit finished, ISO 8601 in UTC: the instant `model_version`
+    #: names. Empty on a predictor built before 2026-11-04.
+    fitted_at: str = ""
 
     def apply(self, frame: pd.DataFrame) -> pd.DataFrame:
         """Raw and calibrated probabilities for every row of `frame`.
@@ -205,6 +208,21 @@ class FittedPredictor:
                 out["ci_low"] = [b[1] for b in bands]
                 out["ci_high"] = [b[2] for b in bands]
         return out
+
+
+def model_version(config_hash: str, git_sha: str, fitted_at: datetime) -> str:
+    """The name one refit's predictions carry.
+
+    **Every refit gets its own** (ADR 029, ADR 193: a refit is a new
+    `model_version`). It was `adr175-<config>-<commit>` until 2026-11-04,
+    so two weekly refits at one commit shared a name: 2026-10-03 and
+    2026-10-10 both wrote `adr175-f183b0f5-070caff`, 2026-10-17 and
+    2026-10-24 both `adr175-f183b0f5-5ca6c9e`. The fit time, to the minute
+    in UTC, is what tells two such fits apart. A refit takes half an hour,
+    so two cannot finish in one minute.
+    """
+    stamp = fitted_at.astimezone(UTC).strftime("%Y%m%dT%H%MZ")
+    return f"adr175-{config_hash[:8]}-{git_sha[:7]}-{stamp}"
 
 
 def fit_and_calibrate(
@@ -287,13 +305,15 @@ def fit_and_calibrate(
             n_buckets=n_buckets,
         )
 
+    fitted = datetime.now(UTC)
     return FittedPredictor(
         ensemble=ensemble,
         tables=tables,
-        model_version=f"adr175-{config_hash[:8]}-{git_sha[:7]}",
+        model_version=model_version(config_hash, git_sha, fitted),
         n_train=len(train_frame),
         n_calibrate=len(valid_frame),
         trained_signal_types=tuple(sorted(set(train_frame["signal_type"].astype(str)))),
+        fitted_at=fitted.isoformat(),
     )
 
 

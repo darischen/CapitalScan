@@ -16,23 +16,6 @@ deleting the entry loses nothing.
 
 # HIGHEST PRIORITY
 
-## Next session: check the first scheduled runs on the ADR 204 model
-
-Added 2026-09-28. The breadth model (`adr175-f183b0f5-8528fa5`) was
-published at 22:01 PT and has not yet been used by a scheduled run. Check:
-
-- the 05:30 PT premarket nightly on 2026-09-29 (ADR 203): every step `ok`,
-  `predict` scored with no `StaleArtifact`, and the frame reports
-  `dropped_no_breadth = 0`;
-- the Pi's live session that day: `journalctl -u capitalscan-poller
-  --since today` shows `cscan predict --serving` passes writing new rows
-  under the new model version;
-- the 13:15 PT nightly: same checks, plus `actions` ~3.6 min and `shares`
-  ~18 s holding.
-
-Delete this entry once all three pass.
-
-
 ## The Pi must be pulled LAST across a `config_hash` change
 
 Written 2026-09-10 while sequencing the bull-reversal rebuild, before it
@@ -78,6 +61,22 @@ actually holds**, and picks up the new one after the close. Rushing the Pi
 pull to "keep it in sync" is the mistake.
 
 ## Open
+
+### ~~Two weekly refits never reached the Pi~~ FIXED 2026-11-04
+
+`artifact.fetch` skipped the download when the Pi's file carried the
+published `git_sha`, and `model_version` named only the config and the
+commit. The 2026-10-10 and 2026-10-24 refits ran at the same commit as the
+week before, so the Pi scored the following weeks on the old weights under
+the new name: 716 and 570 live predictions (OPERATIONS.md). `fetch` now
+compares bytes, and each refit's version ends in its fit time. Test:
+`test_refit_identity.py`.
+
+Found while closing "check the first scheduled runs on the ADR 204 model",
+deleted the same day: on 2026-09-29 both nightlies ran every step `ok`,
+`predict` scored under `adr175-f183b0f5-8528fa5` with 0 dropped, `actions`
+took 3m35s and 2m54s and `shares` 18 s and 17 s, and the Pi wrote 260
+predictions that week under the new model.
 
 ### ~~No timer evaluates a new quarter's universe~~ DONE 2026-11-03: `monthly` runs it
 

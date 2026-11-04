@@ -9129,3 +9129,20 @@ the names that fired long fell short of +3% and hit −3% more often than
 any market input tested accounts for, even with hindsight. For the display
 proposal in DECISIONS.md Open items (option B), scenario probabilities
 conditioned on the S&P alone capture what any market scenario can.
+
+## 2026-11-04 — before this date, `model_version` does not identify a fit
+
+Not an experiment: a caveat for every analysis that groups the forward log
+by model. Until 2026-11-04 the version was `adr175-<config>-<commit>`, so
+two weekly refits at one commit wrote one name. Of October's five refits,
+2026-10-03 and 2026-10-10 share `adr175-f183b0f5-070caff`, and 2026-10-17
+and 2026-10-24 share `adr175-f183b0f5-5ca6c9e`. The Pi also kept the
+earlier fit of each pair for the following week, so 716 Pi rows in the
+week of 2026-10-12 and 570 in the week of 2026-10-26 came from a different
+fit than the nightly rows beside them under the same name (OPERATIONS.md).
+
+**Count fits by publish time, not by distinct version.** A row's fit is the
+newest publish before its `created_at`, and for those 1,286 Pi rows, the
+one before that. ADR 176's amendment counts "six different
+`model_version`s" for the rows it pooled, so the number of fits behind it
+is six or more. From 2026-11-04 each version ends in its fit time.

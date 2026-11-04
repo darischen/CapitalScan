@@ -100,4 +100,5 @@ def load_predictor(config_hash: str, git_sha: str, path: Path = art.DEFAULT_PATH
         n_train=loaded.n_train,
         n_calibrate=loaded.n_calibrate,
         trained_signal_types=loaded.trained_signal_types,
+        fitted_at=loaded.fitted_at,
     )
