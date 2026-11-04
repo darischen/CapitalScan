@@ -411,6 +411,32 @@ class TestBuildRows:
             assert row["ci_low"] <= row["p_touch_3"] <= row["ci_high"]
 
 
+class TestCosmeticRows:
+    """Which rows carry `cosmetic = true` (ADR 183, ADR 208)."""
+
+    @staticmethod
+    def _rows(tickers: list[str], in_trade: list[bool]) -> list[dict[str, object]]:
+        frame = _frame().assign(ticker=tickers, in_trade=in_trade)
+        return rp.build_rows(_fake(_applied([0.62, 0.62])), frame, "c", "r", "s")
+
+    def test_an_in_trade_equity_is_not_cosmetic(self) -> None:
+        rows = self._rows(["AAPL", "MSFT"], [True, True])
+        assert [r["cosmetic"] for r in rows] == [False, False]
+
+    def test_an_out_of_universe_equity_is_cosmetic(self) -> None:
+        rows = self._rows(["AAPL", "MSFT"], [False, True])
+        assert [r["cosmetic"] for r in rows] == [True, False]
+
+    def test_a_fund_is_cosmetic_even_inside_the_trade_universe(self) -> None:
+        """ADR 154 puts funds in `in_trade`; ADR 147 keeps them out of training.
+
+        So `in_trade` alone would publish a fund's extrapolated number with
+        the normal caveat, as though the model had been fitted on funds.
+        """
+        rows = self._rows(["SOXL", "^IXIC"], [True, True])
+        assert [r["cosmetic"] for r in rows] == [True, True]
+
+
 class TestTheJobGuards:
     def test_it_upserts_on_the_event_and_not_on_ticker_and_date(self) -> None:
         """`(ticker, as_of)` is not a key, and the failure is not loud.
