@@ -148,6 +148,8 @@ The incremental sync would have shipped their events and kept serving's
 three months of chart, because it shipped whole histories only for
 tickers serving held no rows for. It now also ships a ticker whose first
 row on serving is later than on research (`sync._backfill_tickers`).
+The 2026-11-04 premarket sync shipped all three whole, and serving
+matches research row for row (OPERATIONS.md).
 An audit of all 1,472 active tickers against Yahoo the same day found no
 other late start except SKYD (above). Do not re-audit the 40 with fewer
 bars than Yahoo: `flat_zero_volume_bar` rejects account for them

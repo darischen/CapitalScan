@@ -2134,6 +2134,15 @@ ticker whose first daily row on serving is later than on research, both
 read from the cutoff (0.2 s on research, 0.7 s on the Pi). On 2026-11-04
 that listed only these three.
 
+**Shipped and checked the same morning.** The 05:30 premarket's sync
+(06:08:09 to 06:12:55 PST) took the three and SKYD whole. On serving,
+HUBB and FISV start on 2003-07-28, SKYD on 2005-12-05 and Q on
+2025-10-27, and bars and indicators match research row for row. Events
+match for the two grains sync ships, `next_open` and `touch`. A raw
+count differs (FISV 5,733 on research, 3,505 on serving) because
+`touch_30m` and `touch_5m` stay on research by design, so compare by
+`entry_kind`.
+
 **Audit, the same day.** Every active ticker (1,472) against Yahoo's
 daily history from 2005-10-01: apart from these three, only SKYD starts
 more than 30 days late, and that is the symbol change in BACKLOG. 40 more
