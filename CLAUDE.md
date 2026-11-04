@@ -321,6 +321,14 @@ then pull the Pi, all outside a live session and before the 05:30 PT
 premarket nightly (ADR 203). Done that way on 2026-09-28: the Pi's
 `predictor.npz` came out byte-identical to `wivie`'s.
 
+**The Pi re-downloads the artifact whenever its bytes differ from serving's**
+(since 2026-11-04). It compared `git_sha` before, so a weekly refit at an
+unchanged commit never reached it: the weeks of 2026-10-12 and 2026-10-26
+scored live on the model before, under the new one's name. Each refit now
+gets its own `model_version`, ending in its fit time. Check with `md5sum
+data/model/predictor.npz` on the Pi against `SELECT md5(payload) FROM
+model_artifact` on serving. → `OPERATIONS.md`
+
 **A `psql` session on the Pi reads the wrong generation.** `run_sync`'s pin on the serving DB fails silently (needs superuser); the site is fine because `web/lib/db.ts` sets the hash per connection from `serving_config` (ADR 115), but a hand query reads a generation the site does not serve. Re-pin after every rebuild via SSH as `postgres`, or `SET capitalscan.default_config_hash = '<hash>'` per session. → `OPERATIONS.md`
 
 ---

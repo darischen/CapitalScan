@@ -165,7 +165,10 @@ def save(predictor: Any, config_hash: str, git_sha: str, path: Path = DEFAULT_PA
             len(exported[0].trunk),
             len(exported[0].heads),
         ),
-        "fitted_at": datetime.now(UTC).isoformat(),
+        # The fit's own instant, the one its `model_version` names, so the
+        # two cannot disagree. The clock read covers a predictor built
+        # before 2026-11-04, which carries no `fitted_at`.
+        "fitted_at": getattr(predictor, "fitted_at", "") or datetime.now(UTC).isoformat(),
         "n_train": predictor.n_train,
         "n_calibrate": predictor.n_calibrate,
         "trained_signal_types": list(predictor.trained_signal_types),
@@ -322,35 +325,39 @@ def fetch(engine: Any, config_hash: str, path: Path = DEFAULT_PATH) -> Path | No
     path with one set of guards. A second in-memory loader would be a
     second place for the staleness check to be forgotten.
 
-    Skips the write when the local file already carries the same
-    `git_sha` -- the payload is 3.6 MB and the poller asks on a 20-second
-    cadence.
+    **Skips the write when the local file holds the published bytes**, so
+    the poller's 20-second cadence costs no disk write on a match. It
+    compared `git_sha` until 2026-11-04, and a weekly refit at an unchanged
+    commit publishes new weights under the same sha: the 2026-10-10 and
+    2026-10-24 refits never reached the Pi, which scored the following
+    week with the model before. Bytes cannot match a different fit. They
+    also make a truncated local file an ordinary mismatch: the old parse
+    raised `BadZipFile`, which its `except` did not name.
 
-    Returns the path when it wrote, `None` when there was nothing to fetch.
-    A missing row is an ordinary state on a store that has never had a
-    weekly run, not an error.
+    Returns the path, written or already current, and `None` when there
+    was nothing to fetch. A missing row is an ordinary state on a store
+    that has never had a weekly run, not an error.
     """
     from sqlalchemy import text
 
     with engine.connect() as conn:
         row = conn.execute(
-            text("SELECT git_sha, payload FROM model_artifact WHERE config_hash = :chash"),
+            text("SELECT payload FROM model_artifact WHERE config_hash = :chash"),
             {"chash": config_hash},
         ).fetchone()
 
     if row is None:
         return None
 
-    if path.exists():
-        try:
-            with np.load(path, allow_pickle=False) as existing:
-                if json.loads(str(existing["meta"]))["git_sha"] == row.git_sha:
-                    return path
-        except (OSError, ValueError, KeyError):
-            # Unreadable or truncated: fall through and overwrite. A local
-            # file that cannot be parsed is worth less than the row.
-            pass
+    payload = bytes(row.payload)
+    try:
+        if path.read_bytes() == payload:
+            return path
+    except OSError:
+        # Absent or unreadable: write it. A local file that cannot be read
+        # is worth less than the row.
+        pass
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(bytes(row.payload))
+    path.write_bytes(payload)
     return path

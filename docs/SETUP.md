@@ -351,9 +351,10 @@ which machine *holds* research and *pushes* to it. `wivie`'s
   measured; torch's threading does not scale like the pandas hot path
   `cpu_bench` drives, so measure before quoting it).
 - **`data/model/predictor.npz`** (ADR 181). Gitignored and stamped with the
-  `config_hash` and `git_sha` it was fit under, so a copied one would be
-  refused on any mismatch anyway. The first `nightly` on `wivie` refits and
-  writes its own.
+  `config_hash` and design fingerprint it was fit under (ADR 186), so a
+  copied one would be refused on any mismatch anyway. The first `weekly` on
+  `wivie` refits and writes its own; until then `nightly` fetches serving's
+  published copy when the file is absent.
 
 ## C2. From scratch — new machine not yet staged
 

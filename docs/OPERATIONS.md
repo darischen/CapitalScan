@@ -2061,3 +2061,45 @@ DECISIONS.md Open items). If a quarter is ever missing, this finds it:
 ```sql
 SELECT max(as_of) FROM universe WHERE config_hash = '<live hash>';
 ```
+
+## Two weekly refits never reached the Pi (2026-10-10 and 2026-10-24, found 2026-11-04)
+
+**What happened.** `artifact.fetch` on the Pi skipped the download when its
+local file carried the published row's `git_sha`. Nothing merged between
+the 2026-10-03 and 2026-10-10 weeklies, or between 2026-10-17 and
+2026-10-24, so each second refit published new weights under the same sha.
+Serving got the new bytes and the Pi kept the old ones. `model_version` was
+`adr175-<config>-<commit>`, so both fits of each pair wrote one name and
+nothing showed the split. Every step reported `ok`.
+
+**What it changed.** Counted on research, `predictions` by writer:
+
+| week of | Pi rows | Pi's model | nightly rows | nightly's model |
+|---|---|---|---|---|
+| 2026-10-12 | 716 | 2026-10-03 refit | 2,100 | 2026-10-10 refit |
+| 2026-10-26 | 570 | 2026-10-17 refit | 1,900 | 2026-10-24 refit |
+
+All 1,286 Pi rows carry the version of a model they did not use. Their
+numbers are what the site showed, from a model one week older, and they
+stay as written (ADR 029, ADR 195). To attribute a row to its fit, take the
+newest publish before its `created_at`, and for Pi-born rows (a `run_id`
+research's `runs` does not hold) in those two weeks, the refit a week
+before that.
+
+**A second fault on the same path.** A truncated local file raised
+`zipfile.BadZipFile`, which the parse's `except` did not name, so `cscan
+predict --serving` would have failed on every pass until someone deleted
+the file. It never happened.
+
+**Fix.** `fetch` compares the bytes, which cannot match a different fit
+and treat a truncated file as a mismatch. `model_version` ends in the fit
+time, to the minute in UTC (`adr175-f183b0f5-<commit>-20261107T2051Z`), so
+each refit has its own name, as ADR 029 and ADR 193 require. Test:
+`test_refit_identity.py`. To check the Pi holds the published model:
+
+```
+md5sum data/model/predictor.npz                                   # on the Pi
+SELECT md5(payload) FROM model_artifact WHERE config_hash = '<live hash>';
+```
+
+All three copies matched on 2026-11-04 (`1aecd33f`), the 2026-10-31 refit.
