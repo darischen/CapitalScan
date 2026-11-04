@@ -79,9 +79,17 @@ pull to "keep it in sync" is the mistake.
 
 ## Open
 
-### No timer evaluates a new quarter's universe (found 2026-11-03)
+### ~~No timer evaluates a new quarter's universe~~ DONE 2026-11-03: `monthly` runs it
 
-ADR 014 makes trade membership quarterly and automatic ("membership changes
+The owner chose `monthly` (DECISIONS.md Open items): four evaluations a
+year, and membership needs no earnings timing. `cscan monthly` evaluates
+the latest completed quarter when the live generation has no rows for it,
+then runs `events` from the quarter's last day to today, so those events
+carry the new membership. It refuses while another job runs (ADR 060), and
+the unit retries hourly, up to 60 times. The first scheduled evaluation is
+2027-01-01, for 2026Q4. Test: `test_monthly_universe.py`.
+
+Original entry: ADR 014 makes trade membership quarterly and automatic ("membership changes
 on its own with no manual review"), and DESIGN §4.12 lists the `universe`
 evaluation as quarterly. No timer ever ran it. ADR 080 planned `monthly` for
 retrain, calibrate and promote, which moved to `weekly` (ADR 184/185), so
@@ -115,6 +123,30 @@ window on 2026-11-03. Neither writer deletes, so a row the detector stops
 producing stays. Cause not traced. Candidates: a bar revised after the
 13:15 fetch, or the backtest keeping a slot `run_events` no longer fills.
 Check what the site shows for one of these slots before deciding on a sweep.
+
+### Backups were never built (found 2026-11-03)
+
+ADR 083 plans a nightly dump and a monthly copy to a GitHub Release. No
+job backs up either database. On `wivie` the only dump is a hand copy of
+serving's `predictions` and `outcomes` from 2026-09-20. The plan no longer
+fits: the research database is 30 GB, and a Release on this public repo
+would publish it. What no rerun rebuilds is small: the forward log and
+poller records (under 200 MB) and hourly bars older than Yahoo's 730-day
+window (262,359 rows, growing daily). Options in DECISIONS.md Open items.
+
+### Quarter-end signals read their own day's close for membership (found 2026-11-03)
+
+ADR 014 evaluates membership on information available at t-1. But
+`compute._latest_indicator_row` takes `ts <= as_of`, so a quarter's
+evaluation uses its last day's close, and `core.universe.TickerMembership`
+applies it to events on that same day. An intraday touch on 2026-09-30 is
+stamped with membership decided by that day's close. 28,768 live-generation
+`touch` events fall on a quarter's last day, and 1,966 of them would flip
+under the previous evaluation, against 305,858 in-trade `touch` events in
+all. A `next_open` entry decides after the close, so the same-day close is
+known in time for it. Applying each evaluation from the next session fixes
+the touch case, moves the backtest population slightly, and is the
+owner's call.
 
 ### Where Session 30 left off (2026-09-22/23) — read this first
 

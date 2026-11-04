@@ -1,17 +1,33 @@
 [Unit]
-Description=CapitalScan monthly maintenance
+Description=CapitalScan monthly (quarterly universe evaluation)
 After=network-online.target postgresql.service
 Wants=network-online.target
+# Bounded retry (ADR 160), with a longer reach than the nightly's.
+# `cscan monthly` exits 1 rather than change `universe` under a running
+# backtest (ADR 060), and the 1st falls on a Saturday, inside the weekly,
+# about one month in seven. Hourly retries have to outlast a weekly that
+# may run to its 54h RuntimeMaxSec: 60 starts in 3 days covers 59 hours.
+# A cause that never clears gives up there, and the next month's run
+# catches the quarter (`cli.monthly`).
+StartLimitIntervalSec=3d
+StartLimitBurst=60
 
 [Service]
-Type=oneshot
+# Type=simple, not oneshot: Restart= is only honoured for a non-oneshot
+# service (the nightly unit's note). It was oneshot until 2026-11-03, when
+# it had nothing to retry.
+Type=simple
 User={{USER}}
 WorkingDirectory={{REPO}}
 ExecStart={{REPO}}/scripts/run_job.sh monthly
+Restart=on-failure
+RestartSec=1h
+# TimeoutStartSec does not bound total runtime for Type=simple; RuntimeMaxSec does.
+# A normal run is ~20 s of evaluation and a few minutes of events.
+RuntimeMaxSec=2h
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=capscan-monthly
-TimeoutStartSec=4h
 
 [Install]
 WantedBy=multi-user.target

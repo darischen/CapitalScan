@@ -2377,9 +2377,11 @@ Sat 00:00-02:00    weekly     chunked backtest + finalize, refit + publish (ADR 
 1st 03:00          monthly    no-op stub
 ```
 
-The quarterly `universe` evaluation (§4.12, ADR 014) is on no line of
+The quarterly `universe` evaluation (§4.12, ADR 014) was on no line of
 either block. It ran by hand until 2026Q3 was found 33 days late on
-2026-11-03 (OPERATIONS.md).
+2026-11-03, and the owner put it in `monthly` that day: the latest
+completed quarter when the live generation lacks it, then `events` since
+the quarter's last day (OPERATIONS.md).
 
 Path capture added to the nightly line 2026-08-06. Task 10.6 deferred the
 wiring to 10.7, 10.7 completed it in `jobs/cli.py::nightly`, and this table
