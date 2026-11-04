@@ -30,7 +30,7 @@ job and ships it to serving. → `OPERATIONS.md`
 
 ## Before writing any code
 
-Read `docs/DECISIONS.md`. It holds 205 ADRs. They are decisions, not suggestions.
+Read `docs/DECISIONS.md`. It holds 207 ADRs. They are decisions, not suggestions.
 
 **An entry in `BACKLOG.md` can be older than the ADR it describes.** On
 2026-09-10 a backlog item read "ADR 179 is decided but not built" two days
@@ -466,6 +466,18 @@ timer ran it before, so 2026Q3 went 33 days late. On the 1st, `cscan
 monthly` evaluates the latest completed quarter if the live generation
 lacks it, then re-runs `events` from the quarter's last day. It refuses
 while another job runs (ADR 060), and its unit retries hourly. → `OPERATIONS.md`
+
+**`backup` copies what no rerun rebuilds to the Pi daily at 16:30 PT** (since
+2026-11-04, ADR 206): the forward log, the poller's records, `runs`,
+`positions`, `order_intents` and every hourly bar, to `~/backups/capitalscan`.
+`wivie`'s key for it reaches that folder only, through
+`scripts/pi/capitalscan-backup-gate`; Regicide's key and gate are separate. A
+week of dailies and four weeks of Sundays. Restore by hand. → `OPERATIONS.md`
+
+**A company keeps one symbol** (ADR 207). When a ticker changes symbol, the new
+one carries the history and the old one retires: inactive, delisted at its
+last bar, its events and universe rows deleted except the ones the forward log
+references. EQR (now VMRK) and PSKY (now SKYD) were retired on 2026-11-04.
 
 **The poller moved to the Pi on 2026-08-28 (ADR 158), and this changes what
 you may run during market hours.** It is the one genuinely scheduled thing

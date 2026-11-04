@@ -4201,6 +4201,23 @@ def weekly(
 
 
 @app.command()
+def backup() -> None:
+    """Copy what no rerun rebuilds to the Pi (ADR 206).
+
+    The forward log, the poller's records, `runs`, `positions`,
+    `order_intents` and every hourly bar, to `~/backups/capitalscan` on the
+    Pi through a key whose forced command reaches that folder only. Checks
+    the sizes that arrived before it prunes. `capitalscan-backup.timer`
+    runs it daily at 16:30 PT, after the 13:15 nightly. Read-only on
+    research, so it needs no config-hash guard and no lock.
+    """
+    from capitalscan.jobs import backup as backup_job
+
+    report = backup_job.run_backup()
+    console.print(f"backup: {report.notes}")
+
+
+@app.command()
 def monthly() -> None:
     """The quarterly universe evaluation (ADR 014), checked on the 1st.
 

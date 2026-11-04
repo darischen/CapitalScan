@@ -2149,3 +2149,61 @@ To spot the next one, compare first rows across the two stores:
 SELECT t.ticker, (SELECT min(x.ts)::date FROM bars x WHERE x.ticker = t.ticker
        AND x.interval = '1d' AND x.ts >= '1996-11-04') FROM tickers t;
 ```
+
+## The notes and two renamed symbols removed (2026-11-04)
+
+Owner's decisions that night (DECISIONS.md Open items, ADR 207). Each store
+got the same SQL, in one transaction, after every row it removes was saved
+as gzipped CSV on the same machine. Nothing ran on either store at the time.
+
+**21 exchange-traded notes** (SOJC, TBB, CCZ and 18 more; BACKLOG). Removed
+from `events` (with `path` by cascade), `indicators`, `bars`, `bars_live`,
+`quotes_live`, `corporate_actions`, `earnings`, `shares_outstanding`,
+`universe`, `fetch_ledger`, `bar_rejects` and `tickers`. On research that
+was 145,296 events and 195,999 path rows, in 17 s; on serving 72,674
+events, in 20 s. **Two rows stay on purpose:** CCZ's signal report (research
+and serving) and order intent (serving) from the 2026-09-09 session. They
+are poller records, permanent like the forward log, and hold no key to
+`tickers`. Saved rows: `~/backups/notes-deletion-2026-11-04/` on `wivie`
+(17.6 MB) and the Pi (11 MB).
+
+**EQR and PSKY retired** (ADR 207). `cscan add-ticker SKYD` first, then:
+every EQR and PSKY event deleted except those a prediction, signal report
+or order intent references (22 and 30 kept on each store), all their
+`universe` rows deleted, and `is_active = false`, `delisted_on = last_bar`
+(2026-08-17 and 2026-10-16). Bars and indicators stay. Saved rows:
+`~/backups/renames-2026-11-04/` on `wivie` (4.0 MB) and the Pi (2.1 MB).
+
+The workstation copy got the same deletes without a saved copy, since
+`wivie`'s covers the same rows. To put any of it back, load the CSV with
+`\copy <table> FROM PROGRAM 'gunzip -c <file>' WITH CSV HEADER`, parents
+(`tickers`) first.
+
+## Restoring from the Pi backup (ADR 206)
+
+`cscan backup` leaves two files a day in `~/backups/capitalscan` on the Pi,
+`capitalscan-daily-<date>.dump` and `capitalscan-daily-<date>-hourly.csv.gz`,
+plus a `weekly` pair on Sundays. The job's key cannot read them back (the
+gate allows no download), so fetch with the Pi's own login:
+
+```
+scp darischen@192.168.1.30:backups/capitalscan/capitalscan-daily-<date>.dump .
+pg_restore --list capitalscan-daily-<date>.dump          # what is inside
+```
+
+Into a database rebuilt from code and public data, where these tables are
+empty: `pg_restore --data-only --disable-triggers -d capitalscan <dump>`,
+then the hourly bars:
+
+```
+\copy bars FROM PROGRAM 'gunzip -c capitalscan-daily-<date>-hourly.csv.gz' WITH (FORMAT csv, HEADER)
+```
+
+Into a database that still holds rows, restore into a scratch database
+first and copy across what is missing: `pg_restore --data-only` into a
+populated table fails that table at the first duplicate key. Advance each table's
+sequence past its max id afterwards (CLAUDE.md, ADR 158).
+
+Check the latest copy: `cscan system-status` shows the `backup` job's last
+run, and `SELECT notes FROM runs WHERE job = 'backup' ORDER BY started_at DESC
+LIMIT 1` names the sizes that arrived.

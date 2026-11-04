@@ -78,7 +78,16 @@ deleted the same day: on 2026-09-29 both nightlies ran every step `ok`,
 took 3m35s and 2m54s and `shares` 18 s and 17 s, and the Pi wrote 260
 predictions that week under the new model.
 
-### A symbol change splits or doubles a company's history (found 2026-11-04)
+### ~~A symbol change splits or doubles a company's history~~ DONE 2026-11-04 (ADR 207)
+
+The owner chose one symbol per company. `cscan add-ticker SKYD` built SKYD
+from 2005-12-05, and EQR and PSKY were retired on all three stores, keeping
+the 22 and 30 events predictions reference (OPERATIONS.md). **Still open:**
+the seed refresh adds a renamed symbol as a second company with five days of
+bars. It should flag a new symbol whose CIK matches a ticker whose bars
+stopped, so the next rename is handled the same way and not found by chance.
+
+Original entry:
 
 No ADR covers a symbol change, and the store handled two of them two
 different wrong ways:
@@ -104,7 +113,11 @@ the decision, the refresh should flag a new symbol that shares a CIK with
 one whose bars stopped (share classes share a CIK too, with current bars on
 both).
 
-### Notes and debentures were ingested as companies (found 2026-11-04)
+### ~~Notes and debentures were ingested as companies~~ DELETED 2026-11-04 (owner)
+
+Deleted from research, serving and the workstation copy, every row saved
+first. CCZ's one signal report and one order intent stay as poller records
+(OPERATIONS.md). Original entry:
 
 `nasdaq._NOT_COMMON` excluded preferreds, warrants and units by name, and
 named nothing about notes. 21 exchange-traded notes, debentures and
@@ -185,7 +198,25 @@ producing stays. Cause not traced. Candidates: a bar revised after the
 13:15 fetch, or the backtest keeping a slot `run_events` no longer fills.
 Check what the site shows for one of these slots before deciding on a sweep.
 
-### Backups were never built (found 2026-11-03)
+**Traced further 2026-11-04, on HWM 2026-10-08.** The stored bar closes at
+222.56, two cents above that day's own lower band (222.54), so the
+close-confirmed flag reads false and the detector now gives
+`bb_lower_touch`. The `bull_close_below_lower` row was written by the
+10-08 13:33 nightly and by no run after it: every upsert sets `run_id`,
+and that row's never moved. The `bb_lower_touch` row's id falls inside
+the 2026-11-03 rerun's range, so that rerun inserted it, though nine
+`events` runs covered 10-08 between 10-08 and 10-14, a full-history pass
+among them. Why none of them wrote it is the open question. Also, "neither
+writer deletes" is incomplete: ADR 150's sweep deletes a session's
+unreconciled poller rows (`cli.py`), and `db_io` deletes the events on
+dates whose bars are purged.
+
+### ~~Backups were never built~~ BUILT 2026-11-04 (ADR 206)
+
+`cscan backup`, daily at 16:30 PT on `wivie`, to `~/backups/capitalscan` on the
+Pi through a key whose forced command reaches that folder only. The owner
+chose the Pi after asking whether the three live copies suffice: they cover
+losing one machine, and none is a snapshot. Original entry:
 
 ADR 083 plans a nightly dump and a monthly copy to a GitHub Release. No
 job backs up either database. On `wivie` the only dump is a hand copy of

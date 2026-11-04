@@ -1,0 +1,10 @@
+[Unit]
+Description=CapitalScan backup at 16:30, after the 13:15 nightly (ADR 206)
+
+[Timer]
+OnCalendar=*-*-* 16:30:00
+Persistent=true
+Unit=capitalscan-backup.service
+
+[Install]
+WantedBy=timers.target
