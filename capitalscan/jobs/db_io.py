@@ -391,6 +391,77 @@ def _conflict_action(
     return f"{action} WHERE ROW({stored}) IS DISTINCT FROM ROW({incoming})"
 
 
+# Tables whose rows point at `events.id`. A row any of them references is
+# part of a record (the forward log, a poller report, an order intent, a
+# live quote) and is never deleted by a reconcile (ADR 207's rule).
+EVENT_REFERENCING_TABLES: tuple[str, ...] = (
+    "predictions",
+    "signal_reports",
+    "order_intents",
+    "quotes_live",
+)
+
+DROP_SUPERSEDED_SLOT_SQL = (
+    "DELETE FROM events e USING ("
+    "  SELECT * FROM unnest("
+    "    CAST(:hashes AS text[]), CAST(:tickers AS text[]), CAST(:dates AS date[]),"
+    "    CAST(:sides AS text[]), CAST(:kinds AS text[]), CAST(:types AS text[])"
+    "  ) AS u(config_hash, ticker, signal_date, side, entry_kind, signal_type)"
+    ") AS w "
+    "WHERE e.config_hash = w.config_hash "
+    "AND e.ticker = w.ticker AND e.signal_date = w.signal_date "
+    "AND e.side = w.side AND e.entry_kind = w.entry_kind "
+    "AND e.signal_type <> w.signal_type "
+    + "".join(
+        f"AND NOT EXISTS (SELECT 1 FROM {t} r WHERE r.event_id = e.id) "
+        for t in EVENT_REFERENCING_TABLES
+    )
+)
+
+
+def drop_superseded_slot_events(engine: Engine, written: pd.DataFrame) -> int:
+    """Delete the rows a write just superseded in its own debounce slots.
+
+    **One event per ticker, per side, per day, per entry kind** (DESIGN
+    §4.7, `core.signals.debounce_key`), but `signal_type` is part of the
+    upsert key. So when a slot's inputs change between runs, the next run
+    writes the new type as a **new row** and the old one stays. Found
+    2026-11-03, traced 2026-11-17, two causes on the live generation:
+
+    - **A bar revised after the 13:15 fetch.** HWM's 2026-10-08 close came
+      back from the next morning's fetch two cents above its lower band, so
+      `bull_close_below_lower` became `bb_lower_touch`, and both stayed.
+    - **A history re-adjusted.** CTVA's whole series was rescaled on
+      2026-10-08 (its 2022-08-15 close now reads 9.24), which reclassified
+      411 old slots. The 10-03 backtest's rows sat beside the 11-14 one's.
+
+    `written` is the frame the caller just upserted. Every other-type row in
+    one of its slots is stale by construction: the writer saw the slot's
+    current inputs and chose a different type. Keyed on the written slots,
+    not on `run_id`, because `events` has no `run_id` index and the
+    `(ticker, signal_date)` one serves this.
+
+    **A referenced row stays** (`EVENT_REFERENCING_TABLES`), as ADR 207 kept
+    EQR's and PSKY's predicted events. Returns the rows deleted.
+    """
+    if written.empty:
+        return 0
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(DROP_SUPERSEDED_SLOT_SQL),
+            {
+                "hashes": [str(v) for v in written["config_hash"]],
+                "tickers": [str(v) for v in written["ticker"]],
+                "dates": [pd.Timestamp(v).date() for v in written["signal_date"]],
+                "sides": [str(v) for v in written["side"]],
+                "kinds": [str(v) for v in written["entry_kind"]],
+                "types": [str(v) for v in written["signal_type"]],
+            },
+        )
+    # `rowcount` is optional in DBAPI and absent on a stubbed cursor.
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
 def fill_event_sector_and_mcap(engine: Engine, run_id: str) -> int:
     """Populate `events.sector` and `events.mcap_usd` for one run's rows.
 

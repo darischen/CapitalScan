@@ -991,6 +991,9 @@ def run_backtest(
             ["config_hash", "ticker", "signal_date", "signal_type", "entry_kind"],
             update_columns=update_columns,
         )
+        # Same reconcile as `run_events`: a slot reclassified since the last
+        # backtest keeps only this run's type (`db_io`'s helper says why).
+        db_io.drop_superseded_slot_events(engine, events)
         # `sector` and `mcap_usd` have no slot in `_EVENT_COLUMNS`, by
         # design: filling them per worker would carry a ticker lookup and a
         # point-in-time universe lateral into every process. Same shape as
