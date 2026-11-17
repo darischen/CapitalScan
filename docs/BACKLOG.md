@@ -1300,6 +1300,18 @@ and rendered on the screener. The coverage-decay figures it carried
 
 ### Operational, small
 
+**`nightly` and `weekly` deadlock on `events` when they overlap (found
+2026-11-17).** They take different locks (`nightly.lock` against the
+weekly's own), so the Saturday weekly's 12-hour backtest runs beside the
+nightly and premarket. On 2026-11-14 that gave four `DeadlockDetected`
+failures: `peak_labels` at 06:59, 08:50 and 14:15 PT, and one
+`backtest_compute` chunk at 14:53. Nothing was lost. Each nightly's
+`peak_labels` succeeded on a later attempt, the failed chunk re-ran `ok`
+at 15:22, and the weekly finished (finalize 15:34, refit published 16:42).
+The nightly restarts that day came from the stuck sync, which multiplied
+the overlap. Options: have the nightly skip `peak_labels` while a weekly
+holds its lock, or retry a deadlocked write once in `db_io`.
+
 **Serving holds rows research does not (compared 2026-11-17).** After the
 catch-up sync, research and serving were compared table by table over the
 live generation. Serving ships `next_open` and `touch` events and daily
