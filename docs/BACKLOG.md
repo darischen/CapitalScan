@@ -187,7 +187,40 @@ Two places to wire it, **owner's call** (DECISIONS.md Open items):
 Either way the step must not run while a backtest runs (ADR 060). Until it
 is wired, run it by hand after each quarter end (CLAUDE.md, Scheduling).
 
-### Some debounce slots hold two `touch` events (found 2026-11-03)
+### ~~Some debounce slots hold two `touch` events~~ FIXED 2026-11-17 (PR #163)
+
+**Cause.** `signal_type` is in the `events` upsert key, so when a slot's
+inputs change between runs the next run writes the new type as a new row
+and the old one stays. Two ways the inputs change, both found on the live
+generation:
+
+- **A bar revised the morning after.** Ids settle the HWM question below:
+  `bb_lower_touch` holds id 187,191,373, among the ids the 10-09 runs
+  minted, so the 10-09 05:46 `events` run wrote it right after that
+  morning's fetch revised the 10-08 close. The "inserted 2026-11-03" reading
+  came from min and max ids by `run_id`, which a rerun moves onto old rows.
+- **A history re-adjusted.** CTVA's whole series was rescaled on 2026-10-08
+  (its 2022-08-15 close now reads 9.24), which reclassified old dates. CTVA
+  held 411 of the duplicate slots, back to its first bar in 2019-06, which
+  is why the duplicates started in 2019.
+
+**Fix.** `run_events` and `run_backtest` call
+`db_io.drop_superseded_slot_events` after each write. It deletes any other
+type in a slot the write filled, keyed on `(config_hash, ticker,
+signal_date, side, entry_kind)`, and keeps a row a prediction, signal
+report, order intent or live quote references.
+
+**Cleanup, 2026-11-17.** Research held 1,782 duplicate slots. In each, the
+row from the newest run stayed. 1,743 older rows were deleted (423
+`next_open`, 474 `touch`, 423 each `touch_30m` and `touch_5m`), saved to
+`~/backups/retire-2026-11-17/stale-slot-events.csv.gz` on `wivie`. 39 stay
+because the forward log references them, HWM's `bull_close_below_lower`
+among them. No slot had a tie. The workstation got the same keys (1,715
+rows, its fork being older). Serving got them after the catch-up sync:
+878 rows, the other keys having no row there, saved to
+`~/backups/retire-2026-11-17/stale-slot-events-serving.csv.gz` on the Pi.
+
+Original entry:
 
 DESIGN §4.7 allows one event per ticker, per band, per day
 (`core.signals.debounce_key`). On the live generation, 168 slots in 2026
@@ -212,6 +245,34 @@ among them. Why none of them wrote it is the open question. Also, "neither
 writer deletes" is incomplete: ADR 150's sweep deletes a session's
 unreconciled poller rows (`cli.py`), and `db_io` deletes the events on
 dates whose bars are purged.
+
+### Ten tickers stopped trading and stayed active (found 2026-11-08, retired 2026-11-17)
+
+EA, LBRDK, LBRDA, AVB, LEG, CRNX, APGE, QRVO, WBD and ACA stopped trading
+between 2026-08-04 and 10-22, and Yahoo agreed on each. None is in the S&P
+500 scrape, none shares a CIK with another ticker, so none is a rename (ADR
+207's case). **Nothing in the code retires a ticker**: `run_tickers_refresh`
+upserts `is_active = true` for current constituents and never sets it false,
+so a company acquired after the 08-01 seed stayed active. Each nightly still
+fetched all ten, AVB logged 2,590 `close_outside_range` rejects after
+08-24, the poller skipped EA and WBD every session as stale, and with
+`delisted_on` empty the ingest guard against a reused symbol (the FB and
+PCLN case) did not cover them.
+
+**Retired by hand on all three stores (owner, 2026-11-17).** `is_active =
+false`, `delisted_on = last_bar` = the last daily bar on research. History
+stays, unlike ADR 207's renames, because a delisting is the survivorship
+case ADR 035 keeps. Also deleted, saved first to
+`~/backups/retire-2026-11-17/` on `wivie` and the Pi: 8 stale daily bars
+that only serving held (EA's four after 08-04 all read 209.70, LBRDA and
+LBRDK repeat 08-19's close on 08-20 and 08-21) and the 8 indicator rows
+computed from them, on research and serving. The nightly reads `WHERE
+is_active` (`cli.py:68`), so it no longer fetches them.
+
+**Still open: a flag, not a rule.** An active ticker with no daily bar in
+10 sessions should be reported by the nightly, with a CIK check for a new
+symbol first (ADR 207). Retirement stays manual: a long trading halt looks
+the same, and a retired ticker is never fetched again.
 
 ### ~~Backups were never built~~ BUILT 2026-11-04 (ADR 206)
 
@@ -1239,6 +1300,32 @@ and rendered on the screener. The coverage-decay figures it carried
 
 ### Operational, small
 
+**Serving holds rows research does not (compared 2026-11-17).** After the
+catch-up sync, research and serving were compared table by table over the
+live generation. Serving ships `next_open` and `touch` events and daily
+bars only, by design. Within that scope:
+
+- **Fixed on serving the same day.** 13,197 daily bars on 56 tickers that
+  research rejected as `flat_zero_volume_bar` (every one has a `reject`
+  row in research's `bar_rejects`) were still on serving, because `cscan
+  sync` upserts and never deletes. Deleted, saved to
+  `~/backups/retire-2026-11-17/serving-rejected-bars.csv.gz` on the Pi.
+  155 bars and 155 indicator rows on FLG, HRI, IESC and NLY (2026-08-27
+  to 2026-10-22) were on research and never reached serving: older than
+  the incremental bound, and `_backfill_tickers` covers only a ticker with
+  no rows. Copied across. ORKA's `tickers` row, inactive with no bars or
+  events, was on serving only. Deleted.
+- **Left as they are.** 352 `touch` events since 2026-09-01 exist only on
+  serving: 333 written by the poller (live detections the close did not
+  confirm), 19 by research jobs and superseded there since. And 15
+  serving-born predictions from 2026-09-11 to 09-16, minted before ADR
+  196's id floor, so `pull_live_records` never adopts them. Whether live
+  records belong in research is an owner question (DECISIONS Open items).
+
+The cause of the first group recurs: anything research deletes stays on
+serving. A sync prune pass, bounded to the tables sync ships and to keys
+research holds a reject or retirement for, would close it.
+
 **`/` waits on 3.75 KB of server-components payload per screener row, not on
 its queries (measured 2026-11-02).** The queries take ~60 ms. Rendering
 costs ~4.3 ms a row on the Pi (loopback: 10 rows 0.14-0.16 s, 40 rows
@@ -1266,6 +1353,12 @@ grew from 593 KB to 783 KB. Without gzip the batches do stream (the first
 20 rows ~40 ms after row 1, the last 105-131 ms after), but `compress:
 false` would send four times the bytes over the Funnel. The lever is a
 smaller payload.
+
+**First cut shipped 2026-11-17 (PR #164, `4d4ba2c`).** `compactPrediction`
+rounds the dialog's probabilities and bands to six digits and drops
+`modelVersion`, which the dialog never reads. Median row payload on the Pi
+went from 3,045 B to 2,772 B, 9%. The next lever is the per-row data
+labels, about 235 B a row.
 
 **~~`/ticker/X` renders "No indicator history" for 688 active tickers~~ --
 FIXED 2026-11-01 (`25f48c8`).** `cscan sync` now ships `bars` and

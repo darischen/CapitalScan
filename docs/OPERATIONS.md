@@ -2022,6 +2022,39 @@ leaves `'started'`, which `resume-check` reads as "run". Test:
 124, 42, 148 and 188 minutes after the weeklies of 2026-10-03, 10-10, 10-17
 and 10-31. The 2026-11-01 run finished with 24 minutes left under the cap.
 
+## The sync stayed stuck for nine days after the 2026-11-07 weekly (fixed 2026-11-17)
+
+**What happened.** The last `ok` sync before the fix started 2026-11-06
+14:13 PT. The 2026-11-07 weekly relabelled about 2.89M `next_open` and
+`touch` events, and every sync after it set out to re-ship them. None
+finished. From 2026-11-08 13:45 PT, 47 sync rows sat at `running`: each
+attempt hit the nightly's `RuntimeMaxSec=4h` or the premarket's limit,
+systemd restarted it, and the restart started over from the same
+`_events_modified_since` bound, because only an `ok` sync moves it.
+
+**Root cause.** `copy_upsert` ended in a plain `ON CONFLICT DO UPDATE`.
+A row serving already held was rewritten anyway, at the full cost of a
+write on the Pi's SD card, so a retry repeated every row the killed run had
+already shipped. The 2026-10-31 weekly's 1.48M rows had taken 3h07m, so a
+2.89M backlog could not finish inside four hours on any attempt. This is
+the "Still open" item of the 2026-10-18 entry, reached.
+
+**Fix (PR #161, `6e32b84`).** `copy_upsert` takes
+`skip_unchanged_ignoring`, and `run_sync` passes `("modified_at",)`: the
+update fires only `WHERE ROW(target) IS DISTINCT FROM ROW(EXCLUDED)` over
+every column but `modified_at`, which each store stamps for itself. A
+retry now reads the rows a killed run wrote and skips them.
+
+**Recovery.** Stopped the nightly, marked the 48 stale sync rows `failed`,
+terminated the orphaned `INSERT` still running on the Pi (a killed
+client's statement keeps going on the server), deployed the fix to `wivie`
+and ran `cscan sync --incremental` under `flock` on
+`reports/nightly/nightly.lock` as a transient unit. It finished `ok` in
+**1h40m** (02:57 to 04:38 PT, 2026-11-17), 3,106,904 rows. `next_open` events then matched research exactly on
+count, newest date and `cofire_count` sum. `touch` differed only by the
+352 rows serving alone holds (BACKLOG, "Serving holds rows research does
+not").
+
 ## 2026Q3's universe was evaluated 33 days late (2026-11-03)
 
 **What happened.** ADR 014 says trade membership is re-evaluated every
