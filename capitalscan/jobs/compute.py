@@ -1461,6 +1461,9 @@ def run_events(
                 report.rows_written = db_io.upsert(
                     engine, "events", deduped, key, update_columns=_RUN_EVENTS_UPDATE_COLUMNS
                 )
+            # A slot whose inputs moved since the last run now holds this
+            # run's type and the old one. See the helper.
+            db_io.drop_superseded_slot_events(engine, pd.DataFrame(deduped))
         # See `db_io.fill_event_sector_and_mcap`: a post-pass, so neither
         # writer needs the lookup in its per-ticker path.
         db_io.fill_event_sector_and_mcap(engine, report.run_id)
