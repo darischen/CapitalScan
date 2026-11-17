@@ -1319,8 +1319,9 @@ bars only, by design. Within that scope:
   serving: 333 written by the poller (live detections the close did not
   confirm), 19 by research jobs and superseded there since. And 15
   serving-born predictions from 2026-09-11 to 09-16, minted before ADR
-  196's id floor, so `pull_live_records` never adopts them. Whether live
-  records belong in research is an owner question (DECISIONS Open items).
+  196's id floor, so `pull_live_records` never adopts them. They stay
+  serving-only (owner, 2026-11-17, DECISIONS Open items), so a parity
+  check expects these two differences.
 
 The cause of the first group recurs: anything research deletes stays on
 serving. A sync prune pass, bounded to the tables sync ships and to keys
