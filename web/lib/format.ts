@@ -1,3 +1,5 @@
+import type { Band, Prediction } from "./screen";
+
 /**
  * Formatting shared by the screener and the ticker page.
  *
@@ -472,4 +474,47 @@ export function screenHref(
   }
   const query = q.toString();
   return query ? `/?${query}` : "/";
+}
+
+/**
+ * Decimal places a probability keeps on its way into a client prop.
+ *
+ * **Every screener row serializes its prediction into the page** (the
+ * Inference button is a client component), and Postgres hands back float8
+ * at 16-17 digits: `0.43850726413625835` where the dialog prints `43.9%`.
+ * Twenty-seven of those a row made the prediction the largest part of a
+ * 3,045-byte row, measured on the Pi on 2026-11-17.
+ *
+ * Six, not fewer: the dialog prints a tenth of a percent and tests interval
+ * symmetry against 0.01 (`MAX_ASYMMETRY`), so the rounding error, 5e-7 at
+ * most, cannot move a rendered digit or a symmetry decision.
+ */
+export const PAYLOAD_PROB_DIGITS = 6;
+
+function roundProb<T extends number | null | undefined>(x: T): T {
+  return (typeof x === "number" ? Number(x.toFixed(PAYLOAD_PROB_DIGITS)) : x) as T;
+}
+
+function compactBand(band: Band): Band {
+  return { p: roundProb(band.p), lo: roundProb(band.lo), hi: roundProb(band.hi), nEff: band.nEff };
+}
+
+/**
+ * The prediction as a client prop needs it: probabilities at
+ * `PAYLOAD_PROB_DIGITS`, and `modelVersion` dropped because the dialog
+ * stopped rendering it (`InferenceModal`). `nEff` and every interval stay,
+ * so invariant 8 holds for what reaches the page.
+ */
+export function compactPrediction(p: Prediction): Prediction {
+  return {
+    ...p,
+    pTouch3: roundProb(p.pTouch3),
+    ciLow: roundProb(p.ciLow),
+    ciHigh: roundProb(p.ciHigh),
+    modelVersion: null,
+    bands: Object.fromEntries(
+      Object.entries(p.bands).map(([field, band]) => [field, compactBand(band)]),
+    ),
+    adverse3: p.adverse3 ? compactBand(p.adverse3) : p.adverse3,
+  };
 }
