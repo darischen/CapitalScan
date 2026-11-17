@@ -223,8 +223,20 @@ def copy_upsert(
     frame: pd.DataFrame,
     conflict_cols: list[str],
     update_columns: list[str] | None = None,
+    *,
+    skip_unchanged_ignoring: tuple[str, ...] | None = None,
 ) -> int:
     """`COPY` into a staging table, then one server-side upsert.
+
+    **`skip_unchanged_ignoring` makes a re-sent row cost a read, not a
+    write** (2026-11-17). With it set, a conflicting row is updated only
+    when some updated column other than the named ones differs. Without
+    it, a row identical to the stored one is rewritten anyway: a new heap
+    tuple, every index entry and its WAL. `cscan sync` re-ships what a
+    killed run already wrote, so on the Pi that rewrite was the whole
+    cost: 2.9M events, re-sent from the start by each of 47 retries, each
+    killed at the 4-hour cap. Name the columns the target stamps itself,
+    such as `modified_at`, which never match the incoming value.
 
     **Same contract as `upsert`, different mechanics.** Use it where the row
     count is large enough that per-row Python dominates; `upsert` stays the
@@ -330,8 +342,7 @@ def copy_upsert(
 
     converters = [_converter(table.columns[c].type) for c in cols]
 
-    set_clause = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in targets)
-    action = f"DO UPDATE SET {set_clause}" if targets else "DO NOTHING"
+    action = _conflict_action(table_name, targets, skip_unchanged_ignoring)
     conflict = ", ".join(f'"{c}"' for c in conflict_cols)
 
     with engine.begin() as conn:
@@ -354,6 +365,30 @@ def copy_upsert(
             f"ON CONFLICT ({conflict}) {action}"
         )
     return len(payload)
+
+
+def _conflict_action(
+    table_name: str, targets: list[str], skip_unchanged_ignoring: tuple[str, ...] | None
+) -> str:
+    """The `ON CONFLICT` action for `copy_upsert`.
+
+    `DO NOTHING` with no columns to update. With `skip_unchanged_ignoring`
+    set, a `WHERE` compares the stored and incoming values of every updated
+    column not named there, so an identical row is left alone. `IS DISTINCT
+    FROM` treats two NULLs as equal, which `<>` does not.
+    """
+    if not targets:
+        return "DO NOTHING"
+    set_clause = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in targets)
+    action = f"DO UPDATE SET {set_clause}"
+    if skip_unchanged_ignoring is None:
+        return action
+    compared = [c for c in targets if c not in skip_unchanged_ignoring]
+    if not compared:
+        return "DO NOTHING"
+    stored = ", ".join(f'"{table_name}"."{c}"' for c in compared)
+    incoming = ", ".join(f'EXCLUDED."{c}"' for c in compared)
+    return f"{action} WHERE ROW({stored}) IS DISTINCT FROM ROW({incoming})"
 
 
 def fill_event_sector_and_mcap(engine: Engine, run_id: str) -> int:
