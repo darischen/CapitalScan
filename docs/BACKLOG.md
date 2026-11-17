@@ -1316,8 +1316,12 @@ left the third state behind.
 Both questions this entry left open are answered above: research held the
 rows, and they cost the Pi about 2.5M rows in each chart table.
 
-**The screener's "newest date" query seq-scans `events` on research (found
-2026-10-13, not fixed, needs a decision).** `web/lib/screen.ts`
+**~~The screener's "newest date" query seq-scans `events` on research~~ --
+RESOLVED 2026-11-17: the live test reads serving (owner's call).**
+`web/tests/live.test.ts` now sets `DATABASE_URL_MCP` from
+`DATABASE_URL_SERVING` when that is set, so it tests the store the site
+reads. Research keeps ADR 159's dropped indexes. First run: 19 of 19 pass
+against the Pi. The original finding (found 2026-10-13): `web/lib/screen.ts`
 `LATEST_DATE_SQL` is `max(signal_date)` over `FEED_DOMAIN`. Measured the
 same day with `EXPLAIN ANALYZE`:
 

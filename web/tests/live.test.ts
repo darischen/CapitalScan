@@ -28,6 +28,20 @@ import { applyEnv } from "@/lib/env";
 const envPath = resolve(__dirname, "..", "..", ".env.local");
 if (existsSync(envPath)) applyEnv(readFileSync(envPath, "utf8"), process.env);
 
+// **Serving first, when it is set (2026-11-17).** The site reads serving,
+// so that is the store these checks describe. Research also lacks the
+// feed indexes on purpose (ADR 159): `LATEST_DATE_SQL` seq-scanned 19M
+// rows there, 27.9 s on `wivie`, against 1.5 ms on the Pi, and
+// `attaches cell statistics` timed out under contention. `lib/db.ts`
+// reads `DATABASE_URL_MCP` first, so the serving URL goes there, with
+// the SQLAlchemy driver suffix the `pg` driver does not understand
+// removed.
+const servingUrl = process.env.DATABASE_URL_SERVING?.replace(
+  /^postgresql\+psycopg:/,
+  "postgresql:",
+);
+if (servingUrl) process.env.DATABASE_URL_MCP = servingUrl;
+
 const connected = Boolean(process.env.DATABASE_URL_MCP || process.env.DATABASE_URL_RESEARCH);
 
 /** Three tickers, as 17.3's acceptance criterion asks for. */
@@ -36,10 +50,11 @@ const TICKERS = ["TSM", "AAPL", "NVDA"];
 /*
  * **30s, not vitest's default 5s, and the number is measured.**
  *
- * These run against whatever `DATABASE_URL_RESEARCH` points at, which on a
- * developer box is the full research store -- 19 GB, ~1.38M events under
- * the live `config_hash`, and `v_screen_live` carries five
- * `LEFT JOIN LATERAL` subqueries. `attaches cell statistics` measured
+ * These run against serving when `DATABASE_URL_SERVING` is set (above), and
+ * otherwise against `DATABASE_URL_RESEARCH`, which on a developer box is
+ * the full research store -- 19 GB, ~1.38M events under the live
+ * `config_hash`, and `v_screen_live` carries five `LEFT JOIN LATERAL`
+ * subqueries. `attaches cell statistics` measured
  * **4,280 ms** in isolation on 2026-09-02: inside the default budget, but
  * only by 14%, so it failed whenever the rest of the suite was contending
  * for the same pool.
