@@ -7,6 +7,7 @@ import {
   REVERSAL_TYPES,
   SIGNAL_LABELS,
   clock,
+  compactPrediction,
   fmt,
   pct,
   screenHref,
@@ -306,11 +307,14 @@ function InferenceButton({ row }: { row: ScreenRow }) {
   // `ScreenRow` cost ~856 B a row (~79 KB on a 95-row day, measured
   // 2026-11-02) that nothing on the client reads. TypeScript accepts the
   // wider object, so the narrow type alone did not prevent it.
+  //
+  // `compactPrediction` then rounds the probabilities to six places: at
+  // float8's 17 digits they were most of a 3,045-byte row (2026-11-17).
   const subject: InferenceSubject = {
     ticker: row.ticker,
     signalDate: row.signalDate,
     side: row.side,
-    prediction: row.prediction,
+    prediction: row.prediction ? compactPrediction(row.prediction) : row.prediction,
   };
   return <InferenceCell row={subject} />;
 }
