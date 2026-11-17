@@ -99,6 +99,12 @@ BATCH_ROWS = 5_000
 MAX_BIND_PARAMS = 60_000
 
 
+# Columns a sync leaves out when it decides whether a serving row changed.
+# The `events` trigger stamps `modified_at` on serving itself, so the
+# incoming value never matches and comparing it would rewrite every row.
+SYNC_SKIP_COMPARE: tuple[str, ...] = ("modified_at",)
+
+
 def _rows_per_batch(n_columns: int) -> int:
     """How many rows fit in one statement, given the table's width.
 
@@ -2002,11 +2008,17 @@ def run_sync(
                 # re-run converges. Bounded memory is worth that.
                 copied = 0
                 for chunk in chunks:
+                    # **Unchanged rows are read, not rewritten.** A killed
+                    # sync leaves its committed chunks on serving and the
+                    # next one re-ships them; on the Pi the rewrite, not
+                    # the transfer, is what never fit in four hours
+                    # (2026-11-17). `modified_at` is serving's own stamp.
                     copied += db_io.copy_upsert(
                         target,
                         table.name,
                         _prepare_chunk(chunk, target, table),
                         list(table.key),
+                        skip_unchanged_ignoring=SYNC_SKIP_COMPARE,
                     )
                 rows[table.name] = copied
 

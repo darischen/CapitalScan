@@ -171,8 +171,60 @@ def test_it_takes_the_same_arguments_as_upsert():
 
     a = list(inspect.signature(db_io.upsert).parameters)
     b = list(inspect.signature(db_io.copy_upsert).parameters)
-    assert b == ["engine", "table_name", "frame", "conflict_cols", "update_columns"]
+    assert b[:5] == ["engine", "table_name", "frame", "conflict_cols", "update_columns"]
     assert a[0] == b[0] and a[1] == b[1] and a[3] == b[3] and a[4] == b[4]
+    # The one addition is keyword-only, so it cannot shift a positional.
+    extra = inspect.signature(db_io.copy_upsert).parameters["skip_unchanged_ignoring"]
+    assert extra.kind is inspect.Parameter.KEYWORD_ONLY
+    assert b[5:] == ["skip_unchanged_ignoring"]
+
+
+# ---------------------------------------------------------------------------
+# The conflict action (2026-11-17)
+# ---------------------------------------------------------------------------
+
+
+def test_without_the_guard_every_conflict_rewrites():
+    assert db_io._conflict_action("t", ["a", "b"], None) == (
+        'DO UPDATE SET "a" = EXCLUDED."a", "b" = EXCLUDED."b"'
+    )
+
+
+def test_nothing_to_update_is_do_nothing_with_or_without_the_guard():
+    assert db_io._conflict_action("t", [], None) == "DO NOTHING"
+    assert db_io._conflict_action("t", [], ("a",)) == "DO NOTHING"
+
+
+def test_the_guard_compares_every_updated_column_but_the_ignored_ones():
+    """A re-shipped row identical to the stored one must not be rewritten.
+    That rewrite is what kept a retried sync from ever finishing on the Pi:
+    47 runs, each re-sending the same first rows and killed at 4 hours."""
+    got = db_io._conflict_action("events", ["a", "modified_at", "b"], ("modified_at",))
+    assert got == (
+        'DO UPDATE SET "a" = EXCLUDED."a", "modified_at" = EXCLUDED."modified_at", '
+        '"b" = EXCLUDED."b" WHERE ROW("events"."a", "events"."b") '
+        'IS DISTINCT FROM ROW(EXCLUDED."a", EXCLUDED."b")'
+    )
+
+
+def test_the_ignored_column_is_still_written_when_another_changed():
+    """Ignoring a column in the comparison must not drop it from the SET."""
+    got = db_io._conflict_action("events", ["a", "modified_at"], ("modified_at",))
+    assert '"modified_at" = EXCLUDED."modified_at"' in got
+
+
+def test_only_ignored_columns_left_means_nothing_can_change():
+    assert db_io._conflict_action("t", ["modified_at"], ("modified_at",)) == "DO NOTHING"
+
+
+def test_sync_passes_the_guard_and_ignores_servings_own_stamp():
+    import inspect
+
+    from capitalscan.jobs import sync
+
+    assert sync.SYNC_SKIP_COMPARE == ("modified_at",)
+    src = inspect.getsource(sync.run_sync)
+    assert "skip_unchanged_ignoring=SYNC_SKIP_COMPARE" in src
 
 
 def test_the_staging_table_is_temp_and_drops_on_commit():
