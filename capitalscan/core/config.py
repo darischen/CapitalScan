@@ -650,6 +650,11 @@ class VarianceParams:
     placebo_seed: int = 20261118
     inflation_floor: float = 1.0
     placebo_workers: int = 8
+    # A placebo draw with fewer non-null outcomes than this is skipped.
+    placebo_min_outcomes: int = 30
+    # An era factor within this relative distance of the pooled one takes
+    # the pooled value, so era rows differ only where the data says so.
+    era_inherit_tolerance: float = 0.05
 
 
 DEFAULT_VARIANCE = VarianceParams()
