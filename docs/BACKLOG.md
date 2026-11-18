@@ -2119,7 +2119,12 @@ endpoints. Check their current docs rather than any recollection here --
 broker APIs move, and the Schwab API is itself the successor to TD
 Ameritrade's.
 
-### A serial `n_eff` — **scoped as ADR 166; validated 2026-11-18, and it diverges**
+### A serial `n_eff` — **DONE 2026-11-18, ADR 209**
+
+**Built.** `cell_stats` counts every fire and takes its interval from a
+month x `cluster_id` robust variance, inflated by a placebo factor. The
+notes below are the history: scoped as ADR 166, validated 2026-11-18, and
+it diverged.
 
 **Validation run 2026-11-18 (RESULTS).** The shipped intervals are 5-8x
 wider than a two-way cluster-robust variance supports, at every time block
@@ -2158,6 +2163,15 @@ evidence, divergence means one is wrong).
 measured anywhere here — rests on a 10+ fire bucket that **does not exist**
 in the measured population, where clusters cap at 6. It was computed on a
 population mixing entry kinds. Re-run through `research/returns.py`.
+
+### `benchmarks` still filters cluster heads (2026-11-18)
+
+ADR 209 moved `cell_stats` to every fire with a robust variance.
+`research/benchmarks.py` still reads `GRID_CLUSTER_HEADS_ONLY` and keeps
+the head filter, so the three benchmark arms measure a different
+population from the cells beside them, and their intervals still come from
+ADR 098. Move them to `core.variance` and every fire, or record why the
+arms keep heads. Moves no `config_hash`.
 
 ## Closed, refuted or answered — do not reopen
 
