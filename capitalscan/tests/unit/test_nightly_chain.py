@@ -100,6 +100,13 @@ def _no_real_nightly_io(monkeypatch):
     # recorded calls are the ones these tests were written against.
     monkeypatch.setattr(ingest, "tickers_missing_session", lambda *args, **kwargs: [])
 
+    # The stale-ticker report (2026-11-18) reads `tickers` and `bars` after
+    # the catch-up. It is wrapped in a `try`, so unstubbed it would only
+    # print a warning, but a unit test must not reach for the database.
+    from capitalscan.jobs import stale_tickers as stale_mod
+
+    monkeypatch.setattr(stale_mod, "run_stale_ticker_report", lambda *args, **kwargs: [])
+
     # The `next_open` resolution step (joined 2026-09-15) queries `events`
     # directly, a fourth database boundary. Stubbed to report no open
     # positions so the step's `backtest()` call — itself a huge amount of
