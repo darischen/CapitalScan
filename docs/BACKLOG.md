@@ -1300,8 +1300,8 @@ and rendered on the screener. The coverage-decay figures it carried
 
 ### Operational, small
 
-**`nightly` and `weekly` deadlock on `events` when they overlap (found
-2026-11-17).** They take different locks (`nightly.lock` against the
+**~~`nightly` and `weekly` deadlock on `events` when they overlap~~ -- FIXED
+2026-11-17 (found the same day).** They take different locks (`nightly.lock` against the
 weekly's own), so the Saturday weekly's 12-hour backtest runs beside the
 nightly and premarket. On 2026-11-14 that gave four `DeadlockDetected`
 failures: `peak_labels` at 06:59, 08:50 and 14:15 PT, and one
@@ -1309,8 +1309,21 @@ failures: `peak_labels` at 06:59, 08:50 and 14:15 PT, and one
 `peak_labels` succeeded on a later attempt, the failed chunk re-ran `ok`
 at 15:22, and the weekly finished (finalize 15:34, refit published 16:42).
 The nightly restarts that day came from the stuck sync, which multiplied
-the overlap. Options: have the nightly skip `peak_labels` while a weekly
-holds its lock, or retry a deadlocked write once in `db_io`.
+the overlap.
+
+**Fix.** `run_job.sh` (and `run_job.ps1`) make the weekly take
+`reports/nightly/nightly.lock` as well as its own, for its whole run. It
+waits up to 4h30m for a nightly already running, longer than that unit's
+`RuntimeMaxSec=4h`, and exits 1 for a retry if the wait runs out. While the
+weekly holds it, a nightly or premarket trigger exits 0 at its existing
+non-blocking `flock`, and the 19:00 slot or the next day's run catches up
+with nothing lost, since `resume-check` sees the slot still open. Chosen
+over a deadlock retry in `db_io` because the overlap was the fault: an
+overlapping nightly also rewrites labels under the refit and syncs serving
+mid-backtest, which a retry would leave in place. Checked on `wivie` with
+stub jobs: the weekly waited for a running nightly, a nightly during the
+weekly exited 0, a nightly after it ran, and a 1-second wait exited 1.
+Tests: `test_weekly_nightly_lock.py`.
 
 **Serving holds rows research does not (compared 2026-11-17).** After the
 catch-up sync, research and serving were compared table by table over the

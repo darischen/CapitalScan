@@ -57,6 +57,10 @@ PY="$REPO/.venv/bin/python"
 CSCAN="$REPO/.venv/bin/cscan"
 [ -x "$PY" ] || { echo "no venv at $PY -- run 'uv sync' in $REPO" >&2; exit 3; }
 
+# Longer than the nightly unit's RuntimeMaxSec=4h, so the wait outlasts any
+# nightly that systemd lets live.
+WEEKLY_NIGHTLY_WAIT_SEC=16200
+
 LOGDIR="reports/$LOCKJOB"
 mkdir -p "$LOGDIR"
 LOG="$LOGDIR/${JOB}_$(date +%Y_%m_%d).log"
@@ -69,6 +73,28 @@ exec 9>"$LOGDIR/${LOCKJOB}.lock"
 if ! flock -n 9; then
   echo "[$JOB] $(date '+%Y-%m-%d %H:%M:%S') another run holds the lock; exiting 0" >&2
   exit 0
+fi
+
+# --- weekly also holds nightly's lock (2026-11-17) --------------------
+# The two took separate locks, so a nightly or premarket run beside the
+# weekly's 12-hour backtest wrote `events` under it. On 2026-11-14 that
+# deadlocked four times (`peak_labels` three times, one compute chunk), and
+# the overlapping nightly rewrote labels under the refit. The weekly now
+# takes nightly.lock too, for its whole run: it waits for a nightly already
+# running (bounded by that unit's RuntimeMaxSec=4h), and while it holds the
+# lock a nightly or premarket trigger exits 0 at its own flock above. The
+# 19:00 slot or the next day's run picks the nightly up. A wait that runs
+# out exits 1, so the unit's Restart= tries again.
+if [ "$JOB" = weekly ]; then
+  mkdir -p reports/nightly
+  exec 8>"reports/nightly/nightly.lock"
+  if ! flock -n 8; then
+    echo "[weekly] $(date '+%Y-%m-%d %H:%M:%S') a nightly holds reports/nightly/nightly.lock; waiting up to 4h30m" >&2
+    if ! flock -w "$WEEKLY_NIGHTLY_WAIT_SEC" 8; then
+      echo "[weekly] $(date '+%Y-%m-%d %H:%M:%S') nightly still running after the wait; exiting 1 for the unit to retry" >&2
+      exit 1
+    fi
+  fi
 fi
 
 # **Append, never truncate** (ADR 202). This line was `: > "$LOG"`, so the
