@@ -10,6 +10,7 @@ from capitalscan.core.variance import (
     inflate,
     inflation_factor,
     month_block,
+    one_sided_p_from_edge,
     robust_n_eff,
     wald_interval,
 )
@@ -92,6 +93,17 @@ def test_wald_clips() -> None:
 
 def test_inflate() -> None:
     assert inflate(2.0, 1.5) == 2.0 * 2.25
+
+
+def test_one_sided_p_from_edge() -> None:
+    from scipy.stats import norm
+
+    assert one_sided_p_from_edge(0.0, 0.01) == 0.5
+    assert one_sided_p_from_edge(0.02, 0.0001) == norm.sf(2.0)
+    assert one_sided_p_from_edge(-0.02, 0.0001) == norm.sf(-2.0)
+    assert one_sided_p_from_edge(0.02, 0.0) is None
+    assert one_sided_p_from_edge(0.02, -1.0) is None
+    assert one_sided_p_from_edge(0.02, float("nan")) is None
 
 
 def test_month_block() -> None:

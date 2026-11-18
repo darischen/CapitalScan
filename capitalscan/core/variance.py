@@ -8,6 +8,7 @@ import math
 
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 
 _Z95 = 1.959963984540054
 
@@ -54,6 +55,17 @@ def robust_n_eff(p: float, v: float) -> float | None:
 
 def inflate(v: float, factor: float) -> float:
     return v * factor**2
+
+
+def one_sided_p_from_edge(edge: float, v: float) -> float | None:
+    """`P(Z >= edge / sqrt(v))`, one-sided; None when `v <= 0`.
+
+    `v` is the variance of the mean edge itself, so the test reads the
+    same variance the placebo calibrated (ADR 209).
+    """
+    if not v > 0:
+        return None
+    return float(norm.sf(edge / math.sqrt(v)))
 
 
 def wald_interval(p: float, v: float, z: float = _Z95) -> tuple[float, float]:

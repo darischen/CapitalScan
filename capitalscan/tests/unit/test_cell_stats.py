@@ -10,13 +10,17 @@ each of which is a silent-wrong-number failure rather than a crash.
 from __future__ import annotations
 
 import contextlib
+import logging
 
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.stats import norm
 
 from capitalscan.core.cells import CellSpec
 from capitalscan.core.config import Config, StatsParams, VarianceParams
+from capitalscan.core.stats import one_sided_p_value
+from capitalscan.core.variance import cluster_robust_variance, month_block
 from capitalscan.research import cell_stats
 from capitalscan.research.cell_stats import (
     apply_benjamini_hochberg,
@@ -476,6 +480,133 @@ def _capture_sql(monkeypatch, module) -> list[str]:
 
     monkeypatch.setattr(module.pd, "read_sql", fake_read_sql)
     return sqls
+
+
+def _baselines(by_ticker: dict[str, float]) -> dict[int, pd.DataFrame]:
+    """Ticker-year baselines for 2012-2016 at every ladder target."""
+    rows = [
+        {
+            "ticker": t,
+            "year": y,
+            "target_pct": float(target),
+            "baseline_empirical": b,
+            "baseline_parametric": b,
+        }
+        for t, b in by_ticker.items()
+        for y in range(2012, 2017)
+        for target in StatsParams().reach_targets
+    ]
+    frame = pd.DataFrame(rows)
+    return {1: frame, -1: frame}
+
+
+def _expected_edge_p(events: pd.DataFrame, by_ticker: dict[str, float], inflation: float):
+    y = (events["fwd_ret_5d"] >= 0.03).astype(float).to_numpy()
+    d = y - events["ticker"].map(by_ticker).to_numpy(dtype=float)
+    block = month_block(events["signal_date"])
+    cluster = pd.factorize(events["cluster_id"].astype(str))[0]
+    v_d = cluster_robust_variance(d, block, cluster)[0] * inflation**2
+    return float(norm.sf(d.mean() / np.sqrt(v_d)))
+
+
+class TestEdgePValue:
+    """Fix round 1: the p-value tests the per-event edge on its own robust
+    variance, the test the placebo calibrated, not `p_hit` on the
+    baseline's binomial SE."""
+
+    def test_p_value_is_the_calibrated_edge_test(self):
+        events = _monthly(60, 10)
+        by_ticker = {f"T{i}": 0.3 for i in range(5)}
+        grid = compute_grid(
+            events,
+            None,
+            Config(),
+            specs=(SPEC,),
+            baselines=_baselines(by_ticker),
+            inflation=1.2,
+        )
+        row = _row(grid, 0.03)
+        assert row["p_hit"] > row["baseline_empirical"]
+        expected = _expected_edge_p(events, by_ticker, 1.2)
+        assert row["p_value_parametric"] == pytest.approx(expected, abs=1e-12)
+
+    def test_varying_baselines_differ_from_the_baseline_se_formula(self):
+        events = _monthly(60, 10)
+        by_ticker = {"T0": 0.10, "T1": 0.20, "T2": 0.30, "T3": 0.40, "T4": 0.45}
+        grid = compute_grid(events, None, Config(), specs=(SPEC,), baselines=_baselines(by_ticker))
+        row = _row(grid, 0.03)
+        old = one_sided_p_value(row["p_hit"], row["baseline_empirical"], row["n_eff"])
+        assert old is not None
+        assert row["p_value_parametric"] == pytest.approx(
+            _expected_edge_p(events, by_ticker, 1.0), abs=1e-12
+        )
+        assert abs(row["p_value_parametric"] - old) > 1e-4
+
+    def test_null_baselines_drop_out_of_the_test_only(self):
+        events = _monthly(60, 10)
+        by_ticker = {f"T{i}": 0.3 for i in range(4)}  # T4 has no baseline
+        grid = compute_grid(events, None, Config(), specs=(SPEC,), baselines=_baselines(by_ticker))
+        row = _row(grid, 0.03)
+        kept = events.loc[events["ticker"] != "T4"]
+        assert row["n_events"] == 600
+        assert row["p_value_parametric"] == pytest.approx(
+            _expected_edge_p(kept, by_ticker, 1.0), abs=1e-12
+        )
+
+    def test_no_baselines_no_p_value(self):
+        row = _row(compute_grid(_monthly(60, 10), None, Config(), specs=(SPEC,)), 0.03)
+        assert pd.isna(row["p_value_parametric"])
+        assert not pd.isna(row["ci_low"])
+
+
+class TestReviewMinors:
+    def test_one_month_one_cluster_names_its_reason(self):
+        """Mixed outcomes but one month and one cluster: the variance is zero
+        while `0 < p < 1`, which is neither every-hit nor every-miss."""
+        events = _events(
+            10,
+            signal_date=pd.bdate_range("2015-03-02", periods=10),
+            cluster_id="c0",
+            fwd_ret_5d=[0.05, -0.05] * 5,
+        )
+        row = _row(compute_grid(events, None, Config(), specs=(SPEC,)), 0.03)
+        assert row["suppressed"]
+        assert row["suppress_reason"] == "no variance: one month and one cluster"
+
+    def test_null_cluster_fires_are_dropped_and_counted(self, caplog):
+        events = _monthly(40, 1)
+        events["cluster_id"] = events["cluster_id"].astype(object)
+        events.loc[[0, 1, 2], "cluster_id"] = None
+        with caplog.at_level(logging.WARNING, logger=cell_stats.logger.name):
+            row = _row(compute_grid(events, None, Config(), specs=(SPEC,)), 0.02)
+        assert row["n_events"] == 37
+        assert row["n_clusters"] == 37
+        assert "dropped 3 fires with a null cluster_id" in caplog.text
+
+    def test_empty_eras_get_no_placebo_scope(self, monkeypatch):
+        """An era with no selected events would only floor with a warning;
+        it is left out of the placebo and still yields its rows."""
+        from capitalscan.research import baselines as baselines_mod
+        from capitalscan.research import placebo
+
+        events = _monthly(24, 2, era="2015-2019")
+        seen: dict = {}
+
+        def fake_inflation(panel, ev, sp, vp, horizon, scopes):
+            seen["scopes"] = sorted(scopes)
+            return {scope: 1.1 for scope in scopes}
+
+        monkeypatch.setattr(cell_stats, "load_grid_events", lambda *a, **k: events)
+        monkeypatch.setattr(baselines_mod, "load_adj_close_panel", lambda *a, **k: pd.DataFrame())
+        monkeypatch.setattr(cell_stats, "build_baselines", lambda *a, **k: None)
+        monkeypatch.setattr(placebo, "measure_inflation", fake_inflation)
+        rows, report = cell_stats.run_cell_stats(None, "h", "train", write=False)
+        assert seen["scopes"] == ["2015-2019", "pooled"]
+        empty = rows.loc[rows["era"] == "2010-2014"]
+        assert len(empty) == 16 * 4
+        assert (empty["suppress_reason"] == "no events in cell").all()
+        assert (empty["se_inflation"] == 1.0).all()
+        assert (rows.loc[rows["era"] == "2015-2019", "se_inflation"] == 1.1).all()
 
 
 class TestEventPopulation:

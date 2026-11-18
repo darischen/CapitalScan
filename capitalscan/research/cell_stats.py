@@ -35,6 +35,7 @@ when the two terms measure the same event.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -63,17 +64,19 @@ from capitalscan.core.config import (
 from capitalscan.core.stats import (
     benjamini_hochberg,
     effective_sample_size,
-    one_sided_p_value,
     rho_bar_for_correction,
 )
 from capitalscan.core.variance import (
     cluster_robust_variance,
     inflate,
     month_block,
+    one_sided_p_from_edge,
     robust_n_eff,
     wald_interval,
 )
 from capitalscan.research.baselines import attach_event_baselines
+
+logger = logging.getLogger(__name__)
 
 # ADR 102's measured population. See the module docstring.
 GRID_ENTRY_KIND = "next_open"
@@ -387,6 +390,7 @@ def compute_grid(
 
     entry_kind = _single_value(events, "entry_kind", GRID_ENTRY_KIND)
     split_key = _single_value(events, "split_key", "train")
+    events = _drop_null_clusters(events)
 
     rows: list[dict[str, Any]] = []
     for spec in specs:
@@ -420,6 +424,22 @@ def compute_grid(
 
     frame = pd.DataFrame(rows, columns=CELL_STATS_COLUMNS)
     return apply_benjamini_hochberg(frame, sp)
+
+
+def _drop_null_clusters(events: pd.DataFrame) -> pd.DataFrame:
+    """Fires with a null `cluster_id`, dropped and counted (invariant 4).
+
+    `astype(str)` would turn every null into one cluster named `"nan"` and
+    pool unrelated fires into it, which narrows nothing visibly and
+    misstates the variance.
+    """
+    if "cluster_id" not in events.columns:
+        raise ValueError("cell events need cluster_id for the ADR 209 variance")
+    null = events["cluster_id"].isna()
+    if null.any():
+        logger.warning("cell_stats: dropped %d fires with a null cluster_id", int(null.sum()))
+        return events.loc[~null]
+    return events
 
 
 def _single_value(events: pd.DataFrame, column: str, fallback: str) -> str:
@@ -511,8 +531,12 @@ def _cell_row(
         v = inflate(cluster_robust_variance(y, block, cluster)[0], inflation)
         robust = robust_n_eff(p_hit, v)
         if robust is None:
-            outcome = "hit" if p_hit >= 1.0 else "missed"
-            reason = f"no variance: every fire {outcome}"
+            if p_hit >= 1.0:
+                reason = "no variance: every fire hit"
+            elif p_hit <= 0.0:
+                reason = "no variance: every fire missed"
+            else:
+                reason = "no variance: one month and one cluster"
         else:
             n_eff = float(robust)
             reason = suppression_reason(n_eff, sp)
@@ -563,8 +587,7 @@ def _cell_row(
         return row
 
     edge = None if baseline_empirical is None else p_hit - baseline_empirical
-    # The interval and the test read the same inflated variance: the Wald
-    # interval takes `v` directly, and the test takes `n_eff = p (1 - p) / v`.
+    # The interval is on the hit rate; the test is on the edge (below).
     ci_low, ci_high = wald_interval(p_hit, v)
 
     row.update(
@@ -573,19 +596,54 @@ def _cell_row(
             "edge": edge,
             "ci_low": ci_low,
             "ci_high": ci_high,
-            "p_value_parametric": one_sided_p_value(p_hit, baseline_empirical, n_eff),
+            "p_value_parametric": _edge_p_value(
+                resolved, baseline_frame, target, horizon, inflation
+            ),
             "q_value": None,  # filled by the family-wide correction
         }
     )
     return row
 
 
+def _edge_p_value(
+    resolved: pd.DataFrame,
+    baseline_frame: pd.DataFrame | None,
+    target: float,
+    horizon: int,
+    inflation: float,
+) -> float | None:
+    """One-sided p-value on the per-event edge `d_i = hit_i - baseline_i`.
+
+    This is the test the placebo calibrated (ADR 209,
+    `placebo_estimators.py`): the variance is the month x cluster variance
+    of `mean(d)` itself, inflated by the scope's factor. Testing `p_hit`
+    against the baseline's binomial SE on `n_eff` would read
+    `V b (1 - b) / p (1 - p)` instead of `V` and run liberal when `p > b`.
+
+    Each event uses its own ticker-year `baseline_empirical`. Events whose
+    baseline is null drop out of this test only (invariant 4).
+    """
+    if baseline_frame is None or baseline_frame.empty or resolved.empty:
+        return None
+    joined = attach_event_baselines(resolved, baseline_frame, target)
+    base = pd.to_numeric(joined["baseline_empirical"], errors="coerce")
+    joined = joined.loc[base.notna()]
+    if joined.empty:
+        return None
+    y = hit_flags(joined, target, horizon).astype("float64").to_numpy()
+    d = y - base.loc[joined.index].to_numpy(dtype="float64")
+    block = month_block(joined["signal_date"])
+    cluster = pd.factorize(joined["cluster_id"].astype(str))[0].astype(np.int64)
+    v_d = inflate(cluster_robust_variance(d, block, cluster)[0], inflation)
+    return one_sided_p_from_edge(float(d.mean()), v_d)
+
+
 def apply_benjamini_hochberg(rows: pd.DataFrame, sp: StatsParams) -> pd.DataFrame:
     """FDR correction over DESIGN §6.8's family, and nothing else.
 
-    The family is every **rendered, pooled** headline cell across every
-    ladder target for one config: twelve cells times four targets is 48
-    tests.
+    The family is every **pooled, unsuppressed** headline cell-target with a
+    p-value, across every ladder target for one config. Its size follows
+    the grid and the suppressions, so no count is fixed here.
 
     Two exclusions matter and both are correctness, not taste. Suppressed
     cells stay out because including them inflates `m` and weakens every
@@ -897,7 +955,7 @@ def run_cell_stats(
     """Measure the headline grid for one config and write it.
 
     Returns `(rows, report)`. The pooled rows carry q-values over the
-    48-test family; the era rows (12.4) are descriptive and carry none.
+    pooled, unsuppressed family; the era rows (12.4) are descriptive and carry none.
 
     ADR 209: every fire enters, and each scope (the split pooled, each
     reported era) gets its own placebo inflation factor, measured once per
@@ -927,8 +985,11 @@ def run_cell_stats(
     panel = load_adj_close_panel(engine, tickers=tickers, start=start, end=end)
     baselines = build_baselines(None, selected, cfg.stats, bp, panel=panel)
 
+    # An era with no selected events gets no placebo scope: it would only
+    # floor with a warning. Its rows still come from `compute_grid` below,
+    # as "no events in cell", under the floor factor.
     scopes = {POOLED: pd.Series(True, index=selected.index)}
-    scopes.update({era: selected["era"] == era for era in eras})
+    scopes.update({era: selected["era"] == era for era in eras if (selected["era"] == era).any()})
     factors = measure_inflation(panel, selected, cfg.stats, vp, bp.horizon_days, scopes)
     del panel
 
@@ -954,7 +1015,7 @@ def run_cell_stats(
                 baselines=baselines,
                 bp=bp,
                 era=era,
-                inflation=factors[era],
+                inflation=factors.get(era, vp.inflation_floor),
                 run_id=run_id,
                 config_hash=config_hash,
                 git_sha=git_sha,
