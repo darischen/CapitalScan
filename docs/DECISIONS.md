@@ -11213,8 +11213,12 @@ group sums and an intersection, which a reader can rebuild.
    a t critical value would add only 1.06x.
 4. **`n_eff` is derived**: `p (1 - p) / V` on the inflated variance. It
    keeps its column and its meaning for a reader (invariant 8). The
-   interval is Wald, clipped to [0, 1]. The p-value is
-   `one_sided_p_value` on the same `n_eff`, so test and interval agree.
+   interval is Wald, clipped to [0, 1]. The p-value is the test the
+   placebo calibrated: each fire's edge `d = hit - its ticker-year
+   baseline`, `p = norm.sf(mean(d) / sqrt(V_d))` with `V_d` the same
+   inflated month x cluster variance of `d`
+   (`core.variance.one_sided_p_from_edge`). A z-test at the baseline's SE
+   runs about 13% liberal when `p > b`, so it is not used here.
    Suppression stays `n_eff < min_n_eff`. A cell with no variance (every
    fire hit, or every fire missed) suppresses with that reason.
 5. **Provenance on the row**: `variance_method = 'cgm_month_cluster'`,
@@ -11230,11 +11234,13 @@ group sums and an intersection, which a reader can rebuild.
 | validate suppressed | 64 | 5 (1 at 3%: `bear_close_above_upper` short 10-20, 36 fires) |
 | validate survivors at q < 0.05 | 0 (family empty) | **0** |
 | train suppressed | 40 | 1 (10% target, every fire missed) |
-| train survivors at q < 0.05 | 0 | 8 |
+| train survivors at q < 0.05 | 0 | 6 |
 
-The eight train survivors are long: `bb_lower_touch` 0-10 at 3%, and in the
-10-20 drawdown bucket `bb_lower_touch` (3%, 5%), `stoch_oversold` (2%, 3%)
-and `confluence_low` (2%, 3%, 5%). None survives on validate. Kill
+The six train survivors are long: `bb_lower_touch` 0-10 at 3% (q 0.034),
+and in the 10-20 drawdown bucket `bb_lower_touch` at 5% (0.030),
+`stoch_oversold` at 2% and 3% (0.009 each) and `confluence_low` at 2% and
+3% (0.010, 0.009). They match the month-block count of the read-only
+re-run (RESULTS 2026-11-18). None survives on validate. Kill
 criterion 1 stays fired, now on intervals with power. The 10-20 longs are
 the one thread with the same sign in both splits.
 
