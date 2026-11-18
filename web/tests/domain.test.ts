@@ -29,7 +29,10 @@ const VIEWS = readFileSync(
 
 /** `v_screen_live`'s WHERE clause, from the DDL that creates it. */
 function liveWhere(): string {
-  const start = VIEWS.indexOf('V_SCREEN_LIVE_DDL = f"""');
+  // A plain or an f-string: the constant was an f-string until 2026-11-18,
+  // when it was synced word for word to migration e4b7a2c9d160's view.
+  const m = /V_SCREEN_LIVE_DDL = f?"""/.exec(VIEWS);
+  const start = m ? m.index : -1;
   expect(start, "V_SCREEN_LIVE_DDL not found in views.py").toBeGreaterThan(-1);
   const body = VIEWS.slice(start, VIEWS.indexOf('"""', start + 30));
   const where = body.lastIndexOf("WHERE");
