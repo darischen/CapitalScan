@@ -765,7 +765,13 @@ correct and all 52 doc references are right. **Verify a tooling finding
 against the tool itself before believing it**, which is the same lesson as
 `verify-with-a-different-instrument`.
 
-### ADR 176's ranking gate was built and never wired to anything
+### ~~ADR 176's ranking gate was built and never wired to anything~~ -- ANSWERED 2026-09-25: dormant by decision
+
+**Closed 2026-11-18.** The gate stays unwired because the forward log refutes
+its ranking claim (ADR 176 amendment, below). `core/breadth.py`'s module
+docstring now says so first, so the next reader of that file does not take
+the gate for pending work. The breadth series keeps running nightly as a
+model input (ADR 204). Do not wire the gate without a new measurement.
 
 **Found 2026-09-24 while scoping item 3b, and the staleness is the symptom
 rather than the defect.**
@@ -788,7 +794,8 @@ since 2026-09-01.
 Six seconds for the full 5,333-session history against a ~55 minute
 nightly, so the cost does not depend on the gate ever being displayed. The
 backfill run that day took the column current (latest 0.571, gate open).
-**The scheduling half is done; the wiring half below is not.**
+**The scheduling half is done. The wiring half is not, on purpose (see
+ANSWERED below).**
 
 **Why nobody noticed, which is the part worth keeping.** `ranking_gate_open`
 is called from exactly one place: `jobs/breadth.py`, to print a line in that

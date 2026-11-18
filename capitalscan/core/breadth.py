@@ -1,5 +1,18 @@
 """The ranking gate: when `p_touch` may be used to choose between names.
 
+**Dormant by decision, not by oversight (ADR 176 as amended 2026-09-25).**
+The out-of-sample test this gate was waiting for refutes it: on 9,656
+resolved forward-log predictions, AUC is **0.6381 above the floor against
+0.6108 below**, the opposite of the validate finding below. What 0.68
+breadth really splits is the base rate (0.5587 / 0.4042), so calibration,
+not ranking. Wiring this would print "Ranking unreliable" on days when
+ranking is measurably fine. So nothing outside `jobs/breadth.py`'s own
+report calls `ranking_gate_open`, and nothing should until a new
+measurement says otherwise. `cscan breadth` still runs in every nightly
+because the breadth series is a model input (ADR 204), not for this gate.
+
+The original reasoning, kept because it is what the amendment answers:
+
 ADR 176. `p_touch` is calibrated in every regime measured -- bias +0.000 --
 and its ability to *rank* is not. Universe breadth separates the two:
 
