@@ -53,7 +53,7 @@ export function KillBanner({ cells }: { cells: Cell[] }) {
 /* --- cell grid ----------------------------------------------------------- */
 
 /**
- * The hit rate with its Wilson interval, and the baseline it is measured
+ * The hit rate with its robust interval (ADR 209), and the baseline it is measured
  * against.
  *
  * **The interval belongs to `p_hit`, not to `edge`** — `cell_stats.py`
