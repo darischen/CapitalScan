@@ -9206,3 +9206,73 @@ supports.
   kill criterion. Its numbers came from these intervals.
 - ADR 098 (Pinned) defines `k_bar` as `mean(cofire_count)`. Correcting its
   scale, or replacing it as ADR 166 proposes, amends a Pinned ADR.
+
+## 2026-11-18 — Corrected for dependence, nothing survives on validate, and month blocks are the right estimator
+
+Two read-only runs on the workstation copy (bars to 2026-11-17), live
+generation `f183b0f5209a4677`, ADR 102's 16 cells x 4 targets, `in_trade`,
+`next_open`, train and validate only. Scripts and CSVs:
+`scripts/hist/neff-correction-test-2026-11-18/`. Owner chose option C
+first, then the estimator comparison, then A (ADR 209).
+
+### The correction re-run (`correction_test.py`)
+
+One-sided tests of `p_hit > baseline_empirical` on every fire,
+Benjamini-Hochberg at 0.05 across the 63 cell-targets with a robust `n_eff`
+of at least 30 (one 10% cell has no variance).
+
+| test | train survivors | validate survivors |
+|---|---|---|
+| shipped (ADR 098, heads) | 0 (min q 0.634, family 24) | 0 (family 0: all suppressed) |
+| level, date x cluster | 17 | 4 |
+| edge, date x cluster | 14 | 3 |
+| edge, month x cluster | 6 | 0 |
+| edge, quarter x cluster | 5 | 0 |
+| moving-block bootstrap, 10 / 21 / 63 days | 4 / 4 / 5 | 0 / 0 / 0 |
+
+Survivors fall from 17 to 5 once the time block widens past one day, so
+dependence crosses dates and ADR 166's date block is too optimistic. The
+train survivors are longs, five of six in the 10-20 drawdown bucket. Five
+of the six keep a positive edge on validate. Only `bb_lower_touch` 10-20 at
+5% comes near (uncorrected p 0.010 quarter, 0.015 bootstrap), and the sixth,
+`bb_lower_touch` 0-10 at 3%, reverses (validate edge -3.9 points).
+
+### Which estimator is right (`placebo_estimators.py`)
+
+A placebo with a known answer. Each cell's real events move together by one
+random number of trading days (circular inside 2010-01-04 to 2023-12-15),
+keeping ticker, cluster and every spacing. The outcome at the new date is
+`1[dir * fwd_5d >= target]` minus that ticker-year's rate over the same
+days, so the true edge is zero and the dependence is the real one. 1,000
+shifts per cell-target, 127,787 draws. The SD of the placebo edges is the
+true sampling error.
+
+| estimator | train SE/SD | train false rejections (5% two-sided) | validate SE/SD | validate false rejections | real survivors train / validate |
+|---|---|---|---|---|---|
+| iid | 0.47 | 36% | 0.39 | 40% | 25 / 23 |
+| shipped (ADR 098) | 5.42 | 0% | 5.44 | 0% | 0 / 0 |
+| CGM date x cluster | 0.79 | 11.5% | 0.65 | 17% | 14 / 2 |
+| CGM month x cluster | 1.04 | 4.7% | 0.85 | 10.5% | 6 / 0 |
+| CGM quarter x cluster | 1.03 | 4.7% | 0.80 | 12.8% | 5 / 0 |
+| Driscoll-Kraay lag 5 | 0.99 | 5.4% | 0.84 | 10.5% | 6 / 0 |
+| Driscoll-Kraay lag 10 / 21 / 63 | 1.03 / 1.05 / 1.04 | about 5% | 0.82-0.88 | 10-11% | 5-6 / 0 |
+
+- The shipped interval is 5.4x the true error and never rejected a true
+  null. It has no power, so ADR 112's "zero survive" carried no
+  information until now.
+- Month blocks and Driscoll-Kraay lag 5 tie on train. Month blocks win on
+  explicability (two group sums and an intersection).
+- On validate every estimator runs about 15% narrow. Two years hold about
+  24 independent months, and no in-sample estimator sees regime-to-regime
+  variation. A t critical value with 23 degrees of freedom adds only 1.06x;
+  the placebo factor (about 1.18) closes it.
+- Mean z is slightly negative (-0.10 train): at low targets a higher hit
+  rate also widens the SE. Two-sided rates are right; one-sided tests at
+  10% run conservative.
+- The placebo dates are random days, not the stress days signals fire on,
+  so it calibrates the estimator against the event structure, not against
+  the volatility of the real dates.
+
+**Reading.** Under an estimator the placebo calibrates, ADR 112's verdict
+holds on validate: zero cells survive correction. The 10-20 drawdown longs
+are the one thread with consistent sign across splits.
