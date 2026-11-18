@@ -13,6 +13,8 @@ fine-grained one carries its coverage limitation with it.
 
 from __future__ import annotations
 
+from typing import TypeVar
+
 import numpy as np
 import pandas as pd
 
@@ -55,24 +57,40 @@ def forward_returns(close: pd.Series, horizons: list[int]) -> pd.DataFrame:
     return pd.DataFrame(out, index=close.index)
 
 
+_Excursion = TypeVar("_Excursion", pd.Series, np.ndarray)
+
+
+def _excursions(
+    entry_price: float, side: Side, high: _Excursion, low: _Excursion
+) -> tuple[_Excursion, _Excursion]:
+    """The one implementation of the excursion formula (invariant 2).
+
+    Generic over a pandas Series and a numpy array because the arithmetic is
+    the same elementwise float64 operation either way; pandas hands a Series
+    this size straight to numpy. `_favorable_adverse_series` feeds it frame
+    columns, `mfe_mae_arrays` feeds it the arrays `core.exits` already holds.
+    """
+    entry = float(entry_price)
+    if side is Side.LONG:
+        favorable = (high - entry) / entry
+        adverse = (low - entry) / entry
+    else:
+        favorable = (entry - low) / entry
+        adverse = (entry - high) / entry
+    return favorable, adverse
+
+
 def _favorable_adverse_series(
     entry_price: float, side: Side, bars: pd.DataFrame
 ) -> tuple[pd.Series, pd.Series]:
     """Vectorized, direction-neutral per-bar excursion from `entry_price`.
 
-    The one implementation of the excursion formula (invariant 2). `mfe_mae`
-    reduces this to a max/min over the window it's given; `path_for_event`
-    (Session 10) uses it directly, one value per forward day — neither
-    writes a second `(high - entry) / entry`-shaped formula of its own.
+    `mfe_mae` reduces this to a max/min over the window it's given;
+    `path_for_event` (Session 10) uses it directly, one value per forward
+    day. Both go through `_excursions`, so neither writes a second
+    `(high - entry) / entry`-shaped formula of its own.
     """
-    entry = float(entry_price)
-    if side is Side.LONG:
-        favorable = (bars["high"] - entry) / entry
-        adverse = (bars["low"] - entry) / entry
-    else:
-        favorable = (entry - bars["low"]) / entry
-        adverse = (entry - bars["high"]) / entry
-    return favorable, adverse
+    return _excursions(entry_price, side, bars["high"], bars["low"])
 
 
 def mfe_mae(entry_price: float, side: Side, fwd_bars: pd.DataFrame) -> tuple[float, float, int]:
@@ -93,6 +111,24 @@ def mfe_mae(entry_price: float, side: Side, fwd_bars: pd.DataFrame) -> tuple[flo
     mae = float(adverse.min())
     time_to_mfe = int(np.argmax(favorable.to_numpy())) + 1
     return mfe, mae, time_to_mfe
+
+
+def mfe_mae_arrays(
+    entry_price: float, side: Side, high: np.ndarray, low: np.ndarray
+) -> tuple[float, float, int]:
+    """`mfe_mae` over float64 `high`/`low` arrays holding **no NaN**.
+
+    Returns exactly what `mfe_mae` returns on a frame of those two columns,
+    bit for bit, without building the frame slice or four Series. The
+    precondition is what makes that true: `Series.max()` skips NaN and
+    `ndarray.max()` propagates it, so with NaN present the two disagree.
+    Callers holding NaN or a non-float64 column call `mfe_mae` instead;
+    invariant 4 keeps NaN bars out of `core/`, so that is the rare path.
+    """
+    if len(high) == 0:
+        raise ValueError("mfe_mae requires at least one forward bar")
+    favorable, adverse = _excursions(entry_price, side, high, low)
+    return float(favorable.max()), float(adverse.min()), int(np.argmax(favorable)) + 1
 
 
 def entry_offset_for(entry_kind: EntryKind) -> int:

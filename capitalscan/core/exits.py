@@ -4,7 +4,7 @@ The most error-prone module in the system, which is why it is separated from
 `returns.py` and carries its own test suite plus the property tests.
 
 Evaluation order is pinned in DESIGN §5.5 and implemented once, in
-`_exit_on_bar`, exactly in that order. Four details decide correctness:
+`_exit_on_values`, exactly in that order. Four details decide correctness:
 
 1. **Gap checks run first.** An open past the level means the fill happened
    at the open, not at the level. Booking a 3% loss on a stop that gapped 8%
@@ -27,16 +27,30 @@ sits below entry, the stop above, and the far band a long exits into
 (`bb_upper`) becomes the near band a short exits into (`bb_lower`). The
 reason code stays `UPPER_BAND` on both sides — it names the far-band exit,
 not a direction.
+
+**`resolve_exit` reads its window as columns, once** (2026-11-18). It built
+three pandas Series per forward bar until then, plus three frame slices per
+call, and that row construction was most of its cost. The bar-by-bar loop,
+the DESIGN §5.5 order and the first-exit `break` are unchanged, and
+`tests/property/test_resolve_exit_equivalence.py` holds the row-based
+version frozen and asserts identical output.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
+import numpy as np
 import pandas as pd
 
 from capitalscan.core.config import ExitParams
-from capitalscan.core.returns import mfe_mae
+from capitalscan.core.returns import mfe_mae, mfe_mae_arrays
 from capitalscan.core.signals import _breach, _isnan
 from capitalscan.core.types import Bound, ExitReason, ExitResult, Side
+
+#: A row read by column name: a pandas Series or a plain mapping.
+_Row = pd.Series | Mapping[str, Any]
 
 
 def stop_level(entry_price: float, side: Side, atr_at_entry: float, ep: ExitParams) -> float:
@@ -88,7 +102,7 @@ def _hit(price: float, level: float, side: Side, adverse: bool) -> bool:
 
 
 def _favorable_exit(
-    bar: pd.Series, level: float, side: Side, reason: ExitReason
+    open_: float, high: float, low: float, level: float, side: Side, reason: ExitReason
 ) -> tuple[float, ExitReason] | None:
     """A target or band exit on this bar, gap-adjusted, or None.
 
@@ -97,19 +111,22 @@ def _favorable_exit(
     """
     if _isnan(level):
         return None
-    open_ = float(bar["open"])
     if _hit(open_, level, side, adverse=False):
         return open_, reason
-    extreme = float(bar["high"]) if side is Side.LONG else float(bar["low"])
+    extreme = high if side is Side.LONG else low
     if _hit(extreme, level, side, adverse=False):
         return float(level), reason
     return None
 
 
-def _exit_on_bar(
-    bar: pd.Series,
-    prior_ind: pd.Series | None,
-    own_ind: pd.Series,
+def _exit_on_values(
+    open_: float,
+    high: float,
+    low: float,
+    close: Any,
+    mid: Any,
+    far: Any,
+    k: Any,
     side: Side,
     stop: float,
     target: float,
@@ -118,13 +135,13 @@ def _exit_on_bar(
     """Resolve one forward bar, in the pinned DESIGN §5.5 order.
 
     Returns `(exit_price, reason, ambiguous)` or None if nothing fired.
-    `prior_ind` is bar i-1's indicator row and supplies the band levels;
-    `own_ind` is bar i's and supplies %K, which is close-based.
+    `mid` and `far` are bar i-1's band cells (`bb_mid`, and `bb_upper` for
+    a long or `bb_lower` for a short); `k` is bar i's own %K cell from
+    `ep.exit_stoch_source`, which is close-based. Those three and `close`
+    arrive as raw cells and are converted only on the branch that reads
+    them, as the row-based version did. A cell that is `None`, or absent
+    from its frame, is NaN, and a NaN level never fires.
     """
-    open_ = float(bar["open"])
-    high = float(bar["high"])
-    low = float(bar["low"])
-
     # 1. GAP CHECK — stop first, then target.
     if not _isnan(stop) and _hit(open_, stop, side, adverse=True):
         return open_, ExitReason.STOP, False
@@ -140,21 +157,19 @@ def _exit_on_bar(
         ambiguous = _hit(favorable_extreme, target, side, adverse=False)
         return float(stop), ExitReason.STOP, ambiguous
 
-    hit = _favorable_exit(bar, target, side, ExitReason.TARGET)
+    hit = _favorable_exit(open_, high, low, target, side, ExitReason.TARGET)
     if hit is not None:
         return hit[0], hit[1], False
 
-    if prior_ind is not None:
-        if ep.exit_on_mid_band:
-            hit = _favorable_exit(bar, _level(prior_ind, "bb_mid"), side, ExitReason.MID_BAND)
-            if hit is not None:
-                return hit[0], hit[1], False
-        if ep.exit_on_upper_band:
-            # The far band: bb_upper for a long, bb_lower for a short.
-            field = "bb_upper" if side is Side.LONG else "bb_lower"
-            hit = _favorable_exit(bar, _level(prior_ind, field), side, ExitReason.UPPER_BAND)
-            if hit is not None:
-                return hit[0], hit[1], False
+    if ep.exit_on_mid_band:
+        hit = _favorable_exit(open_, high, low, _as_level(mid), side, ExitReason.MID_BAND)
+        if hit is not None:
+            return hit[0], hit[1], False
+    if ep.exit_on_upper_band:
+        # The far band: bb_upper for a long, bb_lower for a short.
+        hit = _favorable_exit(open_, high, low, _as_level(far), side, ExitReason.UPPER_BAND)
+        if hit is not None:
+            return hit[0], hit[1], False
 
     # 3. CLOSE-BASED — last, so it cannot preempt an intraday fill.
     if ep.exit_on_stoch_80:
@@ -164,30 +179,86 @@ def _exit_on_bar(
         # became a silent entry/exit disagreement the moment the entry
         # flipped to `k_fast`. Defaults to `k_full`, so naming it changed no
         # measured exit.
-        k = _level(own_ind, ep.exit_stoch_source)
-        if not _isnan(k):
+        k_level = _as_level(k)
+        if not _isnan(k_level):
             # ADR 092: both levels are exit policy, read from ExitParams,
             # never literals and never derived from each other. The short is
             # not a mirror of the long (ADR 016), so the two sweep
             # independently.
             if side is Side.LONG:
-                extreme = k >= ep.exit_stoch_threshold
+                extreme = k_level >= ep.exit_stoch_threshold
             else:
-                extreme = k <= ep.exit_stoch_threshold_short
+                extreme = k_level <= ep.exit_stoch_threshold_short
             if extreme:
-                return float(bar["close"]), ExitReason.STOCH_80, False
+                return float(close), ExitReason.STOCH_80, False
 
     return None
 
 
-def _level(row: pd.Series | None, field: str) -> float:
+def _far_band(side: Side) -> str:
+    """The band a position exits into: bb_upper for a long, bb_lower for a short."""
+    return "bb_upper" if side is Side.LONG else "bb_lower"
+
+
+def _exit_on_bar(
+    bar: _Row,
+    prior_ind: _Row | None,
+    own_ind: _Row,
+    side: Side,
+    stop: float,
+    target: float,
+    ep: ExitParams,
+) -> tuple[float, ExitReason, bool] | None:
+    """`_exit_on_values` for one bar given as rows (a Series or a dict).
+
+    `resolve_exit` reads its window as columns and calls `_exit_on_values`
+    directly. This row-shaped entry point stays for the tests that drive a
+    single bar. `prior_ind` is bar i-1's indicator row and supplies the band
+    levels; `own_ind` is bar i's and supplies %K.
+    """
+    return _exit_on_values(
+        float(bar["open"]),
+        float(bar["high"]),
+        float(bar["low"]),
+        bar["close"],
+        _cell(prior_ind, "bb_mid"),
+        _cell(prior_ind, _far_band(side)),
+        _cell(own_ind, ep.exit_stoch_source),
+        side,
+        stop,
+        target,
+        ep,
+    )
+
+
+def _cell(row: _Row | None, field: str) -> Any:
+    """`row[field]` unconverted, or None when there is no row or no field."""
     if row is None:
-        return float("nan")
+        return None
     try:
-        value = row[field]
+        return row[field]
     except KeyError:
-        return float("nan")
+        return None
+
+
+def _as_level(value: Any) -> float:
     return float("nan") if value is None else float(value)
+
+
+def _level(row: _Row | None, field: str) -> float:
+    return _as_level(_cell(row, field))
+
+
+def _column(frame: pd.DataFrame, field: str, n: int) -> list[Any]:
+    """The first `n` cells of `frame[field]` as Python objects.
+
+    A missing column reads as `None` in every cell, which `_as_level` turns
+    into NaN: the same answer a row lookup gave through its `KeyError`.
+    """
+    if field not in frame.columns:
+        return [None] * n
+    cells: list[Any] = frame[field].to_numpy()[:n].tolist()
+    return cells
 
 
 def resolve_exit(
@@ -198,7 +269,7 @@ def resolve_exit(
     fwd_ind: pd.DataFrame,
     atr_at_entry: float,
     ep: ExitParams,
-    ind_at_entry: pd.Series | None = None,
+    ind_at_entry: _Row | None = None,
 ) -> ExitResult:
     """Resolve a position's exit over its forward window.
 
@@ -216,23 +287,59 @@ def resolve_exit(
     if len(fwd_bars) == 0:
         raise ValueError("resolve_exit requires at least one forward bar")
 
-    window = fwd_bars.iloc[: ep.max_hold_days]
-    ind_window = fwd_ind.iloc[: ep.max_hold_days]
+    # Each column is read once. A list slice `[:horizon]` takes exactly the
+    # rows `.iloc[:horizon]` took, for any int, so `n` and `n_ind` are the
+    # lengths the old `window` and `ind_window` frames had.
+    horizon = ep.max_hold_days
+    n = len(range(len(fwd_bars))[:horizon])
+    n_ind = len(range(len(fwd_ind))[:horizon])
+    high_col = fwd_bars["high"].to_numpy()[:horizon]
+    low_col = fwd_bars["low"].to_numpy()[:horizon]
+    highs: list[Any] = high_col.tolist()
+    lows: list[Any] = low_col.tolist()
+    opens: list[Any] = fwd_bars["open"].to_numpy()[:horizon].tolist()
+    closes: list[Any] = fwd_bars["close"].to_numpy()[:horizon].tolist()
+    # Only the indicator columns `ep` turns on. Cell i-1 of `mids` and
+    # `fars` is bar i's band level; cell i of `ks` is bar i's own %K.
+    unused: list[Any] = [None] * n_ind
+    far_field = _far_band(side)
+    mids = _column(fwd_ind, "bb_mid", n_ind) if ep.exit_on_mid_band else unused
+    fars = _column(fwd_ind, far_field, n_ind) if ep.exit_on_upper_band else unused
+    ks = _column(fwd_ind, ep.exit_stoch_source, n_ind) if ep.exit_on_stoch_80 else unused
 
     stop = stop_level(entry_price, side, atr_at_entry, ep)
     target = target_level(entry_price, side, ep)
 
-    exit_idx = len(window) - 1
-    exit_price = float(window.iloc[-1]["close"])
+    exit_idx = n - 1
+    exit_price = float(closes[-1])
     # A window shorter than the horizon ran out of data, not time. Filled
     # the same way; labelled apart so a count of timeouts means five bars.
-    reason = ExitReason.TIMEOUT if len(window) >= ep.max_hold_days else ExitReason.UNFINISHED
+    reason = ExitReason.TIMEOUT if n >= horizon else ExitReason.UNFINISHED
     ambiguous = False
 
-    for i in range(len(window)):
-        bar = window.iloc[i]
-        prior_ind = ind_window.iloc[i - 1] if i > 0 else ind_at_entry
-        outcome = _exit_on_bar(bar, prior_ind, ind_window.iloc[i], side, stop, target, ep)
+    for i in range(n):
+        if i >= n_ind:
+            # The row version raised here, from `ind_window.iloc[i]`, and only
+            # once the loop reached a bar with no indicator row.
+            raise IndexError("single positional indexer is out-of-bounds")
+        if i > 0:
+            mid, far = mids[i - 1], fars[i - 1]
+        else:
+            mid = _cell(ind_at_entry, "bb_mid")
+            far = _cell(ind_at_entry, far_field)
+        outcome = _exit_on_values(
+            float(opens[i]),
+            float(highs[i]),
+            float(lows[i]),
+            closes[i],
+            mid,
+            far,
+            ks[i],
+            side,
+            stop,
+            target,
+            ep,
+        )
         if outcome is not None:
             exit_price, reason, ambiguous = outcome
             exit_idx = i
@@ -243,12 +350,23 @@ def resolve_exit(
 
     # Path metrics run over [t+1, exit_idx] (DESIGN §5.6). Reachability spans
     # the full window regardless of exit timing and belongs to the backtest
-    # engine, not here.
-    mfe, mae, time_to_mfe = mfe_mae(entry_price, side, window.iloc[: exit_idx + 1])
+    # engine, not here. The array path is exact only for float64 without NaN
+    # (`mfe_mae_arrays`); anything else takes the frame path it always took.
+    held_high = high_col[: exit_idx + 1]
+    held_low = low_col[: exit_idx + 1]
+    if (
+        held_high.dtype == np.float64
+        and held_low.dtype == np.float64
+        and not np.isnan(held_high).any()
+        and not np.isnan(held_low).any()
+    ):
+        mfe, mae, time_to_mfe = mfe_mae_arrays(entry_price, side, held_high, held_low)
+    else:
+        mfe, mae, time_to_mfe = mfe_mae(entry_price, side, fwd_bars.iloc[: exit_idx + 1])
 
     return ExitResult(
         exit_idx=exit_idx,
-        exit_date=window.index[exit_idx].date(),
+        exit_date=fwd_bars.index[exit_idx].date(),
         exit_price=exit_price,
         reason=reason,
         holding_days=exit_idx + 1,

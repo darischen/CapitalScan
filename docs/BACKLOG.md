@@ -1590,7 +1590,54 @@ evaluates a new quarter's universe" under Open.
 
 
 ~~**`core.exits.resolve_exit` builds three pandas Series per forward bar**~~
-— **tried 2026-08-29, made it slower, reverted.**
+— **DONE 2026-11-18 (`perf/resolve-exit-arrays`): 4.05-4.28x per call,
+output identical.** The 2026-08-29 attempt below made it slower and was reverted.
+
+**Profiled first this time**, cProfile over 4,000 calls on frames shaped the
+way `research.backtest` passes them (`ts` kept as a column, a `ticker`
+string, so every row is an object Series). Of the call's time:
+
+| where | share |
+|---|---:|
+| `.iloc`: three Series per bar plus three frame slices per call | 59% |
+| `mfe_mae`: a frame slice and four Series operations | 24% |
+| `_exit_on_bar`'s own decisions, `_breach` included | 12% |
+
+So the rows were the cost, and `mfe_mae` was the second hypothesis worth
+acting on. `_exit_on_bar`'s float conversions were not.
+
+**What changed.** `resolve_exit` reads each column it needs once, as a list,
+and passes scalars to `_exit_on_values`, which holds the DESIGN §5.5 order
+unchanged. The loop and its first-exit `break` are untouched. Only the
+indicator columns `ep` turns on are read, and every cell converts only on
+the branch that reads it, as before. `mfe_mae_arrays` reduces the two numpy
+arrays already in hand through the same `_excursions` formula `mfe_mae`
+uses. It runs only for float64 without NaN, because `Series.max` skips NaN
+and `ndarray.max` does not; anything else takes the old frame path.
+`_exit_on_bar` stays as a row-shaped wrapper for the unit tests.
+
+**Measured** with `scripts/bench_resolve_exit.py --events 4000`, best of 5
+on the workstation, mean holding 2.98 bars, two runs: **5.514s to 1.289s
+(4.28x) and 5.457s to 1.348s (4.05x), ~1,370 to ~330 us per call.** The two run in one process on the same
+inputs, and the script refuses to time them unless their results match.
+
+**Proven identical** by `tests/property/test_resolve_exit_equivalence.py`,
+which freezes the 65f3b8d implementation and compares every `ExitResult`
+field exactly (type, value, sign of zero, NaN against NaN only, and the
+exception type where the old code raised). Hypothesis drives prices onto
+and a sub-tick either side of the stop and target, gapped opens, both
+sides, every reason, NaN and `None` cells, missing columns, all three shapes
+of `ind_at_entry`, and an indicator frame shorter than the bars. It passed
+10,000 cases at `full`. Six deliberate mutations of the new code were run
+against it; it caught five, and the sixth (removing the explicit
+`IndexError`) is equivalent, since the list access raises the same type.
+
+**End to end is an estimate, not a measurement.** The saving is ~1.06 ms of
+CPU per call on the workstation, so ~18 CPU-minutes per million calls and
+~2.2 wall-minutes per million at 8 workers; multiply by ~3.5 for `wivie`.
+If the 2026-08-28 figure of 7,428 entries per ticker still holds, that is
+~7.8s per ticker. Amdahl still bounds it: the backtest's serial tail and
+the harness do not move.
 
 The reasoning was that `path_metrics` had the same pattern and vectorising it
 paid, so replacing `.iloc[i]` with `to_dict("records")` should too. Measured
@@ -1618,6 +1665,10 @@ order, which is worth having whether or not anyone optimises here again.
 **If revisited**, profile inside `resolve_exit` first to find where the 18.8s
 actually goes -- `mfe_mae`, the slicing in `resolve_exit_for_entry`, and
 `_exit_on_bar`'s float conversions are all untested hypotheses.
+
+*(Answered 2026-11-18, above: the rows and `mfe_mae`, not the float
+conversions. The slicing in `resolve_exit_for_entry` sits outside
+`resolve_exit`, the benchmark pre-slices, and it remains unmeasured.)*
 
 Superseded text follows.
 
