@@ -1053,8 +1053,10 @@ the cutover, find every writer of it before trusting an ordering.*
 
 `serving_config` is now the **last** table in `_tables()`, so the pin is
 the final write of a sync and the old generation serves until the new one
-is completely present. `run_sync` never deletes, which is what makes the
-old rows still there to serve.
+is completely present. `run_sync` never deletes another generation's
+rows, which is what makes the old rows still there to serve. (Its prune
+pass, since 2026-11-18, deletes only within the hash being synced, and
+runs before the pin.)
 
 Two tests pin it, in `test_sync.py`:
 
@@ -2075,6 +2077,21 @@ and ran `cscan sync --incremental` under `flock` on
 count, newest date and `cofire_count` sum. `touch` differed only by the
 352 rows serving alone holds (BACKLOG, "Serving holds rows research does
 not").
+
+## `cscan sync` prunes what research deleted (since 2026-11-18)
+
+Every sync, full or `--incremental`, now ends with a prune pass before the
+`serving_config` write: `sync.prune_serving` deletes from serving the daily
+`bars` and `indicators` at a key research holds a `bar_rejects` reject for
+and no row of its own, and the live generation's superseded slot `events`.
+Poller events and events a prediction, signal report, order intent or quote
+references stay. The output gains one line, `pruned from serving:
+indicators N, bars N, events N` (nightly prints it with a `nightly:`
+prefix), and the `runs` row's `notes` carries the same counts. Expect
+zeros on most nights. `cscan sync --no-prune` skips the pass. Tickers are
+never pruned: a `tickers` row on serving only, like ORKA's, is still a hand
+delete. Built from the 2026-11-17 comparison (BACKLOG, "Serving holds rows
+research does not").
 
 ## 2026Q3's universe was evaluated 33 days late (2026-11-03)
 

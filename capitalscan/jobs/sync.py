@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from string import Formatter
 from typing import Any
@@ -1201,8 +1201,9 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
         #
         # Ordered last, the old generation stays live until the new one is
         # completely present, and the pin is the single write that cuts
-        # over. `run_sync` never deletes, so the old rows are still there
-        # to serve throughout -- that is what makes this safe rather than
+        # over. `run_sync` never deletes another generation's rows (the
+        # prune is scoped to the hash being synced), so the old rows are
+        # still there to serve throughout -- that is what makes this safe rather than
         # merely later.
         #
         # Nothing upstream depends on it: every `sql` above runs against
@@ -1299,6 +1300,9 @@ def cutoff_date(sp: ServingParams | None = None, today: date | None = None) -> d
 @dataclass
 class SyncReport:
     rows: dict[str, int]
+    # Rows `prune_serving` deleted from serving, by table. Kept apart from
+    # `rows`, which counts writes, so `total` still means rows shipped.
+    pruned: dict[str, int] = field(default_factory=dict)
 
     @property
     def total(self) -> int:
@@ -1380,8 +1384,9 @@ def _backfill_tickers(source: Engine, target: Engine, cutoff: date) -> dict[str,
     test for "no rows" never fired, and the chart would have stayed three
     months long beside events back to 2003. Both stores are read from
     `cutoff`: the target can hold rows older than today's cutoff, and the
-    source can hold rows no sync ships. Serving never prunes, so once a
-    ticker has shipped, the two first dates agree and it drops off the list.
+    source can hold rows no sync ships. The prune deletes only bars research
+    no longer holds, so once a ticker has shipped, the two first dates
+    agree and it drops off the list.
 
     Every source ticker missing on the target is listed, including ones
     with no bars on the source. They match no rows, which costs nothing.
@@ -1779,6 +1784,197 @@ def pull_live_records(
     return pulled
 
 
+# ---------------------------------------------------------------------------
+# The prune pass: rows research deleted leave serving too (2026-11-18)
+# ---------------------------------------------------------------------------
+#
+# Research keys, read from the sync's own snapshot. `bar_rejects` is the
+# record a deletion leaves: a rejected daily bar is deleted from research
+# and logged there (`db_io` and `ingest` say so). The two `EXISTS` say
+# whether research still holds a bar or an indicator row at that key; a
+# later fetch that landed the bar cleanly keeps it.
+#
+# `:since` is NULL on a full pass, which reads every reject from `:cutoff`.
+PRUNE_REJECT_KEYS_SQL = (
+    "SELECT DISTINCT r.ticker, r.ts, "
+    "EXISTS (SELECT 1 FROM indicators i WHERE i.ticker = r.ticker AND i.ts = r.ts "
+    "AND i.interval = '1d') AS has_indicator "
+    "FROM bar_rejects r "
+    "WHERE r.severity = 'reject' AND r.ticker IS NOT NULL AND r.ts IS NOT NULL "
+    "AND r.ts >= :cutoff "
+    "AND (CAST(:since AS timestamptz) IS NULL OR r.created_at >= CAST(:since AS timestamptz)) "
+    "AND NOT EXISTS (SELECT 1 FROM bars b WHERE b.ticker = r.ticker AND b.ts = r.ts "
+    "AND b.interval = '1d')"
+)
+
+# Every live-generation row research holds in a debounce slot it rewrote
+# since the last sync. All types in the slot, not only the rewritten one:
+# research can hold two (a superseded row a prediction references stays),
+# and serving must keep whichever ones research keeps.
+PRUNE_SLOT_KEYS_SQL = (
+    "WITH touched AS ("
+    "  SELECT DISTINCT ticker, signal_date, side, entry_kind FROM events "
+    "  WHERE config_hash = :config_hash AND entry_kind IN ('next_open', 'touch') "
+    "  AND modified_at >= CAST(:since AS timestamptz) AND signal_date >= :cutoff"
+    ") "
+    "SELECT e.ticker, e.signal_date, e.side, e.entry_kind, e.signal_type "
+    "FROM events e JOIN touched t ON e.ticker = t.ticker "
+    "AND e.signal_date = t.signal_date AND e.side = t.side AND e.entry_kind = t.entry_kind "
+    "WHERE e.config_hash = :config_hash"
+)
+
+# Serving deletes, by key. Daily rows only: `bars_live` and hourly bars are
+# never named.
+PRUNE_CHART_SQL = {
+    table: (
+        f"DELETE FROM {table} x USING ("
+        "  SELECT * FROM unnest(CAST(:tickers AS text[]), CAST(:ts AS timestamptz[]))"
+        "  AS u(ticker, ts)"
+        ") k WHERE x.ticker = k.ticker AND x.ts = k.ts AND x.interval = '1d'"
+    )
+    for table in ("indicators", "bars")
+}
+
+# A serving event in a slot research rewrote, of a type research does not
+# hold in that slot. `DROP_SUPERSEDED_SLOT_SQL`'s rule, keyed on research's
+# slot contents rather than on one write. Two guards beyond it:
+#
+# - **Referenced rows stay** (`EVENT_REFERENCING_TABLES`, ADR 207's rule):
+#   the forward log, a poller report, an order intent, a live quote.
+# - **The poller's rows stay.** A `touch` event the poller wrote is a live
+#   detection research never held (DECISIONS Open items, owner 2026-11-17).
+#   Matched two ways: the `poll_` run_id prefix `_sweep_provisional_poll_rows`
+#   keys on, and the `runs.job` it was written under.
+PRUNE_EVENTS_SQL = (
+    "WITH k AS MATERIALIZED ("
+    "  SELECT * FROM unnest("
+    "    CAST(:tickers AS text[]), CAST(:dates AS date[]), CAST(:sides AS text[]),"
+    "    CAST(:kinds AS text[]), CAST(:types AS text[])"
+    "  ) AS u(ticker, signal_date, side, entry_kind, signal_type)"
+    "), s AS (SELECT DISTINCT ticker, signal_date, side, entry_kind FROM k) "
+    "DELETE FROM events e USING s "
+    "WHERE e.config_hash = :config_hash "
+    "AND e.ticker = s.ticker AND e.signal_date = s.signal_date "
+    "AND e.side = s.side AND e.entry_kind = s.entry_kind "
+    "AND NOT EXISTS (SELECT 1 FROM k WHERE k.ticker = e.ticker "
+    "AND k.signal_date = e.signal_date AND k.side = e.side "
+    "AND k.entry_kind = e.entry_kind AND k.signal_type = e.signal_type) "
+    "AND split_part(e.run_id, '_', 1) <> 'poll' "
+    "AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id = e.run_id AND r.job = 'poll') "
+    + "".join(
+        f"AND NOT EXISTS (SELECT 1 FROM {t} ref WHERE ref.event_id = e.id) "
+        for t in db_io.EVENT_REFERENCING_TABLES
+    )
+)
+
+PRUNE_KEYS = ("indicators", "bars", "events")
+
+
+def _rowcount(result: Any) -> int:
+    # `rowcount` is optional in DBAPI and absent on a stubbed cursor.
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
+def prune_serving(
+    snapshot: Any,
+    source: Engine,
+    target: Engine,
+    *,
+    config_hash: str,
+    cutoff: date,
+    incremental: bool,
+) -> dict[str, int]:
+    """Delete from serving the rows research deleted. Returns counts by table.
+
+    **Why.** `run_sync` upserts, and until this pass it never deleted, so
+    whatever research removed stayed on serving. Compared 2026-11-17: 13,197 daily bars on 56
+    tickers research had rejected, and 878 superseded slot `events` research
+    had dropped (`db_io.drop_superseded_slot_events`). Both were cleaned by
+    hand; this keeps them from coming back.
+
+    **Bounded to keys research names, never "what research lacks".**
+    Serving legitimately holds rows research does not: the poller's `touch`
+    events, the 15 pre-floor serving-born predictions, `bars_live`. A
+    whole-table anti-join would delete them. So every delete here is keyed
+    on something research read out of its own snapshot:
+
+    - `indicators` and `bars`: daily rows at a `(ticker, ts)` research holds
+      a `severity = 'reject'` row for and no row of its own. Incremental
+      reads rejects logged since the last `ok` sync, minus
+      `SYNC_MODIFIED_OVERLAP`; a full pass reads every reject from `cutoff`.
+      `bar_rejects` is small and has no hot path, so either is cheap.
+    - `events`: live-generation `next_open`/`touch` rows in a debounce slot
+      research rewrote since the last `ok` sync, of a `signal_type` research
+      does not hold in that slot. The slots come from the same `modified_at`
+      line the incremental `events` arm ships by, so the key set is never
+      larger than what the sync itself just read. With no prior `ok` sync
+      there is no line, and the events prune skips rather than reading the
+      whole generation. Referenced rows and poller rows stay
+      (`PRUNE_EVENTS_SQL`).
+
+    **`tickers` is deliberately not pruned.** A ticker research retires
+    stays in its `tickers` row (ADR 207: inactive, `delisted_on` set), so a
+    tickers row missing from research is a hand deletion that leaves no
+    record to key on, and the only way to find one is the whole-table
+    comparison ruled out above. The foreign keys from `bars`, `indicators`,
+    `universe`, `events`, `bars_live` and `fetch_ledger` are `NO ACTION`,
+    so a delete would fail the transaction for any ticker serving still has
+    rows for, and one with none (ORKA, 2026-11-17) is an inert row.
+
+    All deletes run in one serving transaction, so a failure leaves serving
+    as it was. Called before `serving_config` is written, which stays last.
+    """
+    since = _events_modified_since(source)
+    # A NULL line reads every reject: a full pass, or no prior `ok` sync.
+    reject_rows = snapshot.execute(
+        text(PRUNE_REJECT_KEYS_SQL),
+        {"cutoff": cutoff, "since": since if incremental else None},
+    ).fetchall()
+    keys = {
+        "bars": [(r[0], r[1]) for r in reject_rows],
+        "indicators": [(r[0], r[1]) for r in reject_rows if not r[2]],
+    }
+    slot_rows: list[Any] = []
+    if since is None:
+        logger.warning("sync prune: no prior ok sync, so no events window; events not pruned")
+    else:
+        slot_rows = snapshot.execute(
+            text(PRUNE_SLOT_KEYS_SQL),
+            {"config_hash": config_hash, "since": since, "cutoff": cutoff},
+        ).fetchall()
+
+    pruned = dict.fromkeys(PRUNE_KEYS, 0)
+    if not keys["bars"] and not slot_rows:
+        return pruned
+    with target.begin() as conn:
+        for table in ("indicators", "bars"):
+            if keys[table]:
+                pruned[table] = _rowcount(
+                    conn.execute(
+                        text(PRUNE_CHART_SQL[table]),
+                        {
+                            "tickers": [str(t) for t, _ in keys[table]],
+                            "ts": [ts for _, ts in keys[table]],
+                        },
+                    )
+                )
+        if slot_rows:
+            pruned["events"] = _rowcount(
+                conn.execute(
+                    text(PRUNE_EVENTS_SQL),
+                    {
+                        "config_hash": config_hash,
+                        "tickers": [str(r[0]) for r in slot_rows],
+                        "dates": [r[1] for r in slot_rows],
+                        "sides": [str(r[2]) for r in slot_rows],
+                        "kinds": [str(r[3]) for r in slot_rows],
+                        "types": [str(r[4]) for r in slot_rows],
+                    },
+                )
+            )
+    return pruned
+
+
 def _prepare_chunk(chunk: pd.DataFrame, target: Engine, table: SyncTable) -> pd.DataFrame:
     """Turn one chunk read from research into the frame `copy_upsert` writes.
 
@@ -1819,6 +2015,7 @@ def run_sync(
     today: date | None = None,
     config_hash: str | None = None,
     incremental: bool = False,
+    prune: bool = True,
 ) -> SyncReport:
     """Copy the serving subset from `source` to `target`.
 
@@ -1828,10 +2025,13 @@ def run_sync(
     and a public page showing no signals is indistinguishable from a day
     when nothing fired.
 
-    **Never deletes.** A row that leaves the subset — an event ageing past
-    the cutoff — stays in the serving store until someone prunes it
-    deliberately. That is the safe direction: the alternative is a bug in
-    the cutoff arithmetic silently emptying the served history.
+    **Deletes only what research deleted, by key.** A row that leaves the
+    subset — an event ageing past the cutoff — stays in the serving store.
+    That is the safe direction: the alternative is a bug in the cutoff
+    arithmetic silently emptying the served history. What research itself
+    deleted, a rejected bar or a superseded slot event, leaves serving
+    through `prune_serving`, keyed on records research holds for it.
+    `prune=False` (`cscan sync --no-prune`) skips it.
 
     **Applies `serving_id_floor` to `target` at both ends, not only the
     end.** `_reset_sequences(target, serving=True)` used to run once, after
@@ -1904,6 +2104,7 @@ def run_sync(
         )
 
         rows: dict[str, int] = {}
+        pruned: dict[str, int] = {}
 
         # **One snapshot for every table (2026-08-25).** Each `read_sql`
         # against the Engine used to open its own connection, so a sync
@@ -1951,6 +2152,19 @@ def run_sync(
             # plain cursor first.
             snapshot = snapshot.execution_options(stream_results=True)
             for table in _tables(cutoff, str(config_hash)):
+                # **The prune runs here, ahead of the pin.** Every table it
+                # deletes from has shipped by now, and `serving_config`
+                # stays the last write: the cutover is that one row.
+                if table.name == "serving_config" and prune:
+                    pruned = prune_serving(
+                        snapshot,
+                        source,
+                        target,
+                        config_hash=str(config_hash),
+                        cutoff=cutoff,
+                        incremental=incremental,
+                    )
+                    logger.info("sync prune: %s", pruned)
                 # pandas-stubs types `params` values as non-optional; a NULL
                 # bound is exactly how "no incremental floor" is expressed and
                 # psycopg binds it fine. The mismatch is the stub, not the call
@@ -2031,6 +2245,8 @@ def run_sync(
         # a pin failure discarded the count and recorded rows_written = 0
         # for a sync that had committed ~100,000 rows.
         report.rows_written = sum(rows.values())
+        if pruned:
+            report.notes = "pruned " + ", ".join(f"{k}={v}" for k, v in pruned.items())
 
         # The pin is a convenience and must not fail a sync that worked.
         # ADR 115 moved the serving views onto the `serving_config` table,
@@ -2057,7 +2273,7 @@ def run_sync(
                 "by hand if you want `psql` sessions to default to %s.",
                 config_hash,
             )
-    return SyncReport(rows=rows)
+    return SyncReport(rows=rows, pruned=pruned)
 
 
 def _pin_config_hash(target: Engine, config_hash: str) -> None:

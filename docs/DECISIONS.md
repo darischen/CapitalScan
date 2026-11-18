@@ -4430,6 +4430,8 @@ Three fits with 23% headroom, covers every chart range through 1y and most of 2y
 
 **Upserts, never truncates, never deletes.** A truncate-and-reload leaves the site empty for the duration, and an interrupted one leaves it empty until the next run — a public page showing no signals is indistinguishable from a day when nothing fired. A row ageing past the cutoff stays until someone prunes it deliberately, because the alternative is a bug in the cutoff arithmetic silently emptying the served history.
 
+**Amended 2026-11-18: "never deletes" now reads "never deletes by cutoff or by absence".** `sync.prune_serving` is the deliberate prune this paragraph leaves room for. It deletes only rows research itself deleted, by keys research records: a daily bar or indicator row at a `bar_rejects` reject research holds no row for, and a superseded slot event in the generation being synced (never a referenced or poller row). Nothing ageing past the cutoff and nothing merely absent from research is touched, so the reason above still holds. BACKLOG, "Serving holds rows research does not".
+
 **The table list is written down, not discovered.** It came from `pg_depend` on the serving views, but a table appearing in a view is not consent to publish it: `bar_rejects`, `runs` and `quotes_live` are local diagnostics. Adding a table is a deliberate edit, asserted by test.
 
 **`cscan sync --to-serving` is gone.** The stub carried that flag, implying a second destination that never existed — ADR 053 defines exactly one serving store. A flag whose only valid value is `true` is one that eventually gets passed `false`.
