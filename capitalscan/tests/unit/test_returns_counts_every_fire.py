@@ -93,16 +93,17 @@ class TestGroupingIsClosed:
 
 
 class TestItDoesNotTouchTheStatisticalPath:
-    def test_cell_stats_keeps_its_filter(self) -> None:
-        """The split is the decision (ADR 165). `cell_stats` answers "is
-        this cell distinguishable from its baseline", where the extra
-        observations are serially dependent by construction and dropping
-        the filter narrows every interval ~2x -- the direction that
-        manufactures significance.
+    def test_cell_stats_counts_every_fire_under_a_robust_variance(self) -> None:
+        """ADR 165 kept the head filter here because ADR 098's interval
+        treated serially dependent fires as independent. ADR 209 replaced
+        that interval with a month x cluster robust variance, which carries
+        the dependence itself, so `cell_stats` now counts every fire. The
+        filter may only go together with the estimator.
         """
         from capitalscan.research import cell_stats
 
-        assert "is_cluster_head" in inspect.getsource(cell_stats)
+        assert cell_stats.CELL_STATS_CLUSTER_HEADS_ONLY is False
+        assert "cluster_robust_variance" in inspect.getsource(cell_stats._cell_row)
 
     def test_benchmarks_keeps_its_filter(self) -> None:
         from capitalscan.research import benchmarks
