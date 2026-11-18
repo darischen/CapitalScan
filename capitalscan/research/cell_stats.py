@@ -796,7 +796,7 @@ def load_grid_events(
         # membership and started recording it, so the cell population is
         # only unchanged while this predicate is here. Without it every
         # measured cell silently widens by roughly 4.4x on the next
-        # `cscan cell-stats`, and nothing about the output would look
+        # `cscan stats cells`, and nothing about the output would look
         # wrong.
         "AND in_trade",
         "AND entry_kind = :entry_kind",

@@ -26,6 +26,10 @@ Three rules this module follows, all from the session spec:
   proves nothing about the implementation that ships. Until ADR 209 this
   module tested ADR 098's `k_bar` correction and a Wilson interval, which
   no longer build any stored row.
+  One deliberate departure: the null test does not apply `cell_stats`'s
+  `min_n_eff` floor. About 73% of synthetic cells fall below 30 and would
+  never publish, and keeping them makes the gate harsher, not easier: on
+  the cells that would publish the correct path's raw tail is 0%.
 - **Seeded and reproducible.** Two runs produce identical output. Every
   generator here takes its seed from the caller.
 - **Report the rate, not pass or fail.** A run at 4.9% and a run at 0.2% are

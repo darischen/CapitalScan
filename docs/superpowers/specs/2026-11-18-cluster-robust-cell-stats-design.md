@@ -122,7 +122,7 @@ suppress reasons today.
 
 1. Unit tests and the four CI gates.
 2. Migration on research and serving.
-3. `cscan cell-stats --split train` and `--split validate` on `wivie`,
+3. `cscan stats cells --config-hash f183b0f5209a4677 --split-key train` and `--split-key validate` on `wivie`,
    generation `f183b0f5209a4677`. Compare against the stored rows.
 4. `cscan sync`, then `cscan db sync-config`, then restart
    `capitalscan-web`. Count rendered rows on `/research` before and after.

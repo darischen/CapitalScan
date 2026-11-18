@@ -2942,7 +2942,7 @@ def stats_self_validate_cmd(
     )
     console.print(
         f"  rho_bar={null.rho_bar:.4f} k_bar={null.mean_k_bar:.2f} "
-        f"n={null.mean_n:.1f} n_eff={null.mean_n_eff:.1f} z_sd={null.z_sd:.3f} "
+        f"n={null.mean_n:.1f} n_eff={null.mean_n_eff:.1f} z_sd_iqr={null.z_sd:.3f} "
         f"upper_tail={null.upper_tail_rate:.2%} "
         f"min_p={null.min_p_value:.3g}"
     )
@@ -2962,7 +2962,7 @@ def stats_self_validate_cmd(
         caught = broken.rate > broken.threshold
         console.print(
             f"broken variant (SE on raw n): {broken.rate:.2%} at q < {broken.alpha} "
-            f"z_sd={broken.z_sd:.3f} -> "
+            f"z_sd_iqr={broken.z_sd:.3f} -> "
             + ("[green]caught[/green]" if caught else "[red]NOT CAUGHT[/red]")
         )
 

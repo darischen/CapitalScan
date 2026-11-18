@@ -76,7 +76,7 @@ class TestNullTest:
         assert 0.0 <= result.rate <= 1.0
         assert len(result.rate_by_replication) == REPLICATIONS
 
-    def test_correction_is_calibrated_or_conservative(self):
+    def test_correction_tail_is_controlled_and_body_near_calibrated(self):
         # ADR 209's test is one-sided, so calibration is the share of raw
         # p-values under alpha before any FDR correction: near alpha when
         # the month x cluster variance is the right size, well above it when

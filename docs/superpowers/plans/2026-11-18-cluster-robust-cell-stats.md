@@ -130,7 +130,7 @@ Row semantics in `_cell_row`:
   - `test_benchmarks_keep_heads`: `benchmarks` load still filters `is_cluster_head`.
 - [ ] **Step 2: Run** `uv run pytest capitalscan/tests/unit/test_cell_stats.py -v`. Expected: the new tests FAIL.
 - [ ] **Step 3: Implement** the changes above.
-- [ ] **Step 4: Verify on the workstation copy**, `--no-write`: `uv run cscan stats cells --config-hash f183b0f5209a4677 --split-key validate --no-write` and `uv run cscan stats cells --config-hash f183b0f5209a4677 --split-key train --no-write`. Expected: validate 0 suppressed at the 3% target, factor about 1.18 pooled; train factor about 1.0; survivors at q < 0.05: train 4-6, validate 0. Runtime under 10 minutes each.
+- [ ] **Step 4: Verify on the workstation copy**, `--no-write`: `uv run cscan stats cells --config-hash f183b0f5209a4677 --split-key validate --no-write` and `uv run cscan stats cells --config-hash f183b0f5209a4677 --split-key train --no-write`. Expected: validate 1 suppressed at the 3% target (`bear_close_above_upper` short 10-20, 36 fires), factor about 1.18 pooled; train factor about 1.0; survivors at q < 0.05: train 4-6, validate 0. Runtime under 10 minutes each.
 - [ ] **Step 5: Run** all four gates. **Commit** `feat(stats): cell_stats on month x cluster robust variance (ADR 209)`.
 
 ### Task 5: Web copy
