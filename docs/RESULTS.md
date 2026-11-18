@@ -9146,3 +9146,63 @@ newest publish before its `created_at`, and for those 1,286 Pi rows, the
 one before that. ADR 176's amendment counts "six different
 `model_version`s" for the rows it pooled, so the number of fits behind it
 is six or more. From 2026-11-04 each version ends in its fit time.
+
+## 2026-11-18 — ADR 166's validation diverges, and the shipped `n_eff` is the one that is wrong
+
+ADR 166 asked for this before any migration: cluster-robust intervals on
+every fire against the shipped cluster-head intervals. Agreement would
+retire the filter with evidence, and divergence would mean one of them is
+wrong. **They diverge by about 5x in width, and the shipped interval is the
+one off.** Read-only, on the workstation copy refreshed 2026-11-17 (bars to
+2026-11-17), live generation `f183b0f5209a4677`, ADR 102's 16 headline
+cells x 4 reach targets, `in_trade`, `next_open`, closed forward windows.
+Script and per-row CSVs: `scripts/hist/neff-validation-2026-11-18/`.
+
+- **Shipped**: `research.cell_stats` as `cscan cell-stats` runs it. Cluster
+  heads only, `n_eff = n / (1 + rho_bar (k_bar - 1))` with `k_bar =
+  mean(cofire_count)` (ADR 098), Wilson interval over `n_eff`.
+- **Robust**: every fire, the variance of `p_hit` clustered two ways
+  (Cameron-Gelbach-Miller) by a time block and by `cluster_id`, minus the
+  intersection. Wald interval; `n_eff` recovered as `p (1 - p) / V`.
+
+| time block | split | width robust / shipped (median, p10-p90) | `n_eff` robust / shipped (median) | shipped `p_hit` inside robust CI | suppressed, shipped -> robust |
+|---|---|---|---|---|---|
+| date | train | 0.124 (0.057-0.176) | 60.6x | 55/64 | 40 -> 0 |
+| date | validate | 0.135 (0.044-0.196) | 71.4x | 57/64 | 64 -> 0 |
+| week | train | 0.167 (0.069-0.247) | 42.1x | 59/64 | 40 -> 0 |
+| month | train | 0.172 (0.072-0.270) | 36.7x | 58/64 | 40 -> 0 |
+| quarter | train | 0.182 (0.074-0.305) | 34.7x | 58/64 | 40 -> 0 |
+| quarter | validate | 0.174 (0.058-0.287) | 49.8x | 59/64 | 64 -> 3 |
+
+All 128 interval pairs overlap. The rate barely moves with the population:
+`p_all - p_heads` has median +0.0003 on train and -0.0025 on validate. The
+time axis binds in 81-98% of cell-targets, and `cluster_id` hardly ever
+does. One cell-target per split had a negative two-way variance and fell
+back to the larger one-way term.
+
+**The cause is `k_bar`'s scale, not the cluster-head filter.** Long
+`bb_lower_touch`, 0-10, train: 6,440 heads get a shipped `n_eff` of 91.7, a
+design effect of 70. `rho_bar` is 0.35-0.47 by era, so that implies
+`k_bar` ~150, and the cell's mean `cofire_count` is in fact **169.5**.
+Within the cell, a cluster head shares its date with **3.93** others on
+average, and a fire of any kind with **7.37**. `cofire_count` counts every
+ticker in the generation firing that signal type that day: `finalize_cofire`
+groups all events of the config, every entry kind, `in_watch` and the
+cosmetic rows of ADR 178. Only the cell's own events enter the variance of
+the cell's mean, so `k_bar` overstates the relevant cluster size about 40x,
+and the shipped intervals are 5-8x wider than the dependence in the data
+supports.
+
+**Not yet tested, and the reason this is a decision and not a fix.**
+
+- Coarser blocks shrink the gap (60x at date, 35x at quarter) and do not
+  close it. Driscoll-Kraay or a block bootstrap over time would settle how
+  much cross-date dependence the 5-day windows leave. ADR 166 rejected the
+  bootstrap for the shipped interval, not as a check.
+- No p-value or q-value was recomputed here. Narrower intervals put ADR
+  112's "zero cells survive correction" back in question, and only a re-run
+  of `apply_benjamini_hochberg` on robust p-values against
+  `baseline_empirical` answers it. ADR 112 is Pinned and fired ADR 033's
+  kill criterion. Its numbers came from these intervals.
+- ADR 098 (Pinned) defines `k_bar` as `mean(cofire_count)`. Correcting its
+  scale, or replacing it as ADR 166 proposes, amends a Pinned ADR.

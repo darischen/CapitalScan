@@ -2119,7 +2119,20 @@ endpoints. Check their current docs rather than any recollection here --
 broker APIs move, and the Schwab API is itself the successor to TD
 Ameritrade's.
 
-### A serial `n_eff` — **scoped as ADR 166, deliberately not started**
+### A serial `n_eff` — **scoped as ADR 166; validated 2026-11-18, and it diverges**
+
+**Validation run 2026-11-18 (RESULTS).** The shipped intervals are 5-8x
+wider than a two-way cluster-robust variance supports, at every time block
+from a single date to a quarter, because `k_bar = mean(cofire_count)`
+counts every ticker in the generation firing that signal type that day
+(~170) where a cell's own events share a date with ~4-7. Shipped
+suppression: 40/64 train and 64/64 validate cell-targets; robust: 0-3.
+**Owner decision open in DECISIONS:** whether to adopt ADR 166 (a migration
+touching `cell_stats`, the handlers and serving views) and re-test ADR
+112's correction on the new intervals. The cheap prerequisite below was
+already done on 2026-09-02 (RESULTS, "Cluster size is real and almost
+entirely hindsight"); this entry kept calling it pending.
+
 
 **Ordering (user's decision, 2026-09-02): Phase 6 first, this after the
 move.** It changes what a stored `cell_stats` column means and
