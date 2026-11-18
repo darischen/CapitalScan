@@ -749,6 +749,9 @@ def _run_backtest_compute_chunked(
                 full_universe=False,
                 include_out_of_universe=cosmetic,
                 quiet=quiet,
+                # Safe here: this path's harness reads by `config_hash`
+                # (`_load_events_for_config`), never by `run_id`.
+                skip_unchanged=True,
             )
             report.rows_written = bt.rows_written
             if bt.failed_tickers:

@@ -1300,6 +1300,39 @@ and rendered on the screener. The coverage-decay figures it carried
 
 ### Operational, small
 
+**~~Unchanged `events` rows rewritten on every run~~ -- FIXED 2026-11-18.**
+On 2026-11-17 `wivie` held 21.8M events in 22 GB against 13 GB for the
+same rows freshly restored on the workstation, about 9 GB of dead tuples,
+and the Pi carried 3-4 GB the same way. `VACUUM` marks that space
+reusable without returning it, so it stayed. Five writers updated rows to
+the values they already held, and a rewritten row is a dead tuple whether
+or not it changed. Each now writes only a row whose values move.
+Measured on the refreshed workstation copy:
+
+- **`peak_labels`, both families, every nightly** (twice a day): 881,418
+  rows each, every run. Guarded with `IS DISTINCT FROM` over the value the
+  `SET` assigns, as `fwd_labels` already was: **0 rows**, 65 s against
+  158-206 s.
+- **The weekly's backtest write**: `ON CONFLICT DO UPDATE` on all ~10.9M
+  rows. `run_backtest(skip_unchanged=True)` compares every updatable
+  column but `run_id`, so three tickers' 17,116 recomputed rows updated
+  **0**, against 17,116. On only for the chunked compute path, whose
+  harness reads by `config_hash`. The single-call `cscan backtest` still
+  stamps every row, because its harness reads by `run_id`. A skipped row
+  keeps the `run_id` of the run that computed the same values.
+- **`finalize_cofire`**: all ~10.9M rows each weekly. Guarded: 380,182
+  counts had actually moved since the last weekly.
+- **`fill_event_sector_and_mcap` and `fill_event_derived_state`**:
+  rewrote a row with no source value back to NULL on every run, 952 rows
+  per three-ticker run. Both now compute first and write only a gained or
+  changed value. Under the skip they scope by ticker rather than
+  `run_id`, so a NULL on a skipped row is still retried. Checked by
+  blanking one AAPL row's `mcap_usd`, `bb_mid` and `close`: both fills
+  restored the exact values.
+
+Tests: `test_skip_unchanged_events.py`. The existing bloat needs `VACUUM
+FULL` once (done 2026-11-18).
+
 **~~`nightly` and `weekly` deadlock on `events` when they overlap~~ -- FIXED
 2026-11-17 (found the same day).** They take different locks (`nightly.lock` against the
 weekly's own), so the Saturday weekly's 12-hour backtest runs beside the

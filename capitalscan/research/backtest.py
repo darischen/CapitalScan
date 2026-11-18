@@ -204,6 +204,11 @@ _EVENT_COLUMNS = [
 # writable is the same precedent `_RUN_EVENTS_UPDATE_COLUMNS` already set for
 # `entry_date`/`entry_price`/`entry_gapped`, `dd_bucket`, `split_key`,
 # `vix_close`, and `spx_ret_1d`.
+#: Columns `run_backtest(skip_unchanged=True)` leaves out of its
+#: "has anything changed" comparison. Only `run_id`: it differs on every
+#: run by construction, so comparing it would make every row "changed".
+BACKTEST_SKIP_COMPARE: tuple[str, ...] = ("run_id",)
+
 _RUN_BACKTEST_UPDATE_COLUMNS = [
     "run_id",
     # ADR 149. Owned jointly with `run_events`, which is permitted because
@@ -814,6 +819,7 @@ def run_backtest(
     full_universe: bool = True,
     include_out_of_universe: bool = False,
     quiet: bool = False,
+    skip_unchanged: bool = False,
 ) -> BacktestReport:
     """DESIGN §5.1/§5.8: config in, `events` rows out. Dispatches one worker
     per ticker (`_backtest_one_ticker`), runs the cross-ticker
@@ -870,6 +876,20 @@ def run_backtest(
     finishes (same shape as `cscan indicators`), so a scheduled caller with
     no TTY -- `weekly` -- passes `quiet=True` for one JSON line per 100
     tickers; an interactive `cscan backtest` gets a live bar by default.
+
+    `skip_unchanged` (2026-11-18): leave an existing row alone when every
+    column this write would set, `run_id` aside, already holds the same
+    value. A full-universe weekly recomputes ~10.9M rows and almost all of
+    them come out identical, yet `ON CONFLICT DO UPDATE` rewrote each one,
+    so every weekly left millions of dead tuples: ~9 GB of `wivie`'s 22 GB
+    `events` on 2026-11-17. A skipped row keeps the `run_id` of the run
+    that computed those same values, which is still a true provenance
+    (invariant 6). **Off by default, because `_load_events_for_run` reads
+    a run's rows by `run_id`** for the harness of a single-call `cscan
+    backtest`. Only the chunked compute path, whose harness reads by
+    `config_hash`, turns it on. With it on, the sector/mcap and
+    derived-state fills scope by ticker rather than `run_id`, so a NULL on
+    a skipped row still gets retried.
     """
     engine = engine or db_io.get_engine()
     sorted_tickers = sorted(set(tickers))
@@ -990,6 +1010,9 @@ def run_backtest(
             events,
             ["config_hash", "ticker", "signal_date", "signal_type", "entry_kind"],
             update_columns=update_columns,
+            # Passed only when on, so the default call is byte-for-byte the
+            # one every existing caller and test fake already makes.
+            **({"skip_unchanged_ignoring": BACKTEST_SKIP_COMPARE} if skip_unchanged else {}),
         )
         # Same reconcile as `run_events`: a slot reclassified since the last
         # backtest keeps only this run's type (`db_io`'s helper says why).
@@ -998,8 +1021,17 @@ def run_backtest(
         # design: filling them per worker would carry a ticker lookup and a
         # point-in-time universe lateral into every process. Same shape as
         # `add_cofire_count` -- the cross-cutting part runs once, here.
-        db_io.fill_event_sector_and_mcap(engine, run_id)
-        db_io.fill_event_derived_state(engine, run_id)
+        if skip_unchanged:
+            chash = str(events["config_hash"].iloc[0])
+            db_io.fill_event_sector_and_mcap(
+                engine, run_id, config_hash=chash, tickers=sorted_tickers
+            )
+            db_io.fill_event_derived_state(
+                engine, run_id, config_hash=chash, tickers=sorted_tickers
+            )
+        else:
+            db_io.fill_event_sector_and_mcap(engine, run_id)
+            db_io.fill_event_derived_state(engine, run_id)
 
     return BacktestReport(
         run_id=run_id,
@@ -1041,7 +1073,8 @@ def finalize_cofire(engine: Engine, config_hash: str) -> int:
     compute phase can be interrupted, resumed, or run in pieces across a day
     without this pass caring how the rows got there.
 
-    Returns the number of rows written (`result.rowcount`).
+    Returns the number of rows written (`result.rowcount`): rows whose
+    count changed, since a row already holding the right count is skipped.
 
     **Correct only when the compute phase has finished for this config.**
     Running it early is not an error and produces no warning -- it computes
@@ -1058,7 +1091,12 @@ def finalize_cofire(engine: Engine, config_hash: str) -> int:
                 "  GROUP BY signal_date, signal_type"
                 ") AS sub "
                 "WHERE e.config_hash = :config_hash "
-                "AND e.signal_date = sub.signal_date AND e.signal_type = sub.signal_type"
+                "AND e.signal_date = sub.signal_date AND e.signal_type = sub.signal_type "
+                # Rewrite only a count that moved (2026-11-18). Unguarded,
+                # this updated all ~10.9M rows of the generation every
+                # weekly, nearly all to the value they already held, and a
+                # rewritten row is a dead tuple whether or not it changed.
+                "AND e.cofire_count IS DISTINCT FROM sub.cnt"
             ),
             {"config_hash": config_hash},
         )
