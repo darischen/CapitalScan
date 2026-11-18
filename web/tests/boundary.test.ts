@@ -258,6 +258,13 @@ describe("the client boundary", () => {
     // `ScrollRegion` joined with it for `/research`: a table that scrolls
     // sideways on a phone must be keyboard-focusable, and only while it
     // overflows, which takes a measurement. It imports nothing from `lib/`.
+    //
+    // `ScreenCell` joined 2026-11-18 for bytes, not for a browser API: it
+    // holds no state and renders one `<td>`. As a server component each
+    // cell wrote its constant `data-label` and class into the page's
+    // payload on every row, ~316 B a row; a client component keeps them in
+    // its own bundle once (`tests/row-payload.test.tsx`). It imports only a
+    // type.
     expect(clients).toEqual([
       "components/Chat.tsx",
       "components/DatePicker.tsx",
@@ -267,6 +274,7 @@ describe("the client boundary", () => {
       "components/LivePrice.tsx",
       "components/OpenSelected.tsx",
       "components/PredictButton.tsx",
+      "components/ScreenCell.tsx",
       "components/ScrollRegion.tsx",
       "components/TickerChart.tsx",
       "components/TickerSearch.tsx",

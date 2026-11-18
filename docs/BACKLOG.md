@@ -1419,6 +1419,20 @@ rounds the dialog's probabilities and bands to six digits and drops
 went from 3,045 B to 2,772 B, 9%. The next lever is the per-row data
 labels, about 235 B a row.
 
+**Second cut 2026-11-18 (`perf/screener-payload-labels`): the labels and
+the column classes, 316 B a row.** Each row's 13 `<td>`s wrote a constant
+`data-label` (for the phone card layout) and a constant `className` into
+the payload. `components/ScreenCell.tsx` is a stateless client component
+that holds both per column, so a row now carries `"col":"bb"` and its own
+values. The HTML is byte for byte what it was, attribute order included.
+In `tests/row-payload.test.tsx`'s model of the Flight encoding a row went
+from 2,400 B to 2,084 B, 13%; the test fails above 2,150 B. Applied to the
+Pi's 2,772 B median that is about 2,456 B, ~30 KB raw off a 95-row day.
+Not yet measured on the Pi. What remains per row is mostly the dialog's
+`prediction` (bands ~566 B before rounding) and the row's own varying
+markup; the constant `type="checkbox" name="ticker"` and the rail cell are
+~60 B and the next smallest lever.
+
 **~~`/ticker/X` renders "No indicator history" for 688 active tickers~~ --
 FIXED 2026-11-01 (`25f48c8`).** `cscan sync` now ships `bars` and
 `indicators` for every ticker, and an incremental pass ships the whole
