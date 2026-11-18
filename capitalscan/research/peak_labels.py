@@ -107,10 +107,18 @@ def extremum_label_sql(horizons: tuple[int, ...], family: str = "peak") -> str:
     # forward window is still filling. NULL, never a partial extremum --
     # for the trough family a partial window gives a value too close to
     # zero, which reads as a safer trade rather than an incomplete one.
-    sets = ",\n        ".join(
-        f"{column.format(h=h)} = CASE WHEN agg.n{h} = {h} THEN agg.pk{h} ELSE NULL END"
+    values = {
+        column.format(h=h): f"CASE WHEN agg.n{h} = {h} THEN agg.pk{h} ELSE NULL END"
         for h in horizons
-    )
+    }
+    sets = ",\n        ".join(f"{col} = {val}" for col, val in values.items())
+    # **Write only a row whose labels moved** (2026-11-18). This UPDATE
+    # runs in every nightly, twice a day, over every labelled event of the
+    # live generation, and nearly all of them already hold their final
+    # values: a label changes only while its forward window is filling.
+    # Unguarded, each run rewrote them all, and a rewritten row is a dead
+    # tuple whether or not it changed. `fwd_labels` guards the same way.
+    changes = "\n        OR ".join(f"e.{col} IS DISTINCT FROM {val}" for col, val in values.items())
     return f"""
     WITH eo AS (
         SELECT id, {_ENTRY_OFFSET_SQL} AS entry_offset
@@ -149,6 +157,7 @@ def extremum_label_sql(horizons: tuple[int, ...], family: str = "peak") -> str:
         {sets}
     FROM agg
     WHERE e.id = agg.event_id
+      AND ({changes})
     """
 
 

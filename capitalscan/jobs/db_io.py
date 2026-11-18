@@ -462,7 +462,34 @@ def drop_superseded_slot_events(engine: Engine, written: pd.DataFrame) -> int:
     return int(getattr(result, "rowcount", 0) or 0)
 
 
-def fill_event_sector_and_mcap(engine: Engine, run_id: str) -> int:
+def _fill_scope(
+    run_id: str, config_hash: str | None, tickers: list[str] | None, alias: str = "e"
+) -> tuple[str, dict[str, Any]]:
+    """The row scope for the event fills: one run's rows, or one config's
+    rows for some tickers.
+
+    The second exists for `run_backtest(skip_unchanged=True)`, which leaves
+    an unchanged row carrying an earlier `run_id`. Scoping by `run_id`
+    there would stop retrying a NULL on that row. Both scopes only ever
+    touch NULLs, so widening to the tickers cannot rewrite a filled value.
+    """
+    if tickers is None:
+        return f"{alias}.run_id = :run_id", {"run_id": run_id}
+    if config_hash is None:
+        raise ValueError("a ticker scope needs its config_hash")
+    return (
+        f"{alias}.config_hash = :config_hash AND {alias}.ticker = ANY(:tickers)",
+        {"config_hash": config_hash, "tickers": list(tickers)},
+    )
+
+
+def fill_event_sector_and_mcap(
+    engine: Engine,
+    run_id: str,
+    *,
+    config_hash: str | None = None,
+    tickers: list[str] | None = None,
+) -> int:
     """Populate `events.sector` and `events.mcap_usd` for one run's rows.
 
     **A post-pass, not a hot-path change.** Both writers -- `run_events`
@@ -498,34 +525,48 @@ def fill_event_sector_and_mcap(engine: Engine, run_id: str) -> int:
         """
         return int(getattr(result, "rowcount", 0) or 0)
 
+    where, params = _fill_scope(run_id, config_hash, tickers)
+    inner, _ = _fill_scope(run_id, config_hash, tickers, alias="e2")
     with engine.begin() as conn:
         mcap = _rows(
             conn.execute(
+                # **Only a row that gains a value is written (2026-11-18).**
+                # This was `SET mcap_usd = (subquery) WHERE mcap_usd IS NULL`,
+                # which rewrote a row with no universe market cap to NULL
+                # again on every run: a dead tuple per such row, per run.
                 text(
-                    "UPDATE events e SET mcap_usd = ("
-                    "  SELECT u.mcap_usd FROM universe u"
-                    "   WHERE u.ticker = e.ticker AND u.as_of <= e.signal_date"
-                    "     AND u.config_hash = e.config_hash AND u.mcap_usd IS NOT NULL"
-                    "   ORDER BY u.as_of DESC LIMIT 1)"
-                    " WHERE e.run_id = :run_id AND e.mcap_usd IS NULL"
+                    "UPDATE events e SET mcap_usd = s.v FROM ("
+                    "  SELECT e2.id, (SELECT u.mcap_usd FROM universe u"
+                    "   WHERE u.ticker = e2.ticker AND u.as_of <= e2.signal_date"
+                    "     AND u.config_hash = e2.config_hash AND u.mcap_usd IS NOT NULL"
+                    "   ORDER BY u.as_of DESC LIMIT 1) AS v"
+                    f"  FROM events e2 WHERE {inner}"
+                    "   AND e2.mcap_usd IS NULL"
+                    ") s WHERE e.id = s.id AND s.v IS NOT NULL"
                 ),
-                {"run_id": run_id},
+                params,
             )
         )
         sector = _rows(
             conn.execute(
                 text(
                     "UPDATE events e SET sector = t.sector FROM tickers t"
-                    " WHERE t.ticker = e.ticker AND e.run_id = :run_id"
+                    f" WHERE t.ticker = e.ticker AND {where}"
                     "   AND e.sector IS NULL AND t.sector IS NOT NULL"
                 ),
-                {"run_id": run_id},
+                params,
             )
         )
     return mcap + sector
 
 
-def fill_event_derived_state(engine: Engine, run_id: str) -> int:
+def fill_event_derived_state(
+    engine: Engine,
+    run_id: str,
+    *,
+    config_hash: str | None = None,
+    tickers: list[str] | None = None,
+) -> int:
     """Populate `bb_mid`, `close` and `vix_pct_252d` for one run's rows.
 
     DESIGN §7.3's last three features (f1c8a260d94e). Each exists at t-1 in
@@ -543,33 +584,45 @@ def fill_event_derived_state(engine: Engine, run_id: str) -> int:
     *t*. Using the entry as the denominator of `atr_14 / close` would put
     it into a state-at-signal feature.
 
-    Scoped to `run_id` and only touching NULLs, so it is idempotent and
-    cannot rewrite another run's rows.
+    Scoped to `run_id` (or, for `run_backtest(skip_unchanged=True)`, to
+    the run's tickers) and only touching rows with a NULL, so it is
+    idempotent. A row is written only when a value actually moves.
     """
 
     def _rows(result: Any) -> int:
         return int(getattr(result, "rowcount", 0) or 0)
 
+    inner, params = _fill_scope(run_id, config_hash, tickers, alias="e2")
     with engine.begin() as conn:
         return _rows(
             conn.execute(
+                # **Only a row whose values move is written (2026-11-18).**
+                # The lookups are computed in `s` and compared before the
+                # write: a row whose missing value has no source (no prior
+                # VIX row, say) was otherwise rewritten unchanged every run.
                 text(
-                    "UPDATE events e SET"
-                    "  bb_mid = (SELECT i.bb_mid FROM indicators i"
-                    "             WHERE i.ticker = e.ticker AND i.interval = '1d'"
-                    "               AND i.ts < e.signal_date"
-                    "             ORDER BY i.ts DESC LIMIT 1),"
-                    "  close = (SELECT b.close FROM bars b"
-                    "            WHERE b.ticker = e.ticker AND b.interval = '1d'"
-                    "              AND b.ts < e.signal_date"
-                    "            ORDER BY b.ts DESC LIMIT 1),"
-                    "  vix_pct_252d = (SELECT m.vix_pct_252d FROM market_days m"
-                    "                   WHERE m.ts < e.signal_date"
-                    "                   ORDER BY m.ts DESC LIMIT 1)"
-                    " WHERE e.run_id = :run_id"
-                    "   AND (e.bb_mid IS NULL OR e.close IS NULL OR e.vix_pct_252d IS NULL)"
+                    "UPDATE events e SET bb_mid = s.bb_mid, close = s.close,"
+                    "  vix_pct_252d = s.vix_pct_252d FROM ("
+                    "  SELECT e2.id,"
+                    "   (SELECT i.bb_mid FROM indicators i"
+                    "     WHERE i.ticker = e2.ticker AND i.interval = '1d'"
+                    "       AND i.ts < e2.signal_date"
+                    "     ORDER BY i.ts DESC LIMIT 1) AS bb_mid,"
+                    "   (SELECT b.close FROM bars b"
+                    "     WHERE b.ticker = e2.ticker AND b.interval = '1d'"
+                    "       AND b.ts < e2.signal_date"
+                    "     ORDER BY b.ts DESC LIMIT 1) AS close,"
+                    "   (SELECT m.vix_pct_252d FROM market_days m"
+                    "     WHERE m.ts < e2.signal_date"
+                    "     ORDER BY m.ts DESC LIMIT 1) AS vix_pct_252d"
+                    f"  FROM events e2 WHERE {inner}"
+                    "   AND (e2.bb_mid IS NULL OR e2.close IS NULL OR e2.vix_pct_252d IS NULL)"
+                    ") s WHERE e.id = s.id"
+                    "  AND (e.bb_mid IS DISTINCT FROM s.bb_mid"
+                    "    OR e.close IS DISTINCT FROM s.close"
+                    "    OR e.vix_pct_252d IS DISTINCT FROM s.vix_pct_252d)"
                 ),
-                {"run_id": run_id},
+                params,
             )
         )
 
