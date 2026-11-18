@@ -1650,16 +1650,27 @@ Expect less than the microbenchmark suggests: `path_metrics` was 11.5-27.5x
 faster in isolation and 1.14x end to end. At 18.8s of a ~36s per-ticker
 budget the ceiling is real but Amdahl-bounded.
 
-**`signal_reports` has no `signal_type`, so `v_screen_live` matches on
-`(ticker, signal_date)`.** Migration `d5e91a7c3b48` had to stop resolving
+**~~`signal_reports` has no `signal_type`, so `v_screen_live` matches on
+`(ticker, signal_date)`~~ -- FIXED 2026-09-28.** Three migrations closed it.
+`a4c8d19f6e02` (2026-08-29) added `signal_reports.signal_type`, and the
+poller writes it on every report. `b7f3c5d21a94` (2026-09-01) made the
+`fired_at` lateral match `r.signal_type IS NULL OR r.signal_type =
+e.signal_type`. `e4b7a2c9d160` (2026-09-28, ADR 202) applied the same
+predicate to the bear and bull reversal laterals. The 1,831 reports
+written before 2026-08-29 keep `signal_type` NULL by design: nothing
+records their type, so they use the `(ticker, signal_date)` fallback
+match. `jobs/views.py::V_SCREEN_LIVE_DDL` still matched on `event_id`
+until 2026-11-18, when it was synced to `e4b7a2c9d160`'s text and pinned
+by `test_views_screen_live_matches_migration.py`. History follows.
+
+Original problem: migration `d5e91a7c3b48` had to stop resolving
 `fired_at` through `event_id`, because ADR 150's nightly sweep nulls that
 column by design. The columns the sweep guarantees are `ticker`, `fired_at`
-and `state_json`, and `state_json` carries no signal type — only `ticker`.
-
-The consequence is small and real: a ticker firing two different signal
-types on the same day gives both events the **same** earliest `fired_at`.
-Exact today (all 157 linked events on 2026-08-28 had exactly one report),
-and far better than the NULL it replaced, but wrong in principle.
+and `state_json`, and `state_json` carries no signal type, only `ticker`.
+A ticker firing two different signal types on the same day gave both
+events the **same** `fired_at`. Exact at the time (all 157 linked events
+on 2026-08-28 had exactly one report), and far better than the NULL it
+replaced, but wrong in principle.
 
 ~~**The fix is a `signal_type` column on `signal_reports`**~~ — **built
 2026-08-29** (`a4c8d19f6e02`). The column exists on both databases and the
