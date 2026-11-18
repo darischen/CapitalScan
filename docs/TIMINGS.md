@@ -43,6 +43,18 @@ end on 2026-08-26 against **1,470 tickers / 1,365,000 events** under
 | `finalize` (cross-ticker cofire) | **3.6 min** | 1,365,000 rows |
 | `harness` (8 workers, parallel) | ~~35.7 min~~ **9-13 min** | `harness passed` |
 
+**`compute` after `resolve_exit` read columns (2026-11-18): ESTIMATE, not
+measured.** `scripts/bench_resolve_exit.py` measured ~1,370 to ~330 us per
+`resolve_exit` call on the workstation (4.05-4.28x over two runs, identical output), so
+compute should lose ~1.06 ms of CPU per exit resolved: ~18 CPU-minutes per
+million calls, ~2.2 wall-minutes per million at 8 workers, ~3.5x that on
+`wivie`. Replace this with the first `backtest_compute` chunk durations from
+`runs` after the change ships. -> `BACKLOG.md`
+
+| phase | estimate | basis |
+|---|---|---|
+| `compute`, per million exits resolved | **~2.2 min less** at 8 workers (estimate) | microbenchmark only |
+
 Compute averaged 83s per chunk. **The harness is the number that was most
 wrong**: this file said 4h19m, which was single-threaded on 590 tickers.
 It was then 35.7 min against 2.5x the tickers -- roughly the worker count,
