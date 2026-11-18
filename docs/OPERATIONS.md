@@ -2242,6 +2242,50 @@ The workstation copy got the same deletes without a saved copy, since
 `\copy <table> FROM PROGRAM 'gunzip -c <file>' WITH CSV HEADER`, parents
 (`tickers`) first.
 
+## Dead tuples reclaimed with `VACUUM FULL` (2026-11-18)
+
+**Why.** Five writers rewrote unchanged `events` rows on every run (fixed in
+PR #170, BACKLOG "Unchanged `events` rows rewritten on every run"). Plain
+`VACUUM` makes that space reusable inside the table but never returns it,
+so `wivie` held 21.8M events in 22 GB against 13 GB for the same rows freshly
+restored. Run once after the fix, between 02:02 and 03:17 PT, before the
+05:30 premarket.
+
+**How.** One `VACUUM (FULL, ANALYZE) <table>` per table, from a detached
+script (`setsid nohup`) so a dropped SSH session cannot kill it. It holds an
+ACCESS EXCLUSIVE lock per table, so on the Pi the site waits on any table it
+reads: one request took 395 s while `indicators` was locked, then returned a
+full page. Run it outside the session. It needs free disk about the size of
+the table being rewritten. Never put a `SET` and the `VACUUM` in one `psql
+-c`: psql sends them as one transaction and `VACUUM` refuses to run in one.
+Pass settings through `PGOPTIONS` instead.
+
+| store | before | after | time |
+|---|---|---|---|
+| Pi (serving) | 15 GB | 11 GB | 71 min, `events` 10 GB -> 7.6 GB in 58 min |
+| `wivie` (research) | 31 GB | 22 GB | 10.5 min, `events` 22 GB -> 13 GB in 8 min |
+| workstation | 23 GB | 22 GB | 7.8 min, the dead rows of that night's measurements |
+
+The Pi's free space went from 23 GB to 26 GB. Its SD card is the slow
+part: the same `events` rewrite took 8 min on `wivie`'s SSD.
+
+**Docker Desktop's disk file does not shrink on its own.** On the
+workstation, `docker_data.vhdx` is not sparse, so the space freed inside
+the container stays allocated on Windows, and `VACUUM FULL` grows the file
+while it writes the new copies (78.6 GB to 94.2 GB). To reclaim it:
+
+1. Trim inside Docker's VM: `docker run --rm --privileged --pid=host
+   alpine:3.20 nsenter -t 1 -m -- fstrim -av`.
+2. `docker desktop stop`, then `wsl --shutdown`.
+3. From an elevated prompt, `diskpart` with `select vdisk
+   file="%LOCALAPPDATA%\Docker\wsl\disk\docker_data.vhdx"`, `attach vdisk
+   readonly`, `compact vdisk`, `detach vdisk`. About a minute here.
+4. `docker desktop start`. Both containers carry `unless-stopped` and come
+   back on their own.
+
+Done 2026-11-18 after dropping `capitalscan_ws_old`: 94.2 GB down to
+48.5 GB, holding `capitalscan` (22 GB) and `capitalscan_hist` (16 GB).
+
 ## Restoring from the Pi backup (ADR 206)
 
 `cscan backup` leaves two files a day in `~/backups/capitalscan` on the Pi,

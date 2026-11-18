@@ -935,6 +935,21 @@ generation and does not sync, so the next 13:15 nightly ships it:
 On 2026-11-01 the whole chain took 3h36m against `RuntimeMaxSec=4h`. The
 2026-10-18 kill and why its retry was skipped are in OPERATIONS.md.
 
+## `VACUUM FULL` after the skip-unchanged fix (2026-11-18)
+
+One pass per table, `VACUUM (FULL, ANALYZE)`, after PR #170 stopped the
+rewrites that made the bloat.
+
+| table | Pi | `wivie` | workstation |
+|---|---|---|---|
+| `events` | 10 GB -> 7.6 GB, 58m15s | 22 GB -> 13 GB, 7m58s | 15 GB -> 13 GB, 6m01s |
+| `indicators` | 2.4 GB -> 1.9 GB, 7m52s | 1.9 GB -> 1.9 GB, 37s | 31s |
+| `bars` | 1.8 GB -> 1.2 GB, 4m44s | 2.0 GB -> 1.7 GB, 34s | 27s |
+| `path` | not on serving | 4.9 GB -> 4.7 GB, 68s | 44s |
+| whole store | 15 -> 11 GB, 71 min | 31 -> 22 GB, 10.5 min | 23 -> 22 GB, 7.8 min |
+
+The Pi's SD card runs `events` about 7x slower than `wivie`'s SSD.
+
 ## `cscan backup` (ADR 206)
 
 **On `wivie`, 2026-11-04: 1m20s**, the first run, started by hand at 03:24
