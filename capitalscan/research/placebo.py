@@ -131,13 +131,24 @@ def _tasks(
     dpos: dict[pd.Timestamp, int],
     tpos: dict[str, int],
 ) -> list[tuple[str, dict[str, Any]]]:
-    """`(scope, task)` for every headline cell-target with events in the window."""
+    """`(scope, task)` for every headline cell-target with events in the window.
+
+    A scope with events, none of which map into the window and the panel,
+    raises: flooring it would ship an uncalibrated interval under a factor
+    that reads as measured. A scope with no events at all is left to floor.
+    """
     sd = pd.to_datetime(events["signal_date"]).dt.normalize()
     in_win = sd.isin(list(dpos)) & events["ticker"].isin(list(tpos))
     out: list[tuple[str, dict[str, Any]]] = []
     seed = vp.placebo_seed
     for scope, mask in scopes.items():
-        ev = events.loc[mask.reindex(events.index, fill_value=False).astype(bool) & in_win]
+        scoped = mask.reindex(events.index, fill_value=False).astype(bool)
+        if scoped.any() and not (scoped & in_win).any():
+            raise ValueError(
+                f"placebo scope {scope!r}: {int(scoped.sum())} events, none map into the "
+                f"placebo window {vp.placebo_window} and the panel's tickers"
+            )
+        ev = events.loc[scoped & in_win]
         for spec in headline_grid(sp):
             c = ev.loc[
                 (ev["side"] == spec.side)

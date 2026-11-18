@@ -157,3 +157,27 @@ def test_pool_matches_serial() -> None:
         panel, events, SP, dataclasses.replace(vp, placebo_workers=2), H, _pooled(events)
     )
     assert serial == pooled
+
+
+def test_scope_with_no_event_in_window_raises() -> None:
+    """A scope whose events all fall outside the placebo window would floor
+    to a factor that reads as measured. It raises, naming the scope."""
+    vp = _vp(placebo_draws=20)
+    panel = _panel(10, "2011-06-01", "2018-06-29", seed=14)
+    inside = _iid_events(panel, 50, seed=15, vp=vp)
+    outside = _events(
+        pd.bdate_range("2018-01-02", periods=5), ["T000"] * 5, [f"x{i}" for i in range(5)]
+    )
+    events = pd.concat([inside, outside.assign(era="late")], ignore_index=True)
+    scopes = {**_pooled(events), "late": events["era"] == "late"}
+    with pytest.raises(ValueError, match="late"):
+        placebo.measure_inflation(panel, events, SP, vp, H, scopes)
+
+
+def test_scope_with_no_events_floors() -> None:
+    vp = _vp(placebo_draws=20)
+    panel = _panel(10, "2011-06-01", "2018-06-29", seed=16)
+    events = _iid_events(panel, 50, seed=17, vp=vp)
+    scopes = {**_pooled(events), "empty": events["era"] == "none"}
+    out = placebo.measure_inflation(panel, events, SP, vp, H, scopes)
+    assert out["empty"] == vp.inflation_floor
