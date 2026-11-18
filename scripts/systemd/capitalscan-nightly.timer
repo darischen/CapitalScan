@@ -12,8 +12,11 @@ Description=CapitalScan nightly, after the 13:00 PT close
 # It also collided with `weekly`, which starts Sat 00:00 and ran 11h55m on
 # 2026-09-19. Nothing locks the two against each other, so an overlapping
 # nightly syncs serving mid-backtest and rewrites labels under the refit.
-# Dropping Saturday removes the overlap that has actually happened; a weekly
-# running past Sunday 13:15 would still meet one. -> BACKLOG.md
+# Dropping Saturday removed the scheduled overlap, but systemd's retries
+# still reached Saturday: on 2026-11-14 restarts of a failing Friday run
+# deadlocked with the weekly four times. Since 2026-11-17 the weekly holds
+# nightly.lock for its whole run (run_job.sh), so a nightly or premarket
+# trigger during it exits 0 and the next slot picks it up. -> BACKLOG.md
 OnCalendar=Sun,Mon,Tue,Wed,Thu,Fri *-*-* 13:15:00
 # A second full attempt the same evening. If the 13:15 batch exhausted its
 # retry burst (see the .service), this gives it a fresh one. resume-check

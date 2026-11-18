@@ -79,6 +79,31 @@ catch {
     exit 0
 }
 
+# --- weekly also holds nightly's lock (2026-11-17). Mirrors run_job.sh:
+# the weekly waits for a running nightly (up to 4h30m, longer than the
+# nightly's own 4h cap), then holds nightly.lock for its whole run, so a
+# nightly or premarket trigger exits 0 at its own lock above.
+if ($Job -eq 'weekly') {
+    $nightlyDir = Join-Path $RepoRoot 'reports
+ightly'
+    if (-not (Test-Path $nightlyDir)) { New-Item -ItemType Directory -Force $nightlyDir | Out-Null }
+    $nightlyLockPath = Join-Path $nightlyDir 'nightly.lock'
+    $deadline = (Get-Date).AddSeconds(16200)
+    while ($true) {
+        try {
+            $script:nightlyLock = [System.IO.File]::Open($nightlyLockPath, 'OpenOrCreate', 'ReadWrite', 'None')
+            break
+        }
+        catch {
+            if ((Get-Date) -ge $deadline) {
+                Write-Host "[weekly] $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') nightly still holds $nightlyLockPath after 4h30m; exiting 1"
+                exit 1
+            }
+            Start-Sleep -Seconds 60
+        }
+    }
+}
+
 # UTF-8, not PowerShell 5.1's default. Tee-Object has no -Encoding in 5.1
 # and writes UTF-16LE, which unix tools read as gibberish -- and this log
 # is read precisely when something has gone wrong.
