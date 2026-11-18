@@ -509,6 +509,10 @@ def _patch_nightly_io(monkeypatch):
         monkeypatch.setattr(ingest, name, lambda *a, **k: None)
     # ADR 202's session-bar catch-up reads `bars` before `indicators`.
     monkeypatch.setattr(ingest, "tickers_missing_session", lambda *a, **k: [])
+    # The stale-ticker report (2026-11-18) reads `tickers` and `bars`.
+    from capitalscan.jobs import stale_tickers as stale_mod
+
+    monkeypatch.setattr(stale_mod, "run_stale_ticker_report", lambda *a, **k: [])
 
 
 def test_nightly_command_threads_resolved_config(monkeypatch, tmp_path):

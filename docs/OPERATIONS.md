@@ -2242,6 +2242,17 @@ The workstation copy got the same deletes without a saved copy, since
 `\copy <table> FROM PROGRAM 'gunzip -c <file>' WITH CSV HEADER`, parents
 (`tickers`) first.
 
+## When the nightly reports a stale ticker (since 2026-11-18)
+
+**`stale_tickers:` lines in the nightly log, or a `runs` row with `job =
+'stale_tickers'` whose `notes` count is not 0, mean an active ticker has no
+daily bar in more than 10 sessions: check the CIK first, and if another
+active ticker on it has current bars, treat it as a symbol change (ADR 207:
+`cscan add-ticker` the new symbol, then retire the old one as EQR and PSKY
+were above); otherwise confirm on Yahoo that it stopped trading and retire
+it by hand as the ten were on 2026-11-17 (BACKLOG).** Nothing retires
+automatically, because a long halt looks the same.
+
 ## Dead tuples reclaimed with `VACUUM FULL` (2026-11-18)
 
 **Why.** Five writers rewrote unchanged `events` rows on every run (fixed in

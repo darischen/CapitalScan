@@ -3659,6 +3659,21 @@ def nightly(
                     f"{end.isoformat()} bar; the next nightly or premarket run retries them: "
                     f"{' '.join(still)}"
                 )
+    # **Report active tickers whose daily bars stopped** (2026-11-18). Ten
+    # acquired or delisted names stayed `is_active` for up to three months
+    # in 2026 and every nightly kept fetching them (BACKLOG "Ten tickers
+    # stopped trading and stayed active"). After both bar passes, so a late
+    # vendor bar ADR 202 just refetched does not count against a ticker.
+    #
+    # **A report, never an action.** It writes its own `runs` row and
+    # nothing else; retirement stays manual, because a long halt looks the
+    # same. A failure is reported and the chain goes on.
+    try:
+        from capitalscan.jobs.stale_tickers import run_stale_ticker_report
+
+        run_stale_ticker_report(engine, end, echo=console.print)
+    except Exception as exc:  # noqa: BLE001 - informational; the chain does not depend on it
+        console.print(f"[yellow]warn[/yellow] stale-ticker report skipped: {exc}")
     compute.run_indicators(
         tickers, start, end, params=config.indicators, max_workers=1, engine=engine
     )

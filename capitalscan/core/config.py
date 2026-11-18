@@ -976,6 +976,32 @@ DEFAULT_MONITORING = MonitoringThresholds()
 
 
 @dataclass(frozen=True)
+class StaleTickerParams:
+    """The nightly's stale-ticker report (BACKLOG "Ten tickers stopped trading").
+
+    Not a field of `Config`, same rationale as `MonitoringThresholds`: it
+    decides what the nightly reports, never what it computes, so it must not
+    move `config_hash`.
+
+    **`stale_after_sessions`.** An active ticker whose newest daily bar is
+    more than this many sessions old, counted on `trading_days`, is
+    reported. Ten is the backlog's figure: two weeks clears a vendor's late
+    bar (ADR 202 refetches those within a day) and a short halt, and still
+    catches an acquisition within a fortnight. EA stopped 2026-08-04 and
+    stayed active for three months.
+
+    **`notes_limit`.** How many tickers the `runs.notes` line names before
+    it says "+N more". The log names every one.
+    """
+
+    stale_after_sessions: int = 10
+    notes_limit: int = 10
+
+
+DEFAULT_STALE_TICKERS = StaleTickerParams()
+
+
+@dataclass(frozen=True)
 class BenchmarkParams:
     """Session 13's benchmark arms (DESIGN §6.4-§6.6, ADRs 012, 017, 032, 061).
 

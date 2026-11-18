@@ -269,10 +269,19 @@ LBRDK repeat 08-19's close on 08-20 and 08-21) and the 8 indicator rows
 computed from them, on research and serving. The nightly reads `WHERE
 is_active` (`cli.py:68`), so it no longer fetches them.
 
-**Still open: a flag, not a rule.** An active ticker with no daily bar in
-10 sessions should be reported by the nightly, with a CIK check for a new
-symbol first (ADR 207). Retirement stays manual: a long trading halt looks
-the same, and a retired ticker is never fetched again.
+**~~Still open: a flag, not a rule.~~ BUILT 2026-11-18.** An active ticker
+with no daily bar in more than 10 sessions (`StaleTickerParams.
+stale_after_sessions`, counted on `trading_days`) is reported by the
+nightly, with a CIK check for a new symbol first (ADR 207): a stale ticker
+whose CIK an active ticker with current bars shares is listed first as a
+possible symbol change. The step runs after both bar passes and before
+`indicators`, prints `stale_tickers:` lines in the nightly log, and writes
+one `runs` row (`job = 'stale_tickers'`, `notes` = the count and the first
+ten). Logic in `core/stale_tickers.py`, query in `jobs/stale_tickers.py`. It
+writes nothing else and a failure never fails the nightly. Retirement stays
+manual: a long trading halt looks the same, and a retired ticker is never
+fetched again. What to do when it fires: `OPERATIONS.md`, "When the nightly
+reports a stale ticker".
 
 ### ~~Backups were never built~~ BUILT 2026-11-04 (ADR 206)
 
