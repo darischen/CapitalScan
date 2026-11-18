@@ -9158,7 +9158,7 @@ one off.** Read-only, on the workstation copy refreshed 2026-11-17 (bars to
 cells x 4 reach targets, `in_trade`, `next_open`, closed forward windows.
 Script and per-row CSVs: `scripts/hist/neff-validation-2026-11-18/`.
 
-- **Shipped**: `research.cell_stats` as `cscan cell-stats` runs it. Cluster
+- **Shipped**: `research.cell_stats` as `cscan stats cells --config-hash f183b0f5209a4677 --split-key <train|validate>` runs it. Cluster
   heads only, `n_eff = n / (1 + rho_bar (k_bar - 1))` with `k_bar =
   mean(cofire_count)` (ADR 098), Wilson interval over `n_eff`.
 - **Robust**: every fire, the variance of `p_hit` clustered two ways

@@ -2173,6 +2173,25 @@ population from the cells beside them, and their intervals still come from
 ADR 098. Move them to `core.variance` and every fire, or record why the
 arms keep heads. Moves no `config_hash`.
 
+### Holdout evaluation needs a placebo factor design (2026-11-18)
+
+ADR 209 inflates each scope's variance by a factor a placebo measures on
+the same bars the cells read. That design covers train and validate only.
+`panel_bounds` caps the adj-close panel at 2024-01-31, one month past
+`validate_end`, and `VarianceParams.placebo_window` ends 2023-12-15, so no
+holdout bar beyond the January forward windows is loaded and no placebo
+draw lands in holdout. A holdout run would carry a factor measured on
+another split, or none.
+
+The holdout is evaluated once, at the end, and published whatever it says
+(ADR 033). Spending that one shot on an interval whose inflation nobody
+designed would waste it. So `run_cell_stats` refuses `split_key =
+'holdout'` with a `ValueError` before it loads anything, and the refusal
+stands until a factor design exists: either a placebo window inside the
+holdout, which reads holdout bars before the evaluation, or the validate
+factor carried forward with a stated reason. Pick one, record it in an
+ADR, then lift the refusal. Moves no `config_hash`.
+
 ## Closed, refuted or answered — do not reopen
 
 ## LEFT AS IS 2026-11-03 (owner): quarter-end signals read that day's close for membership

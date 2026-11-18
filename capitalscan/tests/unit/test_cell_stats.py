@@ -395,6 +395,42 @@ class TestRobustVarianceRow:
         assert row["n_eff"] == pytest.approx(60.0, rel=0.10)
         assert row["p_hit"] == pytest.approx(0.5)
 
+    def test_ci_level_sets_the_interval_width(self):
+        """`VarianceParams.ci_level` drives z (invariant 9): 90% coverage
+        narrows the interval by `z_90 / z_95`."""
+        events = _monthly(60, 10)
+        base = _row(compute_grid(events, None, Config(), specs=(SPEC,)), 0.03)
+        narrow = _row(
+            compute_grid(events, None, Config(), specs=(SPEC,), vp=VarianceParams(ci_level=0.90)),
+            0.03,
+        )
+        ratio = (narrow["ci_high"] - narrow["ci_low"]) / (base["ci_high"] - base["ci_low"])
+        assert ratio == pytest.approx(norm.ppf(0.95) / norm.ppf(0.975))
+        assert cell_stats.ci_z(VarianceParams()) == pytest.approx(1.959963984540054)
+
+    def test_n_eff_can_exceed_n_under_negative_within_month_correlation(self):
+        """Pinned on purpose: a robust `n_eff` is not capped at `n`.
+
+        Three fires a month, one cluster each. Months alternate one hit
+        and two hits, so fires inside a month offset each other: the month
+        sums of residuals are +-0.5 where three independent fires would
+        give a variance of 0.75 per month. The month x cluster variance
+        comes out a third of the iid one and `n_eff = 3n`. ADR 098's
+        formula could not exceed `n`; this estimator can, and clamping it
+        would discard the measurement (DESIGN §6.3).
+        """
+        months = pd.date_range("2012-01-01", periods=20, freq="MS")
+        dates = [m + pd.Timedelta(days=d) for m in months for d in range(3)]
+        rets = []
+        for i in range(20):
+            rets += [0.05, -0.05, -0.05] if i % 2 == 0 else [0.05, 0.05, -0.05]
+        events = _events(60, signal_date=dates, fwd_ret_5d=rets)
+        row = _row(compute_grid(events, None, Config(), specs=(SPEC,)), 0.02)
+        assert row["p_hit"] == pytest.approx(0.5)
+        assert row["n_events"] == 60
+        assert row["n_eff"] == pytest.approx(180.0)
+        assert row["n_eff"] > row["n_events"]
+
     def test_independent_fires_keep_their_count(self):
         """One fire per month and per cluster: no shared dependence, so the
         robust `n_eff` is exactly `n`."""
@@ -412,7 +448,7 @@ class TestRobustVarianceRow:
 
     def test_interval_is_wald_on_the_robust_variance(self):
         row = _row(compute_grid(_monthly(60, 10), None, Config(), specs=(SPEC,)), 0.03)
-        half = 1.959963984540054 * np.sqrt(0.25 / row["n_eff"])
+        half = norm.ppf(0.975) * np.sqrt(0.25 / row["n_eff"])
         assert row["ci_low"] == pytest.approx(0.5 - half)
         assert row["ci_high"] == pytest.approx(0.5 + half)
 
@@ -607,6 +643,47 @@ class TestReviewMinors:
         assert (empty["suppress_reason"] == "no events in cell").all()
         assert (empty["se_inflation"] == 1.0).all()
         assert (rows.loc[rows["era"] == "2015-2019", "se_inflation"] == 1.1).all()
+
+
+class TestRunCellStatsGuards:
+    def test_holdout_is_refused_before_anything_loads(self, monkeypatch):
+        """ADR 209's placebo factor covers train and validate only, and the
+        one-shot holdout run (ADR 033) needs its own factor design."""
+
+        def fail(*a, **k):
+            raise AssertionError("loaded events for a holdout run")
+
+        monkeypatch.setattr(cell_stats, "load_grid_events", fail)
+        with pytest.raises(ValueError, match="placebo factor"):
+            cell_stats.run_cell_stats(None, "h", "holdout")
+
+    def test_null_clusters_drop_before_the_placebo(self, monkeypatch, caplog):
+        """The placebo and the cells see one population, and the drop logs
+        once rather than once per grid."""
+        from capitalscan.research import baselines as baselines_mod
+        from capitalscan.research import placebo
+
+        events = _monthly(24, 2, era="2015-2019")
+        events["cluster_id"] = events["cluster_id"].astype(object)
+        events.loc[[0, 1, 2], "cluster_id"] = None
+        seen: dict = {}
+
+        def fake_inflation(panel, ev, sp, vp, horizon, scopes):
+            seen["n"] = len(ev)
+            seen["null"] = int(ev["cluster_id"].isna().sum())
+            seen["scope_n"] = {k: int(v.sum()) for k, v in scopes.items()}
+            return {scope: 1.0 for scope in scopes}
+
+        monkeypatch.setattr(cell_stats, "load_grid_events", lambda *a, **k: events)
+        monkeypatch.setattr(baselines_mod, "load_adj_close_panel", lambda *a, **k: pd.DataFrame())
+        monkeypatch.setattr(cell_stats, "build_baselines", lambda *a, **k: None)
+        monkeypatch.setattr(placebo, "measure_inflation", fake_inflation)
+        with caplog.at_level(logging.WARNING, logger=cell_stats.logger.name):
+            cell_stats.run_cell_stats(None, "h", "train", write=False)
+        assert seen["n"] == 45
+        assert seen["null"] == 0
+        assert seen["scope_n"]["pooled"] == 45
+        assert caplog.text.count("null cluster_id") == 1
 
 
 class TestEventPopulation:

@@ -655,6 +655,9 @@ class VarianceParams:
     # An era factor within this relative distance of the pooled one takes
     # the pooled value, so era rows differ only where the data says so.
     era_inherit_tolerance: float = 0.05
+    # Two-sided coverage of the stored Wald interval. `research.cell_stats`
+    # turns it into a z critical value.
+    ci_level: float = 0.95
 
 
 DEFAULT_VARIANCE = VarianceParams()

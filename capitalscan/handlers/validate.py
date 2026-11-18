@@ -54,8 +54,9 @@ from capitalscan.handlers.types import (
 # `test_handlers_validate.py::test_the_escape_hatch_is_off`.
 _DISABLED = False
 
-# `ci_low <= p_hit <= ci_high` is exact in theory - a Wilson interval always
-# contains its point estimate. It is not exact after a round trip through
+# `ci_low <= p_hit <= ci_high` is exact in theory - the stored interval
+# (ADR 209) always contains its point estimate. It is not exact after a
+# round trip through
 # `numeric(12,6)` and back, so containment is checked to the stored
 # precision rather than to float equality. Tighter than this and the check
 # fires on rounding; looser and it stops meaning anything.
@@ -140,16 +141,17 @@ def _check_interval_coherence(obj: Any) -> None:
 
     point = getattr(obj, "p_hit", None)
     if _present(point):
-        # A Wilson interval contains its point estimate by construction, so
-        # a violation here means the two came from different samples - the
-        # classic symptom of a join that matched the wrong cell.
+        # The stored interval (ADR 209) contains its point estimate by
+        # construction, so a violation here means the two came from
+        # different samples - the classic symptom of a join that matched
+        # the wrong cell.
         if not (
             _num(low) - _PRECISION_TOLERANCE <= _num(point) <= _num(high) + _PRECISION_TOLERANCE
         ):
             _fail(
                 obj,
                 f"p_hit={point} sits outside its own interval [{low}, {high}]. "
-                "A Wilson interval contains its point estimate, so these two "
+                "The stored interval (ADR 209) contains its point estimate, so these two "
                 "did not come from the same sample.",
             )
 

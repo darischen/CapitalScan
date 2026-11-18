@@ -42,6 +42,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 from sqlalchemy import Engine, text
 
 from capitalscan.core.baselines import event_weighted_baseline
@@ -353,6 +354,7 @@ def compute_grid(
     bp: BaselineParams | None = None,
     era: str | None = None,
     inflation: float = 1.0,
+    vp: VarianceParams | None = None,
     run_id: str = "",
     config_hash: str = "",
     git_sha: str = "",
@@ -372,9 +374,13 @@ def compute_grid(
     standard error, so the variance by its square. `rho_era` no longer
     enters any row since ADR 209 retired ADR 098's correction here; the
     parameter stays so older research scripts still call this unchanged.
+
+    `vp.ci_level` sets the interval's coverage; the z critical value is
+    derived here rather than written down (invariant 9).
     """
     del rho_era
     bp = bp or BaselineParams()
+    z = ci_z(vp or VarianceParams())
     sp = cfg.stats
     # ADR 103. Era 2024+ *is* the holdout split, so a headline cell for it
     # reports on holdout. Refused here rather than left to the caller's
@@ -410,6 +416,7 @@ def compute_grid(
                     target=float(target),
                     horizon=horizon,
                     inflation=float(inflation),
+                    z=z,
                     sp=sp,
                     baselines=baselines,
                     era=era,
@@ -424,6 +431,11 @@ def compute_grid(
 
     frame = pd.DataFrame(rows, columns=CELL_STATS_COLUMNS)
     return apply_benjamini_hochberg(frame, sp)
+
+
+def ci_z(vp: VarianceParams) -> float:
+    """Two-sided z critical value for `vp.ci_level`: 1.96 at 0.95."""
+    return float(norm.ppf(1.0 - (1.0 - vp.ci_level) / 2.0))
 
 
 def _drop_null_clusters(events: pd.DataFrame) -> pd.DataFrame:
@@ -458,6 +470,7 @@ def _cell_row(
     target: float,
     horizon: int,
     inflation: float,
+    z: float,
     sp: StatsParams,
     baselines: dict[int, pd.DataFrame] | None,
     era: str | None,
@@ -588,7 +601,7 @@ def _cell_row(
 
     edge = None if baseline_empirical is None else p_hit - baseline_empirical
     # The interval is on the hit rate; the test is on the edge (below).
-    ci_low, ci_high = wald_interval(p_hit, v)
+    ci_low, ci_high = wald_interval(p_hit, v, z)
 
     row.update(
         {
@@ -621,7 +634,11 @@ def _edge_p_value(
     `V b (1 - b) / p (1 - p)` instead of `V` and run liberal when `p > b`.
 
     Each event uses its own ticker-year `baseline_empirical`. Events whose
-    baseline is null drop out of this test only (invariant 4).
+    baseline is null drop out of this test only (invariant 4). So the two
+    numbers cover different populations when any baseline is null: the
+    stored `edge` is `p_hit` over every resolved fire minus the cell's
+    event-weighted baseline, while this test reads only the fires with a
+    non-null baseline. The p-value does not test the stored `edge` exactly.
     """
     if baseline_frame is None or baseline_frame.empty or resolved.empty:
         return None
@@ -885,8 +902,10 @@ def panel_bounds(
     The baselines want two years before the first event year and one after
     the last (see `build_baselines`). The placebo wants every bar of
     `vp.placebo_window` plus the forward window of its last day. The panel
-    covers both and never runs past the month after `validate_end`: the
-    holdout split's bars are never loaded.
+    covers both and stops at the end of the month after `validate_end`.
+    Those January 2024 bars are loaded only so the forward windows of
+    December 2023 fires and placebo days can close; no holdout event is
+    loaded, and nothing measures a holdout outcome from them.
     """
     years = pd.to_datetime(events["signal_date"]).dt.year
     start = min(pd.Timestamp(f"{int(years.min()) - 2}-01-01"), pd.Timestamp(vp.placebo_window[0]))
@@ -964,6 +983,12 @@ def run_cell_stats(
     from capitalscan.research.baselines import load_adj_close_panel
     from capitalscan.research.placebo import POOLED, measure_inflation
 
+    if split_key == "holdout":
+        raise ValueError(
+            "run_cell_stats refuses split_key 'holdout': ADR 209's placebo factor is "
+            "designed for train and validate only, and the holdout evaluation needs its "
+            "own factor design (BACKLOG, 'Holdout evaluation needs a placebo factor design')"
+        )
     cfg = cfg or Config()
     bp = bp or BaselineParams()
     vp = vp or VarianceParams()
@@ -974,6 +999,9 @@ def run_cell_stats(
     selected, selection = select_grid_events(
         events, cfg.stats, min_fwd_window=min_fwd_window_for(cfg)
     )
+    # Dropped once, here, so the placebo and the cells measure the same
+    # population and the warning logs once rather than once per grid.
+    selected = _drop_null_clusters(selected).reset_index(drop=True)
 
     # Default to every era except the holdout one (ADR 103), derived rather
     # than listed at the call site. `compute_grid` refuses the holdout era
@@ -1000,6 +1028,7 @@ def run_cell_stats(
         baselines=baselines,
         bp=bp,
         inflation=factors[POOLED],
+        vp=vp,
         run_id=run_id,
         config_hash=config_hash,
         git_sha=git_sha,
@@ -1016,6 +1045,7 @@ def run_cell_stats(
                 bp=bp,
                 era=era,
                 inflation=factors.get(era, vp.inflation_floor),
+                vp=vp,
                 run_id=run_id,
                 config_hash=config_hash,
                 git_sha=git_sha,

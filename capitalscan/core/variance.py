@@ -10,8 +10,6 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
-_Z95 = 1.959963984540054
-
 
 def _group_sum_sq(r: np.ndarray, codes: np.ndarray) -> float:
     _, inv = np.unique(codes, return_inverse=True)
@@ -68,7 +66,12 @@ def one_sided_p_from_edge(edge: float, v: float) -> float | None:
     return float(norm.sf(edge / math.sqrt(v)))
 
 
-def wald_interval(p: float, v: float, z: float = _Z95) -> tuple[float, float]:
+def wald_interval(p: float, v: float, z: float) -> tuple[float, float]:
+    """`p +/- z sqrt(v)`, clipped to [0, 1].
+
+    `z` has no default: the caller derives it from `VarianceParams.ci_level`
+    (invariant 9), so no confidence level is written down here.
+    """
     half = z * math.sqrt(max(v, 0.0))
     return max(0.0, p - half), min(1.0, p + half)
 

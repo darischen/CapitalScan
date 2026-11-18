@@ -2943,6 +2943,7 @@ def stats_self_validate_cmd(
     console.print(
         f"  rho_bar={null.rho_bar:.4f} k_bar={null.mean_k_bar:.2f} "
         f"n={null.mean_n:.1f} n_eff={null.mean_n_eff:.1f} z_sd={null.z_sd:.3f} "
+        f"upper_tail={null.upper_tail_rate:.2%} "
         f"min_p={null.min_p_value:.3g}"
     )
     console.print(
@@ -3032,7 +3033,9 @@ def stats_cells_cmd(
     config_hash: str = typer.Option(
         ..., "--config-hash", help="events.config_hash to measure the headline grid against"
     ),
-    split_key: str = typer.Option("train", help="train | validate | holdout"),
+    split_key: str = typer.Option(
+        "train", help="train | validate (holdout is refused until it has a placebo design)"
+    ),
     write: bool = typer.Option(True, help="Write to cell_stats. --no-write measures only"),
     placebo_workers: int = typer.Option(
         DEFAULT_VARIANCE.placebo_workers,

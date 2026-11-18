@@ -85,10 +85,20 @@ def test_single_month_single_cluster_finite() -> None:
 
 
 def test_wald_clips() -> None:
-    lo, hi = wald_interval(0.01, 0.01)
+    lo, hi = wald_interval(0.01, 0.01, 1.96)
     assert lo == 0.0
     assert hi <= 1.0
-    assert wald_interval(0.99, 0.01)[1] == 1.0
+    assert wald_interval(0.99, 0.01, 1.96)[1] == 1.0
+
+
+def test_wald_reads_the_z_it_is_given() -> None:
+    """No confidence level lives in `core.variance` (invariant 9)."""
+    lo, hi = wald_interval(0.5, 0.0004, 2.0)
+    assert (lo, hi) == (0.5 - 0.04, 0.5 + 0.04)
+
+
+def test_ci_level_defaults_to_95() -> None:
+    assert VarianceParams().ci_level == 0.95
 
 
 def test_inflate() -> None:

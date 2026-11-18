@@ -104,7 +104,7 @@
 
 **Files:**
 - Modify: `capitalscan/research/cell_stats.py` (`GRID_CLUSTER_HEADS_ONLY`, `CELL_STATS_COLUMNS`, `load_grid_events`, `_cell_row`, `compute_grid`, `run_cell_stats`)
-- Modify: `capitalscan/jobs/cli.py` (the `cell-stats` command: `--placebo-workers` option)
+- Modify: `capitalscan/jobs/cli.py` (the `stats cells` command: `--placebo-workers` option)
 - Modify: `capitalscan/research/benchmarks.py` only to keep passing `cluster_heads_only=True` explicitly
 - Test: `capitalscan/tests/unit/test_cell_stats.py`
 
@@ -130,7 +130,7 @@ Row semantics in `_cell_row`:
   - `test_benchmarks_keep_heads`: `benchmarks` load still filters `is_cluster_head`.
 - [ ] **Step 2: Run** `uv run pytest capitalscan/tests/unit/test_cell_stats.py -v`. Expected: the new tests FAIL.
 - [ ] **Step 3: Implement** the changes above.
-- [ ] **Step 4: Verify on the workstation copy**, `--no-write`: `uv run cscan cell-stats --split validate --no-write` and `--split train`. Expected: validate 0 suppressed at the 3% target, factor about 1.18 pooled; train factor about 1.0; survivors at q < 0.05: train 4-6, validate 0. Runtime under 10 minutes each.
+- [ ] **Step 4: Verify on the workstation copy**, `--no-write`: `uv run cscan stats cells --config-hash f183b0f5209a4677 --split-key validate --no-write` and `uv run cscan stats cells --config-hash f183b0f5209a4677 --split-key train --no-write`. Expected: validate 0 suppressed at the 3% target, factor about 1.18 pooled; train factor about 1.0; survivors at q < 0.05: train 4-6, validate 0. Runtime under 10 minutes each.
 - [ ] **Step 5: Run** all four gates. **Commit** `feat(stats): cell_stats on month x cluster robust variance (ADR 209)`.
 
 ### Task 5: Web copy
@@ -158,6 +158,6 @@ Row semantics in `_cell_row`:
 
 - [ ] **Step 1:** Push, open PR, CI green, merge.
 - [ ] **Step 2:** On `wivie`, check no job is running (`systemctl list-timers`, `pg_stat_activity`), `git pull`, `uv run cscan db migrate` (both stores), read the output for both targets.
-- [ ] **Step 3:** `uv run cscan cell-stats --split train` then `--split validate` on `wivie`.
+- [ ] **Step 3:** `uv run cscan stats cells --config-hash f183b0f5209a4677 --split-key train` then `uv run cscan stats cells --config-hash f183b0f5209a4677 --split-key validate` on `wivie`.
 - [ ] **Step 4:** `uv run cscan sync`, then `uv run cscan db sync-config`, then on the Pi `git pull`, `npx next build`, confirm `.next/BUILD_ID`, then `sudo systemctl restart capitalscan-web` as a separate command.
-- [ ] **Step 5: Verify** by rendered rows: `/research` validate grid shows 16 rows with a q column filled and 0 suppressed at 3%; the banner reads `0 of 16`. Serving `SELECT count(*) FROM cell_stats WHERE variance_method IS NOT NULL` equals research's.
+- [ ] **Step 5: Verify** by rendered rows: `/research` validate grid: 15 of 16 rows at 3% render numbers and 1 suppresses (`bear_close_above_upper` short 10-20, n_eff about 23); the banner reads `0 of 15`. Serving `SELECT count(*) FROM cell_stats WHERE variance_method IS NOT NULL` equals research's.

@@ -146,7 +146,7 @@ def test_an_inverted_interval_raises():
 
 
 def test_a_point_estimate_outside_its_own_interval_raises():
-    """A Wilson interval contains its point estimate by construction.
+    """The stored interval (ADR 209) contains its point estimate by construction.
 
     A violation means the rate and the interval came from different samples,
     which is what a join matching the wrong cell looks like from the outside.

@@ -38,7 +38,7 @@ export function KillBanner({ cells }: { cells: Cell[] }) {
         The smallest q-value in the grid is{" "}
         <strong className="num">{minQ === null ? NONE : minQ.toFixed(4)}</strong>.{" "}
         <strong className="num">{suppressed.length}</strong> cells are suppressed
-        for insufficient effective sample.
+        (reason in each row).
       </p>
       <p className="dim">
         These events do not predict five-session returns better than each

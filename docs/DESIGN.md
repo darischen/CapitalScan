@@ -1387,7 +1387,10 @@ by a placebo with a known zero edge (`research.placebo`), per split and
 era: validate about 1.18, train 1.0 on 2026-11-18. The p-value tests each fire's edge against its
 own ticker-year baseline, `d = hit − b`, as `P(Z > mean(d) / √V_d)` with
 `V_d` the same inflated month × cluster variance of `d`. A cell with no
-variance suppresses.
+variance suppresses. `n_eff` can exceed `n`: when fires inside one month
+offset each other (negative within-month correlation), the month sums
+cancel, `V` falls below the iid `p(1−p)/n`, and nothing clamps it
+(`test_cell_stats.py::test_n_eff_can_exceed_n_under_negative_within_month_correlation`).
 
 **Until ADR 209** the system used `n_eff = n / (1 + (k̄ − 1)·ρ̄)` with `k̄`
 the mean `cofire_count` and a Wilson interval. `k̄` counted the whole

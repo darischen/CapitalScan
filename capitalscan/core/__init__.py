@@ -19,6 +19,7 @@ from capitalscan.core.variance import (
     inflate,
     inflation_factor,
     month_block,
+    one_sided_p_from_edge,
     robust_n_eff,
     wald_interval,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "inflate",
     "inflation_factor",
     "month_block",
+    "one_sided_p_from_edge",
     "parametric_baseline",
     "rho_bar_for_correction",
     "robust_n_eff",
