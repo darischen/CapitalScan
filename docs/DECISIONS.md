@@ -157,7 +157,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 095 | Exit thresholds in SQL are a second exit implementation | Provisional. Authorizes a Phase 5 rebuild of `v_positions` |
 | 096 | `cell_stats` is keyed by config, not by cell alone | Pinned |
 | 097 | Backtest reads events only within a rolling 2-year window | Superseded by 019/009. Reverted 2026-08-09, never in effect |
-| 098 | Effective sample size: overlapping windows, co-fire weighting, stored per-era table, factor-implied diagnostic | Pinned |
+| 098 | Effective sample size: overlapping windows, co-fire weighting, stored per-era table, factor-implied diagnostic | Pinned. `k_bar` correction superseded for `cell_stats` by ADR 209; `rho_era` kept as a diagnostic |
 | 099 | Market breadth as a reporting split, not a grid dimension | Pinned |
 | 100 | Three Phase 4 contract corrections: v_screen config scope, cell_key wording, exit_mix semantics | Pinned |
 | 101 | Drawdown buckets reduced from four to two; 20%+ measured and permanently suppressed | Pinned |
@@ -225,7 +225,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 163 | `events.id` is local to its store; the natural key is the identity | **Implemented 2026-09-01.** Narrows ADR 158. Fixes the sync `events_pkey` collision; `pull_live_records` nulls `event_id` and resets research's sequences |
 | 164 | The two research machines are functionally identical, not literally | **Decided 2026-09-01.** PG 16.14/17.11 and Python 3.14/3.13 accepted; do not align. **Reopening clause fired 2026-09-03 (ADR 171)**: CI aligned to 3.13, floor to `>=3.13`; the workstation/`wivie` difference itself stands |
 | 165 | Returns count every fire; `cell_stats` keeps the cluster-head filter | **Implemented 2026-09-01.** Adds `research/returns.py` and `cscan stats returns`; the filter is not invariant to a swept `max_hold_days`. No `config_hash` move |
-| 166 | Cluster-robust variance replaces the mean-size `n_eff` correction | **Proposed 2026-09-02, not started.** Two-way clustering by date and `cluster_id`; `n_eff` becomes derived. Validate against current intervals before migrating. After Phase 6 and after the move |
+| 166 | Cluster-robust variance replaces the mean-size `n_eff` correction | **Amended and implemented by ADR 209 (2026-11-18).** Month blocks, not dates; placebo inflation |
 | 167 | Check 5's baseline is global, not per-ticker-year | **Decided 2026-09-02.** Amends ADR 113. Ticker-year overlap across a temporal split is zero, and the faithful reconstruction would be an oracle; per-sector and per-ticker reported beside it, gating nothing |
 | 168 | `watch_reason` gains `near_trade`: `crit_rel_return` alone barring `in_trade` | **Decided 2026-09-02.** Amends ADR 149. `crit_mcap`, `crit_above_sma200`, `crit_sma200_slope` all true, `crit_rel_return` not true (`False` or `None`) — the same "one named failure" shape as `pullback`. No `config_hash` move; existing rows unbackfilled until the next `cscan universe --quarter` |
 | 169 | TabFM evaluated against ADR 063's LightGBM baseline, gated on running on `wivie` | **Measured 2026-09-03. The gate fails.** On `wivie`, a 250-row context takes **231 s for one row** of inference at 7.04GB RSS on a 7.6GB box; ADR 170's model scores all 34,195 validate events in 91 ms on a CPU. On the workstation GPU it runs but loses to LightGBM. Two claims in the original text were wrong and are corrected below. Originally proposed: Google's zero-shot tabular transformer (released 2026-06-30) directly contests ADR 063's "gradient boosting dominates tabular data at this scale" — TabArena beats tuned LightGBM/XGBoost across 700-150k rows and supports native quantile output. Deployment target is `wivie` (measured: i5-7200U, 4 threads, 7.6GB RAM, no discrete GPU), against TabFM's own stated ~40k-row/24GB-GPU ceiling. Nothing measured yet; salvaging a piece (its representation, not the whole model) is on the table alongside full adoption |
@@ -267,6 +267,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 206 | The irreplaceable tables are copied daily to a folder on the Pi | **Decided 2026-11-04 (owner).** Supersedes ADR 083's tiers, whose GitHub Release half would publish a 30 GB database on a public repo and whose serving half named Neon. `cscan backup` runs on `wivie` at 16:30 PT: a `pg_dump` of `predictions`, `outcomes`, `signal_reports`, `poller_sessions`, `runs`, `positions` and `order_intents`, plus every hourly bar, copied to `~/backups/capitalscan` on the Pi through a key whose forced command reaches that folder only. A week of dailies, four weeks of Sundays. Nothing else reads the folder |
 | 207 | A company keeps one symbol, and the new one carries the history | **Decided 2026-11-04 (owner).** A symbol change reached the store as two companies: EQR and VMRK held identical bars back to 2010, and SKYD held 23 bars beside PSKY's twenty years. The new symbol carries the full history; the old one goes inactive, delisted at its last bar, and loses its events, universe rows and paths, except events the forward log or the poller's records reference. Its bars and indicators stay. Applied the same day to both pairs |
 | 208 | Funds and indexes are scored, always cosmetic, and still never train | **Decided 2026-11-04 (owner).** Amends ADR 147's serving clause only. `build_serving_frame` keeps `ETF_TICKERS` rows (`core.training.partition_for_serving`); `build_rows` writes `cosmetic = true` for every fund, in trade or not. Sector encodes all-zero. Training is unchanged, and a blank-sector equity is still dropped. No migration, no `config_hash` move |
+| 209 | `cell_stats` takes its interval from a month x cluster robust variance, inflated by a placebo factor | **Decided 2026-11-18 (owner).** Amends 166, supersedes 098's `k_bar` for `cell_stats`, restates 112 (holds: 0 validate survivors). Migration `d7e3b1a94c52`. No `config_hash` move |
 
 ---
 
@@ -2127,7 +2128,9 @@ What this does not change. The research store continues ingesting from 2009 and 
 
 ## 098. Effective sample size: rho-bar definition, computation, and storage
 
-**Status.** Pinned, 2026-08-10.
+**Status.** Pinned, 2026-08-10. **Its `n_eff` formula no longer feeds
+`cell_stats` (ADR 209, 2026-11-18)**; `rho_era` is still measured and kept
+as a diagnostic.
 
 **Context.**
 
@@ -4949,7 +4952,7 @@ that one logs whatever still gets through.
 | ~~**Hold longs longer**~~ (2026-09-30) | A: leave `max_hold_days` 5, `target_pct` 0.05, `stop_atr_k` 2.0. B: `max_hold_days` 10 with the same target and stop. C: `max_hold_days` 10, 3 ATR stop, no target. Either change applies to shorts too unless `ExitParams` gains per-side fields, and a longer hold costs shorts about 0.03% a day | **Resolved: A, owner 2026-11-03.** The exit stays at 5 days, 2 ATR stop, 5% target. Measured 2026-10-01: both arms raise the long return per trade (+0.270% now, +0.411% for B, +0.581% for C) and all three earn the same **0.070% per day held**: the gain is time in the trade, not a better exit. Shorts lose more under both (−0.150% to −0.200% and −0.260%). A longer hold pays only if capital would otherwise sit idle, and it moves `config_hash` and the forward log's basis. RESULTS 2026-10-01, `scripts/hist/long-hold-2026-09-30/` |
 | ~~**What to do about the short book**~~ (2026-09-29, BACKLOG item 10) | A: enable only the close-confirmed short, `bear_close_above_upper` (+0.471% net), and disable `bb_upper_touch` and `confluence_high` as short entries. B: gate every short on the S&P below its 200-day (+0.126% net there, interval spans zero, n=6,162). C: keep the book, and show a hedged or relative return beside `net_ret` for shorts. D: leave it and document the drift | **Resolved: D, owner 2026-09-30.** Shorts keep firing as they are and the drift is documented. An exit change was tested first and does not rescue them: across 180 simulated exits the best is break-even (RESULTS 2026-09-30). The lean recorded on 2026-09-29 was A with C on the display; the owner chose otherwise |
 | ~~**Add breadth as a model feature**~~ (2026-09-27) | A: adopt `breadth_ma_above` and `breadth_chg_60d` at t-1 as features. B: leave them out | **Resolved: A, ADR 204 (owner, 2026-09-28).** |
-| **ADR 166's validation diverges: shipped `n_eff` is ~35-70x too small** (2026-11-18, RESULTS, BACKLOG "A serial `n_eff`") | A: adopt ADR 166, two-way cluster-robust intervals over every fire, `n_eff` derived; migration plus coordinated handler and view change, then re-run ADR 112's correction on the new intervals. B: keep the shipped estimator and fix only `k_bar`'s scale (the cell's own same-day count in place of the generation-wide `cofire_count`); a smaller change, amends Pinned ADR 098. C: test first, read-only: robust p-values and Benjamini-Hochberg against `baseline_empirical`, plus a time-block bootstrap, before choosing A or B | **Open.** Recommendation C, then A. The width gap holds from date to quarter blocks (60x to 35x in `n_eff`), so the shipped intervals are too wide in every variant tried, but whether any cell then survives correction is unmeasured, and ADR 112 (Pinned) rests on these intervals |
+| ~~**ADR 166's validation diverges: shipped `n_eff` is ~35-70x too small**~~ (2026-11-18, RESULTS, BACKLOG "A serial `n_eff`") | A: adopt ADR 166, two-way cluster-robust intervals over every fire, `n_eff` derived; migration plus coordinated handler and view change, then re-run ADR 112's correction on the new intervals. B: keep the shipped estimator and fix only `k_bar`'s scale (the cell's own same-day count in place of the generation-wide `cofire_count`); a smaller change, amends Pinned ADR 098. C: test first, read-only: robust p-values and Benjamini-Hochberg against `baseline_empirical`, plus a time-block bootstrap, before choosing A or B | **Resolved: C, then A amended, owner 2026-11-18 (ADR 209).** C ran first: under estimators that handle dependence across dates, 0 validate cells survive and 4-6 train cells do. A placebo graded the estimators and month x cluster won; date blocks, ADR 166 as written, were overconfident. Validate carries a placebo inflation of about 1.18 |
 | ~~**Live poller events and pre-floor predictions exist only on serving**~~ (2026-11-17, BACKLOG "Serving holds rows research does not") | A: leave them serving-only. Research stays the end-of-day record, and the poller's evidence reaches it through `signal_reports`. B: pull poller `touch` events into research under their own `run_id`, so analysis there sees what the site showed. C: B plus adopt the 15 pre-floor predictions under new ids | **Resolved: A, owner 2026-11-17.** They stay serving-only. A live detection the close did not confirm is not a backtest event, and mixing them into research's `events` changes what every backtest-side count means. 333 poller events and 15 predictions today |
 | **Wire `P(stop)` into `expected_net_return`** (2026-09-27) | A: leave it unwired. B: use the historical stop-rate table by stop-distance decile. C: use the trough head's CDF at each event's stop | **Deferred, low priority (owner, 2026-09-28).** Not wired: a small feature in the predictions modal is not worth a level-biased expected return. If revisited, use the historical table (B) |
 | ~~**`cscan nightly` never ingests the session it runs after**~~ | Pass `end + 1 day` to the fetcher, or make `_download_daily`'s `end` inclusive to match every other date range in the codebase | **Resolved 2026-08-17 (`b50afa1`): the fetcher passes `end + 1 day`, since yfinance's `end` is exclusive.** Audited 2026-09-26: the 2026-09-25 nightly ingested bars through 2026-09-25 |
@@ -7601,7 +7604,9 @@ is $20e9 and both funds sit more than tenfold above it.
 
 ## 166. Cluster-robust variance replaces the mean-size `n_eff` correction
 
-**Status.** **Proposed 2026-09-02, not implemented and deliberately not
+**Status.** **Amended and implemented by ADR 209, 2026-11-18**: month
+blocks, not dates, plus a placebo inflation. The text below is the
+2026-09-02 proposal. **Proposed 2026-09-02, not implemented and deliberately not
 started.** It changes what a stored `cell_stats` column means, and
 `cell_stats`, the handlers and the serving views all read it — not work to
 have in flight while the research machine is moving. Phase 6 comes first
@@ -11162,3 +11167,90 @@ frame dropped 29 blank-sector equity rows, as before.
 What remains. A fund gets a prediction only when it fires a signal type the
 model was fitted on, like any equity. A fund that fired only stochastic
 signals in the lookback still shows no button.
+
+
+## 209. `cell_stats` takes its interval from a month x cluster robust variance, inflated by a placebo factor
+
+**Status.** **Decided 2026-11-18 (owner).** Amends ADR 166 (month blocks,
+not dates; a placebo inflation). Supersedes ADR 098's `k_bar` correction as
+the source of every `cell_stats` interval; `rho_era` stays as a diagnostic.
+Restates ADR 112 on the new p-values: its verdict holds. Migration
+`d7e3b1a94c52`. No `config_hash` move.
+
+**Context.** ADR 166's validation (RESULTS 2026-11-18) found the shipped
+interval 5-8x too wide, because `k_bar = mean(cofire_count)` counts every
+ticker in the generation firing that signal type that day (about 170) where
+a cell's own events share a date with 4 to 7. A placebo with a known zero
+edge (RESULTS 2026-11-18, 127,787 draws) graded the candidates:
+
+| estimator | train SE/SD | train false rejections | validate SE/SD | validate false rejections |
+|---|---|---|---|---|
+| ADR 098 (shipped) | 5.42 | 0% | 5.44 | 0% |
+| ADR 166 as written, date x cluster | 0.79 | 11.5% | 0.65 | 17% |
+| month x cluster | 1.04 | 4.7% | 0.85 | 10.5% |
+| Driscoll-Kraay lag 5 | 0.99 | 5.4% | 0.84 | 10.5% |
+
+The shipped interval never rejected a true null, so ADR 112's "zero
+survive" measured nothing. The date block ADR 166 proposed is
+overconfident. Month blocks and Driscoll-Kraay tie; month blocks are two
+group sums and an intersection, which a reader can rebuild.
+
+**Decision.**
+
+1. **Every fire counts.** `cell_stats` drops the `is_cluster_head` filter
+   (ADR 166's condition for retiring it is met). `benchmarks` keeps it for
+   now (BACKLOG).
+2. **The variance of `p_hit` is Cameron-Gelbach-Miller two-way**, clustered
+   by calendar month and by `cluster_id`, minus the intersection, falling
+   back to the larger one-way term when the sum is not positive
+   (`core.variance.cluster_robust_variance`).
+3. **The variance is inflated by a factor the placebo measures each run**,
+   per split and per era (`research.placebo.measure_inflation`), floored at
+   1.0 so it never narrows an interval. An era within 5% of its split
+   inherits the split's factor. On 2026-11-18: validate 1.181, train 1.000
+   (eras 1.062, 1.000, 1.072). Two years of validate hold about 24
+   independent months, and no in-sample estimator sees regime variation;
+   a t critical value would add only 1.06x.
+4. **`n_eff` is derived**: `p (1 - p) / V` on the inflated variance. It
+   keeps its column and its meaning for a reader (invariant 8). The
+   interval is Wald, clipped to [0, 1]. The p-value is the test the
+   placebo calibrated: each fire's edge `d = hit - its ticker-year
+   baseline`, `p = norm.sf(mean(d) / sqrt(V_d))` with `V_d` the same
+   inflated month x cluster variance of `d`
+   (`core.variance.one_sided_p_from_edge`). A z-test at the baseline's SE
+   runs about 13% liberal when `p > b`, so it is not used here.
+   Suppression stays `n_eff < min_n_eff`. A cell with no variance (every
+   fire hit, or every fire missed) suppresses with that reason.
+5. **Provenance on the row**: `variance_method = 'cgm_month_cluster'`,
+   `n_time_blocks`, `n_clusters`, `se_inflation`. Null on ADR 098 rows.
+6. **Settings live in `VarianceParams`**, standalone like `RhoParams`, so
+   the live generation keeps its hash and nothing rebuilds.
+
+**ADR 112 restated.** Measured on the workstation copy (bars to
+2026-11-17), generation `f183b0f5209a4677`, 64 cell-targets per split:
+
+| | before (ADR 098) | after (ADR 209) |
+|---|---|---|
+| validate suppressed | 64 | 5 (1 at 3%: `bear_close_above_upper` short 10-20, 36 fires) |
+| validate survivors at q < 0.05 | 0 (family empty) | **0** |
+| train suppressed | 40 | 1 (10% target, every fire missed) |
+| train survivors at q < 0.05 | 0 | 6 |
+
+The six train survivors are long: `bb_lower_touch` 0-10 at 3% (q 0.034),
+and in the 10-20 drawdown bucket `bb_lower_touch` at 5% (0.030),
+`stoch_oversold` at 2% and 3% (0.009 each) and `confluence_low` at 2% and
+3% (0.010, 0.009). They match the month-block count of the read-only
+re-run (RESULTS 2026-11-18). None survives on validate. Kill
+criterion 1 stays fired, now on intervals with power. The 10-20 longs are
+the one thread with the same sign in both splits.
+
+**Rejected.** ADR 098 with `k_bar` rescaled to the cell's own same-day
+count (option B): it ignores dependence across dates, which the placebo
+measured. A block bootstrap as the shipped interval: right size, but a
+reader cannot rebuild it (ADR 166's reason, unchanged).
+
+**Consequences.** The site's validate grid, kill banner, era table,
+drawdown slice and the screener's Cell column show numbers where they
+showed suppress reasons. `cscan stats cells` runs the placebo (about 1 min
+validate, 2 min train on the workstation at 8 workers;
+`--placebo-workers`).

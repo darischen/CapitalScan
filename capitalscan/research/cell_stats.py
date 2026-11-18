@@ -18,6 +18,12 @@ entry-kind filter multiplies it by four again. `GRID_ENTRY_KIND` and
 `GRID_CLUSTER_HEADS_ONLY` below are those filters, named so a future
 reader does not have to re-derive them.
 
+**ADR 209 drops the head filter here.** Every fire enters the cell, and the
+interval comes from a two-way cluster-robust variance (calendar month x
+`cluster_id`) on the hit flags, widened by a placebo-measured inflation
+factor per scope. `n_eff` is derived from that variance, `p (1 - p) / V`.
+`benchmarks` keeps the head filter through `GRID_CLUSTER_HEADS_ONLY`.
+
 **`p_hit` and the baseline are the same quantity.** Both are
 `P(signed return over the horizon >= target)`, measured on the event's own
 side. The `p_touch_*` columns are a different question — did the price
@@ -29,12 +35,14 @@ when the two terms measure the same event.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 from sqlalchemy import Engine, text
 
 from capitalscan.core.baselines import event_weighted_baseline
@@ -47,19 +55,42 @@ from capitalscan.core.cells import (
     reported_eras,
     suppression_reason,
 )
-from capitalscan.core.config import BaselineParams, Config, ReportingParams, StatsParams
+from capitalscan.core.config import (
+    BaselineParams,
+    Config,
+    ReportingParams,
+    StatsParams,
+    VarianceParams,
+)
 from capitalscan.core.stats import (
     benjamini_hochberg,
     effective_sample_size,
-    one_sided_p_value,
     rho_bar_for_correction,
-    wilson_ci,
+)
+from capitalscan.core.variance import (
+    cluster_robust_variance,
+    inflate,
+    month_block,
+    one_sided_p_from_edge,
+    robust_n_eff,
+    wald_interval,
 )
 from capitalscan.research.baselines import attach_event_baselines
 
+logger = logging.getLogger(__name__)
+
 # ADR 102's measured population. See the module docstring.
 GRID_ENTRY_KIND = "next_open"
+# `benchmarks` still measures cluster heads only (a BACKLOG follow-up).
 GRID_CLUSTER_HEADS_ONLY = True
+# ADR 209: `cell_stats` counts every fire. The month x cluster variance
+# carries the dependence the head filter used to approximate, so the filter
+# would only discard observations.
+CELL_STATS_CLUSTER_HEADS_ONLY = False
+
+# Stored on every row, so a reader can tell which estimator built the
+# interval (ADR 209). Null on rows written before it.
+VARIANCE_METHOD = "cgm_month_cluster"
 
 # `next_open` enters one bar after the signal, so a closed forward window
 # needs `entry_offset + max_hold_days` bars. Derived rather than written
@@ -109,6 +140,10 @@ CELL_STATS_COLUMNS = [
     "earnings_frac",
     "suppressed",
     "suppress_reason",
+    "variance_method",
+    "n_time_blocks",
+    "n_clusters",
+    "se_inflation",
     "computed_at",
     "git_sha",
 ]
@@ -311,13 +346,15 @@ def _baseline_for(
 
 def compute_grid(
     events: pd.DataFrame,
-    rho_era: pd.DataFrame,
+    rho_era: pd.DataFrame | None,
     cfg: Config,
     *,
     specs: tuple[CellSpec, ...] | None = None,
     baselines: dict[int, pd.DataFrame] | None = None,
     bp: BaselineParams | None = None,
     era: str | None = None,
+    inflation: float = 1.0,
+    vp: VarianceParams | None = None,
     run_id: str = "",
     config_hash: str = "",
     git_sha: str = "",
@@ -332,8 +369,18 @@ def compute_grid(
     baseline frame. Omitted, the baseline columns come back null and the
     cell still reports its counts and distribution — a partial row is
     visible, a fabricated baseline is not.
+
+    `inflation` is the scope's placebo factor (ADR 209): it multiplies the
+    standard error, so the variance by its square. `rho_era` no longer
+    enters any row since ADR 209 retired ADR 098's correction here; the
+    parameter stays so older research scripts still call this unchanged.
+
+    `vp.ci_level` sets the interval's coverage; the z critical value is
+    derived here rather than written down (invariant 9).
     """
+    del rho_era
     bp = bp or BaselineParams()
+    z = ci_z(vp or VarianceParams())
     sp = cfg.stats
     # ADR 103. Era 2024+ *is* the holdout split, so a headline cell for it
     # reports on holdout. Refused here rather than left to the caller's
@@ -349,6 +396,7 @@ def compute_grid(
 
     entry_kind = _single_value(events, "entry_kind", GRID_ENTRY_KIND)
     split_key = _single_value(events, "split_key", "train")
+    events = _drop_null_clusters(events)
 
     rows: list[dict[str, Any]] = []
     for spec in specs:
@@ -367,7 +415,8 @@ def compute_grid(
                     spec,
                     target=float(target),
                     horizon=horizon,
-                    rho_era=rho_era,
+                    inflation=float(inflation),
+                    z=z,
                     sp=sp,
                     baselines=baselines,
                     era=era,
@@ -382,6 +431,27 @@ def compute_grid(
 
     frame = pd.DataFrame(rows, columns=CELL_STATS_COLUMNS)
     return apply_benjamini_hochberg(frame, sp)
+
+
+def ci_z(vp: VarianceParams) -> float:
+    """Two-sided z critical value for `vp.ci_level`: 1.96 at 0.95."""
+    return float(norm.ppf(1.0 - (1.0 - vp.ci_level) / 2.0))
+
+
+def _drop_null_clusters(events: pd.DataFrame) -> pd.DataFrame:
+    """Fires with a null `cluster_id`, dropped and counted (invariant 4).
+
+    `astype(str)` would turn every null into one cluster named `"nan"` and
+    pool unrelated fires into it, which narrows nothing visibly and
+    misstates the variance.
+    """
+    if "cluster_id" not in events.columns:
+        raise ValueError("cell events need cluster_id for the ADR 209 variance")
+    null = events["cluster_id"].isna()
+    if null.any():
+        logger.warning("cell_stats: dropped %d fires with a null cluster_id", int(null.sum()))
+        return events.loc[~null]
+    return events
 
 
 def _single_value(events: pd.DataFrame, column: str, fallback: str) -> str:
@@ -399,7 +469,8 @@ def _cell_row(
     *,
     target: float,
     horizon: int,
-    rho_era: pd.DataFrame,
+    inflation: float,
+    z: float,
     sp: StatsParams,
     baselines: dict[int, pd.DataFrame] | None,
     era: str | None,
@@ -433,6 +504,8 @@ def _cell_row(
         "target_pct": target,
         "n_events": n,
         "p_value_randomization": None,  # Session 13's 200 replications
+        "variance_method": VARIANCE_METHOD,
+        "se_inflation": inflation,
         "computed_at": computed_at,
         "git_sha": git_sha,
     }
@@ -442,13 +515,44 @@ def _cell_row(
             {col: None for col in CELL_STATS_COLUMNS if col not in row},
             n_eff=0.0,
             n_tickers=0,
+            n_time_blocks=0,
+            n_clusters=0,
             suppressed=True,
             suppress_reason="no events in cell",
         )
         return row
 
-    k_bar, _, n_eff = cell_n_eff(cell_events, rho_era)
-    reason = suppression_reason(n_eff, sp)
+    # ADR 209. The variance runs over the fires with a measured outcome;
+    # a null flag is the absence of a measurement, not a miss (invariant 4).
+    flags = hit_flags(cell_events, target, horizon)
+    resolved = cell_events.loc[flags.notna()]
+    y = flags.dropna().astype("float64").to_numpy()
+    p_hit: float | None = float(y.mean()) if len(y) else None
+
+    reason: str | None
+    n_eff = 0.0
+    v = 0.0
+    n_blocks = 0
+    n_clusters = 0
+    if p_hit is None:
+        reason = "no resolved outcomes in cell"
+    else:
+        block = month_block(resolved["signal_date"])
+        cluster = pd.factorize(resolved["cluster_id"].astype(str))[0].astype(np.int64)
+        n_blocks = int(np.unique(block).size)
+        n_clusters = int(np.unique(cluster).size)
+        v = inflate(cluster_robust_variance(y, block, cluster)[0], inflation)
+        robust = robust_n_eff(p_hit, v)
+        if robust is None:
+            if p_hit >= 1.0:
+                reason = "no variance: every fire hit"
+            elif p_hit <= 0.0:
+                reason = "no variance: every fire missed"
+            else:
+                reason = "no variance: one month and one cluster"
+        else:
+            n_eff = float(robust)
+            reason = suppression_reason(n_eff, sp)
 
     direction = -1 if spec.side == "short" else 1
     baseline_frame = (baselines or {}).get(direction)
@@ -457,14 +561,16 @@ def _cell_row(
         cell_events, baseline_frame, target, "baseline_parametric"
     )
 
-    flags = hit_flags(cell_events, target, horizon)
-    p_hit = None if flags.dropna().empty else float(flags.dropna().mean())
-
     row.update(
         {
-            "n_eff": float(n_eff),
+            "n_eff": n_eff,
             "n_tickers": int(cell_events["ticker"].nunique()),
-            "mean_cofire": k_bar,
+            # A diagnostic since ADR 209: no interval reads it.
+            "mean_cofire": float(
+                pd.to_numeric(cell_events["cofire_count"], errors="coerce").mean()
+            ),
+            "n_time_blocks": n_blocks,
+            "n_clusters": n_clusters,
             "baseline_empirical": baseline_empirical,
             "baseline_parametric": baseline_parametric,
             "mean_ret": _numeric_or_none(cell_events["net_ret"], "mean"),
@@ -487,20 +593,15 @@ def _cell_row(
         }
     )
 
-    if reason is not None:
+    if reason is not None or p_hit is None:
         # No number renders on a suppressed cell. The counts above stay,
         # because they are the explanation.
         row.update({col: None for col in RENDERED_COLUMNS})
         return row
 
-    edge = None if (p_hit is None or baseline_empirical is None) else p_hit - baseline_empirical
-    ci_low: float | None = None
-    ci_high: float | None = None
-    if p_hit is not None:
-        # Wilson takes `n_eff`, never `n`. The parameter is named for it and
-        # a signature test enforces the name, but the caller still has to
-        # pass the right thing (ADR 098).
-        ci_low, ci_high = wilson_ci(p_hit * n_eff, n_eff)
+    edge = None if baseline_empirical is None else p_hit - baseline_empirical
+    # The interval is on the hit rate; the test is on the edge (below).
+    ci_low, ci_high = wald_interval(p_hit, v, z)
 
     row.update(
         {
@@ -508,19 +609,58 @@ def _cell_row(
             "edge": edge,
             "ci_low": ci_low,
             "ci_high": ci_high,
-            "p_value_parametric": one_sided_p_value(p_hit, baseline_empirical, n_eff),
+            "p_value_parametric": _edge_p_value(
+                resolved, baseline_frame, target, horizon, inflation
+            ),
             "q_value": None,  # filled by the family-wide correction
         }
     )
     return row
 
 
+def _edge_p_value(
+    resolved: pd.DataFrame,
+    baseline_frame: pd.DataFrame | None,
+    target: float,
+    horizon: int,
+    inflation: float,
+) -> float | None:
+    """One-sided p-value on the per-event edge `d_i = hit_i - baseline_i`.
+
+    This is the test the placebo calibrated (ADR 209,
+    `placebo_estimators.py`): the variance is the month x cluster variance
+    of `mean(d)` itself, inflated by the scope's factor. Testing `p_hit`
+    against the baseline's binomial SE on `n_eff` would read
+    `V b (1 - b) / p (1 - p)` instead of `V` and run liberal when `p > b`.
+
+    Each event uses its own ticker-year `baseline_empirical`. Events whose
+    baseline is null drop out of this test only (invariant 4). So the two
+    numbers cover different populations when any baseline is null: the
+    stored `edge` is `p_hit` over every resolved fire minus the cell's
+    event-weighted baseline, while this test reads only the fires with a
+    non-null baseline. The p-value does not test the stored `edge` exactly.
+    """
+    if baseline_frame is None or baseline_frame.empty or resolved.empty:
+        return None
+    joined = attach_event_baselines(resolved, baseline_frame, target)
+    base = pd.to_numeric(joined["baseline_empirical"], errors="coerce")
+    joined = joined.loc[base.notna()]
+    if joined.empty:
+        return None
+    y = hit_flags(joined, target, horizon).astype("float64").to_numpy()
+    d = y - base.loc[joined.index].to_numpy(dtype="float64")
+    block = month_block(joined["signal_date"])
+    cluster = pd.factorize(joined["cluster_id"].astype(str))[0].astype(np.int64)
+    v_d = inflate(cluster_robust_variance(d, block, cluster)[0], inflation)
+    return one_sided_p_from_edge(float(d.mean()), v_d)
+
+
 def apply_benjamini_hochberg(rows: pd.DataFrame, sp: StatsParams) -> pd.DataFrame:
     """FDR correction over DESIGN §6.8's family, and nothing else.
 
-    The family is every **rendered, pooled** headline cell across every
-    ladder target for one config: twelve cells times four targets is 48
-    tests.
+    The family is every **pooled, unsuppressed** headline cell-target with a
+    p-value, across every ladder target for one config. Its size follows
+    the grid and the suppressions, so no count is fixed here.
 
     Two exclusions matter and both are correctness, not taste. Suppressed
     cells stay out because including them inflates `m` and weakens every
@@ -645,7 +785,7 @@ def load_grid_events(
     """
     sql = [
         "SELECT ticker, signal_date, signal_type, side, dd_bucket, era, split_key,",
-        "       entry_kind, is_cluster_head, fwd_window_days, cofire_count,",
+        "       entry_kind, is_cluster_head, cluster_id, fwd_window_days, cofire_count,",
         "       fwd_ret_1d, fwd_ret_2d, fwd_ret_3d, fwd_ret_5d, fwd_ret_10d,",
         "       net_ret, gross_ret, mfe, mae, time_to_mfe, capture_ratio, exit_reason,",
         "       earnings_in_window, touched_2pct, day_touched_2pct, touched_3pct,",
@@ -656,7 +796,7 @@ def load_grid_events(
         # membership and started recording it, so the cell population is
         # only unchanged while this predicate is here. Without it every
         # measured cell silently widens by roughly 4.4x on the next
-        # `cscan cell-stats`, and nothing about the output would look
+        # `cscan stats cells`, and nothing about the output would look
         # wrong.
         "AND in_trade",
         "AND entry_kind = :entry_kind",
@@ -737,21 +877,54 @@ class CellStatsRunReport:
     n_rows_era: int
     n_written: int
     suppressed_cells: tuple[str, ...]
+    # `(scope, factor)` per placebo scope, pooled first (ADR 209).
+    inflation: tuple[tuple[str, float], ...] = ()
 
     def summary(self) -> str:
+        factors = ", ".join(f"{scope} {f:.4f}" for scope, f in self.inflation)
         return (
             f"{self.selection.summary()}\n"
             f"pooled rows: {self.n_rows_pooled}, era rows: {self.n_rows_era}, "
             f"written: {self.n_written}\n"
+            f"se inflation: {factors or 'none'}\n"
             f"suppressed: {', '.join(self.suppressed_cells) or 'none'}"
         )
 
 
+def panel_bounds(
+    events: pd.DataFrame,
+    cfg: Config,
+    vp: VarianceParams,
+    horizon: int,
+) -> tuple[str, str]:
+    """`(start, end)` of the adj-close panel `run_cell_stats` loads once.
+
+    The baselines want two years before the first event year and one after
+    the last (see `build_baselines`). The placebo wants every bar of
+    `vp.placebo_window` plus the forward window of its last day. The panel
+    covers both and stops at the end of the month after `validate_end`.
+    Those January 2024 bars are loaded only so the forward windows of
+    December 2023 fires and placebo days can close; no holdout event is
+    loaded, and nothing measures a holdout outcome from them.
+    """
+    years = pd.to_datetime(events["signal_date"]).dt.year
+    start = min(pd.Timestamp(f"{int(years.min()) - 2}-01-01"), pd.Timestamp(vp.placebo_window[0]))
+    placebo_end = (
+        pd.Timestamp(vp.placebo_window[1]) + pd.offsets.BDay(horizon) + pd.offsets.MonthEnd(0)
+    )
+    end = max(pd.Timestamp(f"{int(years.max()) + 1}-12-31"), placebo_end)
+    cap = pd.Timestamp(cfg.splits.validate_end) + pd.offsets.MonthEnd(1)
+    end = min(end, cap)
+    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+
 def build_baselines(
-    engine: Engine,
+    engine: Engine | None,
     events: pd.DataFrame,
     sp: StatsParams,
     bp: BaselineParams,
+    *,
+    panel: pd.DataFrame | None = None,
 ) -> dict[int, pd.DataFrame]:
     """Ticker-year baselines for both directions over the event universe.
 
@@ -764,15 +937,21 @@ def build_baselines(
     and the empirical one needs a complete forward window. A window cut to
     the event years exactly would null the first and last year of every
     ticker.
+
+    `panel` is a preloaded adj-close panel. `run_cell_stats` passes one so
+    the placebo and the baselines read the same bars from one load; omitted,
+    the panel loads here over the window described above.
     """
     from capitalscan.research.baselines import load_adj_close_panel, ticker_year_baselines
 
-    tickers = sorted(events["ticker"].dropna().unique().tolist())
-    years = pd.to_datetime(events["signal_date"]).dt.year
-    start = f"{int(years.min()) - 2}-01-01"
-    end = f"{int(years.max()) + 1}-12-31"
-
-    panel = load_adj_close_panel(engine, tickers=tickers, start=start, end=end)
+    if panel is None:
+        if engine is None:
+            raise ValueError("build_baselines needs an engine or a preloaded panel")
+        tickers = sorted(events["ticker"].dropna().unique().tolist())
+        years = pd.to_datetime(events["signal_date"]).dt.year
+        start = f"{int(years.min()) - 2}-01-01"
+        end = f"{int(years.max()) + 1}-12-31"
+        panel = load_adj_close_panel(engine, tickers=tickers, start=start, end=end)
     return {
         1: ticker_year_baselines(panel, sp.reach_targets, bp, direction=1),
         -1: ticker_year_baselines(panel, sp.reach_targets, bp, direction=-1),
@@ -786,6 +965,7 @@ def run_cell_stats(
     *,
     cfg: Config | None = None,
     bp: BaselineParams | None = None,
+    vp: VarianceParams | None = None,
     run_id: str = "",
     git_sha: str = "",
     eras: tuple[str, ...] | None = None,
@@ -794,44 +974,78 @@ def run_cell_stats(
     """Measure the headline grid for one config and write it.
 
     Returns `(rows, report)`. The pooled rows carry q-values over the
-    48-test family; the era rows (12.4) are descriptive and carry none.
+    pooled, unsuppressed family; the era rows (12.4) are descriptive and carry none.
+
+    ADR 209: every fire enters, and each scope (the split pooled, each
+    reported era) gets its own placebo inflation factor, measured once per
+    run from the same adj-close panel the baselines read.
     """
+    from capitalscan.research.baselines import load_adj_close_panel
+    from capitalscan.research.placebo import POOLED, measure_inflation
+
+    if split_key == "holdout":
+        raise ValueError(
+            "run_cell_stats refuses split_key 'holdout': ADR 209's placebo factor is "
+            "designed for train and validate only, and the holdout evaluation needs its "
+            "own factor design (BACKLOG, 'Holdout evaluation needs a placebo factor design')"
+        )
     cfg = cfg or Config()
     bp = bp or BaselineParams()
+    vp = vp or VarianceParams()
 
-    events = load_grid_events(engine, config_hash, split_key)
+    events = load_grid_events(
+        engine, config_hash, split_key, cluster_heads_only=CELL_STATS_CLUSTER_HEADS_ONLY
+    )
     selected, selection = select_grid_events(
         events, cfg.stats, min_fwd_window=min_fwd_window_for(cfg)
     )
-    rho_era = load_rho_era(engine, config_hash)
-    baselines = build_baselines(engine, selected, cfg.stats, bp)
-
-    pooled = compute_grid(
-        selected,
-        rho_era,
-        cfg,
-        baselines=baselines,
-        bp=bp,
-        run_id=run_id,
-        config_hash=config_hash,
-        git_sha=git_sha,
-    )
+    # Dropped once, here, so the placebo and the cells measure the same
+    # population and the warning logs once rather than once per grid.
+    selected = _drop_null_clusters(selected).reset_index(drop=True)
 
     # Default to every era except the holdout one (ADR 103), derived rather
     # than listed at the call site. `compute_grid` refuses the holdout era
     # regardless, so an explicit caller cannot route around this.
     eras = reported_eras(cfg.stats, cfg.splits) if eras is None else eras
 
+    tickers = sorted(selected["ticker"].dropna().unique().tolist())
+    start, end = panel_bounds(selected, cfg, vp, bp.horizon_days)
+    panel = load_adj_close_panel(engine, tickers=tickers, start=start, end=end)
+    baselines = build_baselines(None, selected, cfg.stats, bp, panel=panel)
+
+    # An era with no selected events gets no placebo scope: it would only
+    # floor with a warning. Its rows still come from `compute_grid` below,
+    # as "no events in cell", under the floor factor.
+    scopes = {POOLED: pd.Series(True, index=selected.index)}
+    scopes.update({era: selected["era"] == era for era in eras if (selected["era"] == era).any()})
+    factors = measure_inflation(panel, selected, cfg.stats, vp, bp.horizon_days, scopes)
+    del panel
+
+    pooled = compute_grid(
+        selected,
+        None,
+        cfg,
+        baselines=baselines,
+        bp=bp,
+        inflation=factors[POOLED],
+        vp=vp,
+        run_id=run_id,
+        config_hash=config_hash,
+        git_sha=git_sha,
+    )
+
     era_frames = []
     for era in eras:
         era_frames.append(
             compute_grid(
                 selected,
-                rho_era,
+                None,
                 cfg,
                 baselines=baselines,
                 bp=bp,
                 era=era,
+                inflation=factors.get(era, vp.inflation_floor),
+                vp=vp,
                 run_id=run_id,
                 config_hash=config_hash,
                 git_sha=git_sha,
@@ -853,6 +1067,7 @@ def run_cell_stats(
         n_rows_era=int(sum(len(f) for f in era_frames)),
         n_written=n_written,
         suppressed_cells=suppressed,
+        inflation=tuple((scope, float(f)) for scope, f in factors.items()),
     )
     return rows, report
 

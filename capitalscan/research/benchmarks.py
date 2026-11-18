@@ -384,10 +384,11 @@ def load_signal_events(
 ) -> pd.DataFrame:
     """ADR 102's measured population, one side, for the arm layer.
 
-    Same two filters `research.cell_stats.load_grid_events` applies —
-    `entry_kind = 'next_open'` and `is_cluster_head` — imported from that
-    module rather than restated, so the arms and the grid cannot end up
-    measuring different populations of the same config.
+    `entry_kind = 'next_open'` and `is_cluster_head`, imported from
+    `research.cell_stats` rather than restated. Since ADR 209 `cell_stats`
+    counts every fire and this layer still keeps cluster heads only
+    (`GRID_CLUSTER_HEADS_ONLY`); moving the arms to every fire is a BACKLOG
+    follow-up, not an accident to fix here.
     """
     sql = [
         "SELECT ticker, signal_date, signal_type, side, era, k_full, cofire_count",

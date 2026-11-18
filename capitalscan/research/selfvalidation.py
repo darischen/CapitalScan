@@ -17,9 +17,19 @@ the gate rather than the null test on its own.
 Three rules this module follows, all from the session spec:
 
 - **The real code path, not a parallel one.** `cell_statistics` below calls
-  `research.baselines`, `research.rho`, `research.backtest.add_cofire_count`,
-  and every function in `core.stats`. A test exercising a reimplementation
-  proves nothing about the implementation that ships.
+  `research.baselines`, `research.backtest.add_cofire_count`,
+  `jobs.compute._tag_clusters` for `cluster_id`, and the functions
+  `research.cell_stats` ships with since ADR 209: `core.variance`'s
+  `cluster_robust_variance` (calendar month x `cluster_id`),
+  `robust_n_eff`, `wald_interval` and `one_sided_p_from_edge`, then
+  `core.stats.benjamini_hochberg`. A test exercising a reimplementation
+  proves nothing about the implementation that ships. Until ADR 209 this
+  module tested ADR 098's `k_bar` correction and a Wilson interval, which
+  no longer build any stored row.
+  One deliberate departure: the null test does not apply `cell_stats`'s
+  `min_n_eff` floor. About 73% of synthetic cells fall below 30 and would
+  never publish, and keeping them makes the gate harsher, not easier: on
+  the cells that would publish the correct path's raw tail is 0%.
 - **Seeded and reproducible.** Two runs produce identical output. Every
   generator here takes its seed from the caller.
 - **Report the rate, not pass or fail.** A run at 4.9% and a run at 0.2% are
@@ -28,9 +38,15 @@ Three rules this module follows, all from the session spec:
 
 **On `broken_se_on_raw_n`.** A guard nobody has seen fail is not known to
 work, so the null test carries a switch that reintroduces a specific, real
-bug: standard errors on `n` rather than `n_eff`. `confirm_broken_variant_fails`
+bug: standard errors on `n` rather than `n_eff`. On the ADR 209 path that
+means the iid variance `var(y) / n` in place of the month x cluster one,
+which ignores every co-firing name sharing the market factor. `confirm_broken_variant_fails`
 runs it and asserts the null test catches it. The switch exists only for
 that confirmation and is never reachable from the passing path.
+
+**Inflation is 1.0 here.** ADR 209 widens each shipped scope by a factor a
+placebo measures on real bars. The synthetic null has no placebo, and the
+gate asks whether the estimator itself is calibrated, so nothing inflates.
 
 **On the synthetic panel.** DESIGN §6.13 says driftless GBM. This module
 uses `research.synthetic.single_factor_bars` with `mu_annual = 0`, which is
@@ -54,17 +70,23 @@ from capitalscan.core.baselines import event_weighted_baseline
 from capitalscan.core.config import (
     DEFAULT_BASELINE,
     BaselineParams,
+    ExitParams,
     StatsParams,
+    VarianceParams,
 )
-from capitalscan.core.stats import (
-    benjamini_hochberg,
-    effective_sample_size,
-    rho_bar_for_correction,
-    standard_error_n_eff,
-    wilson_ci,
+from capitalscan.core.stats import benjamini_hochberg
+from capitalscan.core.variance import (
+    cluster_robust_variance,
+    inflate,
+    month_block,
+    one_sided_p_from_edge,
+    robust_n_eff,
+    wald_interval,
 )
+from capitalscan.jobs.compute import _tag_clusters
 from capitalscan.research.backtest import add_cofire_count
 from capitalscan.research.baselines import attach_event_baselines, ticker_year_baselines
+from capitalscan.research.cell_stats import ci_z
 from capitalscan.research.rho import (
     cofire_pair_days,
     empirical_rho_bar,
@@ -76,22 +98,26 @@ from capitalscan.research.synthetic import single_factor_bars
 # specification; the betas spread around 1.0 so the factor structure is
 # heterogeneous rather than every name moving identically.
 #
-# Equal market and residual volatility puts the measured pairwise
-# correlation of 5-day returns near 0.48, which is where mega-cap US
-# equities actually sit — index constituents run 0.3-0.5 in calm periods
-# and higher under stress, and this signal fires on drawdowns.
+# Market volatility of 0.30 against residual 0.18 puts the pairwise
+# correlation of 5-day returns near 0.7. Index constituents run 0.3-0.5 in
+# calm periods and higher under stress, and this signal fires on drawdowns,
+# so this is the stressed end of the real range.
 #
 # Stated plainly because it looks like a tuning knob: the **correct**
-# pipeline reports zero significant cells at every setting tried, from
-# 0.16/0.25 through 0.30/0.18. What this level buys is a null test that can
-# *fail*. At 0.16/0.25 the broken variant's rate is 3.8%, under the 5%
-# threshold, so the guard would not catch a real bug; at 0.22/0.22 it is
-# 11.7%. The parameter was chosen for the sensitivity of the guard, never
-# to move the result the guard reports.
+# pipeline passes at every setting tried. What the level buys is a null
+# test that can *fail*. Under ADR 098's two-sided z-test, 0.22/0.22 gave
+# the broken variant 11.7% and was the setting. ADR 209's test is
+# one-sided (`one_sided_p_from_edge`), which counts one tail of the same
+# overconfidence, and at 0.22/0.22 the broken variant fell to 3.8% (seed
+# 20260811) and 2.6% (seed 777) at ten replications: under the 5%
+# threshold, so the guard no longer caught the bug. At 0.30/0.18 it reads
+# 10.7% and 9.6% on those seeds, while the correct path reads 0.24% and
+# 0.0% (measured 2026-11-18). The parameter was chosen for the
+# sensitivity of the guard, never to move the result the guard reports.
 NULL_N_TICKERS = 50
 NULL_N_DAYS = 2500
-NULL_SIGMA_MARKET = 0.22
-NULL_SIGMA_RESID = 0.22
+NULL_SIGMA_MARKET = 0.30
+NULL_SIGMA_RESID = 0.18
 NULL_BETA_LOW = 0.6
 NULL_BETA_HIGH = 1.4
 
@@ -114,6 +140,11 @@ RECOVERY_TARGET = 0.02
 
 _SIGNAL_TYPE = "SYNTHETIC_NULL"
 _ERA = "synthetic"
+_SIDE = "long"
+
+# ADR 209's inflation factor. The synthetic null has no placebo (see the
+# module docstring), so the estimator runs uninflated.
+NULL_INFLATION = 1.0
 
 # Event generation draws from `seed + _EVENT_SEED_OFFSET`. The offset is
 # large because `single_factor_bars` derives ticker `i` from `seed + 1 + i`:
@@ -147,6 +178,7 @@ class NullTestResult:
     mean_n: float
     mean_n_eff: float
     z_sd: float
+    upper_tail_rate: float
     min_p_value: float
     seed: int
     broken_se_on_raw_n: bool
@@ -247,7 +279,25 @@ def synthetic_events(
     events = pd.DataFrame(rows)
     events["signal_type"] = _SIGNAL_TYPE
     events["era"] = _ERA
-    return add_cofire_count(events)
+    events["side"] = _SIDE
+    return add_cofire_count(_with_clusters(events))
+
+
+def _with_clusters(events: pd.DataFrame) -> pd.DataFrame:
+    """`cluster_id` exactly as `run_events` assigns it: one (ticker, side)
+    run of fires whose gaps stay within `ExitParams.max_hold_days`.
+
+    The real `jobs.compute._tag_clusters` does the tagging, so the ADR 209
+    variance clusters synthetic fires by the rule it clusters real ones by.
+    It sorts and mutates its input records, so it gets copies, and the
+    original row order is restored afterwards.
+    """
+    records = [{**rec, "_row": i} for i, rec in enumerate(events.to_dict("records"))]
+    tagged = _tag_clusters(records, ExitParams().max_hold_days)
+    order = sorted(tagged, key=lambda rec: rec["_row"])
+    out = events.copy()
+    out["cluster_id"] = [rec["cluster_id"] for rec in order]
+    return out
 
 
 def attach_outcomes(
@@ -273,22 +323,30 @@ def attach_outcomes(
 def cell_statistics(
     events: pd.DataFrame,
     baselines: pd.DataFrame,
-    rho_bar: float,
     targets: tuple[float, ...],
     sp: StatsParams,
     broken_se_on_raw_n: bool = False,
+    vp: VarianceParams | None = None,
 ) -> pd.DataFrame:
-    """One row per (cell, target): the real Phase 4 arithmetic.
+    """One row per (cell, target): the shipped ADR 209 arithmetic.
 
     Test family, per DESIGN §6.8: every cell crossed with every ladder
     target, for one config. Benjamini-Hochberg runs once across that whole
-    family, not per target — correcting inside each target separately would
+    family, not per target. Correcting inside each target separately would
     under-correct by the number of targets.
 
-    `broken_se_on_raw_n` divides by `n` instead of `n_eff`. Nothing but
+    Per cell, as `research.cell_stats._cell_row` and `_edge_p_value` do it:
+    the variance of `p_hit` is the month x `cluster_id` cluster-robust
+    variance of the hit flags, `n_eff = p (1 - p) / V`, the interval is
+    Wald at `vp.ci_level`, and the p-value is one-sided on each fire's
+    edge `d = hit - baseline_empirical`, at the same variance of `mean(d)`.
+    `NULL_INFLATION` (1.0) multiplies both standard errors.
+
+    `broken_se_on_raw_n` swaps both variances for the iid `var / n`, which
+    is the variance on the raw count. Nothing but
     `confirm_broken_variant_fails` passes True.
     """
-    rho = rho_bar_for_correction(rho_bar)
+    z_crit = ci_z(vp or VarianceParams())
     rows = []
     for target in targets:
         joined = attach_event_baselines(events, baselines, target)
@@ -302,32 +360,45 @@ def cell_statistics(
             if baseline is None:
                 continue
 
-            p_hit = float(usable["hit"].mean())
-            k_bar = float(usable["cofire_count"].mean())
-            n_eff = effective_sample_size(n, k_bar, rho)
-            se = standard_error_n_eff(baseline, n if broken_se_on_raw_n else n_eff)
+            y = usable["hit"].to_numpy(dtype="float64")
+            p_hit = float(y.mean())
+            block = month_block(usable["signal_date"])
+            cluster = pd.factorize(usable["cluster_id"].astype(str))[0].astype(np.int64)
+            v = inflate(_variance(y, block, cluster, broken_se_on_raw_n), NULL_INFLATION)
+            n_eff = robust_n_eff(p_hit, v)
 
-            # A degenerate standard error (baseline exactly 0 or 1) carries
-            # no test. Reporting it as p = 0 would manufacture significance
-            # out of arithmetic, so it is skipped and counted by absence.
-            if se == 0.0:
+            # The edge test reads only fires with a baseline (invariant 4),
+            # as `_edge_p_value` does.
+            has_base = usable["baseline_empirical"].notna().to_numpy()
+            d = y[has_base] - usable["baseline_empirical"].to_numpy(dtype="float64")[has_base]
+            v_d = inflate(
+                _variance(d, block[has_base], cluster[has_base], broken_se_on_raw_n),
+                NULL_INFLATION,
+            )
+            p_value = one_sided_p_from_edge(float(d.mean()), v_d)
+
+            # A degenerate variance (every fire hit, or every fire missed)
+            # carries no test. The shipped writer suppresses such a cell;
+            # here it is skipped and counted by absence.
+            if n_eff is None or p_value is None:
                 continue
-            z = (p_hit - baseline) / se
-            p_value = float(2.0 * scipy_stats.norm.sf(abs(z)))
-            lower, upper = wilson_ci(p_hit * n_eff, n_eff, sp.fdr_alpha)
+            se = float(np.sqrt(v_d))
+            lower, upper = wald_interval(p_hit, v, z_crit)
 
             rows.append(
                 {
                     "cell": int(str(cell)),
                     "target_pct": float(target),
                     "n": n,
-                    "n_eff": n_eff,
-                    "k_bar": k_bar,
+                    "n_eff": float(n_eff),
+                    "k_bar": float(usable["cofire_count"].mean()),
+                    "n_time_blocks": int(np.unique(block).size),
+                    "n_clusters": int(np.unique(cluster).size),
                     "p_hit": p_hit,
                     "baseline": baseline,
                     "edge": p_hit - baseline,
                     "se": se,
-                    "z": z,
+                    "z": float(d.mean()) / se,
                     "p_value": p_value,
                     "ci_lower": lower,
                     "ci_upper": upper,
@@ -345,6 +416,13 @@ def cell_statistics(
     return frame
 
 
+def _variance(y: np.ndarray, block: np.ndarray, cluster: np.ndarray, broken: bool) -> float:
+    """The month x cluster variance of `mean(y)`, or, broken, the iid one."""
+    if broken:
+        return float(np.var(y)) / len(y)
+    return cluster_robust_variance(y, block, cluster)[0]
+
+
 def _one_replication(
     seed: int,
     sp: StatsParams,
@@ -360,9 +438,7 @@ def _one_replication(
     measured_rho, _, _, _ = empirical_rho_bar(returns_wide, cofire_pair_days(events))
     rho_bar = 0.0 if measured_rho is None else float(measured_rho)
 
-    cells = cell_statistics(
-        events, baselines, rho_bar, tuple(sp.reach_targets), sp, broken_se_on_raw_n
-    )
+    cells = cell_statistics(events, baselines, tuple(sp.reach_targets), sp, broken_se_on_raw_n)
     return cells, rho_bar
 
 
@@ -422,15 +498,29 @@ def run_null_test(
         mean_k_bar=float(cells["k_bar"].mean()) if n_tests else 0.0,
         mean_n=float(cells["n"].mean()) if n_tests else 0.0,
         mean_n_eff=float(cells["n_eff"].mean()) if n_tests else 0.0,
-        # Under a correct correction the z-scores are standard normal, so a
-        # z_sd near 1 says the layer is calibrated, well under 1 says it is
-        # conservative, and above 1 says intervals are too narrow. This is
-        # the number that explains a rate rather than restating it.
-        z_sd=float(cells["z"].std()) if n_tests > 1 else 0.0,
+        # Under a correct variance the z-scores are near standard normal, so
+        # a z_sd near 1 says the layer is calibrated and above 1 says
+        # intervals are too narrow. Measured on the interquartile range
+        # (IQR over a normal's IQR), not the plain SD: a cell with three to five month
+        # blocks gives a heavy-tailed z, and a handful of such cells
+        # dominate a plain SD in both directions (ADR 209 path, 2026-11-18:
+        # plain SD about 2 for the correct and the broken variant alike).
+        z_sd=_iqr_sd(cells["z"]) if n_tests > 1 else 0.0,
+        # The share of cells whose raw one-sided p clears alpha before any
+        # FDR correction. A calibrated one-sided test holds it near alpha.
+        upper_tail_rate=float((cells["p_value"] < sp.fdr_alpha).mean()) if n_tests else 0.0,
         min_p_value=float(cells["p_value"].min()) if n_tests else 1.0,
         seed=seed,
         broken_se_on_raw_n=broken_se_on_raw_n,
         cells=cells,
+    )
+
+
+def _iqr_sd(values: pd.Series) -> float:
+    """The normal-equivalent SD from the interquartile range."""
+    # A standard normal's IQR is 2 * Phi^-1(0.75), about 1.349.
+    return float(
+        (values.quantile(0.75) - values.quantile(0.25)) / (2.0 * scipy_stats.norm.ppf(0.75))
     )
 
 
@@ -503,12 +593,12 @@ def confirm_broken_variant_fails(
     """Run the null test correct and broken, and return both.
 
     Session gate item 3. The broken variant computes standard errors on the
-    raw event count, so it ignores the clustering entirely: co-firing names
-    on a shared market factor deliver far less independent information than
-    their count suggests, the standard error comes out too small by roughly
-    `sqrt(1 + (k_bar - 1) * rho_bar)`, and z-scores inflate by the same
-    factor. The layer then finds significant cells in a random walk, which
-    is exactly the failure the null test exists to catch.
+    raw event count, the iid `var / n`, so it ignores the clustering
+    entirely: co-firing names on a shared market factor deliver far less
+    independent information than their count suggests, the standard error
+    comes out too small, and z-scores inflate by the same factor. The layer
+    then finds significant cells in a random walk, which is exactly the
+    failure the null test exists to catch.
 
     Returns `(correct, broken)` rather than asserting, so the caller decides
     what to do and the observed rates both get reported.

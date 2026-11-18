@@ -38,7 +38,7 @@ export function KillBanner({ cells }: { cells: Cell[] }) {
         The smallest q-value in the grid is{" "}
         <strong className="num">{minQ === null ? NONE : minQ.toFixed(4)}</strong>.{" "}
         <strong className="num">{suppressed.length}</strong> cells are suppressed
-        for insufficient effective sample.
+        (reason in each row).
       </p>
       <p className="dim">
         These events do not predict five-session returns better than each
@@ -53,12 +53,13 @@ export function KillBanner({ cells }: { cells: Cell[] }) {
 /* --- cell grid ----------------------------------------------------------- */
 
 /**
- * The hit rate with its Wilson interval, and the baseline it is measured
+ * The hit rate with its robust interval (ADR 209), and the baseline it is measured
  * against.
  *
  * **The interval belongs to `p_hit`, not to `edge`** — `cell_stats.py`
- * computes `wilson_ci(p_hit * n_eff, n_eff)`, a proportion interval on the
- * hit rate. `edge` is `p_hit - baseline`, a *difference*, and no interval
+ * computes a 95% Wald interval on the hit rate from a month x cluster robust
+ * variance (ADR 209), a proportion interval on the hit rate. `edge` is
+ * `p_hit - baseline`, a *difference*, and no interval
  * for it is stored.
  *
  * The first version of this column was labelled "Edge (95% CI)" and drew
@@ -130,12 +131,12 @@ export function CellGrid({
           <th>Signal</th>
           <th>Bucket</th>
           <th className="r">n</th>
-          <th className="r" title="effective sample size after ADR 098's autocorrelation correction">
+          <th className="r" title="effective sample size implied by the month x cluster robust variance (ADR 209)">
             n_eff
           </th>
           <th className="r">Hit</th>
           <th className="r">Base</th>
-          <th className="edge-col" title="Wilson interval on the hit rate, with the baseline marked. No edge interval is stored.">Hit rate 95% CI · baseline</th>
+          <th className="edge-col" title="95% Wald interval on the hit rate from a month x cluster robust variance, with the baseline marked. No edge interval is stored.">Hit rate 95% CI · baseline</th>
           <th className="r">q</th>
         </tr>
       </thead>

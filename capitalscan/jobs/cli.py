@@ -1,5 +1,6 @@
 """CapitalScan command-line interface."""
 
+import dataclasses
 import time
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
@@ -8,6 +9,8 @@ from typing import Annotated, Any, Optional
 
 import typer
 from rich.console import Console
+
+from capitalscan.core.config import DEFAULT_VARIANCE
 
 console = Console()
 
@@ -2939,7 +2942,8 @@ def stats_self_validate_cmd(
     )
     console.print(
         f"  rho_bar={null.rho_bar:.4f} k_bar={null.mean_k_bar:.2f} "
-        f"n={null.mean_n:.1f} n_eff={null.mean_n_eff:.1f} z_sd={null.z_sd:.3f} "
+        f"n={null.mean_n:.1f} n_eff={null.mean_n_eff:.1f} z_sd_iqr={null.z_sd:.3f} "
+        f"upper_tail={null.upper_tail_rate:.2%} "
         f"min_p={null.min_p_value:.3g}"
     )
     console.print(
@@ -2958,7 +2962,7 @@ def stats_self_validate_cmd(
         caught = broken.rate > broken.threshold
         console.print(
             f"broken variant (SE on raw n): {broken.rate:.2%} at q < {broken.alpha} "
-            f"z_sd={broken.z_sd:.3f} -> "
+            f"z_sd_iqr={broken.z_sd:.3f} -> "
             + ("[green]caught[/green]" if caught else "[red]NOT CAUGHT[/red]")
         )
 
@@ -3029,8 +3033,15 @@ def stats_cells_cmd(
     config_hash: str = typer.Option(
         ..., "--config-hash", help="events.config_hash to measure the headline grid against"
     ),
-    split_key: str = typer.Option("train", help="train | validate | holdout"),
+    split_key: str = typer.Option(
+        "train", help="train | validate (holdout is refused until it has a placebo design)"
+    ),
     write: bool = typer.Option(True, help="Write to cell_stats. --no-write measures only"),
+    placebo_workers: int = typer.Option(
+        DEFAULT_VARIANCE.placebo_workers,
+        "--placebo-workers",
+        help="Processes for ADR 209's placebo inflation factor. 1 runs serially",
+    ),
 ) -> None:
     """Session 12's headline grid (DESIGN §6.7-§6.11, ADR 102).
 
@@ -3040,10 +3051,10 @@ def stats_cells_cmd(
     reproduced by anyone reading the CLI. Found while re-measuring under a
     new `config_hash`.
 
-    Requires `cscan stats rho --config-hash <same>` first: `n_eff` is
-    computed from the stored `rho_empirical`, so this is a prerequisite
-    rather than a report. A missing `rho_era` row makes every cell
-    uninterpretable.
+    Since ADR 209 every fire enters a cell, and `n_eff`, the interval and
+    the p-value come from a month x `cluster_id` cluster-robust variance,
+    widened by a placebo inflation factor measured per scope on each run.
+    `rho_era` no longer enters any row.
 
     Additive and re-runnable. The write upserts on `(cell_id, config_hash)`
     — ADR 096's composite key — so a second config adds rows rather than
@@ -3054,6 +3065,7 @@ def stats_cells_cmd(
     from capitalscan.jobs.provenance import git_sha
     from capitalscan.research.cell_stats import run_cell_stats
 
+    vp = dataclasses.replace(DEFAULT_VARIANCE, placebo_workers=placebo_workers)
     config = _resolve_config_or_exit()
     engine = db_io.get_engine()
 
@@ -3065,6 +3077,7 @@ def stats_cells_cmd(
             config_hash,
             split_key,
             cfg=config,
+            vp=vp,
             run_id=job.run_id,
             git_sha=git_sha(),
             write=write,

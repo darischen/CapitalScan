@@ -1369,23 +1369,34 @@ Why per ticker-year matters: selecting on growth hands you free baseline points.
 
 ### 6.3 Effective sample size
 
-```
-n_eff = n / (1 + (k̄ − 1)·ρ̄)
-```
-
-`k̄` is the mean `cofire_count` across the cell's events. `ρ̄` is the mean pairwise correlation of 5-day returns among co-firing tickers, computed once per era.
-
-**`ρ̄` is a measurement in the `rho_era` table, not a configuration constant** (ADR 098, Session 11.3). It is measured on **overlapping** 5-day windows and weighted by how many days each ticker pair fired together; pairs that never co-fired are excluded. Both choices are deliberate and both run conservative — see ADR 098. A second, factor-implied estimate is stored alongside it as a diagnostic and never feeds `n_eff`: it assumes residual independence, so it understates `ρ̄` and inflates `n_eff`, which is the unsafe direction. `rho_era` is keyed `(era, config_hash)` and carries `run_id`, `computed_at`, and `git_sha`, because two `cell_stats` runs against the same config can legitimately disagree and that provenance is what explains the difference. A `cell_stats` row is only interpretable alongside the `rho_era` row sharing its `config_hash`.
-
-A negative measured `ρ̄` clamps to zero at the point of use (`core.stats.rho_bar_for_correction`), since passing it through would return `n_eff > n`. The stored measurement keeps its raw value.
-
-All standard errors use `n_eff`, and both are displayed:
+**Since ADR 209 (2026-11-18)** the interval comes from the observed
+dependence, not from a formula. Over every fire in a cell:
 
 ```
-SE = √( p(1−p) / n_eff )
+V = V_month + V_cluster - V_month∩cluster        (Cameron-Gelbach-Miller)
+V_g = Σ_groups (Σ_i∈group (y_i − ȳ))² / n²
+V_shipped = V · f²                               f = placebo factor, ≥ 1
+n_eff = p(1−p) / V_shipped
+CI = p ± 1.96 √V_shipped                         (Wald, clipped to [0, 1])
 ```
 
-Confidence intervals use **Wilson**, not the normal approximation, since p near 0 or 1 with modest n breaks the normal interval.
+`y_i` is the event's hit flag. Month blocks carry the cross-sectional
+co-firing and the overlap of 5-day windows across adjacent days;
+`cluster_id` carries one ticker's repeat fires. `f` is measured each run
+by a placebo with a known zero edge (`research.placebo`), per split and
+era: validate about 1.18, train 1.0 on 2026-11-18. The p-value tests each fire's edge against its
+own ticker-year baseline, `d = hit − b`, as `P(Z > mean(d) / √V_d)` with
+`V_d` the same inflated month × cluster variance of `d`. A cell with no
+variance suppresses. `n_eff` can exceed `n`: when fires inside one month
+offset each other (negative within-month correlation), the month sums
+cancel, `V` falls below the iid `p(1−p)/n`, and nothing clamps it
+(`test_cell_stats.py::test_n_eff_can_exceed_n_under_negative_within_month_correlation`).
+
+**Until ADR 209** the system used `n_eff = n / (1 + (k̄ − 1)·ρ̄)` with `k̄`
+the mean `cofire_count` and a Wilson interval. `k̄` counted the whole
+generation's co-firing, about 170 a day against a cell's 4 to 7, so every
+interval ran about 5x too wide (RESULTS 2026-11-18). `ρ̄` is still measured
+in `rho_era` (ADR 098) as a diagnostic.
 
 Power reference at p = 0.4, 80% power, α = 0.05:
 
