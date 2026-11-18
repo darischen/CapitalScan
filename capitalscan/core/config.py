@@ -633,6 +633,29 @@ DEFAULT_RHO = RhoParams()
 
 
 @dataclass(frozen=True)
+class VarianceParams:
+    """Settings for the cluster-robust variance behind `cell_stats` (ADR 209).
+
+    Standalone, not a field of `Config`: these describe a measurement, and
+    folding them in would move `config_hash` and orphan the live generation.
+
+    `placebo_window` ends before the holdout split starts, so the placebo
+    never loads holdout data.
+    """
+
+    time_block: str = "month"
+    placebo_draws: int = 1000
+    placebo_min_shift_days: int = 60
+    placebo_window: tuple[str, str] = ("2010-01-04", "2023-12-15")
+    placebo_seed: int = 20261118
+    inflation_floor: float = 1.0
+    placebo_workers: int = 8
+
+
+DEFAULT_VARIANCE = VarianceParams()
+
+
+@dataclass(frozen=True)
 class McapPlausibility:
     """Ceiling for a single `universe.mcap_usd`, applied in
     `jobs.compute.run_universe`.
