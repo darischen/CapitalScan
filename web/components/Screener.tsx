@@ -1,5 +1,6 @@
 import DatePicker from "./DatePicker";
 import { InferenceCell } from "./InferenceCell";
+import { ScreenCell } from "./ScreenCell";
 import type { InferenceSubject } from "./InferenceModal";
 import TickerSearch from "./TickerSearch";
 import {
@@ -752,7 +753,7 @@ export function ScreenerTable({
                   assistive tech and on hover. */}
               <span data-side={row.side} title={row.side} />
             </td>
-            <td className="ticker" data-label="Ticker">
+            <ScreenCell col="ticker">
               <a href={`/ticker/${row.ticker}`}>{row.ticker}</a>
               {/* A mark, not a colour and not a column. These rows are a
                   minority (27 of 164 on 2026-08-26) and the reader's
@@ -767,7 +768,7 @@ export function ScreenerTable({
                   W
                 </abbr>
               )}
-            </td>
+            </ScreenCell>
             {/* Every type, spelled out (user's request, 2026-08-19). The
                 previous `+2` made the reader hover to learn what a
                 confluence was made of, and left the column narrow enough
@@ -777,7 +778,7 @@ export function ScreenerTable({
                 order, with `signal_type` first -- verified against the live
                 data rather than assumed -- so the leading label is the one
                 that names the row and the rest are dimmed as context. */}
-            <td className="sig" data-label="Signal">
+            <ScreenCell col="sig">
               {typeList(row)
                 .filter((t) => !REVERSAL_TYPES.includes(t))
                 .map((t, i) => (
@@ -798,15 +799,14 @@ export function ScreenerTable({
                   Rare enough to earn the treatment: 116 of 4,306
                   confluences. */}
               <ReversalBadge row={row} />
-            </td>
+            </ScreenCell>
             {/* The t-1 bands, which is the row the signal compared against
                 (invariant 3). `bb_mid` is the 20-day SMA as
                 `core/indicators.py` computed it; nothing is recomputed
                 here. `title` carries the session so a reader can confirm
                 which one it is without a column for it. */}
-            <td
-              className="r num"
-              data-label="Bollinger"
+            <ScreenCell
+              col="bb"
               title={row.bandTs ? `bands at ${row.bandTs}` : undefined}
             >
               {fmt(row.bbLower)}
@@ -814,15 +814,15 @@ export function ScreenerTable({
               {fmt(row.bbMid)}
               <span className="dim"> / </span>
               {fmt(row.bbUpper)}
-            </td>
+            </ScreenCell>
             {/* Both %K series. ADR 110 made the agreement between them part
                 of the signal definition: the raw one is the trigger and the
                 smoothed one must agree within `fast_agreement_tol`, so
                 showing one is showing half the rule. */}
-            <td className="r num" data-label="Stochastic">
+            <ScreenCell col="stoch">
               {fmt(row.kFast, 1)}
               <span className="dim"> / {fmt(row.kSlow, 1)}</span>
-            </td>
+            </ScreenCell>
             {/* Four columns rather than one slash-separated cell (user's
                 request, 2026-08-19). Separate columns let the eye scan one
                 series down the page, which a joined cell does not.
@@ -833,7 +833,7 @@ export function ScreenerTable({
                 mislabelled -- dimmed to mark it provisional. Only a name
                 the poller does not cover, or a date with neither table
                 populated, falls through to the dash. */}
-            <td className="r num" data-label="Open">
+            <ScreenCell col="open">
               {row.open !== null ? (
                 fmt(row.open)
               ) : row.liveOpen !== null ? (
@@ -845,52 +845,50 @@ export function ScreenerTable({
                   —
                 </span>
               )}
-            </td>
-            <td className="r num dim" data-label="High">
+            </ScreenCell>
+            <ScreenCell col="high">
               {row.high !== null ? fmt(row.high) : fmt(row.liveHigh)}
-            </td>
-            <td className="r num dim" data-label="Low">
+            </ScreenCell>
+            <ScreenCell col="low">
               {row.low !== null ? fmt(row.low) : fmt(row.liveLow)}
-            </td>
+            </ScreenCell>
             {/* The one coloured number in the bar. Cool closed above its
                 open, warm closed below -- the same cool/warm the side rail
                 uses, so one palette carries direction everywhere rather
                 than two conventions competing. Green/red is avoided for the
                 reason §11.7 gives: it fails for a red-green deficiency and
                 separates on hue alone. */}
-            <td className={`r num ${dayClass(row)}`} data-label="Close">
+            <ScreenCell col="close" tone={dayClass(row)}>
               {fmt(row.close)}
-            </td>
-            <td className="r num" data-label="Vol">
-              {vol(row.volume)}
-            </td>
+            </ScreenCell>
+            <ScreenCell col="vol">{vol(row.volume)}</ScreenCell>
             {/* Coloured against today's own open, from `bars_live` --
                 the same cool/warm rule the Close column applies against
                 the nightly open, just evaluated live instead of after
                 the session settles. */}
-            <td
-              className={`r num ${liveClass(row)}`}
-              data-label="Live"
+            <ScreenCell
+              col="live"
+              tone={liveClass(row)}
               title={
                 row.livePriceTs ? `as of ${clock(row.livePriceTs)}` : undefined
               }
             >
               {fmt(row.livePrice)}
-            </td>
-            <td className="r num" data-label="Fired">
+            </ScreenCell>
+            <ScreenCell col="fired">
               {row.firedAt ? (
                 clock(row.firedAt)
               ) : (
                 <span className="dim">—</span>
               )}
-            </td>
-            <td data-label="Inference" className="c">
+            </ScreenCell>
+            <ScreenCell col="infer">
               <InferenceButton row={row} />
-            </td>
+            </ScreenCell>
             {withStats && (
-              <td data-label="Cell">
+              <ScreenCell col="cell">
                 <StatsCell stats={row.stats} />
-              </td>
+              </ScreenCell>
             )}
           </tr>
         ))}
