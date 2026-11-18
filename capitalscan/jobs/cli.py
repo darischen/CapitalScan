@@ -1889,6 +1889,12 @@ def sync(
         help="Ship only what is newer than the target's own watermark. "
         "What `cscan nightly` uses; the bare command still copies everything.",
     ),
+    prune: bool = typer.Option(
+        True,
+        "--prune/--no-prune",
+        help="Delete from serving the rejected bars and superseded slot events "
+        "research deleted, keyed on research's own records (`sync.prune_serving`).",
+    ),
 ) -> None:
     """Push the serving subset to the cloud store (ADR 053, ADR 137).
 
@@ -1918,10 +1924,15 @@ def sync(
         console.print(", ".join(plan["tables"]))
         return
 
-    report = sync_job.run_sync(incremental=incremental)
+    report = sync_job.run_sync(incremental=incremental, prune=prune)
     for name, n in report.rows.items():
         console.print(f"  {name:<16} {n:>9,}")
     console.print(f"[green]synced[/green] {report.total:,} rows")
+    if report.pruned:
+        console.print(
+            "pruned from serving: "
+            + ", ".join(f"{name} {n:,}" for name, n in report.pruned.items())
+        )
 
 
 @app.command()
@@ -3948,6 +3959,11 @@ def nightly(
         sync_report = sync_job.run_sync(incremental=True)
         sync_ok = True
         console.print(f"nightly: synced {sync_report.total:,} rows to serving")
+        if sync_report.pruned:
+            console.print(
+                "nightly: pruned from serving "
+                + ", ".join(f"{name} {n:,}" for name, n in sync_report.pruned.items())
+            )
     except RuntimeError as exc:
         console.print(f"[yellow]skip[/yellow] sync: {exc}")
     except Exception as exc:  # noqa: BLE001 - reported, chain still succeeded

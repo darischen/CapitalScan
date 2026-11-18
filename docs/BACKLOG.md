@@ -1397,9 +1397,33 @@ bars only, by design. Within that scope:
   serving-only (owner, 2026-11-17, DECISIONS Open items), so a parity
   check expects these two differences.
 
-The cause of the first group recurs: anything research deletes stays on
-serving. A sync prune pass, bounded to the tables sync ships and to keys
-research holds a reject or retirement for, would close it.
+The cause of the first group recurred: anything research deleted stayed
+on serving. **Built 2026-11-18: `sync.prune_serving`**, run inside every
+`run_sync` before the `serving_config` write (`--no-prune` skips it). It
+deletes on serving by keys research reads from the sync's own snapshot,
+never by "what research lacks":
+
+- **`bars` and `indicators`:** daily rows at a `(ticker, ts)` with a
+  research `bar_rejects` row of `severity = 'reject'` and no research row
+  at that key. An incremental sync reads rejects logged since the last
+  `ok` sync minus `SYNC_MODIFIED_OVERLAP`; a full sync reads every reject
+  from the cutoff.
+- **`events`:** live-generation `next_open`/`touch` rows in a debounce
+  slot research rewrote since the last `ok` sync (`modified_at`, the same
+  line the incremental events arm ships by), of a `signal_type` research
+  does not hold in that slot. So the key set never exceeds what the sync
+  itself read. Rows referenced by `predictions`, `signal_reports`,
+  `order_intents` or `quotes_live` stay, and so does any row whose
+  `run_id` belongs to a `poll` job. With no prior `ok` sync the events
+  prune skips.
+- **Not pruned: `tickers`.** Research retires a ticker in place (ADR 207)
+  and records nothing when one is deleted by hand, so there is no key to
+  bound by. The tickers foreign keys are `NO ACTION`, not `CASCADE`, so a
+  delete would fail on any ticker serving still has rows for. ORKA-style
+  rows stay a hand delete.
+
+The 19 research-written `touch` events above sit in slots no recent write
+touched, so the prune leaves them until their slot is rewritten.
 
 **`/` waits on 3.75 KB of server-components payload per screener row, not on
 its queries (measured 2026-11-02).** The queries take ~60 ms. Rendering

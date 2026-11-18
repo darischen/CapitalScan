@@ -221,6 +221,9 @@ def _capture(monkeypatch) -> list[dict]:
         sync_mod, "_backfill_tickers", lambda s, t, c: dict.fromkeys(sync_mod.BACKFILL_TABLES, [])
     )
     monkeypatch.setattr(sync_mod.db_io, "upsert", lambda *a, **k: 0)
+    # The prune pass reads its own keys; `test_sync_prune.py` covers it.
+    # These tests are about what the copy reads.
+    monkeypatch.setattr(sync_mod, "prune_serving", lambda *a, **k: {})
     monkeypatch.setattr(sync_mod, "_refuse_self_sync", lambda s, t: None)
     monkeypatch.setattr(sync_mod, "_pin_config_hash", lambda t, c: None)
 
