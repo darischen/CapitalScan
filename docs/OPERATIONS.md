@@ -1950,6 +1950,27 @@ by id.
 
 The backup files from step 1 are in `C:\Users\daris\capitalscan_ws_backup_20261014`.
 
+**Second run, 2026-11-17** (bars 2026-10-27 to 2026-11-17), about 40 min
+of machine time:
+
+- Step 1 found nothing to export. The workstation held only the two
+  generations `wivie` has, and all 671 of its `runs` since 2026-10-14
+  were on `wivie` too.
+- Dump 4m11s, 4.0 GB. Copied as `ssh wivie 'tar -C ~/dumps -cf -
+  ws-refresh' | tar -xf -` in 27m55s, no faster than `scp -r`.
+- Restore 8m09s, six `transaction_timeout` errors and nothing else.
+  `VACUUM (PARALLEL 0, ANALYZE)` 42 s.
+- Step 4: all 30 tables, the 7 sequences and the object counts matched
+  `wivie` exactly, with no `wivie` job run between dump and check.
+- Step 8 needs no password. `capscan_ro` is a cluster role, so it
+  survives the swap with its password; only the grants are per database.
+  Running `grant_statements` from `jobs/roles.py` minus its first
+  statement (the `CREATE`/`ALTER ROLE` that sets the password) restores
+  them. Checked with `has_table_privilege`: SELECT on `events` and
+  `serving_config`, no INSERT.
+- The old copy is `capitalscan_ws_old` (22 GB). Drop it once nothing
+  needs it.
+
 ## The nightly ticker refresh blanked `tickers` metadata (2026-09-01 to 2026-10-15)
 
 **Symptom.** Found comparing the old workstation copy against a refresh:
