@@ -23,6 +23,7 @@ import pandas as pd
 from capitalscan.jobs.ingest import (
     MIN_DETECTABLE_SPLIT_DISTANCE,
     back_adjust_daily,
+    back_adjust_fresh_rows,
     daily_split_state,
 )
 
@@ -161,3 +162,84 @@ class TestAdjustment:
         f = _frame([_bar("2026-08-21", 685.04), _bar("2026-08-25", 324.12)])
         out = back_adjust_daily(f, date(2026, 8, 24), 2.0)
         assert daily_split_state(out.loc[0, "close"], out.loc[1, "close"], 2.0) == "adjusted"
+
+
+def _embj_window(run_id: str, closes: dict[str, float]) -> pd.DataFrame:
+    rows = [
+        {
+            "ticker": "EMBJ",
+            "ts": pd.Timestamp(d),
+            "interval": "1d",
+            "open": c,
+            "high": c,
+            "low": c,
+            "close": c,
+            "adj_close": c,
+            "volume": 1000.0,
+            "run_id": run_id,
+        }
+        for d, c in closes.items()
+    ]
+    return pd.DataFrame(rows)
+
+
+class TestNoCompounding:
+    """EMBJ, 4-for-1 on 2026-11-16, and the vendor never adjusted it.
+
+    Each nightly re-fetched its 5-day window, which put 2026-11-13 back at
+    the unadjusted 78.73. The repair then saw "unadjusted" again and divided
+    every stored pre-split row by 4 again: 9 times between 2026-11-16 and
+    2026-11-19, so 2025's ~$61 closes were stored as 0.0002 and 2020's as
+    0.0000, and the 2026-11-21 weekly died on an infinite `fwd_ret_1d`.
+    """
+
+    EX = date(2026, 11, 16)
+
+    def test_only_rows_written_by_this_run_are_adjusted(self):
+        stored = pd.concat(
+            [
+                _embj_window("old", {"2025-11-21": 15.2475}),  # adjusted last run
+                _embj_window("now", {"2026-11-13": 78.73}),  # re-fetched unadjusted
+            ],
+            ignore_index=True,
+        )
+        out = back_adjust_fresh_rows(stored, self.EX, 4.0, "now")
+        assert list(out["close"]) == [19.6825]
+        assert list(out["run_id"]) == ["now"]
+
+    def test_nine_reruns_divide_history_exactly_once(self):
+        """The real sequence: one first repair, then eight more runs that
+        each re-fetch the pre-split window unadjusted."""
+        history = _embj_window("r0", {"2025-11-21": 60.99, "2026-11-13": 78.73})
+        for i in range(9):
+            run = f"r{i}"
+            if i > 0:
+                # The nightly window re-fetch: the vendor still serves 78.73.
+                history.loc[history["ts"] == pd.Timestamp("2026-11-13"), ["close", "run_id"]] = [
+                    78.73,
+                    run,
+                ]
+            fixed = back_adjust_fresh_rows(history, self.EX, 4.0, run)
+            history = pd.concat(
+                [history[history["run_id"] != run], fixed], ignore_index=True
+            ).sort_values("ts", ignore_index=True)
+        assert list(history["close"]) == [15.2475, 19.6825]
+
+    def test_no_fresh_rows_is_a_no_op(self):
+        stored = _embj_window("old", {"2025-11-21": 15.2475})
+        assert back_adjust_fresh_rows(stored, self.EX, 4.0, "now").empty
+
+    def test_fresh_rows_on_or_after_the_ex_date_are_not_returned(self):
+        stored = _embj_window("now", {"2026-11-13": 78.73, "2026-11-17": 18.90})
+        out = back_adjust_fresh_rows(stored, self.EX, 4.0, "now")
+        assert list(out["ts"]) == [pd.Timestamp("2026-11-13")]
+
+
+class TestNonPositivePrice:
+    def test_a_zero_close_is_rejected_not_stored(self):
+        from capitalscan.jobs.ingest import validate_bars
+
+        bars = _embj_window("now", {"2020-10-28": 0.0, "2020-10-29": 0.0001})
+        clean, rejects = validate_bars(bars)
+        assert list(clean["ts"]) == [pd.Timestamp("2020-10-29")]
+        assert [r["rule"] for r in rejects if r["severity"] == "reject"] == ["non_positive_price"]
