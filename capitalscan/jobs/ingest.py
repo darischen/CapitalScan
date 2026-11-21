@@ -382,6 +382,12 @@ def validate_bars(
         )
 
     for idx, row in df.iterrows():
+        # A price of zero makes every return from it infinite. The 2026-11-21
+        # weekly died on exactly that (`fwd_ret_1d = inf`, EMBJ).
+        prices = [row[c] for c in ("open", "high", "low", "close", "adj_close") if c in row]
+        if any(pd.notna(v) and v <= 0 for v in prices):
+            reject(idx, "non_positive_price", {"low": row["low"], "close": row["close"]})
+            continue
         if row["high"] < row["low"]:
             reject(idx, "high_lt_low", {"high": row["high"], "low": row["low"]})
             continue
@@ -627,6 +633,28 @@ def back_adjust_daily(frame: pd.DataFrame, ex_date: date, ratio: float) -> pd.Da
     if "volume" in out.columns:
         out.loc[mask, "volume"] = (out.loc[mask, "volume"] * ratio).round()
     return out
+
+
+def back_adjust_fresh_rows(
+    stored: pd.DataFrame, ex_date: date, ratio: float, run_id: str
+) -> pd.DataFrame:
+    """The pre-split rows this run wrote, back-adjusted. Nothing else.
+
+    **A stored row is divided at most once, and this is what enforces it.**
+    Until 2026-11-21 the repair rewrote every pre-split row on each run that
+    found the series unadjusted. The vendor never adjusted EMBJ (4-for-1,
+    2026-11-16), so each nightly's 5-day re-fetch put 2026-11-13 back at
+    78.73, the check read "unadjusted" again, and twenty years of history
+    were divided by 4 nine times. Rows from earlier runs were either
+    adjusted then or replaced by `refetch_history_for_new_splits`; only the
+    rows this run fetched can still be unadjusted.
+    """
+    pre = stored.loc[
+        (stored["run_id"] == run_id) & (pd.to_datetime(stored["ts"]).dt.date < ex_date)
+    ]
+    if pre.empty:
+        return pre.copy()
+    return back_adjust_daily(pre, ex_date, ratio)
 
 
 # ============ hourly split back-adjustment (Session 9 hourly-split-adjust) ============
@@ -989,6 +1017,9 @@ def run_bars_daily(
         # **The vendor's adjustment cannot be assumed.** See
         # `reconcile_daily_splits`. Runs after the upsert because it
         # reconciles what is now stored, not what was just fetched.
+        refetched = refetch_history_for_new_splits(engine, report.tickers, report.run_id, end)
+        if refetched:
+            console.print(f"re-fetched full daily history for new split(s): {', '.join(refetched)}")
         adjusted = reconcile_daily_splits(engine, report.tickers, report.run_id)
         if adjusted:
             console.print(
@@ -1060,8 +1091,14 @@ def reconcile_daily_splits(
     seven were false. Adjusting on a coin flip corrupts a correct series,
     which is strictly worse than leaving a suspect one alone.
 
-    **Idempotent.** Once applied, the same comparison returns `"adjusted"`,
-    so a second run is a no-op. That matters because this runs every night.
+    **Never divides a row twice.** This said "idempotent" until 2026-11-21,
+    on the reasoning that once applied the comparison reads `"adjusted"`.
+    That fails when the vendor never adjusts: each nightly re-fetches the
+    bar before the ex-date unadjusted, the comparison reads `"unadjusted"`
+    again, and EMBJ's whole history was divided by 4 nine times. Only rows
+    written by `run_id` are rewritten now (`back_adjust_fresh_rows`), and
+    `refetch_history_for_new_splits` has already replaced every stored row
+    the first time a split appears, so no stale row needs this either.
 
     **Writes an audit row per adjustment.** Silently rewriting stored prices
     is the kind of change that is impossible to explain later.
@@ -1108,18 +1145,39 @@ def reconcile_daily_splits(
         if daily_split_state(float(before), float(after), ratio) != "unadjusted":
             continue
 
-        # Only the pre-ex-date rows are read and rewritten. `back_adjust_daily`
-        # is the same function the unit tests pin, not a second copy of the
-        # arithmetic (invariant 2).
+        # Only pre-ex-date rows this run wrote are rewritten (EMBJ, 2026-11-21:
+        # rewriting all of them divided twenty years by 4 nine times).
         with engine.connect() as conn:
             frame = pd.read_sql(
-                text("SELECT * FROM bars WHERE ticker=:t AND interval='1d' AND ts < :d"),
+                text(
+                    "SELECT * FROM bars WHERE ticker=:t AND interval='1d' AND ts < :d "
+                    "   AND run_id = :r"
+                ),
                 conn,
-                params={"t": ticker, "d": ex_date},  # type: ignore[arg-type]
+                params={"t": ticker, "d": ex_date, "r": run_id},  # type: ignore[arg-type]
             )
-        if frame.empty:
+        fixed = back_adjust_fresh_rows(frame, ex_date, ratio, run_id)
+        if fixed.empty:
             continue
-        fixed = back_adjust_daily(frame, ex_date, ratio)
+        price_cols = [c for c in ("open", "high", "low", "close", "adj_close") if c in fixed]
+        if (fixed[price_cols] <= 0).any(axis=None):
+            # Rounding to 4dp turned a price into 0. Writing it would make an
+            # infinite return, so the repair is refused and left visible.
+            db_io.append(
+                engine,
+                "bar_rejects",
+                [
+                    {
+                        "ticker": ticker,
+                        "ts": pd.Timestamp(ex_date),
+                        "rule": "split_adjust_non_positive",
+                        "severity": "reject",
+                        "payload": _json_safe_payload({"ratio": ratio, "ex_date": str(ex_date)}),
+                        "run_id": run_id,
+                    }
+                ],
+            )
+            continue
         fixed["run_id"] = run_id
         db_io.upsert(engine, "bars", fixed, ["ticker", "ts", "interval"])
         db_io.append(
@@ -1146,6 +1204,101 @@ def reconcile_daily_splits(
         )
         adjusted.append(ticker)
     return adjusted
+
+
+# `bar_rejects.rule` marking that a split's ticker had its whole daily
+# history re-fetched. One row per (ticker, ex_date); its presence is the
+# "already done" test, so the re-fetch happens once per split.
+SPLIT_REFETCH_RULE = "split_history_refetched"
+
+
+def refetch_history_for_new_splits(
+    engine: Engine,
+    tickers: Sequence[str],
+    run_id: str,
+    end: date,
+    lookback_days: int = SPLIT_RECONCILE_DAYS,
+) -> list[str]:
+    """Re-fetch a ticker's whole daily history the first time a split appears.
+
+    Returns the tickers re-fetched.
+
+    **The nightly fetch re-reads days, never history.** When the vendor
+    adjusts a split, only the re-fetched window comes back adjusted and the
+    rest of `bars` keeps the old prices. SNDK (8-for-1, recorded 2026-11-20)
+    was stored at 885.01 on 2026-11-13 and 101.14 on 2026-11-16: a fake 89%
+    crash that `reconcile_daily_splits` cannot see, because it compares the
+    two bars beside the ex-date and both were fresh. AVB on 2026-08-17 was
+    the same failure, repaired by hand.
+
+    Re-fetching from the ticker's first stored bar puts every row on one
+    vendor state, with this `run_id`, so `reconcile_daily_splits` then
+    adjusts all of it or none of it. A ticker whose re-fetch returns nothing
+    gets no ledger row and is tried again next run.
+    """
+    if not tickers:
+        return []
+    cutoff = end - timedelta(days=lookback_days)
+    with engine.connect() as conn:
+        pending = pd.read_sql(
+            text(
+                "SELECT c.ticker, c.ex_date, "
+                "       (SELECT min(b.ts) FROM bars b "
+                "         WHERE b.ticker = c.ticker AND b.interval = '1d') AS first_ts "
+                "  FROM corporate_actions c "
+                " WHERE c.action_type = 'split' AND c.ex_date >= :cutoff "
+                "   AND c.ticker = ANY(:tickers) "
+                "   AND NOT EXISTS (SELECT 1 FROM bar_rejects r "
+                "        WHERE r.ticker = c.ticker AND r.rule = :rule "
+                "          AND r.ts = c.ex_date::timestamp) "
+                " ORDER BY c.ticker, c.ex_date"
+            ),
+            conn,
+            params={  # type: ignore[arg-type]
+                "cutoff": cutoff,
+                "tickers": list(tickers),
+                "rule": SPLIT_REFETCH_RULE,
+            },
+        )
+    pending = pending.dropna(subset=["first_ts"])
+    if pending.empty:
+        return []
+
+    done: list[str] = []
+    for ticker, group in pending.groupby("ticker"):
+        sym = str(ticker)
+        start = _as_day(group["first_ts"].min())
+        raw = yahoo.fetch_bars_daily([sym], start, end)
+        if raw.empty:
+            continue
+        raw["interval"] = "1d"
+        raw["source"] = "yahoo"
+        raw["run_id"] = run_id
+        clean, rejects = validate_bars(raw, _read_corporate_actions(engine, [sym]))
+        for r in rejects:
+            r["run_id"] = run_id
+        if rejects:
+            db_io.append(engine, "bar_rejects", rejects)
+        db_io.upsert(engine, "bars", clean, ["ticker", "ts", "interval"])
+        db_io.append(
+            engine,
+            "bar_rejects",
+            [
+                {
+                    "ticker": sym,
+                    "ts": pd.Timestamp(_as_day(ex)),
+                    "rule": SPLIT_REFETCH_RULE,
+                    "severity": "flag",
+                    "payload": _json_safe_payload(
+                        {"ex_date": str(_as_day(ex)), "start": str(start), "rows": len(clean)}
+                    ),
+                    "run_id": run_id,
+                }
+                for ex in group["ex_date"]
+            ],
+        )
+        done.append(sym)
+    return done
 
 
 def _as_day(value: object) -> date:

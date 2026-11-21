@@ -2349,3 +2349,36 @@ bars. Repeat the drill after any change to `jobs/backup.py`.
 Check the latest copy: `cscan system-status` shows the `backup` job's last
 run, and `SELECT notes FROM runs WHERE job = 'backup' ORDER BY started_at DESC
 LIMIT 1` names the sizes that arrived.
+
+## The split repair divided EMBJ by 4 nine times (2026-11-21)
+
+**Symptom.** The 2026-11-21 weekly failed twice at the same row:
+`numeric field overflow ... COPY _copy_events, line 170965, column
+fwd_ret_1d: "inf"`, and systemd kept retrying it every 15 minutes.
+
+**Cause.** EMBJ split 4-for-1 on 2026-11-16 and Yahoo never adjusted it.
+`reconcile_daily_splits` correctly read the series as unadjusted and divided
+every pre-split row by 4. The next nightly re-fetched its 5-day window,
+which put 2026-11-13 back at the unadjusted 78.73, so the check read
+"unadjusted" again and divided twenty years by 4 again. `bar_rejects` holds
+9 `vendor_split_unadjusted` rows for it, 2026-11-16 to 2026-11-19, and
+4^9 = 262,144: 2025's ~$61 closes were stored as 0.0002 and 2020's as
+0.0000. It stopped only when 11-13 left the re-fetch window. The docstring
+called the repair idempotent.
+
+**A second fault in the same week.** SNDK (8-for-1, recorded 2026-11-20):
+Yahoo did adjust, but only the re-fetched window came back adjusted, so
+`bars` held 885.01 on 2026-11-13 and 101.14 on 2026-11-16, a fake 89%
+crash. The repair compares only the two bars beside the ex-date, and both
+were fresh. This is AVB's 2026-08-17 failure again.
+
+**Fix.** `back_adjust_fresh_rows` rewrites only pre-split rows the current
+run wrote, so no stored row is divided twice. `refetch_history_for_new_splits`
+re-fetches a ticker's whole daily history the first time a split appears
+(ledger: `bar_rejects.rule = 'split_history_refetched'`), so every row is on
+one vendor state before the repair looks. `validate_bars` rejects any
+non-positive price (`non_positive_price`), and a repair that would round a
+price to 0 is refused (`split_adjust_non_positive`).
+
+**Data repair.** `cscan add-ticker EMBJ,SNDK` on `wivie` re-fetched both
+histories and rebuilt indicators, events and paths. Then the weekly restarted.
