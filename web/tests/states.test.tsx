@@ -563,7 +563,11 @@ describe("the two reversals are told apart", () => {
       { confirmed: false, beyondBand: false, openGapAtr: -1.99 },
     ]) {
       const html = render({
-        reversal: { ...rev, side: "bear" as const, ts: "2026-09-09T20:05:00.000Z" },
+        reversal: {
+          ...rev,
+          side: "bear" as const,
+          ts: "2026-09-09T20:05:00.000Z",
+        },
       });
       expect(html).not.toContain("reversal");
     }
@@ -646,6 +650,8 @@ describe("the ticker page's states", () => {
     // It cannot tell an unknown symbol from a known one with no indicators,
     // so it must not assert either.
     expect(html).not.toMatch(/not a (valid|real) ticker|does not exist/i);
+    // The way back is a control of its own, not a word inside the sentence.
+    expect(html).toMatch(/<a href="\/" class="empty-action">/);
   });
 
   it("renders a ticker with no events without an empty table", () => {
@@ -1226,7 +1232,8 @@ describe("the ticker page's streamed parts", () => {
   });
 
   it("shares one history skeleton between loading.tsx and the boundary", async () => {
-    const { default: HistorySkeleton } = await import("@/components/HistorySkeleton");
+    const { default: HistorySkeleton } =
+      await import("@/components/HistorySkeleton");
     const { default: Loading } = await import("@/app/ticker/[sym]/loading");
     const rows = renderToStaticMarkup(<HistorySkeleton />);
     expect(rows.match(/<tr>/g)).toHaveLength(6);
@@ -1238,8 +1245,13 @@ describe("the ticker page's streamed parts", () => {
     // A source check, because an async server component cannot render
     // here. Losing either boundary puts the history's reads back in front
     // of the chart, which is the regression this guards.
-    const page = readFileSync(join(__dirname, "..", "app", "ticker", "[sym]", "page.tsx"), "utf8");
-    expect(page).toMatch(/<Suspense fallback=\{<HistorySkeleton \/>\}>\s*<History\b/);
+    const page = readFileSync(
+      join(__dirname, "..", "app", "ticker", "[sym]", "page.tsx"),
+      "utf8",
+    );
+    expect(page).toMatch(
+      /<Suspense fallback=\{<HistorySkeleton \/>\}>\s*<History\b/,
+    );
     expect(page).toMatch(/<Suspense fallback="…">\s*<EventCount\b/);
     expect(page).not.toMatch(/await Promise\.all\(\[\s*chart\([^\]]*events\(/);
   });

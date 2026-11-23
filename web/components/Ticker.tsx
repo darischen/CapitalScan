@@ -501,10 +501,7 @@ export function EventHistory({
           <a href={`/ticker/${sym}`} className={all ? undefined : "on"}>
             confluence
           </a>
-          <a
-            href={`/ticker/${sym}?all=1`}
-            className={all ? "on" : undefined}
-          >
+          <a href={`/ticker/${sym}?all=1`} className={all ? "on" : undefined}>
             every fire
           </a>
         </nav>
@@ -556,8 +553,14 @@ export function NoTicker({ sym }: { sym: string }) {
         </p>
         <p className="last">
           Either the symbol is not in this database, or it has bars but no
-          computed indicators. <a href="/">Back to the screener</a>.
+          computed indicators.
         </p>
+        {/* Its own control, not a word in the sentence above: on this page
+            it is the only way forward, and as 12px muted text it read as
+            part of the explanation (owner, 2026-11-23). */}
+        <a href="/" className="empty-action">
+          ‹ Back to the screener
+        </a>
       </div>
     </div>
   );
