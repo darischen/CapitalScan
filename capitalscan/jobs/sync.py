@@ -1845,20 +1845,30 @@ PRUNE_CHART_SQL = {
 #   detection research never held (DECISIONS Open items, owner 2026-11-17).
 #   Matched two ways: the `poll_` run_id prefix `_sweep_provisional_poll_rows`
 #   keys on, and the `runs.job` it was written under.
+#
+# **One row per slot, its kept types in an array** (2026-11-23). This was an
+# anti-join of every candidate against the whole key list, and Postgres
+# estimates an `unnest` of bound arrays at a few rows, so it planned that as
+# a nested loop: 200M comparisons and 136 s for 20k keys on the Pi. The first
+# weekly after the prune shipped (2026-11-22) rewrote 212k slots, the
+# premarket's sync sat in this DELETE until `RuntimeMaxSec` killed it, and
+# the server kept running the statement for hours after. Grouped, each slot
+# is one index probe and the type test is `<> ALL` on its own row: 18 s for
+# the same 20k, and minutes for 212k. → OPERATIONS.md
 PRUNE_EVENTS_SQL = (
-    "WITH k AS MATERIALIZED ("
-    "  SELECT * FROM unnest("
+    "WITH s AS ("
+    "  SELECT ticker, signal_date, side, entry_kind, array_agg(signal_type) AS types"
+    "  FROM unnest("
     "    CAST(:tickers AS text[]), CAST(:dates AS date[]), CAST(:sides AS text[]),"
     "    CAST(:kinds AS text[]), CAST(:types AS text[])"
     "  ) AS u(ticker, signal_date, side, entry_kind, signal_type)"
-    "), s AS (SELECT DISTINCT ticker, signal_date, side, entry_kind FROM k) "
+    "  GROUP BY ticker, signal_date, side, entry_kind"
+    ") "
     "DELETE FROM events e USING s "
     "WHERE e.config_hash = :config_hash "
     "AND e.ticker = s.ticker AND e.signal_date = s.signal_date "
     "AND e.side = s.side AND e.entry_kind = s.entry_kind "
-    "AND NOT EXISTS (SELECT 1 FROM k WHERE k.ticker = e.ticker "
-    "AND k.signal_date = e.signal_date AND k.side = e.side "
-    "AND k.entry_kind = e.entry_kind AND k.signal_type = e.signal_type) "
+    "AND e.signal_type <> ALL (s.types) "
     "AND split_part(e.run_id, '_', 1) <> 'poll' "
     "AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id = e.run_id AND r.job = 'poll') "
     + "".join(
