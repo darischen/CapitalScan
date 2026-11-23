@@ -12,9 +12,15 @@ import {
   StateRail,
   TickerHeader,
 } from "@/components/Ticker";
+import {
+  ListingHeader,
+  ListingNoEvents,
+  ListingRail,
+} from "@/components/Listing";
 import TickerChart from "@/components/TickerChart";
 import TouchNotes from "@/components/TouchNotes";
 import { normalizeSymbol } from "@/lib/format";
+import { listing } from "@/lib/listing";
 import { readMeta } from "@/lib/screen";
 import type { Prediction } from "@/lib/screen";
 import {
@@ -100,9 +106,29 @@ export default async function TickerPage({
     // typo is three round trips for one answer.
     const current = await state(sym);
     if (!current) {
+      // No indicator row. A name with bars still gets a page: a new
+      // listing (ANT, SPCX) or any ticker short of the warm-up.
+      const young = await listing(sym);
+      if (!young || young.sessions === 0) {
+        return (
+          <main className="wrap">
+            <NoTicker sym={sym} />
+          </main>
+        );
+      }
+      const [bars, meta] = await Promise.all([chart(sym, range), readMeta()]);
       return (
-        <main className="wrap">
-          <NoTicker sym={sym} />
+        <main className="wrap tk">
+          <ListingHeader listing={young} meta={meta} />
+          <ListingRail listing={young} />
+          <div className="tk-chart">
+            <div className="chart-bar">
+              <RangeSwitch sym={sym} range={range} />
+            </div>
+            <TickerChart ticker={sym} bars={bars} />
+          </div>
+          <ListingNoEvents listing={young} />
+          <TouchNotes />
         </main>
       );
     }
@@ -112,7 +138,11 @@ export default async function TickerPage({
     // serves requests first come, first served. The chart's four reads go
     // first and take all four, so the history's reads queue behind them
     // instead of the chart's queueing behind a second of SD-card reads.
-    const top = Promise.all([chart(sym, range), liveQuote(sym, current.asOf), readMeta()]);
+    const top = Promise.all([
+      chart(sym, range),
+      liveQuote(sym, current.asOf),
+      readMeta(),
+    ]);
 
     // Started now and awaited inside the boundaries below, so they run
     // alongside the chart rather than after it.
@@ -180,7 +210,11 @@ export default async function TickerPage({
   } catch (error) {
     return (
       <main className="wrap">
-        <ErrorState code="TICKER_QUERY_FAILED" message={redacted(error)} what={sym} />
+        <ErrorState
+          code="TICKER_QUERY_FAILED"
+          message={redacted(error)}
+          what={sym}
+        />
       </main>
     );
   }
@@ -189,7 +223,10 @@ export default async function TickerPage({
 /** The driver's message can carry the connection string. */
 function redacted(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/postgres(ql)?:\/\/[^\s]+/gi, "postgresql://[redacted]");
+  return message.replace(
+    /postgres(ql)?:\/\/[^\s]+/gi,
+    "postgresql://[redacted]",
+  );
 }
 
 /**

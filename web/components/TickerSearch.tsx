@@ -153,6 +153,7 @@ export default function TickerSearch() {
                   it is why a name has no screener rows and a short event
                   history, and this is where someone finds it. */}
               {h.inTrade === false && <span className="out">not traded</span>}
+              {h.unevaluated && <span className="out">new listing</span>}
               <span className="cap num">{mcap(h.mcapUsd)}</span>
             </li>
           ))}
