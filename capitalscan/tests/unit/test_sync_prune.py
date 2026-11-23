@@ -211,8 +211,19 @@ def test_the_slot_read_returns_every_type_research_holds_in_the_slot():
 def test_the_events_delete_keeps_what_research_keeps():
     sql = sync_mod.PRUNE_EVENTS_SQL
     assert sql.count("e.config_hash = :config_hash") == 1
-    assert "k.signal_type = e.signal_type" in sql
-    assert "AND NOT EXISTS (SELECT 1 FROM k WHERE" in sql
+    assert "array_agg(signal_type) AS types" in sql
+    assert "GROUP BY ticker, signal_date, side, entry_kind" in sql
+    assert "e.signal_type <> ALL (s.types)" in sql
+
+
+def test_the_events_delete_never_anti_joins_the_key_list():
+    """2026-11-23: an anti-join against the bound key list planned as a
+    nested loop, quadratic in keys. 212k slots after a weekly ran past the
+    premarket's 105-minute limit. The key list is read once, grouped."""
+    sql = sync_mod.PRUNE_EVENTS_SQL
+    assert "FROM k" not in sql
+    assert "MATERIALIZED" not in sql
+    assert sql.count("unnest(") == 1
 
 
 @pytest.mark.parametrize("table", db_io.EVENT_REFERENCING_TABLES)

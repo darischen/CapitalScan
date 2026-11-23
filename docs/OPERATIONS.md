@@ -2382,3 +2382,40 @@ price to 0 is refused (`split_adjust_non_positive`).
 
 **Data repair.** `cscan add-ticker EMBJ,SNDK` on `wivie` re-fetched both
 histories and rebuilt indicators, events and paths. Then the weekly restarted.
+
+## The premarket sync sat in the events prune for four hours (2026-11-23)
+
+**What happened.** The 05:30 PT premarket ran every step `ok` through
+`outcomes` by 05:55 and started `sync`. The upserts finished by about 06:38.
+The prune's events DELETE then ran until `RuntimeMaxSec=105min` stopped the
+unit at 07:15. The client died and the statement did not: at 10:45 it was
+still running on the Pi, four hours in, CPU-bound and blocking nothing (the
+poller wrote normally all session). `serving_config` was never written,
+which left serving at the generation it already served.
+
+**Root cause.** `PRUNE_EVENTS_SQL` (since 2026-11-18) tested each candidate
+event with `NOT EXISTS (SELECT 1 FROM k ...)` against the whole bound key
+list. Postgres estimates an `unnest` of bound arrays at a few rows, so it
+planned that as a nested loop over the list. Measured on the Pi: 20k keys,
+200,048,020 comparisons, 136 s. Normal nights carry a few hundred keys and
+never showed it. The 2026-11-22 weekly, the first since the prune shipped,
+rewrote 212k `next_open` and `touch` slots, about 4 h of comparisons.
+
+**Fix.** The key list is grouped once per slot with its types in an array,
+and the type test is `e.signal_type <> ALL (s.types)`: one index probe per
+slot. 18 s for the same 20k keys on the Pi. On 3,000 slots built to have
+candidates, the old and new statements selected the same 408 ids, none
+different. `test_the_events_delete_never_anti_joins_the_key_list` pins it.
+
+**Nothing was corrupted.** The prune runs in its own serving transaction,
+so the cancel rolled it back whole. Every step before `sync` was `ok`, the
+upserts had committed, and `cscan sync` skips unchanged rows (PR #161), so
+the next run re-reads them cheaply from the same `_events_modified_since`
+line. Recovery: `pg_cancel_backend` on the orphan, the stale `sync` row
+marked `failed`.
+
+**The rule.** A statement fed a bound array gets a planner estimate of a
+few rows whatever the array holds. Never correlate a subquery against one;
+aggregate it into the join instead. And a killed sync leaves its last
+statement running on the Pi: check `pg_stat_activity` there after any
+timeout, as on 2026-11-17.
