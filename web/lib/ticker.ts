@@ -779,10 +779,12 @@ export interface TickerHit {
   sector: string | null;
   mcapUsd: number | null;
   inTrade: boolean | null;
+  /** Listed, with no quarter evaluated yet: `inTrade` is null for it. */
+  unevaluated: boolean;
 }
 
 /**
- * Type-ahead over `v_universe` — 622 names, **including the ones outside
+ * Type-ahead over `v_universe`, plus new listings from `v_listing` — 622 names, **including the ones outside
  * the trade universe**, because the ticker page is where you go to look at
  * a name you are not trading.
  *
@@ -798,8 +800,17 @@ export interface TickerHit {
  * is.
  */
 const SEARCH_SQL = `
-  SELECT ticker, name, sector, mcap_usd, in_trade
-    FROM v_universe
+  SELECT ticker, name, sector, mcap_usd, in_trade, unevaluated FROM (
+    SELECT ticker, name, sector, mcap_usd, in_trade, false AS unevaluated
+      FROM v_universe
+    UNION ALL
+    -- A listing no quarter has evaluated yet (ANT, 2026-11-19). It has
+    -- bars and a page (\`YoungListing\`), and no universe row until the
+    -- quarter it listed in closes.
+    SELECT ticker, name, sector, NULL, NULL, true
+      FROM v_listing
+     WHERE is_active AND NOT evaluated
+  ) hits
    WHERE ticker ILIKE '%' || $1 || '%'
       OR name ILIKE '%' || $1 || '%'
    ORDER BY CASE
@@ -830,6 +841,7 @@ export async function searchTickers(
     sector: string | null;
     mcap_usd: string | null;
     in_trade: boolean | null;
+    unevaluated: boolean;
   }>(SEARCH_SQL, [q, Math.max(1, Math.min(Math.trunc(limit), 20))]);
 
   return rows.map((r) => ({
@@ -838,6 +850,7 @@ export async function searchTickers(
     sector: r.sector,
     mcapUsd: num(r.mcap_usd),
     inTrade: r.in_trade,
+    unevaluated: r.unevaluated,
   }));
 }
 
@@ -913,7 +926,9 @@ export function toLiveQuote(
  * Returns `null` when the name has no scored prediction at all, which is
  * common and not an error — the button is simply not rendered.
  */
-export async function latestPrediction(sym: string): Promise<Prediction | null> {
+export async function latestPrediction(
+  sym: string,
+): Promise<Prediction | null> {
   const rows = await query<{
     as_of: Date;
     signal_type: string;
@@ -959,7 +974,10 @@ export async function latestPrediction(sym: string): Promise<Prediction | null> 
   if (!r) return null;
   const recent = await recentRealisedOrNone();
   return {
-    recent: r.side === "long" || r.side === "short" ? recent[r.side as "long" | "short"] : null,
+    recent:
+      r.side === "long" || r.side === "short"
+        ? recent[r.side as "long" | "short"]
+        : null,
     pTouch3: num(r.p_touch_3),
     ciLow: num(r.ci_low),
     ciHigh: num(r.ci_high),

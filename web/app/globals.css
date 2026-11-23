@@ -4189,3 +4189,23 @@ table.screen th.r .sortlink {
     scroll-margin-bottom: 84px;
   }
 }
+
+/* --- young listing (components/Listing.tsx) ---------------------------- */
+
+/* Fills the gauge track the band gauge uses, in the muted ink: progress
+ * toward a computation has no direction, so it takes no colour. */
+.warmup-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--muted);
+  opacity: 0.55;
+}
+
+.warmup-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  max-width: 34ch;
+}

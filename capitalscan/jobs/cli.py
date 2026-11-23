@@ -2203,25 +2203,35 @@ def _jobs_running(engine) -> list[tuple[str, str, datetime]]:
 
 
 def _fill_missing_cik(engine, tickers: list[str]) -> int:
-    """Set `tickers.cik` from SEC's ticker map where it is NULL.
+    """Set `tickers.cik`, and `name`, from SEC's ticker map where NULL.
 
     The nightly seed refresh fills CIKs for S&P constituents only, so a
     company added by hand would otherwise reach `shares` and `earnings`
     with none: market cap falls back to Yahoo and earnings dates, which
     `days_to_earnings` reads, never arrive.
+
+    **The name comes from the same map** (2026-11-23). The seed's names come
+    from the Wikipedia constituent table, so a company outside it had none,
+    and search, which matches names, could not find ANT by "Anthropic".
+    Only a NULL is filled: a constituent's Wikipedia name is never replaced.
+    Returns the rows whose CIK or name changed.
     """
     from sqlalchemy import text
 
     from capitalscan.jobs.fetch import sec
 
-    lookup = sec.fetch_cik_lookup().set_index("ticker")["cik"]
+    lookup = sec.fetch_cik_lookup().drop_duplicates("ticker").set_index("ticker")
     filled = 0
     with engine.begin() as conn:
         for t in tickers:
             if t in lookup.index:
                 filled += conn.execute(
-                    text("UPDATE tickers SET cik = :cik WHERE ticker = :t AND cik IS NULL"),
-                    {"cik": str(lookup[t]), "t": t},
+                    text(
+                        "UPDATE tickers SET cik = coalesce(cik, :cik), "
+                        "       name = coalesce(name, :name) "
+                        " WHERE ticker = :t AND (cik IS NULL OR name IS NULL)"
+                    ),
+                    {"cik": str(lookup.at[t, "cik"]), "name": lookup.at[t, "name"], "t": t},
                 ).rowcount
     return filled
 
@@ -2346,7 +2356,7 @@ def add_ticker(
 
     ingest.ensure_tickers(tickers, engine)
     if companies:
-        console.print(f"cik: filled {_fill_missing_cik(engine, companies)} row(s)")
+        console.print(f"cik and name: filled {_fill_missing_cik(engine, companies)} row(s)")
     report = ingest.run_bars_daily(tickers, start, end)
     console.print(f"bars --daily: {report.rows_written:,} written")
     # Yahoo serves 730 days of hourly bars at most, the window `bars --hourly
