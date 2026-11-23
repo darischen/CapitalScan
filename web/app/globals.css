@@ -371,6 +371,32 @@ table.screen td.c {
   font-size: 12px;
 }
 
+/* The way off a dead end. Bordered and in `--text` so it reads as a
+ * control, and uncoloured, because leaving a page is not a direction. */
+.empty-action {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  margin-top: 10px;
+  padding: 0 14px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.empty-action:hover {
+  background: var(--panel-hover);
+  border-color: var(--muted);
+}
+
+.empty-action:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
 /* --- suppressed / statistics ------------------------------------------- */
 
 /* Never a number and never a blank (ADR 026, DESIGN §11.6). Grey, with the
@@ -1669,10 +1695,14 @@ table.research tr.dimmed td {
     scrollbar-width: thin;
     scrollbar-color: var(--muted) var(--panel);
     background:
-      linear-gradient(to right, var(--ground) 30%, transparent) left center / 24px 100% no-repeat local,
-      linear-gradient(to left, var(--ground) 30%, transparent) right center / 24px 100% no-repeat local,
-      linear-gradient(to right, var(--rule), transparent) left center / 10px 100% no-repeat scroll,
-      linear-gradient(to left, var(--rule), transparent) right center / 10px 100% no-repeat scroll;
+      linear-gradient(to right, var(--ground) 30%, transparent) left center /
+        24px 100% no-repeat local,
+      linear-gradient(to left, var(--ground) 30%, transparent) right center /
+        24px 100% no-repeat local,
+      linear-gradient(to right, var(--rule), transparent) left center / 10px
+        100% no-repeat scroll,
+      linear-gradient(to left, var(--rule), transparent) right center / 10px
+        100% no-repeat scroll;
   }
 
   .research-page .table-scroll:focus-visible {
@@ -1734,7 +1764,11 @@ table.research tr.dimmed td {
     left: 3px;
   }
 
-  .research-page .table-scroll > table.research tbody td:first-child:not(.rail) {
+  .research-page
+    .table-scroll
+    > table.research
+    tbody
+    td:first-child:not(.rail) {
     left: 0;
   }
 
@@ -3146,7 +3180,12 @@ table.screen th.r .sortlink {
     position: relative;
   }
 
-  .picker-form table.screen > tbody > tr > td[data-label="Open"] > span[title]::after {
+  .picker-form
+    table.screen
+    > tbody
+    > tr
+    > td[data-label="Open"]
+    > span[title]::after {
     content: "";
     position: absolute;
     inset: 0;
@@ -3158,7 +3197,12 @@ table.screen th.r .sortlink {
     position: relative;
   }
 
-  .picker-form table.screen > tbody > tr > td[data-label="Cell"] .flag[title]::after {
+  .picker-form
+    table.screen
+    > tbody
+    > tr
+    > td[data-label="Cell"]
+    .flag[title]::after {
     content: "";
     position: absolute;
     inset: -11px -4px;
@@ -3175,7 +3219,11 @@ table.screen th.r .sortlink {
   /* The side, in words. Desktop keeps it in the rail's `title`, and a 3px
    * rail cannot be tapped. Same colours as the rail, so this is the rail
    * read aloud rather than a second encoding. */
-  .picker-form table.screen > tbody > tr:has(> td.rail span[data-side]) > td.ticker::after {
+  .picker-form
+    table.screen
+    > tbody
+    > tr:has(> td.rail span[data-side])
+    > td.ticker::after {
     font-family: var(--sans);
     font-size: 10.5px;
     font-weight: 400;
@@ -3183,12 +3231,20 @@ table.screen th.r .sortlink {
     text-transform: uppercase;
   }
 
-  .picker-form table.screen > tbody > tr:has(> td.rail span[data-side="long"]) > td.ticker::after {
+  .picker-form
+    table.screen
+    > tbody
+    > tr:has(> td.rail span[data-side="long"])
+    > td.ticker::after {
     content: "long";
     color: var(--long);
   }
 
-  .picker-form table.screen > tbody > tr:has(> td.rail span[data-side="short"]) > td.ticker::after {
+  .picker-form
+    table.screen
+    > tbody
+    > tr:has(> td.rail span[data-side="short"])
+    > td.ticker::after {
     content: "short";
     color: var(--short);
   }

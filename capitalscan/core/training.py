@@ -26,8 +26,11 @@ from capitalscan.core.sectors import is_canonical
 # and still be a company, and an ETF sponsor could in principle file. Sharing
 # one list would silently couple a training decision to an ingest detail.
 ETF_TICKERS: frozenset[str] = frozenset(
-    {"QQQ", "SPY", "VOO", "IBIT", "VGT", "SOXX", "SOXL", "^GSPC", "^IXIC", "^DJI", "^NYA"}
+    {"QQQ", "SPY", "VOO", "IBIT", "VGT", "SOXX", "SOXL", "^GSPC", "^IXIC", "^DJI", "^NYA", "^VIX"}
 )
+# `^VIX` added 2026-11-23 (owner): the CBOE volatility index, an index like
+# `^GSPC`, so no shares, sector or CIK. Yahoo reports its volume as 0, so
+# `vol_z_20d` is NULL for it and every other indicator computes.
 # `SOXX` and `SOXL` added 2026-10-28 (owner): iShares Semiconductor and its
 # Direxion 3x daily-leveraged twin. SOXL compounds daily, so its multi-day
 # outcomes are not 3x SOXX's and its path statistics are its own.
