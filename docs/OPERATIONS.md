@@ -1791,6 +1791,14 @@ for any ticker serving lacks (`sync._backfill_tickers`), after `tickers`.
 `cscan path backfill --tickers` exists too. The rest of this section is
 the record of the procedure the command replaced.
 
+**Since 2026-11-24 it also probes and resolves sector.** It asks Yahoo for
+the last 14 days of bars before writing anything and refuses any symbol with
+none, so a typo leaves no `tickers` row; `--no-probe` repairs a retired
+symbol. A company then gets `run_sector_backfill`, because `ensure_tickers`
+writes no sector and a blank one is the `missing_sector` defect in the
+training frame. Before this, a company added with the command arrived with
+a NULL sector.
+
 The owner asked for VGT, the Vanguard Information Technology ETF. Nothing
 in `nightly`, `weekly` or the poller needs editing to add a ticker: every
 job reads `tickers` and `universe`, so a ticker with rows in both is picked
