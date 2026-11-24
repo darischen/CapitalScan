@@ -2262,6 +2262,13 @@ def _print_add_ticker_summary(engine, tickers: list[str], chash: str) -> None:
         )
 
 
+# How far back `add-ticker` asks Yahoo for bars before it writes anything.
+# Fourteen calendar days always holds a session, through any holiday run.
+# It must stay inside `yahoo.RECENT_WINDOW_DAYS` of today so the fetch cache
+# is bypassed: an empty answer cached from a typo would refuse a real symbol.
+ADD_TICKER_PROBE_DAYS = 14
+
+
 @app.command(name="add-ticker")
 def add_ticker(
     symbols: str = typer.Argument(
@@ -2277,6 +2284,12 @@ def add_ticker(
     force: bool = typer.Option(
         False, "--force", help="Run even though `runs` shows another job in progress"
     ),
+    probe: bool = typer.Option(
+        True,
+        "--probe/--no-probe",
+        help="Refuse a symbol Yahoo has no recent bars for, before writing anything. "
+        "--no-probe for repairing a retired symbol",
+    ),
 ) -> None:
     """Build a new ticker's whole history on the research machine.
 
@@ -2286,7 +2299,10 @@ def add_ticker(
     hand for VGT on 2026-10-01 (OPERATIONS.md, "Adding a ticker"), where
     two steps were started by mistake for the whole generation and killed.
 
-    In order: the `tickers` row (and, for a company, its CIK), daily and
+    **Probes Yahoo first** and refuses any symbol with no bars in the last
+    `ADD_TICKER_PROBE_DAYS`, so a typo leaves no `tickers` row behind.
+
+    In order: the `tickers` row (and, for a company, its CIK and sector), daily and
     hourly bars, actions, shares, earnings for a company, indicators, the
     universe for every quarter the generation holds, events, the backtest
     with its harness, and paths. All for these tickers only, and each step
@@ -2306,6 +2322,7 @@ def add_ticker(
     from capitalscan.core import training
     from capitalscan.jobs import compute, db_io, ingest
     from capitalscan.jobs.config import config_hash as compute_config_hash
+    from capitalscan.jobs.fetch import yahoo
     from capitalscan.jobs.progress import track
     from capitalscan.research.path_backfill import run_path_backfill
 
@@ -2354,9 +2371,26 @@ def add_ticker(
     end = date.today()
     start = end - timedelta(days=lookback)
 
+    if probe:
+        recent = yahoo.fetch_bars_daily(tickers, end - timedelta(days=ADD_TICKER_PROBE_DAYS), end)
+        known = set(recent["ticker"]) if not recent.empty else set()
+        unknown = [t for t in tickers if t not in known]
+        if unknown:
+            console.print(
+                f"[red]error[/red]: Yahoo has no bars in the last {ADD_TICKER_PROBE_DAYS} days "
+                f"for {', '.join(unknown)}. Check the spelling (an index takes a caret, "
+                "e.g. ^GSPC). Nothing was written. --no-probe repairs a retired symbol."
+            )
+            raise typer.Exit(code=1)
+
     ingest.ensure_tickers(tickers, engine)
     if companies:
         console.print(f"cik and name: filled {_fill_missing_cik(engine, companies)} row(s)")
+        # `ensure_tickers` writes no sector, and a company without one is the
+        # `missing_sector` defect in the training frame (core/training.py).
+        # A fund has none to resolve (ADR 147).
+        report = ingest.run_sector_backfill(companies, engine)
+        console.print(f"sector: {report.notes}")
     report = ingest.run_bars_daily(tickers, start, end)
     console.print(f"bars --daily: {report.rows_written:,} written")
     # Yahoo serves 730 days of hourly bars at most, the window `bars --hourly

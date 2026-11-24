@@ -12,16 +12,20 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import date, datetime
 
+import pandas as pd
 import pytest
 import typer
 
 from capitalscan.core import training
 from capitalscan.core.config import Config
 from capitalscan.jobs import cli, compute, db_io, ingest
+from capitalscan.jobs.fetch import yahoo
 from capitalscan.research import path_backfill as path_backfill_mod
 from capitalscan.research.path_backfill import PathBackfillReport
 
 QUARTERS = ["2010Q1", "2010Q2", "2026Q2"]
+# Symbols the stubbed Yahoo probe returns no bars for.
+UNKNOWN_SYMBOLS = {"NOPE", "ZZQX"}
 
 
 @pytest.fixture
@@ -49,8 +53,16 @@ def calls(monkeypatch) -> list:
     monkeypatch.setattr(cli, "_fill_missing_cik", rec("cik", 1))
     monkeypatch.setattr(cli, "_print_add_ticker_summary", lambda *a, **k: None)
     monkeypatch.setattr(ingest, "run_job", _fake_run_job)
+
+    def _fake_probe(tickers, start, end):
+        log.append(("probe", (list(tickers), start, end), {}))
+        known = [t for t in tickers if t not in UNKNOWN_SYMBOLS]
+        return pd.DataFrame({"ticker": known, "ts": [end] * len(known)})
+
+    monkeypatch.setattr(yahoo, "fetch_bars_daily", _fake_probe)
     for name in (
         "ensure_tickers",
+        "run_sector_backfill",
         "run_bars_daily",
         "run_bars_hourly",
         "run_actions",
@@ -68,11 +80,11 @@ def calls(monkeypatch) -> list:
 
 
 def _names(log: list) -> list[str]:
-    return [name for name, _, _ in log if name != "run_job"]
+    return [name for name, _, _ in log if name not in ("run_job", "probe")]
 
 
-def _run(symbols: str, etf: bool = False, force: bool = False) -> None:
-    cli.add_ticker(symbols=symbols, etf=etf, lookback=8500, force=force)
+def _run(symbols: str, etf: bool = False, force: bool = False, probe: bool = True) -> None:
+    cli.add_ticker(symbols=symbols, etf=etf, lookback=8500, force=force, probe=probe)
 
 
 def test_a_fund_runs_every_step_in_order(calls):
@@ -174,3 +186,49 @@ def test_no_symbols_is_an_error(calls):
 )
 def test_quarter_label(as_of, label):
     assert cli._quarter_label(as_of) == label
+
+
+def test_a_company_gets_its_sector_resolved_and_a_fund_does_not(calls):
+    # `ensure_tickers` writes a stub row with no sector, and nothing else in
+    # the command filled it: a company added this way reached the training
+    # frame as the `missing_sector` defect (core/training.py).
+    _run("ZZZZ,VGT")
+
+    names = _names(calls)
+    sector = [(a, k) for n, a, k in calls if n == "run_sector_backfill"]
+    assert sector == [((["ZZZZ"], "fake-engine"), {})]
+    assert names.index("ensure_tickers") < names.index("run_sector_backfill")
+    assert names.index("run_sector_backfill") < names.index("run_indicators")
+
+
+def test_a_fund_only_run_skips_the_sector_step(calls):
+    _run("VGT", etf=True)
+    assert "run_sector_backfill" not in _names(calls)
+
+
+def test_a_symbol_yahoo_does_not_know_is_refused_before_any_write(calls):
+    with pytest.raises(typer.Exit) as exc:
+        _run("ZZZZ,NOPE")
+    assert exc.value.exit_code == 1
+    # Not even the `tickers` stub: a typo must leave no row behind.
+    assert _names(calls) == []
+
+
+def test_the_probe_asks_for_a_recent_window_so_the_cache_never_answers(calls):
+    _run("ZZZZ")
+
+    (args,) = [a for n, a, _ in calls if n == "probe"]
+    tickers, start, end = args
+    assert tickers == ["ZZZZ"]
+    assert end == date.today()
+    assert (end - start).days == cli.ADD_TICKER_PROBE_DAYS
+    # `_window_is_recent` bypasses the fetch cache for such a window, so an
+    # empty answer cached from an earlier typo cannot refuse a real symbol.
+    assert yahoo._window_is_recent(tickers, start, end)
+
+
+def test_no_probe_lets_a_retired_symbol_through(calls):
+    _run("ZZQX", probe=False)
+
+    assert not [n for n, _, _ in calls if n == "probe"]
+    assert "run_path_backfill" in _names(calls)
