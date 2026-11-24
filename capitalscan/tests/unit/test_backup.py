@@ -89,6 +89,7 @@ def test_the_dump_holds_what_no_rerun_rebuilds() -> None:
     assert set(backup.TABLES) == {
         "predictions",
         "outcomes",
+        "forward_log_exclusions",
         "signal_reports",
         "poller_sessions",
         "runs",

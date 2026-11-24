@@ -39,6 +39,7 @@ from datetime import UTC, datetime
 from sqlalchemy import Engine, text
 
 from capitalscan.jobs import db_io, ingest
+from capitalscan.jobs.exclusions import NOT_EXCLUDED
 
 #: The threshold whose Brier score is stored per row. Matches
 #: `research.predict.HEADLINE`: it is the field with the best combination
@@ -167,7 +168,8 @@ SELECT count(*)                                   AS n,
        min(p.as_of)                               AS first_pred,
        max(p.as_of)                               AS last_pred
   FROM outcomes o JOIN predictions p ON p.id = o.prediction_id
-"""
+ WHERE {not_excluded}
+""".format(not_excluded=NOT_EXCLUDED)
 
 
 def score(engine: Engine | None = None) -> dict[str, float | None]:

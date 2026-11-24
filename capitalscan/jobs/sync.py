@@ -1181,6 +1181,15 @@ def _tables(cutoff: date, config_hash: str) -> tuple[SyncTable, ...]:
         # the project has, and a serving store that cannot see it can only
         # show the model's claims, never how they turned out.
         SyncTable("outcomes", "SELECT * FROM outcomes", ("prediction_id",)),
+        # ADR 210. Keyed on `prediction_id` for the same reason `outcomes`
+        # is, and after `predictions` for the same foreign key. Shipped
+        # whole: it holds tens of rows. Without it serving's reliability
+        # table would average the corrupt rows research already set aside.
+        SyncTable(
+            "forward_log_exclusions",
+            "SELECT * FROM forward_log_exclusions",
+            ("prediction_id",),
+        ),
         SyncTable("positions", "SELECT * FROM positions", ("id",)),
         # **Last, and the position is the whole point.**
         #
