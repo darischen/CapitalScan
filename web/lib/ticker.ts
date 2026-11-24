@@ -1,5 +1,5 @@
 import { num, query } from "./db";
-import { recentRealisedOrNone } from "./reliability";
+import { NOT_EXCLUDED, recentRealisedOrNone } from "./reliability";
 import { EQUITY_LOOKBACK_SESSIONS, compoundEquity } from "./equity";
 import {
   allBands,
@@ -966,6 +966,10 @@ export async function latestPrediction(
       WHERE p.ticker = $1
         AND p.model_scored
         AND p.config_hash = current_setting('capitalscan.default_config_hash', true)
+        -- ADR 210: a row set aside for corrupt inputs is not what the model
+        -- last said. EMBJ's 0.856 of 2026-11-18 came from a history divided
+        -- by 4 nine times.
+        AND ${NOT_EXCLUDED}
       ORDER BY p.as_of DESC, p.id DESC
       LIMIT 1`,
     [sym],

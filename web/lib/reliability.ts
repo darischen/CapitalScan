@@ -64,6 +64,15 @@ function wilson(successes: number, n: number, z = 1.96): [number, number] {
   ];
 }
 
+/**
+ * ADR 210: forward-log rows whose prices were corrupt when they were
+ * scored or resolved. The rows stay in `outcomes`; every reader that
+ * measures the model skips them. Same spelling as
+ * `capitalscan/jobs/exclusions.py::NOT_EXCLUDED`.
+ */
+export const NOT_EXCLUDED =
+  "NOT EXISTS (SELECT 1 FROM forward_log_exclusions x WHERE x.prediction_id = p.id)";
+
 const SQL = `
   SELECT p.p_touch_3::float AS predicted,
          (o.touched_3)::int AS realised,
@@ -74,6 +83,7 @@ const SQL = `
      AND p.p_touch_3 IS NOT NULL
      AND o.touched_3 IS NOT NULL
      AND p.config_hash = current_setting('capitalscan.default_config_hash', true)
+     AND ${NOT_EXCLUDED}
    ORDER BY p.p_touch_3
 `;
 
@@ -261,6 +271,7 @@ const RECENT_SQL = `
        AND p.p_touch_3 IS NOT NULL
        AND o.touched_3 IS NOT NULL
        AND p.config_hash = current_setting('capitalscan.default_config_hash', true)
+       AND ${NOT_EXCLUDED}
   ), days AS (
     SELECT DISTINCT as_of FROM r ORDER BY as_of DESC LIMIT $1
   )

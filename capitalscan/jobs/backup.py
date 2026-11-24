@@ -35,6 +35,8 @@ from capitalscan.jobs import db_io, ingest
 TABLES: tuple[str, ...] = (
     "predictions",
     "outcomes",
+    # ADR 210: a hand decision about the forward log, which no rerun rebuilds.
+    "forward_log_exclusions",
     "signal_reports",
     "poller_sessions",
     "runs",

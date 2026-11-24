@@ -62,6 +62,30 @@ pull to "keep it in sync" is the mistake.
 
 ## Open
 
+### A ticker rebuild leaves the corrupt slots it did not reproduce (found 2026-11-24)
+
+`cscan add-ticker EMBJ,SNDK` (2026-11-22) rebuilt both histories after the
+split repair, and `events` upserts on its slot key, so a slot the corrupt
+history produced and the clean one did not was never overwritten. 30 such
+events remain on research and serving, written 2026-11-17 to 2026-11-20:
+26 EMBJ, all `in_trade`, 22 labelled, and 4 SNDK `in_watch`. Their feature
+rows read the corrupt history: SNDK 2026-11-18 `atr_14` 158.9 on a $97
+close, EMBJ 2026-11-17 `sma200_slope_60` 198.9. The weekly refit trains on
+labelled `in_trade` events, so the 22 enter training on the next weekly
+unless they go first. Find them as the live generation's EMBJ and SNDK
+events whose `run_id` started before 2026-11-22 11:30 PT.
+
+Two parts: delete the 30 (owner's call: the forward log references them,
+and ADR 210 already excludes every prediction that scored one), and make
+the rebuild delete a ticker's live-generation slots it did not write.
+
+### Daily bars stopped for ROKU and KVUE (found 2026-11-24)
+
+Yahoo's last daily bar is 2026-11-06 for ROKU and 2026-10-30 for KVUE, and
+both are still `is_active`. `stale_tickers` already names KVUE. Each needs
+the ADR 207 check (symbol change or delisting) before it is retired.
+
+
 ### ~~Two weekly refits never reached the Pi~~ FIXED 2026-11-04
 
 `artifact.fetch` skipped the download when the Pi's file carried the

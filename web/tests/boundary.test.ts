@@ -196,6 +196,9 @@ describe("parameterisation", () => {
     // from the outer row. Added 2026-08-20 when a second benchmark run for
     // one config made `/research` read both and double everything.
     "${LATEST_RUN}",
+    // ADR 210: the forward-log exclusion clause, a module constant with no
+    // caller input. Pinned to the Python spelling by test_exclusions.py.
+    "${NOT_EXCLUDED}",
     // The screener's ORDER BY. `orderBy` returns either the default clause
     // or a string built from `SORT_COLUMNS`, a frozen map; the only thing a
     // request chooses is which *key* of that map to use, and `isSortKey`

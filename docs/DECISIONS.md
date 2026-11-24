@@ -268,6 +268,7 @@ with a fifth promotion check and a kill criterion of its own fixed in advance.
 | 207 | A company keeps one symbol, and the new one carries the history | **Decided 2026-11-04 (owner).** A symbol change reached the store as two companies: EQR and VMRK held identical bars back to 2010, and SKYD held 23 bars beside PSKY's twenty years. The new symbol carries the full history; the old one goes inactive, delisted at its last bar, and loses its events, universe rows and paths, except events the forward log or the poller's records reference. Its bars and indicators stay. Applied the same day to both pairs |
 | 208 | Funds and indexes are scored, always cosmetic, and still never train | **Decided 2026-11-04 (owner).** Amends ADR 147's serving clause only. `build_serving_frame` keeps `ETF_TICKERS` rows (`core.training.partition_for_serving`); `build_rows` writes `cosmetic = true` for every fund, in trade or not. Sector encodes all-zero. Training is unchanged, and a blank-sector equity is still dropped. No migration, no `config_hash` move |
 | 209 | `cell_stats` takes its interval from a month x cluster robust variance, inflated by a placebo factor | **Decided 2026-11-18 (owner).** Amends 166, supersedes 098's `k_bar` for `cell_stats`, restates 112 (holds: 0 validate survivors). Migration `d7e3b1a94c52`. No `config_hash` move |
+| 210 | Corrupt forward-log rows are excluded by a separate table, never edited | **Decided 2026-11-24 (owner).** 50 predictions scored or resolved on corrupt prices: EMBJ (split repair divided its history by 4 nine times, returns to 17,892), SNDK (partial vendor adjustment), MNST, APH and CTVA (unadjusted splits in Aug-Sep). `forward_log_exclusions` holds one row per prediction with a reason, `run_id` and `git_sha`; `predictions` and `outcomes` are untouched (ADR 029, ADR 195). Every reader that measures the model filters on it. Ids are named by hand from an audit against current bars, never matched by rule. Migration `a3c9e1f7b204`. No `config_hash` move |
 
 ---
 
@@ -11254,3 +11255,60 @@ drawdown slice and the screener's Cell column show numbers where they
 showed suppress reasons. `cscan stats cells` runs the placebo (about 1 min
 validate, 2 min train on the workstation at 8 workers;
 `--placebo-workers`).
+
+---
+
+## 210. Corrupt forward-log rows are excluded by a separate table, never edited
+
+Status: Decided 2026-11-24 (owner). Migration `a3c9e1f7b204`. No
+`config_hash` move. Leaves ADR 029 and ADR 195 standing.
+
+The problem. The forward log keeps what it first wrote. On 2026-11-24 it
+held rows whose prices were wrong when they were scored or resolved, and
+the bars were repaired afterwards:
+
+- EMBJ split 4-for-1 on 2026-11-16 and Yahoo never adjusted it. The split
+  repair divided its history by 4 nine times before the rebuild at 11:32 PT
+  on 2026-11-22 (OPERATIONS, 2026-11-21). Outcomes resolved in that window
+  read 5-day returns up to 17,892, and the mean 5-day return of the
+  2026-11-10 cohort read 35,514%. Predictions written in the window scored
+  26 events the corrupt history produced and the rebuild did not.
+- SNDK: four predictions written 2026-11-20 on events from the partial
+  vendor adjustment (a fake 89% fall).
+- MNST, APH and CTVA resolved against unadjusted splits in August and
+  September. `split_history_refetched` repaired their bars on 2026-11-23.
+
+Two audits against current bars found them, and agree on the set. The
+first recomputes each resolved 5-day return from `adj_close` with the entry
+kind's base bar. The second bounds every stored return, MFE and MAE by the
+high/low range of the bars it covers, so it flags only impossible values.
+Of 16,195 resolved outcomes, nothing outside these five tickers fails
+either. MRNA's 177% move on 2026-08-19 and P's August rally are real
+(199M shares that day; hourly bars agree) and stay.
+
+The options put to the owner: exclude with a reason, recompute the rows,
+or leave them. The owner chose exclusion: "EMBJ is basically corrupted
+data, no use to anyone".
+
+Decision.
+
+1. `forward_log_exclusions(prediction_id, reason, detail, excluded_at,
+   run_id, git_sha)`, one row per excluded prediction, `ON DELETE CASCADE`
+   from `predictions`.
+2. `predictions` and `outcomes` are not changed. Recomputing would let a
+   repair quietly improve the recorded track record, which ADR 195 exists
+   to make impossible; an exclusion says what happened and keeps the row.
+3. Every reader that measures the model skips excluded rows:
+   `outcomes.score`, the web reliability table, the recent realised rate,
+   and the ticker page's latest prediction. The clause is spelled once in
+   Python (`jobs/exclusions.py::NOT_EXCLUDED`) and once in the web
+   (`lib/reliability.ts`), and a test pins the two to the same text.
+4. Ids are named by hand (`cscan outcomes-exclude`), never matched by a
+   rule that would re-run and start matching rows nobody looked at.
+5. A table, not a column: `predictions` syncs insert-only, so a column set
+   on research would never reach serving's existing rows. The table syncs
+   on `prediction_id` and is in the daily backup.
+
+What it does not fix. The 30 stale EMBJ and SNDK events are still in
+`events` on both stores, and the 26 EMBJ ones are `in_trade`. Deleting them
+is a separate decision (BACKLOG).

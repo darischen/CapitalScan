@@ -487,6 +487,24 @@ def outcomes(
     console.print(f"outcomes: {report.summary()}")
 
 
+@app.command(name="outcomes-exclude")
+def outcomes_exclude(
+    ids: str = typer.Argument(..., help="Comma-separated prediction ids"),
+    reason: str = typer.Option(..., help="Short machine-readable reason, e.g. split_corrupt_bars"),
+    detail: str | None = typer.Option(None, help="One line a later reader needs"),
+) -> None:
+    """Set forward-log rows aside because their inputs were corrupt (ADR 210).
+
+    The rows stay; every reader that measures the model skips them. Writes
+    research; `cscan sync` carries the table to serving.
+    """
+    from capitalscan.jobs import exclusions as ex
+
+    parsed = [int(s) for s in ids.replace(" ", "").split(",") if s]
+    report = ex.exclude(parsed, reason, detail)
+    console.print(f"outcomes-exclude: {report.summary()}")
+
+
 @app.command()
 def breadth() -> None:
     """Recompute universe breadth and report the ranking gate (ADR 176).
