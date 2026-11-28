@@ -1656,6 +1656,120 @@ def _pull_predictions(source: Engine, target: Engine) -> tuple[int, int, int, in
     return adopted, no_slot, ambiguous, collided, duplicate_target, unmapped
 
 
+# **An adopted row whose link points at nothing, and one more try at it
+# (2026-11-28).** `_pull_predictions` resolves a row once, on the night it
+# arrives, and `insert_new` never revisits it. A bar revised after the 13:15
+# fetch means research writes the slot's event on a later run, so the row
+# adopts with `event_id = NULL` (`no_slot`), and the next `predict` claims
+# the event with research's own row. 489 live-generation rows reached
+# 2026-11-28 that way. A link also dangles when its event is deleted (a
+# rebuild's leftovers, a superseded slot), which the NULL-only backfill
+# never saw.
+#
+# So the read takes both: NULL, or an id no event holds. It skips a row an
+# outcome already resolved (the outcome was computed from the old link and
+# ADR 195 keeps it) and a row ADR 210 excluded (it scored corrupt inputs,
+# and a fresh link would only resolve it again).
+RELINK_READ_SQL = (
+    "SELECT p.*, p.event_id AS prior_event_id FROM predictions p "  # noqa: S608
+    "WHERE p.id >= :floor AND p.as_of >= :since "
+    "AND (p.event_id IS NULL "
+    "  OR NOT EXISTS (SELECT 1 FROM events e WHERE e.id = p.event_id)) "
+    "AND NOT EXISTS (SELECT 1 FROM outcomes o WHERE o.prediction_id = p.id) "
+    "AND NOT EXISTS (SELECT 1 FROM forward_log_exclusions x WHERE x.prediction_id = p.id)"
+)
+
+# **Compare-and-set on the link the read saw.** `IS NOT DISTINCT FROM`
+# matches a NULL prior as well as a dangling id, so a row another writer
+# linked between the read and this write is left alone, as the NULL-only
+# guard did before. The outcome guard repeats the read's for the same
+# reason. A template so `scripts/verify_slot_adoption.py` can aim it at a
+# `zz_` scratch table, like `_apply_slot_remap`'s `table=`.
+RELINK_WRITE_SQL_TEMPLATE = """
+UPDATE {table} p
+   SET event_id = m.event_id
+  FROM unnest(
+      CAST(:ids AS bigint[]), CAST(:event_ids AS bigint[]), CAST(:prior_ids AS bigint[])
+  ) AS m(id, event_id, prior)
+ WHERE p.id = m.id AND p.event_id IS NOT DISTINCT FROM m.prior
+   AND NOT EXISTS (SELECT 1 FROM outcomes o WHERE o.prediction_id = p.id)
+"""
+RELINK_WRITE_SQL = RELINK_WRITE_SQL_TEMPLATE.format(table="predictions")
+
+
+def read_unlinked_adopted(engine: Engine, since: date | None = None) -> pd.DataFrame:
+    """Adopted, unresolved, unexcluded predictions whose link is NULL or
+    dangling. `since` bounds `as_of`, and None reads them all."""
+    return pd.read_sql(
+        text(RELINK_READ_SQL),
+        engine,
+        params={  # type: ignore[arg-type]
+            "floor": ServingParams().serving_id_floor,
+            "since": since or date(1900, 1, 1),
+        },
+    )
+
+
+def write_relinks(engine: Engine, updates: pd.DataFrame, *, table: str = "predictions") -> int:
+    """Write `(id, event_id, prior_event_id)` rows in one statement and one
+    transaction. Returns the rows Postgres updated, which is fewer than
+    `len(updates)` when another writer moved a link since the read."""
+    if updates.empty:
+        return 0
+
+    def _ids(column: str) -> list[int | None]:
+        return [None if pd.isna(v) else int(v) for v in updates[column].tolist()]
+
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(RELINK_WRITE_SQL_TEMPLATE.format(table=table)),
+            {
+                "ids": _ids("id"),
+                "event_ids": _ids("event_id"),
+                "prior_ids": _ids("prior_event_id"),
+            },
+        )
+    return int(result.rowcount or 0)
+
+
+def resolve_unlinked(frame: pd.DataFrame, engine: Engine) -> tuple[pd.DataFrame, dict[str, int]]:
+    """`_pull_predictions`' three steps in its order, against research
+    alone: the slot, then a different row already owning the event, then
+    two of these rows claiming one event. Returns the frame and the four
+    counts under the names the nightly log already uses."""
+    if frame.empty:
+        return frame, {"no_slot": 0, "ambiguous": 0, "collision": 0, "duplicate_target": 0}
+    frame, no_slot, ambiguous = _apply_slot_remap(frame, engine)
+    frame, collision = _null_inbound_remap_collisions(
+        frame, engine, "predictions", ("id",), _PREDICTIONS_EVENT_REMAP
+    )
+    frame, duplicate_target = _null_duplicate_slot_targets(frame)
+    return frame, {
+        "no_slot": no_slot,
+        "ambiguous": ambiguous,
+        "collision": collision,
+        "duplicate_target": duplicate_target,
+    }
+
+
+def relink_adopted_predictions(engine: Engine, since: date | None = None) -> dict[str, int]:
+    """Link every adopted prediction whose slot now has exactly one event no
+    other row owns. Runs in `nightly` after the pull and before `predict`,
+    so a late event goes to the row the reader saw live rather than to a
+    fresh research score. Returns `examined`, `relinked` and the four
+    reasons a row stays unlinked."""
+    frame = read_unlinked_adopted(engine, since)
+    examined = len(frame)
+    frame, reasons = resolve_unlinked(frame, engine)
+    linked = (
+        frame.loc[frame["event_id"].notna(), ["id", "event_id", "prior_event_id"]]
+        if examined
+        else frame
+    )
+    relinked = write_relinks(engine, linked)
+    return {"examined": examined, "relinked": relinked, **reasons}
+
+
 def pull_live_records(
     source: Engine | None = None,
     target: Engine | None = None,

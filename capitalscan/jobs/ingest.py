@@ -873,6 +873,110 @@ def _read_daily_range(
         return pd.read_sql(text(sql), conn, params=params)  # type: ignore[arg-type]
 
 
+#: Every split with a stored hourly bar before its ex-date.
+_REPAIR_SPLITS_SQL = (
+    "SELECT c.ticker, c.ex_date, c.ratio FROM corporate_actions c "
+    "WHERE c.action_type = 'split' AND c.ex_date > ("
+    "  SELECT min(ts)::date FROM bars WHERE interval = '1h') "
+    "AND EXISTS (SELECT 1 FROM bars b WHERE b.ticker = c.ticker "
+    "  AND b.interval = '1h' AND b.ts < c.ex_date)"
+)
+
+
+#: What the repair rewrites. Volume stays as stored, as the fetch leaves it.
+_REPAIR_COLUMNS = ("open", "high", "low", "close", "adj_close", "run_id")
+
+
+def run_hourly_split_repair(engine: Engine | None = None) -> IngestReport:
+    """Back-adjust stored hourly bars for a split recorded after they were.
+
+    `run_bars_hourly` adjusts at fetch time against the `corporate_actions`
+    it sees then, and the nightly fetches five days. A split recorded later
+    leaves every stored bar before its ex-date unadjusted. Found 2026-11-28:
+    15 tickers, SOXX's whole 2024-11-04 to 2026-10-30 at 3.000x its daily
+    bars after the 3-for-1 of 2026-11-05, CTVA at 6.665x across 540 days.
+    Yahoo serves 730 days of hourly bars, so a refetch cannot reach the
+    oldest of them. This repairs them where they are.
+
+    **Safe to run on bars already adjusted.** `_split_adjustment_factor`
+    scores each day against its daily bar: a day near 1.0 is left as it is,
+    a day near the split factor is divided, and a day between the two is
+    left untouched and counted. So a second run changes nothing. A day
+    with no daily bar is dropped from the input first: the fetch path
+    divides such a day naively, which on a stored bar could adjust it twice.
+
+    Volume stays as stored, as the fetch path leaves it.
+    """
+    engine = engine or db_io.get_engine()
+    with run_job(engine, "hourly_split_repair", {}) as report:
+        with engine.connect() as conn:
+            splits = pd.read_sql(text(_REPAIR_SPLITS_SQL), conn)
+        unresolved_days = 0
+        repaired: list[str] = []
+        for ticker, ticker_splits in splits.groupby("ticker", sort=True):
+            last_ex = pd.to_datetime(ticker_splits["ex_date"]).max().date()
+            with engine.connect() as conn:
+                stored = pd.read_sql(
+                    text(
+                        "SELECT ticker, ts, open, high, low, close FROM bars "
+                        "WHERE ticker = :t AND interval = '1h' AND ts < :end ORDER BY ts"
+                    ),
+                    conn,
+                    params={"t": ticker, "end": last_ex},
+                )
+            if stored.empty:
+                continue
+            # `numeric` reads back as Decimal, and Decimal / float raises.
+            # The fetch path divides floats, so this one does too.
+            for col in ("open", "high", "low", "close"):
+                stored[col] = stored[col].astype("float64")
+            daily = _read_daily_range(engine, [str(ticker)], end=last_ex)
+            daily = daily.assign(
+                high=daily["high"].astype("float64"), low=daily["low"].astype("float64")
+            )
+            day = pd.to_datetime(stored["ts"]).dt.date
+            stored = stored.loc[day.isin(set(daily["d"]))].reset_index(drop=True)
+            if stored.empty:
+                continue
+            adjusted, unresolved = _back_adjust_hourly(stored, ticker_splits, daily)
+            # **Written only where the result agrees with the daily bar.**
+            # The factor compounds every split, and a daily series need not:
+            # DD's 2.39 of 2025-11-03 and 1-for-3 of 2026-06-24 took 23 days
+            # from 0.353x to 0.418x, wrong both ways. A day whose adjusted
+            # high is not within the detection margin of its daily high is
+            # left as stored and counted with the unresolved ones.
+            adj_day = pd.to_datetime(adjusted["ts"]).dt.date
+            ratio = adjusted.groupby(adj_day)["high"].max() / daily.set_index("d")["high"]
+            margin = DEFAULT_HOURLY_SPLIT_DETECTION.resolution_margin
+            agrees = set(ratio.index[(ratio - 1.0).abs() <= margin])
+            moved = adjusted["close"].ne(stored["close"].round(4))
+            refused = moved & ~(adj_day.isin(agrees) & ~adjusted["ts"].isin(unresolved["ts"]))
+            unresolved_days += int(adj_day[refused].nunique())
+            changed = moved & ~refused
+            if not changed.any():
+                continue
+            rows = adjusted.loc[changed].assign(
+                interval="1h",
+                adj_close=lambda f: f["close"],
+                run_id=report.run_id,
+            )
+            report.rows_written += db_io.upsert(
+                engine,
+                "bars",
+                rows[["ticker", "ts", "interval", *_REPAIR_COLUMNS]],
+                ["ticker", "ts", "interval"],
+                update_columns=list(_REPAIR_COLUMNS),
+            )
+            repaired.append(f"{ticker} {int(changed.sum())}")
+        report.notes = (
+            f"{report.rows_written} hourly bar(s) re-adjusted across {len(repaired)} ticker(s)"
+            + (f": {', '.join(repaired[:15])}" if repaired else "")
+            + f"; {unresolved_days} day(s) left as stored, between adjusted and not"
+        )
+        console.print(f"hourly split repair: {report.notes}")
+    return report
+
+
 def _flag_range_escape(
     hourly: pd.DataFrame, daily_range: pd.DataFrame, guard=DEFAULT_HOURLY_SPLIT_GUARD
 ) -> list[dict]:

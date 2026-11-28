@@ -73,6 +73,7 @@ def calls(monkeypatch) -> list:
     for name in ("run_indicators", "run_universe", "run_events"):
         monkeypatch.setattr(compute, name, rec(name))
     monkeypatch.setattr(cli, "backtest", rec("backtest"))
+    monkeypatch.setattr(db_io, "drop_unreproduced_events", rec("drop_unreproduced_events", 0))
     monkeypatch.setattr(
         path_backfill_mod, "run_path_backfill", rec("run_path_backfill", PathBackfillReport())
     )
@@ -101,6 +102,7 @@ def test_a_fund_runs_every_step_in_order(calls):
         "run_events",
         "backtest",
         "run_path_backfill",
+        "drop_unreproduced_events",
     ]
 
 

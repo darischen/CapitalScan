@@ -62,29 +62,73 @@ pull to "keep it in sync" is the mistake.
 
 ## Open
 
-### A ticker rebuild leaves the corrupt slots it did not reproduce (found 2026-11-24)
+### Poller predictions adopted unlinked stay unlinked (found 2026-11-28)
+
+489 live-generation predictions the Pi wrote are permanently unlinked:
+research's own `predict` row claimed each one's event first, and ADR 195
+forbids moving it. Cause: a bar revised after the 13:15 fetch means research
+writes the slot's event on a later run (DRI, ENIC and XPO on 2026-11-24 were
+the night's three `no_slot` rows), and adoption resolved a row once and never
+again. **Fixed going forward** (2026-11-28): `nightly` runs
+`sync.relink_adopted_predictions` after the pull and before `predict`, over
+`ServingParams.relink_lookback_days` (14). It also takes a dangling link and
+skips resolved and ADR 210 rows. `scripts/backfill_prediction_event_ids.py`
+shares its SQL for older rows. Its dry run that day: 571 examined, 0
+linkable, 489 `collision`, 81 `no_slot`, 1 `ambiguous`. **Still open**: the
+489 keep research's end-of-day score in the forward log, not the one the
+reader saw. Recovering the live number would mean rewriting a recorded
+prediction, which needs its own ADR.
+
+### ~~A ticker rebuild leaves the corrupt slots it did not reproduce~~ FIXED 2026-11-28
 
 `cscan add-ticker EMBJ,SNDK` (2026-11-22) rebuilt both histories after the
-split repair, and `events` upserts on its slot key, so a slot the corrupt
-history produced and the clean one did not was never overwritten. 30 such
-events remain on research and serving, written 2026-11-17 to 2026-11-20:
-26 EMBJ, all `in_trade`, 22 labelled, and 4 SNDK `in_watch`. Their feature
-rows read the corrupt history: SNDK 2026-11-18 `atr_14` 158.9 on a $97
-close, EMBJ 2026-11-17 `sma200_slope_60` 198.9. The weekly refit trains on
-labelled `in_trade` events, so the 22 enter training on the next weekly
-unless they go first. Find them as the live generation's EMBJ and SNDK
-events whose `run_id` started before 2026-11-22 11:30 PT.
+split repair, and `events` upserts on its slot key, so 30 slots only the
+corrupt history produced kept their rows: 26 EMBJ, all `in_trade`, 24
+labelled by 11-28, and 4 SNDK. SNDK 2026-11-18 read `atr_14` 158.9 on a $97
+close. **Deleted on research and serving on 2026-11-28 (owner)**, 02:42 PT,
+during the weekly's backtest and ten hours before its refit. Serving matched
+on the slot key, its ids differing (ADR 163). 250 `path` rows cascaded.
+Saved first to `~/backups/stale-rebuild-2026-11-28/` on `wivie` and the Pi.
+Every prediction referencing one was already excluded (ADR 210).
 
-Two parts: delete the 30 (owner's call: the forward log references them,
-and ADR 210 already excludes every prediction that scored one), and make
-the rebuild delete a ticker's live-generation slots it did not write.
+**Fix.** `add-ticker` now ends with `db_io.drop_unreproduced_events`: the
+rebuilt tickers' live-generation rows whose `run_id` belongs to a run that
+started before the rebuild, since `run_events` stamps `run_id` on every slot
+it writes. A row a signal report, order intent, live quote or unexcluded
+prediction references stays. Checked against research in a rolled-back
+transaction with the 30 restored: it deleted those 30 and nothing else.
+Test: `test_drop_unreproduced_events.py`.
 
-### Daily bars stopped for ROKU and KVUE (found 2026-11-24)
+### ~~Daily bars stopped for ROKU and KVUE~~ RETIRED 2026-11-28
 
-Yahoo's last daily bar is 2026-11-06 for ROKU and 2026-10-30 for KVUE, and
-both are still `is_active`. `stale_tickers` already names KVUE. Each needs
-the ADR 207 check (symbol change or delisting) before it is retired.
+Both acquired, not renamed: no other ticker shares KVUE's CIK, ROKU has
+none, and each closed on volume far above its average (KVUE 66M on 10-30
+against 22M, ROKU 11.5M on 11-06 against 2.5M). Retired by hand on research
+and serving as the ten were on 2026-11-17: `is_active = false`,
+`delisted_on` the last real session (KVUE 10-30, ROKU 11-06). ROKU's
+2026-11-09 bar was a Yahoo placeholder, volume 0 and OHLC all 160.52, so it
+was deleted with its indicator row and the one unreferenced `next_open`
+event that entered on it. Saved to `~/backups/retire-2026-11-28-*` on both.
+LEG and QRVO carry the same placeholder on their last day (BACKLOG
+2026-11-17), left as they are.
 
+### ~~Hourly bars stay unadjusted for a split recorded after them~~ FIXED 2026-11-28
+
+`run_bars_hourly` adjusts at fetch time against the splits `corporate_actions`
+holds then, and nothing revisited stored bars. SOXX's 3-for-1 of 2026-11-05
+left 497 days of its hourly history at 3.000x its daily bars (not SOXL:
+the ratio was exact on every day). 15 tickers carried the gap, CTVA at
+6.665x over 540 days. `nightly` now runs `ingest.run_hourly_split_repair`
+after `actions`, which scores each stored day against its daily bar with the
+fetch path's own detection and writes a day only when the result agrees
+within the detection margin. A dry run against research on 2026-11-28
+re-adjusted 20,490 bars across 30 tickers, every written day 0.989x to
+1.018x. Not run by hand: the weekly backtest was reading hourly bars, so the
+first nightly after it, 2026-11-29 13:15 PT, does it. Touch_30m and touch_5m
+events priced on the old bars correct at the next weekly. Left as stored:
+DD (two splits the daily series does not compound) and seven spin-off
+ratios near 1.0 (SPGI, HON, CMCSA, J, LEN, SCCO, MOD), whose stored bars
+already agree with daily. Test: `test_hourly_split_repair.py`.
 
 ### ~~Two weekly refits never reached the Pi~~ FIXED 2026-11-04
 

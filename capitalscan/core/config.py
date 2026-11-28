@@ -522,6 +522,14 @@ class ServingParams:
     # past either store's measured max (224,862 / 191,860), so headroom is
     # not the risk this guards against -- a collision is.
     serving_id_floor: int = 1_000_000_000
+    # **How far back each nightly retries linking an adopted prediction
+    # (2026-11-28).** A row adopts with `event_id = NULL` when research has
+    # no event for its slot yet, which a bar revised after the 13:15 fetch
+    # causes: research writes the event on a later run. 489 rows reached
+    # 2026-11-28 unlinked because nothing retried. A late event appears
+    # within a session or two, so two weeks covers it with room; older rows
+    # are the backfill script's.
+    relink_lookback_days: int = 14
     # **The trailing realised rate beside `p_touch_3` (2026-09-29).** The
     # modal shows what the model stated against what happened over the last
     # `realised_rate_sessions` resolved signal dates, per side, from the
