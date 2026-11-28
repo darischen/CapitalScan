@@ -419,6 +419,66 @@ DROP_SUPERSEDED_SLOT_SQL = (
 )
 
 
+#: A rebuild's leftovers: rows of the rebuilt tickers whose `run_id` belongs
+#: to a run that started before the rebuild did. `run_events` writes
+#: `run_id` on every slot it produces, so a row still carrying an older one
+#: is a slot the current bars no longer produce. A referenced row stays,
+#: except where the only references are predictions ADR 210 excluded: those
+#: scored the corrupt row, and keeping it would keep it in training.
+DROP_UNREPRODUCED_SQL = (
+    "DELETE FROM events e "
+    "WHERE e.config_hash = :config_hash AND e.ticker = ANY(:tickers) "
+    "AND e.signal_date >= :since_date "
+    # Without the rebuild's own row the cutoff below is NULL, the NOT EXISTS
+    # is true for every row, and the delete would take the whole history.
+    "AND EXISTS (SELECT 1 FROM runs b WHERE b.run_id = :rebuild_run_id) "
+    "AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id = e.run_id "
+    "  AND r.started_at >= (SELECT b.started_at FROM runs b WHERE b.run_id = :rebuild_run_id)) "
+    "AND NOT EXISTS (SELECT 1 FROM predictions p WHERE p.event_id = e.id "
+    "  AND NOT EXISTS (SELECT 1 FROM forward_log_exclusions x "
+    "    WHERE x.prediction_id = p.id)) "
+    + "".join(
+        f"AND NOT EXISTS (SELECT 1 FROM {t} r WHERE r.event_id = e.id) "
+        for t in EVENT_REFERENCING_TABLES
+        if t != "predictions"
+    )
+)
+
+
+def drop_unreproduced_events(
+    engine: Engine,
+    config_hash: str,
+    tickers: list[str],
+    since_date: Any,
+    rebuild_run_id: str,
+) -> int:
+    """Delete the slots a ticker rebuild did not write again.
+
+    `events` upserts on its slot key, so a rebuild overwrites every slot the
+    clean history produces and leaves alone the ones only the old history
+    produced. Found 2026-11-24: after `cscan add-ticker EMBJ,SNDK` repaired
+    their splits, 30 such rows stayed, with SNDK's `atr_14` at 158.9 on a $97
+    close, and 22 labelled EMBJ rows were in line for the weekly refit.
+
+    Call after `run_events` and the backtest, with the `run_id` of that
+    `run_events`: its `runs.started_at` is the cutoff, on the database's
+    clock. Returns the rows deleted.
+    """
+    if not tickers:
+        return 0
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(DROP_UNREPRODUCED_SQL),
+            {
+                "config_hash": config_hash,
+                "tickers": list(tickers),
+                "since_date": since_date,
+                "rebuild_run_id": rebuild_run_id,
+            },
+        )
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
 def drop_superseded_slot_events(engine: Engine, written: pd.DataFrame) -> int:
     """Delete the rows a write just superseded in its own debounce slots.
 

@@ -293,10 +293,13 @@ class TestTheGeneratedUpdateNamesExactlyOneColumn:
         columns = [part.strip().split("=")[0].strip() for part in set_clause.split(",")]
         assert columns == ["event_id"], f"SET clause must name exactly one column, got {columns}"
 
-    def test_where_clause_carries_the_null_guard(self):
+    def test_where_clause_is_compare_and_set_on_the_link_read(self):
+        """`IS NOT DISTINCT FROM` matches a NULL prior and a dangling one, and
+        leaves alone a row another writer linked since the read."""
         sql = backfill._BACKFILL_SQL
         where_clause = sql.split("WHERE", 1)[1]
-        assert "event_id IS NULL" in where_clause
+        assert "p.event_id IS NOT DISTINCT FROM m.prior" in where_clause
+        assert "FROM outcomes o WHERE o.prediction_id = p.id" in where_clause
 
     def test_apply_updates_sends_exactly_this_sql(self, patched_read_sql):
         rows = _predictions(
@@ -325,7 +328,7 @@ class TestTheTableSeamIsAdditiveOnly:
         backfill.apply_updates(cast(Engine, engine), updates)
         sent_sql, params = engine.executed[0]
         assert sent_sql.strip() == backfill._BACKFILL_SQL.strip()
-        assert params == {"ids": [FLOOR], "event_ids": [42]}
+        assert params == {"ids": [FLOOR], "event_ids": [42], "prior_ids": [None]}
 
     def test_a_scratch_table_changes_only_the_table_name(self):
         engine = _FakeEngine(_predictions([]), _events([]))
@@ -516,3 +519,45 @@ class TestDryRunIsTheDefault:
         assert exit_code == 0
         assert len(engine.executed) == 1
         assert int(engine.predictions.loc[0, "event_id"]) == 42
+
+
+class TestADanglingLinkIsReadToo:
+    """2026-11-28: the script read only NULL links, so a row whose event was
+    deleted (30 EMBJ and SNDK rows after a rebuild) was never examined."""
+
+    def test_the_read_takes_null_or_dangling(self):
+        sql = backfill.RELINK_READ_SQL
+        assert "p.event_id IS NULL" in sql
+        assert "NOT EXISTS (SELECT 1 FROM events e WHERE e.id = p.event_id)" in sql
+
+    def test_the_read_skips_a_resolved_or_excluded_row(self):
+        sql = backfill.RELINK_READ_SQL
+        assert "NOT EXISTS (SELECT 1 FROM outcomes o WHERE o.prediction_id = p.id)" in sql
+        assert "forward_log_exclusions x WHERE x.prediction_id = p.id" in sql
+
+    def test_the_prior_link_reaches_the_write(self):
+        engine = _FakeEngine(_predictions([]), _events([]))
+        updates = pd.DataFrame({"id": [FLOOR], "event_id": [42], "prior_event_id": [7]})
+        backfill.apply_updates(cast(Engine, engine), updates)
+        _, params = engine.executed[0]
+        assert params["prior_ids"] == [7]
+
+
+class TestTheNightlyRetries:
+    """A row adopts NULL when research writes its slot's event on a later
+    run. Before this, nothing retried, and 489 rows stayed unlinked."""
+
+    def test_nightly_relinks_after_the_pull_and_before_predict(self):
+        import inspect
+
+        from capitalscan.jobs import cli
+
+        source = inspect.getsource(cli.nightly)
+        pull = source.index("sync_job.pull_live_records()")
+        relink = source.index("sync_job.relink_adopted_predictions(")
+        predict = source.index("from capitalscan.jobs.predict import run_predict")
+        assert pull < relink < predict
+
+    def test_the_lookback_is_a_serving_constant(self):
+        """Not in `Config`: it varies no backtest, so it must not move the hash."""
+        assert ServingParams().relink_lookback_days == 14

@@ -1,5 +1,14 @@
-"""One-time backfill: link the 100 adopted predictions' `event_id` on the
-slot, not the label (task 4, slot-keyed-adoption plan, 2026-09-20).
+"""Backfill: link adopted predictions' `event_id` on the slot, not the label
+(task 4, slot-keyed-adoption plan, 2026-09-20; widened 2026-11-28).
+
+**Widened 2026-11-28.** Written for 100 NULL rows, it now reads every
+adopted row whose link is NULL or dangling (its event deleted), skips rows
+an outcome resolved or ADR 210 excluded, and writes compare-and-set on the
+link it read. The read and the write are `jobs/sync.py`'s, which `nightly`
+now runs over the last `ServingParams.relink_lookback_days` before `predict`,
+so a late event reaches the Pi's row. This script covers older rows. On
+2026-11-28 it examined 572: 489 `collision`, research's own row having
+claimed the event first, which nothing may undo (ADR 195).
 
 **Why this exists.** The 2026-09-20 nightly adopted 100 of the Pi's
 predictions into research (`jobs/sync.py::_pull_predictions`) before the
@@ -155,39 +164,25 @@ from capitalscan.core.config import ServingParams
 from capitalscan.jobs import db_io
 from capitalscan.jobs.sync import (
     _PREDICTIONS_EVENT_REMAP,
+    RELINK_READ_SQL,
+    RELINK_WRITE_SQL,
+    RELINK_WRITE_SQL_TEMPLATE,
     _apply_slot_remap,
     _null_duplicate_slot_targets,
     _null_inbound_remap_collisions,
+    write_relinks,
 )
 
 logger = logging.getLogger(__name__)
 
-# See "The write touches exactly one column" above. `unnest` over two
-# parallel arrays binds the whole (id -> event_id) mapping as two
-# parameters regardless of row count, the same form `jobs/sync.py` and
-# `scripts/repair_prediction_ids.py` already prefer for a bounded,
-# dynamic-length list, rather than one bound pair of statement per row.
-#
-# The `event_id IS NULL` guard is load-aware, not decorative: it is the
-# only thing standing between this script and overwriting a link some
-# other writer set between the SELECT above and this UPDATE.
-#
-# **A template, so `scripts/verify_slot_adoption.py` can run the real
-# statement against a `zz_` scratch table** (whole-branch review MINOR 7:
-# `unnest` over a `bigint[]` cast had never run against real Postgres, the
-# same gap that hid `insert_new`'s `rowcount` of -1). Only the table name
-# is substituted, from a fixed identifier, never from a value.
-# `_BACKFILL_SQL` is the production statement and what `apply_updates`
-# sends by default.
-_BACKFILL_SQL_TEMPLATE = """
-UPDATE {table} p
-   SET event_id = m.event_id
-  FROM unnest(
-      CAST(:ids AS bigint[]), CAST(:event_ids AS bigint[])
-  ) AS m(id, event_id)
- WHERE p.id = m.id AND p.event_id IS NULL
-"""
-_BACKFILL_SQL = _BACKFILL_SQL_TEMPLATE.format(table="predictions")
+# **The read and the write are `jobs/sync.py`'s, shared with the nightly
+# relink (2026-11-28).** The script began as a NULL-only repair. It now takes
+# a dangling link too (its event deleted), skips rows an outcome resolved or
+# ADR 210 excluded, and writes compare-and-set on the link it read, so a row
+# another writer moved in between is left alone. One copy of each statement:
+# a second is the drift `jobs/sync.py`'s docstring warns about.
+_BACKFILL_SQL_TEMPLATE = RELINK_WRITE_SQL_TEMPLATE
+_BACKFILL_SQL = RELINK_WRITE_SQL
 
 #: The reason names, in the order `pull_live_records` reports them. Kept as
 #: a tuple (not re-typed at each call site) so the report and the tests
@@ -201,22 +196,19 @@ _DETAIL_COLS: tuple[str, ...] = ("ticker", "as_of", "signal_type")
 
 
 def read_unresolved(engine: Engine, floor: int) -> pd.DataFrame:
-    """Adopted rows (`id >= floor`) still carrying a NULL `event_id`.
+    """Adopted rows (`id >= floor`) with a NULL or dangling `event_id`, not
+    yet resolved by an outcome and not excluded (ADR 210). Every `as_of`:
+    the nightly retries two weeks, and this is the repair for the rest.
 
-    Scoped to `event_id IS NULL` on the read, not only on the write, so a
-    row a prior `--apply` already linked never enters the resolution frame
-    at all -- the write's own guard would no-op on it regardless, but
-    filtering here means the report describes only the rows this run
-    actually looked at, which is what makes "a second run changes nothing"
-    visible in the printed counts rather than only in the database.
+    `floor` is bound as given, so a test can pass its own. The SQL is
+    `jobs/sync.py::RELINK_READ_SQL`, which the nightly reads with.
     """
+    from datetime import date
+
     return pd.read_sql(
-        text(
-            "SELECT * FROM predictions "  # noqa: S608 - fixed table name
-            "WHERE id >= :floor AND event_id IS NULL"
-        ),
+        text(RELINK_READ_SQL),
         engine,
-        params={"floor": floor},
+        params={"floor": floor, "since": date(1900, 1, 1)},  # type: ignore[arg-type]
     )
 
 
@@ -311,6 +303,8 @@ def plan_updates(frame: pd.DataFrame) -> pd.DataFrame:
     gain.
     """
     cols = ("id", "event_id", *_DETAIL_COLS)
+    if "prior_event_id" in frame.columns:
+        cols = (*cols, "prior_event_id")
     if frame.empty:
         return pd.DataFrame(columns=list(cols))
     linked = frame.loc[frame["event_id"].notna(), list(cols)]
@@ -351,26 +345,18 @@ def event_labels(engine: Engine, event_ids: list[int]) -> pd.DataFrame:
 
 
 def apply_updates(engine: Engine, updates: pd.DataFrame, *, table: str = "predictions") -> int:
-    """Write `updates` with `_BACKFILL_SQL`, in one transaction. Returns the
-    number of rows Postgres actually updated -- which can be less than
-    `len(updates)` if the `event_id IS NULL` guard caught a row linked by
-    something else since the read (see the module docstring). One
-    statement inside one `engine.begin()`: this either commits every row
-    it touches or none of them (see the module docstring's "no partial
-    --apply" note) -- there is no in-between state.
+    """Write `updates` through `jobs/sync.py::write_relinks`: one statement,
+    one transaction, compare-and-set on each row's `prior_event_id`.
+    Returns the rows Postgres updated, fewer than `len(updates)` when
+    another writer moved a link since the read.
 
-    `table` defaults to `"predictions"` and `main` never passes it. It is
-    keyword-only and exists for `scripts/verify_slot_adoption.py`, the same
-    seam `_apply_slot_remap`'s `table=` is.
+    `table` is keyword-only, for `scripts/verify_slot_adoption.py`.
     """
     if updates.empty:
         return 0
-    sql = _BACKFILL_SQL_TEMPLATE.format(table=table)
-    ids = [int(v) for v in updates["id"].tolist()]
-    event_ids = [int(v) for v in updates["event_id"].tolist()]
-    with engine.begin() as conn:
-        result = conn.execute(text(sql), {"ids": ids, "event_ids": event_ids})
-        return int(result.rowcount or 0)
+    if "prior_event_id" not in updates.columns:
+        updates = updates.assign(prior_event_id=None)
+    return write_relinks(engine, updates, table=table)
 
 
 def _verify_reason_accounting(*, total: int, planned: int, unresolved: int) -> None:
@@ -418,7 +404,7 @@ def _print_plan(updates: pd.DataFrame, labels: pd.DataFrame, unlinked: pd.DataFr
 def _print_summary(
     *, total: int, planned: int, reasons: dict[str, int], applied: int | None
 ) -> None:
-    print(f"\nadopted rows examined (id >= floor, event_id IS NULL): {total}")
+    print(f"\nadopted rows examined (id >= floor, event_id NULL or dangling): {total}")
     print(f"resolved to exactly one event: {planned}")
     for name in REASONS:
         print(f"  {name}: {reasons[name]}")

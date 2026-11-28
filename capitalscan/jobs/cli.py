@@ -2337,6 +2337,7 @@ def add_ticker(
     under a running backtest (ADR 060). Run it outside the nightly windows
     (05:30 and 13:15 PT) and not during a Saturday weekly.
     """
+
     from capitalscan.core import training
     from capitalscan.jobs import compute, db_io, ingest
     from capitalscan.jobs.config import config_hash as compute_config_hash
@@ -2438,8 +2439,11 @@ def add_ticker(
     console.print(f"universe: {len(quarters)} quarter(s)")
 
     event_start = date.fromisoformat(config.splits.event_start)
-    report = compute.run_events(tickers, max(start, event_start), end, config=config, max_workers=1)
+    events_from = max(start, event_start)
+    report = compute.run_events(tickers, events_from, end, config=config, max_workers=1)
     console.print(f"events: {report.rows_written:,} written")
+    # The cleanup's cutoff: every slot this run wrote carries its `run_id`.
+    events_run_id = report.run_id
 
     backtest(
         tickers=",".join(tickers),
@@ -2460,6 +2464,11 @@ def add_ticker(
         )
         job_report.rows_written = path_report.rows_written
     console.print(f"path backfill: {path_report.rows_written:,} rows")
+
+    # A slot only the old history produced keeps its old row, because
+    # `events` upserts (BACKLOG, 2026-11-24: 30 EMBJ and SNDK rows).
+    dropped = db_io.drop_unreproduced_events(engine, chash, tickers, events_from, events_run_id)
+    console.print(f"events not reproduced by this rebuild: {dropped:,} deleted")
 
     console.print("add-ticker: done")
     _print_add_ticker_summary(engine, tickers, chash)
@@ -3720,6 +3729,17 @@ def nightly(
         ingest.run_bars_hourly(tickers, start, end, engine=engine)
         ingest.run_market(lookback_days=5, engine=engine)
     ingest.run_actions(tickers, engine=engine)
+    # **Then re-adjust stored hourly bars for any split `actions` has
+    # recorded since they were fetched** (2026-11-28). The fetch adjusts
+    # against the splits it knows, so SOXX's hourly history stayed 3.000x
+    # its daily bars after its 3-for-1, and 14 more tickers the same way.
+    # After `actions`, before `backtest`, which prices two entry kinds off
+    # hourly bars. A no-op on bars already adjusted. A failure is reported
+    # and the chain goes on: the bars it would fix are already wrong.
+    try:
+        ingest.run_hourly_split_repair(engine)
+    except Exception as exc:  # noqa: BLE001 - reported; the chain continues
+        console.print(f"[yellow]warn[/yellow] hourly split repair skipped: {exc}")
     ingest.run_shares(tickers, engine=engine)
     ingest.run_earnings(tickers, historical=False, forward_days=90, engine=engine)
     # **A second pass for the session bars Yahoo had not published yet**
@@ -3935,6 +3955,25 @@ def nightly(
             )
     except Exception as exc:  # noqa: BLE001 - reported; research is unaffected
         console.print(f"[yellow]warn[/yellow] live-record pull skipped: {exc}")
+
+    # **Then one more try at every recent adopted row still unlinked**, for
+    # the same "ahead of `predict`" reason: a slot whose event a later run
+    # wrote (a bar revised after the 13:15 fetch) goes to the Pi's row, not
+    # to a fresh research score. 489 rows were lost that way before this.
+    try:
+        from capitalscan.core.config import ServingParams
+
+        lookback = ServingParams().relink_lookback_days
+        relinked = sync_job.relink_adopted_predictions(
+            engine, since=date.today() - timedelta(days=lookback)
+        )
+        if relinked["relinked"] or relinked["examined"]:
+            console.print(
+                "nightly: relinked adopted predictions "
+                + ", ".join(f"{k} {v:,}" for k, v in relinked.items())
+            )
+    except Exception as exc:  # noqa: BLE001 - reported; research is unaffected
+        console.print(f"[yellow]warn[/yellow] adopted-prediction relink skipped: {exc}")
 
     # **Inference, after the labels it trains on and before the sync that
     # ships it.** That ordering is the whole point: `peak_labels` above

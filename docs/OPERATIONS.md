@@ -2278,6 +2278,13 @@ were above); otherwise confirm on Yahoo that it stopped trading and retire
 it by hand as the ten were on 2026-11-17 (BACKLOG).** Nothing retires
 automatically, because a long halt looks the same.
 
+**An acquisition's last session trades several times its average volume**,
+and Yahoo often adds one placeholder bar after it: volume 0, OHLC all equal
+to the last close. Set `delisted_on` to the last real session, not the
+placeholder, and delete the placeholder with its indicator row and any
+unreferenced `next_open` event that entered on it. Done for ROKU and KVUE on
+2026-11-28 (BACKLOG).
+
 ## Dead tuples reclaimed with `VACUUM FULL` (2026-11-18)
 
 **Why.** Five writers rewrote unchanged `events` rows on every run (fixed in
